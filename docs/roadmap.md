@@ -18,23 +18,30 @@
 
 **Exit criteria:** At least one external reader has reviewed and the design hasn't fundamentally changed in a week.
 
-## Phase 1 — Local POC (Next)
+## Phase 1 — Local POC ✅ (Done 2026-06-17)
 
 **Goal:** Two agent processes on `localhost` can hold a scoped session.
 
-- [ ] Skeleton of `back-channel-node` library
-- [ ] Visitor mode: connect, request capabilities, invoke
-- [ ] Host mode: register capabilities, enforce scope, return responses
-- [ ] In-memory session state (no DB yet)
-- [ ] Hardcoded scope grants (no UI yet)
-- [ ] Console-based transcript logging
-- [ ] One end-to-end scenario:
-  - Visitor reads a fake config file via `config.read`
-  - Visitor proposes a change via `config.suggest`
-  - Host approves via terminal prompt
-  - Visitor sees confirmation
+- [x] Skeleton of `back-channel` library
+- [x] Visitor mode: connect, request capabilities, invoke
+- [x] Host mode: register capabilities, enforce scope, return responses
+- [x] In-memory session state (no DB yet)
+- [x] Hardcoded scope grants (no UI yet)
+- [x] Console-based transcript logging
+- [x] End-to-end scenario working: read config → suggest change w/ approval → out-of-scope denial → session end
+- [x] 9 unit tests passing
 
-**Exit criteria:** Demo video showing two terminal windows doing the dance.
+**What shipped:**
+- `src/host.ts` — HostAgent with scope enforcement + approval gate
+- `src/visitor.ts` — VisitorAgent with discovery + invocation
+- `src/scopes.ts` — full v1 scope set + BLOCKED_SCOPES hard-block
+- `src/messages.ts` — typed protocol envelopes
+- `src/transport/in-memory.ts` — Phase 1 transport (Phase 2 will swap to WebSocket)
+- `src/transcript.ts` — structured event log
+- `examples/localhost-demo/run.ts` — runnable demo
+- `tests/basic.test.ts` — vitest coverage
+
+Run `npm install && npm run demo` to see it.
 
 ## Phase 2 — Networked POC
 
@@ -101,3 +108,4 @@
 - Team workspaces (org-managed visitor pool)
 - Trust-graph reputation (who's a good visitor)
 - Marketplace for visitor agents that offer specialized skills
+

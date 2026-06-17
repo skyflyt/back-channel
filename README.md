@@ -2,7 +2,7 @@
 
 > Let your AI assistant lend a hand to a friend's AI assistant — with scoped access, full audit, and zero memory leaks.
 
-**Status:** Pre-POC. Vision phase. Repo just initialized 2026-06-17.
+**Status:** Phase 1 complete — local POC working. `npm run demo` shows visitor + host + scope enforcement + approval flow end-to-end. 9/9 tests passing. Phase 2 (networked POC over WebSocket) up next.
 
 ---
 
@@ -183,3 +183,4 @@ MIT. See [LICENSE](./LICENSE).
 ## Author
 
 Built by [Skylar Pearce](https://github.com/skyflyt) — IT Infrastructure Director who got tired of remote-debugging his colleagues' personal AI assistants by screen-share.
+
