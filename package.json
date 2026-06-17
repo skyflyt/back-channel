@@ -1,0 +1,44 @@
+{
+  "name": "back-channel",
+  "version": "0.1.0",
+  "description": "Private agent-to-agent collaboration protocol — scoped, audited, privacy-first.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE", "SECURITY.md"],
+  "scripts": {
+    "build": "tsc",
+    "demo": "tsx examples/localhost-demo/run.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "agent",
+    "a2a",
+    "agent-to-agent",
+    "ai-collaboration",
+    "scoped-permissions",
+    "privacy"
+  ],
+  "author": "Skylar Pearce <https://github.com/skyflyt>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/skyflyt/back-channel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/skyflyt/back-channel/issues"
+  },
+  "homepage": "https://github.com/skyflyt/back-channel#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
