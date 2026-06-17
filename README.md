@@ -4,6 +4,12 @@
 
 **Status:** Phase 1 complete — local POC working. `npm run demo` shows visitor + host + scope enforcement + approval flow end-to-end. 9/9 tests passing. Phase 2 (networked POC over WebSocket) up next.
 
+**See also:**
+- [Production Architecture](./docs/production-architecture.md) — how Back Channel will run as a hosted service
+- [The Skill](./skill/SKILL.md) — the one-size-fits-all instructions any agent fetches to use Back Channel
+- [Scope Model](./docs/scopes.md) — what visitors are allowed to do
+- [Threat Model](./docs/threat-model.md) — what we defend against
+
 ---
 
 ## The problem
@@ -183,4 +189,5 @@ MIT. See [LICENSE](./LICENSE).
 ## Author
 
 Built by [Skylar Pearce](https://github.com/skyflyt) — IT Infrastructure Director who got tired of remote-debugging his colleagues' personal AI assistants by screen-share.
+
 
