@@ -62,3 +62,21 @@ export {
   type MessageHandler,
   createInMemoryTransportPair,
 } from "./transport/in-memory.js";
+
+export {
+  createWebSocketHostTransport,
+  createWebSocketVisitorTransport,
+} from "./transport/websocket.js";
+
+export {
+  newEphemeralKeypair,
+  deriveSessionKey,
+  randomSessionKey,
+  type EphemeralKeypair,
+} from "./crypto/session-key.js";
+
+export {
+  seal,
+  open as openEnvelope,
+  type SealedEnvelope,
+} from "./crypto/envelope.js";

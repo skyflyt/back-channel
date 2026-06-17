@@ -64,6 +64,7 @@ export interface CapabilitiesRequest extends BCMessageBase {
 
 export interface CapabilitiesResponse extends BCMessageBase {
   readonly type: "capabilities.response";
+  readonly requestId: MessageId;
   readonly capabilities: ReadonlyArray<Capability>;
 }
 
@@ -113,3 +114,4 @@ export function newMessageId(): MessageId {
 export function newSessionId(): SessionId {
   return `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }
+

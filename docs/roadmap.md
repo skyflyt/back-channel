@@ -43,7 +43,7 @@
 
 Run `npm install && npm run demo` to see it.
 
-## Phase 2 — Networked POC
+## Phase 2 — Networked POC ✅ (Done 2026-06-17)
 
 **Goal:** Two agent processes on different machines (LAN or via a relay) can session.
 
@@ -108,4 +108,5 @@ Run `npm install && npm run demo` to see it.
 - Team workspaces (org-managed visitor pool)
 - Trust-graph reputation (who's a good visitor)
 - Marketplace for visitor agents that offer specialized skills
+
 

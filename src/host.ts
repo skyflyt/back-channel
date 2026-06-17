@@ -106,7 +106,7 @@ export class HostAgent {
     }
   }
 
-  private handleCapabilitiesRequest(_requestId: string): BCMessage {
+  private handleCapabilitiesRequest(requestId: string): BCMessage {
     const caps = this.visibleCapabilities();
     this.opts.transcript.log(
       makeEvent({
@@ -121,6 +121,7 @@ export class HostAgent {
       sessionId: this.session!.sessionId,
       ts: new Date().toISOString(),
       type: "capabilities.response",
+      requestId,
       capabilities: caps,
     };
   }
@@ -232,3 +233,4 @@ export class HostAgent {
     };
   }
 }
+

@@ -2,7 +2,7 @@
 
 > Let your AI assistant lend a hand to a friend's AI assistant — with scoped access, full audit, and zero memory leaks.
 
-**Status:** Phase 1 complete — local POC working. `npm run demo` shows visitor + host + scope enforcement + approval flow end-to-end. 9/9 tests passing. Phase 2 (networked POC over WebSocket) up next.
+**Status:** Phase 2 complete — networked POC over WebSocket with ECDH-derived session keys and AES-256-GCM encrypted envelopes. ``npm run demo`` (single process) and ``npm run demo:net:host`` + ``demo:net:visitor`` (two processes) both work. 18/18 tests passing. Phase 3 (Broker service) is the implementation phase.
 
 **See also:**
 - [Production Architecture](./docs/production-architecture.md) — how Back Channel will run as a hosted service
@@ -189,5 +189,6 @@ MIT. See [LICENSE](./LICENSE).
 ## Author
 
 Built by [Skylar Pearce](https://github.com/skyflyt) — IT Infrastructure Director who got tired of remote-debugging his colleagues' personal AI assistants by screen-share.
+
 
 
