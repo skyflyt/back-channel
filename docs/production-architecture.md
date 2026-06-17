@@ -29,7 +29,7 @@ UI (Next.js):
   /sessions/:id                -> live transcript + approve
 
 Stack: Next.js 15 (App Router) + Postgres + WebSocket
-Deploy: Coolify, hosted at backchannel.app
+Deploy: Google Cloud Run, hosted at backchannel.app
 ```
 
 Both agents call the Broker over HTTPS + WebSocket. The Broker is **content-blind** — it mediates connections but cannot read what the agents say to each other.
@@ -229,14 +229,114 @@ Hard rule, design-enforced:
 - ❌ Memory contents (which we don't allow anyway)
 - ❌ Anyone's API keys, OAuth tokens, etc.
 
-## Deployment plan
+## Deployment plan — Google Cloud Run
 
-Phase 3 MVP:
-1. Deploy Broker to Coolify at `back-channel.bhwk.com` (testing) → later `backchannel.app`
-2. Postgres via Coolify's managed Postgres
-3. Magic-link emails via Postmark or SES (env-configured)
-4. Single instance to start; horizontally scalable behind nginx if needed
-5. WebSocket on same Next.js server (custom server.mjs pattern from spendpilot)
+Same Cloud Run pattern Skylar's ttx_forge uses. Personal infrastructure (not Coolify, which is JEI-only).
+
+### Phase 3 MVP
+
+1. **Broker app**: Next.js 15 with a custom server (handles both HTTP + WebSocket).
+2. **Container**: multi-stage Dockerfile, Node 22 Alpine, distroless final image.
+3. **Cloud Run service**: `backchannel-broker`, region `us-west1` (matches Skylar's Reno latency).
+4. **Database**: Cloud SQL for PostgreSQL (smallest tier — `db-f1-micro` to start).
+5. **Email**: SendGrid or Postmark for magic links (env-configured).
+6. **Custom domain**: `backchannel.app` mapped to Cloud Run service.
+
+### WebSocket on Cloud Run — the stateful-connection problem
+
+Cloud Run supports WebSockets, but the Broker's job is to **relay** messages between two agents that need to be on the **same instance** at the same time. Three approaches:
+
+**Option A — Min/max instances = 1 (simple, MVP)**
+- `gcloud run deploy ... --min-instances=1 --max-instances=1`
+- Single instance holds all active sessions in-memory
+- All WS connections land on the same process
+- Limitations: cold-deploy = drop all connections; CPU/memory cap is the ceiling
+- Cost: -15/month at low traffic (always-on instance)
+- ✅ Good enough for the first 1K-5K users
+
+**Option B — Session affinity + in-memory relay**
+- `--session-affinity` pins each session id to one instance via cookie
+- Multiple instances, each holding its share
+- Limitation: both visitor AND host must be routed to the same instance, which requires a shared lookup layer (Redis) to map session_id → instance_id
+- Cost: -40/month
+
+**Option C — Shared message bus**
+- Each WS connection terminates on any instance
+- Messages route through Cloud Pub/Sub or a Redis pub/sub topic per session
+- Instances are stateless; restart-resilient
+- Most complex but most scalable
+- Cost: -100/month, scales linearly
+
+**Going with Option A** for the MVP. Documented as a known limit. Upgrade path to B then C as load demands.
+
+### Files we'll add for deploy
+
+`
+apps/broker/
+├── Dockerfile                  # multi-stage, Node 22 Alpine -> distroless
+├── cloudbuild.yaml             # Cloud Build trigger config
+├── service.yaml                # Cloud Run service manifest (declarative deploy)
+├── .gcloudignore
+├── server.mjs                  # custom Next.js server with WS upgrade handler
+├── next.config.js
+├── package.json
+├── prisma/
+│   ├── schema.prisma          # accounts, invites, sessions, audit_log, magic_links
+│   └── migrations/
+└── src/
+    ├── app/                    # Next.js App Router pages
+    │   ├── page.tsx           # landing
+    │   ├── account/...
+    │   ├── sessions/...
+    │   └── api/...            # route handlers
+    └── lib/                    # broker logic, ws relay, scope enforcement
+`
+
+The library at `packages/core` (a rename of the current `src/`) is consumed by `apps/broker` as a workspace dep — keeps protocol code shared.
+
+### Build + deploy commands
+
+`ash
+# One-time setup
+gcloud auth login
+gcloud config set project <project-id>
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com sqladmin.googleapis.com
+
+# Build container
+gcloud builds submit --config apps/broker/cloudbuild.yaml
+
+# Deploy
+gcloud run deploy backchannel-broker \
+  --image gcr.io/<project>/backchannel-broker:latest \
+  --region us-west1 \
+  --min-instances 1 \
+  --max-instances 1 \
+  --memory 1Gi \
+  --cpu 1 \
+  --port 8080 \
+  --add-cloudsql-instances <project>:us-west1:backchannel-db \
+  --set-env-vars="..."
+
+# Map domain
+gcloud beta run domain-mappings create \
+  --service backchannel-broker \
+  --domain backchannel.app \
+  --region us-west1
+`
+
+Skylar's ttx_forge already has this exact shape; we'll mirror its layout 1:1.
+
+### Env vars
+
+`
+DATABASE_URL=postgresql://user:pass@/db?host=/cloudsql/<connection>
+NEXTAUTH_SECRET=<rotate>
+POSTMARK_API_KEY=<...>           # or SENDGRID_API_KEY
+PUBLIC_APP_URL=https://backchannel.app
+AGENT_REGISTRY_PEPPER=<32 random bytes, server-side only>
+`
+
+No secrets in repo. All injected at deploy time via `--set-env-vars` or Secret Manager.
 
 ## Open questions for Phase 3 implementation
 
@@ -246,3 +346,4 @@ Phase 3 MVP:
 - **Free vs paid**: where's the boundary? (Personal use free, org accounts paid? Per-session limits?)
 
 To be resolved during implementation. None are blockers for the architecture.
+

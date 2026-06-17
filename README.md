@@ -155,7 +155,7 @@ Fine-grained, declarative. Host picks via checkbox at invite-time.
 
 - **Wire protocol**: A2A (Agent2Agent) by Google — open spec
 - **Transport**: WebSocket over TLS
-- **Broker**: Node.js + TypeScript, Express, deployed to Coolify
+- **Broker**: Next.js (TypeScript) + custom WS server, deployed to Google Cloud Run
 - **UI**: Next.js (host-side scope picker + transcript viewer)
 - **Auth**: JWT with short TTL, asymmetric signing
 - **Audit log**: PostgreSQL (transcript + session metadata)
@@ -189,6 +189,7 @@ MIT. See [LICENSE](./LICENSE).
 ## Author
 
 Built by [Skylar Pearce](https://github.com/skyflyt) — IT Infrastructure Director who got tired of remote-debugging his colleagues' personal AI assistants by screen-share.
+
 
 
 
