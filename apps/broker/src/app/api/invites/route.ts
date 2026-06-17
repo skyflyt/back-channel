@@ -31,25 +31,38 @@ export async function POST(req: NextRequest) {
   const code = generateInviteCode();
   const expiresAt = new Date(Date.now() + ttl * 60 * 1000);
 
-  const invite = await prisma.invite.create({
-    data: {
-      code,
-      hostAccountId: host.id,
-      visitorAccountId: visitor.id,
-      scopes: body.scopes,
-      ttlMinutes: ttl,
-      message: body.message,
-      expiresAt,
-    },
+  // Create invite AND session in one transaction so the visitor can connect
+  // to the relay immediately (broker buffers until host claims and joins).
+  const { invite, session } = await prisma.$transaction(async (tx) => {
+    const inv = await tx.invite.create({
+      data: {
+        code,
+        hostAccountId: host.id,
+        visitorAccountId: visitor.id,
+        scopes: body.scopes!,
+        ttlMinutes: ttl,
+        message: body.message,
+        expiresAt,
+      },
+    });
+    const ses = await tx.session.create({
+      data: {
+        inviteId: inv.id,
+        scopesGranted: inv.scopes,
+      },
+    });
+    return { invite: inv, session: ses };
   });
 
-  // TODO Phase 3.1: push notification to host's registered channel
+  const base = (process.env.PUBLIC_APP_URL ?? "https://backchannel.app").replace(/^https?:/, "wss:");
 
   return NextResponse.json({
     code: invite.code,
     invite_id: invite.id,
+    session_id: session.id,
     expires_at: invite.expiresAt.toISOString(),
-    relay_url: `${process.env.PUBLIC_APP_URL ?? "wss://backchannel.app"}/relay/<session_id_after_claim>`,
+    relay_url: `${base}/relay/${session.id}?role=visitor&token=${session.id}`,
+    host_handle: host.handle,
+    scopes: invite.scopes,
   });
 }
-

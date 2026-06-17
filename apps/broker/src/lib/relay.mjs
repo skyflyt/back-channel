@@ -1,18 +1,24 @@
 /**
  * Back Channel — WebSocket relay (pure JS so server.mjs can import at runtime).
  *
- * The Broker holds zero plaintext: it routes encrypted frames between
- * visitor and host. Both agents connect to /relay/:sessionId; once both
- * sides are present, every frame received from one is forwarded to the
- * other unchanged.
+ * Both agents connect to /relay/:sessionId. Whoever arrives first holds an
+ * open WS; the Broker BUFFERS any frames they send for the not-yet-present
+ * peer. When the peer arrives, buffered frames are flushed in order, then
+ * normal forwarding begins.
  *
- * Phase 3 MVP runs single-instance (--min-instances=1 --max-instances=1)
- * so pairing state lives in process memory. Upgrade path: Redis pub/sub.
+ * Broker is content-blind: it never decodes frame contents. The ECDH
+ * handshake between the two agents happens through the relay (handshake
+ * frames are forwarded plaintext on the wire; both ends derive the same
+ * session key; subsequent frames are AES-GCM ciphertext).
+ *
+ * Phase 3 MVP runs single-instance (--min/max=1) so pairing + buffer state
+ * lives in process memory. Multi-instance upgrade = Redis pub/sub.
  *
  * @typedef {"visitor" | "host"} Role
  * @typedef {Object} PairedSession
  * @property {import("ws").WebSocket | undefined} [visitor]
  * @property {import("ws").WebSocket | undefined} [host]
+ * @property {Array<{from: Role, data: unknown}>} buffer
  * @property {number} startedAt
  * @property {string[]} scopesGranted
  */
@@ -20,6 +26,8 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { parse } from "node:url";
 import { prisma } from "./db.mjs";
+
+const MAX_BUFFER_FRAMES = 64;
 
 /** @type {Map<string, PairedSession>} */
 const sessions = new Map();
@@ -52,6 +60,13 @@ export function handleRelayUpgrade(req, socket, head) {
     return;
   }
 
+  // Phase 3 MVP: token == sessionId (unguessable UUID, distributed only via authed API).
+  // Phase 3.1: separate visitor/host tokens, signed against registered agent pubkey.
+  if (token !== sessionId) {
+    socket.destroy();
+    return;
+  }
+
   wss.handleUpgrade(req, socket, head, (ws) => {
     void attachToSession(sessionId, role, ws);
   });
@@ -79,6 +94,7 @@ async function attachToSession(sessionId, role, ws) {
   const slot = sessions.get(sessionId) ?? {
     startedAt: Date.now(),
     scopesGranted: session.scopesGranted,
+    buffer: [],
   };
   if (slot[role]) {
     ws.close(4409, `${role} already connected`);
@@ -91,17 +107,31 @@ async function attachToSession(sessionId, role, ws) {
     data: { sessionId, role, eventType: "relay.connected", detail: {} },
   });
 
+  // If peer is already present, flush any buffered frames intended for me
+  const flushedToMe = flushBufferTo(slot, role);
+  if (flushedToMe > 0) {
+    await prisma.auditLog.create({
+      data: { sessionId, role, eventType: "relay.flushed", detail: { frames: flushedToMe } },
+    });
+  }
+
   ws.on("message", async (data) => {
     const peer = role === "visitor" ? slot.host : slot.visitor;
-    if (!peer || peer.readyState !== WebSocket.OPEN) {
-      return;
+    if (peer && peer.readyState === WebSocket.OPEN) {
+      peer.send(data);
+    } else {
+      // Peer not connected yet — buffer (capped)
+      if (slot.buffer.length >= MAX_BUFFER_FRAMES) {
+        // Drop oldest to avoid unbounded growth
+        slot.buffer.shift();
+      }
+      slot.buffer.push({ from: role, data });
     }
-    peer.send(data);
     await prisma.auditLog.create({
       data: {
         sessionId,
         role,
-        eventType: "relay.frame",
+        eventType: peer ? "relay.frame" : "relay.frame.buffered",
         detail: { bytes: dataByteLength(data) },
       },
     });
@@ -122,6 +152,7 @@ async function attachToSession(sessionId, role, ws) {
         });
       }
     } else {
+      // Other side still connected — notify them so they can clean up
       const peer = role === "visitor" ? slot.host : slot.visitor;
       try { peer?.close(4000, "peer_disconnected"); } catch {}
     }
@@ -130,6 +161,31 @@ async function attachToSession(sessionId, role, ws) {
   ws.on("error", (e) => {
     console.error(`Relay error on ${sessionId}/${role}:`, e);
   });
+}
+
+/**
+ * Flush buffered frames addressed to the just-arrived peer.
+ * @param {PairedSession} slot
+ * @param {Role} arrivingRole
+ * @returns {number} frames delivered
+ */
+function flushBufferTo(slot, arrivingRole) {
+  // Frames in buffer were sent by the OTHER role, addressed to this newly-arriving one
+  const ws = slot[arrivingRole];
+  if (!ws || ws.readyState !== WebSocket.OPEN) return 0;
+  const targetSenderRole = arrivingRole === "visitor" ? "host" : "visitor";
+  let count = 0;
+  const remaining = [];
+  for (const f of slot.buffer) {
+    if (f.from === targetSenderRole) {
+      ws.send(f.data);
+      count++;
+    } else {
+      remaining.push(f);
+    }
+  }
+  slot.buffer = remaining;
+  return count;
 }
 
 /**

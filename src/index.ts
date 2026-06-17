@@ -69,6 +69,11 @@ export {
 } from "./transport/websocket.js";
 
 export {
+  createBrokerTransport,
+  type BrokerTransportOptions,
+} from "./transport/broker.js";
+
+export {
   newEphemeralKeypair,
   deriveSessionKey,
   randomSessionKey,
@@ -80,3 +85,4 @@ export {
   open as openEnvelope,
   type SealedEnvelope,
 } from "./crypto/envelope.js";
+

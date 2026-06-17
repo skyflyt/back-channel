@@ -15,7 +15,7 @@ export async function POST(
 
   const invite = await prisma.invite.findUnique({
     where: { code },
-    include: { host: true, visitor: true },
+    include: { host: true, visitor: true, session: true },
   });
   if (!invite) return NextResponse.json({ error: "invite_not_found" }, { status: 404 });
 
@@ -30,28 +30,24 @@ export async function POST(
     return NextResponse.json({ error: "invite_expired" }, { status: 410 });
   }
 
-  // Phase 3 MVP: skip out-of-band confirm — claim == confirmed in v0.3
-  // Phase 3.1: send push to host's email/SMS, require explicit confirmation
-  const updated = await prisma.$transaction(async (tx) => {
-    const inv = await tx.invite.update({
-      where: { id: invite.id },
-      data: { status: "confirmed", claimedAt: new Date(), confirmedAt: new Date() },
-    });
-    const session = await tx.session.create({
-      data: {
-        inviteId: inv.id,
-        scopesGranted: inv.scopes,
-      },
-    });
-    return { invite: inv, session };
+  if (!invite.session) {
+    return NextResponse.json({ error: "session_missing", detail: "Invite has no session — re-create invite" }, { status: 500 });
+  }
+
+  // Phase 3 MVP: skip out-of-band confirm. Magic-link / push lands in v0.4.
+  await prisma.invite.update({
+    where: { id: invite.id },
+    data: { status: "confirmed", claimedAt: new Date(), confirmedAt: new Date() },
   });
+
+  const base = (process.env.PUBLIC_APP_URL ?? "https://backchannel.app").replace(/^https?:/, "wss:");
 
   return NextResponse.json({
-    session_id: updated.session.id,
-    relay_url: `${process.env.PUBLIC_APP_URL ?? "wss://backchannel.app"}/relay/${updated.session.id}`,
-    scopes: updated.invite.scopes,
+    session_id: invite.session.id,
+    relay_url: `${base}/relay/${invite.session.id}?role=host&token=${invite.session.id}`,
+    scopes: invite.scopes,
     visitor_handle: invite.visitor.handle,
     visitor_pubkey: invite.visitor.agentPubkey ?? null,
+    message: invite.message,
   });
 }
-
