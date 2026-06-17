@@ -1,0 +1,31 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
+import { getAccountFromAuth } from "@/lib/auth";
+import { kickSession } from "@/lib/relay";
+
+export const runtime = "nodejs";
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const account = await getAccountFromAuth(req.headers.get("authorization"));
+  if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const { id } = await params;
+
+  const session = await prisma.session.findUnique({
+    where: { id },
+    include: { invite: true },
+  });
+  if (!session) return NextResponse.json({ error: "session_not_found" }, { status: 404 });
+
+  const isParticipant =
+    session.invite.hostAccountId === account.id ||
+    session.invite.visitorAccountId === account.id;
+  if (!isParticipant) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+
+  await kickSession(id, "kicked_by_user");
+  return NextResponse.json({ ok: true });
+}
+

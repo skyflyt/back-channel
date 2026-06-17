@@ -1,0 +1,94 @@
+// Back Channel — Broker DB schema
+//
+// See docs/production-architecture.md for the data-model rationale.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id              String   @id @default(uuid())
+  handle          String   @unique
+  email           String   @unique
+  displayName     String?
+  agentPubkey     String?
+  agentEndpoint   String?
+  apiKey          String   @unique
+  createdAt       DateTime @default(now())
+  emailVerifiedAt DateTime?
+
+  invitesAsHost    Invite[]  @relation("HostInvites")
+  invitesAsVisitor Invite[]  @relation("VisitorInvites")
+}
+
+model Invite {
+  id                 String   @id @default(uuid())
+  code               String   @unique
+  hostAccountId      String
+  visitorAccountId   String
+  scopes             String[]
+  ttlMinutes         Int
+  message            String?
+  status             InviteStatus @default(pending)
+  createdAt          DateTime @default(now())
+  expiresAt          DateTime
+  claimedAt          DateTime?
+  confirmedAt        DateTime?
+
+  host    Account @relation("HostInvites",    fields: [hostAccountId],    references: [id])
+  visitor Account @relation("VisitorInvites", fields: [visitorAccountId], references: [id])
+  session Session?
+
+  @@index([hostAccountId])
+  @@index([visitorAccountId])
+  @@index([code])
+}
+
+enum InviteStatus {
+  pending
+  claimed
+  confirmed
+  expired
+  kicked
+}
+
+model Session {
+  id             String   @id @default(uuid())
+  inviteId       String   @unique
+  startedAt      DateTime @default(now())
+  endedAt        DateTime?
+  endReason      String?
+  scopesGranted  String[]
+
+  invite     Invite     @relation(fields: [inviteId], references: [id])
+  auditLog   AuditLog[]
+}
+
+model AuditLog {
+  id        BigInt   @id @default(autoincrement())
+  sessionId String
+  ts        DateTime @default(now())
+  role      String   // "visitor" | "host"
+  eventType String
+  detail    Json     // redacted — no plaintext content
+
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@index([ts])
+}
+
+model MagicLink {
+  token       String   @id
+  email       String
+  expiresAt   DateTime
+  consumedAt  DateTime?
+
+  @@index([email])
+  @@index([expiresAt])
+}

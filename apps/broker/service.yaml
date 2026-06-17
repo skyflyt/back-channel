@@ -1,0 +1,39 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: backchannel-broker
+  annotations:
+    run.googleapis.com/launch-stage: GA
+    run.googleapis.com/session-affinity: "true"
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/cloudsql-instances: PROJECT_ID:us-west1:backchannel-db
+    spec:
+      containerConcurrency: 250
+      timeoutSeconds: 3600
+      containers:
+        - name: broker
+          image: gcr.io/PROJECT_ID/backchannel-broker:latest
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              memory: 1Gi
+              cpu: "1"
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PUBLIC_APP_URL
+              value: https://backchannel.app
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: DATABASE_URL
+                  key: latest

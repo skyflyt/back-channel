@@ -1,0 +1,59 @@
+# Cloud Build config for the Back Channel broker.
+#
+# Trigger: push to main branch.
+# Result: image pushed to gcr.io/$PROJECT_ID/backchannel-broker:$SHORT_SHA
+#         AND deployed to Cloud Run service `backchannel-broker` in us-west1.
+
+steps:
+  # 1. Build image
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - apps/broker/Dockerfile
+      - -t
+      - gcr.io/$PROJECT_ID/backchannel-broker:$SHORT_SHA
+      - -t
+      - gcr.io/$PROJECT_ID/backchannel-broker:latest
+      - .
+
+  # 2. Push image
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - gcr.io/$PROJECT_ID/backchannel-broker
+
+  # 3. Deploy to Cloud Run
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - backchannel-broker
+      - --image=gcr.io/$PROJECT_ID/backchannel-broker:$SHORT_SHA
+      - --region=us-west1
+      - --platform=managed
+      - --min-instances=1
+      - --max-instances=1
+      - --memory=1Gi
+      - --cpu=1
+      - --port=8080
+      - --timeout=3600   # WebSocket sessions up to 60 min
+      - --session-affinity
+      - --allow-unauthenticated
+      - --add-cloudsql-instances=$_CLOUDSQL_INSTANCE
+      - --set-env-vars=PUBLIC_APP_URL=https://backchannel.app,NODE_ENV=production
+      - --set-secrets=DATABASE_URL=DATABASE_URL:latest
+
+images:
+  - gcr.io/$PROJECT_ID/backchannel-broker:$SHORT_SHA
+  - gcr.io/$PROJECT_ID/backchannel-broker:latest
+
+substitutions:
+  _CLOUDSQL_INSTANCE: ""  # set in trigger UI: <project>:us-west1:backchannel-db
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s
