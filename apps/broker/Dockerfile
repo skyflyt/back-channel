@@ -21,6 +21,7 @@ RUN npm prune --omit=dev
 # ─── Stage 2: runtime ──────────────────────────────────────────────────────
 FROM node:22-alpine AS runtime
 WORKDIR /app
+RUN apk add --no-cache openssl
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=8080
@@ -40,3 +41,4 @@ COPY --from=build /skill /skill
 
 EXPOSE 8080
 CMD ["node", "server.mjs"]
+

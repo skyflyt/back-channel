@@ -1,7 +1,7 @@
 # Cloud Build config for the Back Channel broker.
 #
 # Trigger: push to main branch.
-# Result: image pushed to gcr.io/$PROJECT_ID/backchannel-broker:$SHORT_SHA
+# Result: image pushed to gcr.io/$PROJECT_ID/backchannel-broker:${_TAG}
 #         AND deployed to Cloud Run service `backchannel-broker` in us-west1.
 
 steps:
@@ -12,7 +12,7 @@ steps:
       - -f
       - apps/broker/Dockerfile
       - -t
-      - gcr.io/$PROJECT_ID/backchannel-broker:$SHORT_SHA
+      - gcr.io/$PROJECT_ID/backchannel-broker:${_TAG}
       - -t
       - gcr.io/$PROJECT_ID/backchannel-broker:latest
       - .
@@ -31,7 +31,7 @@ steps:
       - run
       - deploy
       - backchannel-broker
-      - --image=gcr.io/$PROJECT_ID/backchannel-broker:$SHORT_SHA
+      - --image=gcr.io/$PROJECT_ID/backchannel-broker:${_TAG}
       - --region=us-west1
       - --platform=managed
       - --min-instances=1
@@ -47,7 +47,7 @@ steps:
       - --set-secrets=DATABASE_URL=DATABASE_URL:latest
 
 images:
-  - gcr.io/$PROJECT_ID/backchannel-broker:$SHORT_SHA
+  - gcr.io/$PROJECT_ID/backchannel-broker:${_TAG}
   - gcr.io/$PROJECT_ID/backchannel-broker:latest
 
 substitutions:
@@ -57,3 +57,4 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 timeout: 1200s
+
