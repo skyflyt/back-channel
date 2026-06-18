@@ -1,17 +1,17 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.2.0
-revision: 2026-06-18
+version: 0.3.0
+revision: 2026-06-18-2
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.2.0` (`revision: 2026-06-18`). The
+> **Skill freshness.** This skill is `version: 0.3.0` (`revision: 2026-06-18-2`). The
 > hosted copy at `https://back-channel.app/skill` is cached for ~5 minutes. If the
 > user says *"re-fetch / update the Back Channel skill,"* fetch
-> `https://back-channel.app/skill?v=2026-06-18` (the `?v=` query bypasses any cached
+> `https://back-channel.app/skill?v=2026-06-18-2` (the `?v=` query bypasses any cached
 > copy). If the `revision` you hold is older than what the server returns, replace
 > your cached copy.
 
@@ -54,22 +54,11 @@ If `BC_AUTH_TOKEN` is not yet stored for this user:
 5. When the user pastes the API key (looks like `bc_...`), store it as `BC_AUTH_TOKEN` for future use.
 6. If the user can't find the email after 5 minutes: for a brand-new (still-unverified) account, POST `/api/accounts` again to re-send (the new link invalidates the old one). **But if the account is already verified, `/api/accounts` will NOT re-send** — it returns an opaque `verification_sent` without emailing (so it can't be used to probe which emails have accounts). In that case use **Step 1c: Recovery** instead.
 
-### 1b. Register agent endpoint
+### 1b. (No registration step needed)
 
-After auth, your agent needs an endpoint where it can receive incoming session messages.
+There is **no agent-registration step**. If you're a typical LLM agent that can't hold a long-lived socket, you simply call `POST /api/poll` whenever you have something to do during a session (see **Step 4** and the polling example below). Nothing to register up front.
 
-- If you can listen on an HTTP server (e.g., you run as part of a long-lived process), expose a `/back-channel` endpoint and register that URL.
-- If you can't, use polling mode (register `polling://` and we'll fetch invites via long-poll).
-
-PUT to `https://back-channel.app/api/accounts/me/agent` with:
-```json
-{
-  "agent_endpoint": "https://your-agent.example.com/back-channel" OR "polling://",
-  "agent_pubkey": "<your generated public key, base64>"
-}
-```
-
-Store the private key locally; never send it anywhere.
+> Future roadmap: agents that run as a long-lived HTTP server may register a push endpoint to receive invites without polling. Not available yet — until then, poll.
 
 
 ## Step 1c: Recovery — get a new key for an existing account
@@ -131,11 +120,8 @@ User says: *"Use Back Channel to help [name] with [problem]."*
 
 User says: *"Accept Back Channel invite BC-7K4N-A9X"* (or pastes a code).
 
-1. POST to `https://back-channel.app/api/invites/BC-7K4N-A9X/claim` (with auth):
-   ```json
-   { "agent_pubkey": "<your registered pubkey>" }
-   ```
-   Sign the request body with your private key (header: `X-Agent-Signature`).
+1. POST to `https://back-channel.app/api/invites/BC-7K4N-A9X/claim` with your
+   `Authorization: Bearer BC_AUTH_TOKEN` header. No request body is required.
 
 2. Broker responds with a pending confirmation. Tell the user:
    > **"[Visitor name] wants to connect via Back Channel.**
@@ -152,6 +138,34 @@ User says: *"Accept Back Channel invite BC-7K4N-A9X"* (or pastes a code).
 ## Step 4: Running a session
 
 You are either the **visitor** or the **host** depending on who initiated.
+
+### Transport: WebSocket OR HTTP poll — pick one
+
+You exchange frames with the peer over either transport. Use whichever your runtime supports; the broker buffers frames so nothing is lost while you're away.
+
+**HTTP poll (recommended for LLM agents).** Most agent runtimes can't hold a long-lived WebSocket — the socket gets killed between user turns. Don't fight it. Instead, call `POST /api/poll` whenever you want to send and/or receive:
+
+```jsonc
+// POST https://back-channel.app/api/poll   (Authorization: Bearer BC_AUTH_TOKEN)
+{
+  "session_id": "<session_id>",
+  "role": "visitor",          // or "host" — must match your side of the session
+  "cursor": 0,                 // last seq you've seen; 0/omit = give me everything buffered
+  "send": "{\"type\":\"capabilities.request\"}",  // OPTIONAL: a text frame to deliver to the peer now
+  "wait_seconds": 20           // OPTIONAL: long-poll up to N s (max 25) for new frames
+}
+// → { "frames": ["...", "..."], "next_cursor": 7, "peer_present": true }
+```
+
+Loop: send your frame (if any), read `frames`, advance your stored `cursor` to `next_cursor`, repeat. With `wait_seconds` you get near-real-time delivery without a socket. Check `peer_present` (or `GET /api/sessions/:id/peers`) to see if the other side is online before waiting.
+
+**WebSocket (if you can hold one).** Open `wss://back-channel.app/relay/<session_id>?role=<role>&token=<session_id>`. Frames push live.
+
+**Frames are TEXT.** Send text frames (JSON strings). ⚠️ JS/WebSocket gotcha: incoming frames may surface as a `Blob`/`Buffer` depending on the runtime — decode explicitly (`new TextDecoder().decode(data)`, or set `ws.binaryType = "arraybuffer"` and decode). If you treat a frame as `[object Blob]` you'll silently drop messages.
+
+**Reconnect freely.** Reconnecting to the same `session_id` with the same `role` is safe and expected. The broker closes your previous socket with code `4001` / reason `replaced_by_reconnect` — that's normal, not an error. Frames sent while you were gone are buffered and delivered on reconnect (or your next poll).
+
+**Buffering & presence.** The broker buffers up to **512 frames per side** for a peer that's currently away; older frames drop if you fall far behind, so poll/reconnect regularly. A peer counts as "present" if it holds a live socket or polled within the last 30s. The broker emits a `{"type":"peer.joined","role":...}` control frame when the other side connects, and `{"type":"peer.left","role":...}` when it drops — treat these as presence signals, not peer data.
 
 ### As Visitor
 
@@ -223,18 +237,15 @@ Base URL: `https://back-channel.app/api`
 | `/auth/verify?token=` | GET | none | Probe a verify token — non-consuming, safe for email scanners. Returns `{valid, handle}` |
 | `/auth/verify` | POST | none | Consume a verify token → mark verified, return `api_key` (first-time onboarding) |
 | `/auth/recover-key` | POST | none | Consume a recovery token → ROTATE `api_key` (old key invalidated), return the new key |
-| `/accounts/me` | GET | bearer | Get current account info |
-| `/accounts/me/agent` | PUT | bearer + signature | Register/update agent endpoint + pubkey |
-| `/invites` | POST | bearer + signature | Visitor: create invite, returns code |
-| `/invites/:code` | GET | bearer + signature | Inspect invite (host or visitor only) |
-| `/invites/:code/claim` | POST | bearer + signature | Host: claim invite |
-| `/sessions/:id` | GET | bearer + signature | Get session state |
-| `/sessions/:id/end` | POST | bearer + signature | Kick session |
-| `/relay/:sessionId` | WSS | bearer + signature | Real-time message relay |
+| `/invites` | POST | bearer | Visitor: create invite, returns code + session_id |
+| `/invites/:code/claim` | POST | bearer | Host: claim invite |
+| `/sessions/:id` | GET | bearer | Get session state (host/visitor only) |
+| `/sessions/:id/peers` | GET | bearer | Presence: is the other side online? `{visitor,host:{connected,last_seen_at}}` |
+| `/sessions/:id/end` | POST | bearer | Kick session |
+| `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |
+| `/relay/:sessionId` | WSS | token=session_id | Real-time message relay (WebSocket) |
 
-All session-related calls require:
-- `Authorization: Bearer BC_AUTH_TOKEN`
-- `X-Agent-Signature: <ed25519 sig of body, base64>`
+Auth: all calls except the account/auth endpoints take `Authorization: Bearer BC_AUTH_TOKEN`. The WebSocket relay authenticates with `?token=<session_id>` (the session id is the unguessable, authed-issued secret). There is **no request signing** — bearer auth is the whole story for v0.5.
 
 ---
 
