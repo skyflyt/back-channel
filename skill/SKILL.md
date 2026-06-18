@@ -1,11 +1,19 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.1.0
+version: 0.2.0
+revision: 2026-06-18
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
+
+> **Skill freshness.** This skill is `version: 0.2.0` (`revision: 2026-06-18`). The
+> hosted copy at `https://back-channel.app/skill` is cached for ~5 minutes. If the
+> user says *"re-fetch / update the Back Channel skill,"* fetch
+> `https://back-channel.app/skill?v=2026-06-18` (the `?v=` query bypasses any cached
+> copy). If the `revision` you hold is older than what the server returns, replace
+> your cached copy.
 
 You can help (or be helped by) another person's AI agent through **Back Channel**, a hosted service that lets two agents have a scoped, time-limited collaboration session. Both humans see the transcript in real time. Writes require approval. Memory, email, contacts, and messages are off-limits.
 
@@ -23,8 +31,10 @@ Trigger phrases (or anything semantically close):
 - "Accept Back Channel invite [code]"
 - "Sign me up for Back Channel"
 - "Register me on Back Channel"
+- "I lost my Back Channel key" / "Reset my Back Channel agent"
+- "Resend my Back Channel verification" / "Issue me a new Back Channel key"
 
-If you see one of these AND you don't already have a Back Channel auth token for this user, walk them through onboarding first.
+If you see one of these AND you don't already have a Back Channel auth token for this user, walk them through onboarding first. If they're already signed up but you don't have their key (lost it, new device, replacing a compromised agent), use **Step 1c: Recovery** — NOT plain signup.
 
 ---
 
@@ -42,7 +52,7 @@ If `BC_AUTH_TOKEN` is not yet stored for this user:
 3. The broker creates a PENDING account and emails a magic verification link to that email. The API does NOT return an API key here — only `{ handle, status: "verification_sent" }`.
 4. Tell the user EXACTLY: *"Check your email — there's a verification link from Back Channel. Click it. The page will show your API key. Copy it and paste it back here."*
 5. When the user pastes the API key (looks like `bc_...`), store it as `BC_AUTH_TOKEN` for future use.
-6. If the user can't find the email after 5 minutes, ask them to confirm the email address and POST `/api/accounts` again to re-send the link (the new link invalidates the old one).
+6. If the user can't find the email after 5 minutes: for a brand-new (still-unverified) account, POST `/api/accounts` again to re-send (the new link invalidates the old one). **But if the account is already verified, `/api/accounts` will NOT re-send** — it returns an opaque `verification_sent` without emailing (so it can't be used to probe which emails have accounts). In that case use **Step 1c: Recovery** instead.
 
 ### 1b. Register agent endpoint
 
@@ -60,6 +70,28 @@ PUT to `https://back-channel.app/api/accounts/me/agent` with:
 ```
 
 Store the private key locally; never send it anywhere.
+
+
+## Step 1c: Recovery — get a new key for an existing account
+
+Use this when the user is **already signed up** but you don't have a stored `BC_AUTH_TOKEN` — e.g. they lost the previous key, are on a new device, or want to revoke a compromised agent and issue a fresh key.
+
+**Trigger phrases:** *"I lost my Back Channel key"* / *"Reset my Back Channel agent"* / *"Resend my Back Channel verification"* / *"Issue me a new Back Channel key."*
+
+**Important — use the right endpoint.** Do **not** call `POST /api/accounts` (signup) for recovery. For an already-verified account that endpoint returns an opaque `verification_sent` and sends **no email** (by design — it must not leak which emails have accounts to unauthenticated callers). The correct endpoint is **`POST /api/accounts/recover`**, which sends a recovery email (or no-ops opaquely if no account exists).
+
+**Flow:**
+
+1. Ask for the user's email, then POST to `https://back-channel.app/api/accounts/recover`:
+   ```json
+   { "email": "user@example.com" }
+   ```
+   Response: `200 { "status": "recovery_sent" }` (opaque — the same response whether or not an account exists).
+2. Tell the user EXACTLY: *"Check your email — there's a recovery link from Back Channel. Click it and the page will show your new API key. **Your old key becomes invalid once you finish** — any agents still using the old key will need this new one."*
+3. The user clicks the link → lands on `/recover?token=...` → clicks the **"Recover my API key"** button → the broker rotates the key (issues a new one, invalidates the old) and displays it.
+4. When the user pastes the new key (`bc_...`), store it as `BC_AUTH_TOKEN`, replacing any old value.
+
+**Multiple agents per account.** The same `BC_AUTH_TOKEN` can be used by any number of agents at the same time — it's the *account* credential, not a per-agent key. Recovery is for **replacement** (lost/compromised key), not for "I want a second key." Do **not** run recovery just to add another agent — that would rotate the key and break the agents already using the old one. (Per-agent tokens may come later; until then, share the one key.)
 
 
 ## Step 2: Visit someone (your user wants to HELP)
@@ -186,8 +218,11 @@ Base URL: `https://back-channel.app/api`
 
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
-| `/accounts` | POST | none | Create account (sends magic link to email) |
-| `/auth/verify?token=` | GET | none | Verify magic link, returns api_key (browser-flow) |
+| `/accounts` | POST | none | Create account (sends magic link). Opaque `verification_sent` if already verified — does NOT re-send |
+| `/accounts/recover` | POST | none | Recover/replace key for an existing account (sends recovery email; opaque if no account exists) |
+| `/auth/verify?token=` | GET | none | Probe a verify token — non-consuming, safe for email scanners. Returns `{valid, handle}` |
+| `/auth/verify` | POST | none | Consume a verify token → mark verified, return `api_key` (first-time onboarding) |
+| `/auth/recover-key` | POST | none | Consume a recovery token → ROTATE `api_key` (old key invalidated), return the new key |
 | `/accounts/me` | GET | bearer | Get current account info |
 | `/accounts/me/agent` | PUT | bearer + signature | Register/update agent endpoint + pubkey |
 | `/invites` | POST | bearer + signature | Visitor: create invite, returns code |
