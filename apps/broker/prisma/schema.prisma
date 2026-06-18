@@ -19,7 +19,7 @@ model Account {
   displayName     String?
   agentPubkey     String?
   agentEndpoint   String?
-  apiKey          String   @unique
+  apiKey         String?   @unique
   createdAt       DateTime @default(now())
   emailVerifiedAt DateTime?
 
@@ -93,4 +93,5 @@ model MagicLink {
   @@index([email])
   @@index([expiresAt])
 }
+
 

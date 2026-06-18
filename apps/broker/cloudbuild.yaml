@@ -44,7 +44,7 @@ steps:
       - --allow-unauthenticated
       - --add-cloudsql-instances=$_CLOUDSQL_INSTANCE
       - --set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production
-      - --set-secrets=DATABASE_URL=DATABASE_URL:latest
+      - --set-secrets=DATABASE_URL=DATABASE_URL:latest,RESEND_API_KEY=RESEND_API_KEY:latest
 
 images:
   - gcr.io/$PROJECT_ID/backchannel-broker:${_TAG}
@@ -57,5 +57,6 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 timeout: 1200s
+
 
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateApiKey, generateHandle } from "@/lib/auth";
+import { generateHandle, generateMagicLinkToken, magicLinkExpiry } from "@/lib/auth";
+import { sendVerificationEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
 
@@ -16,33 +17,75 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "email_required" }, { status: 400 });
   }
 
-  // Phase 3 MVP: skip email verification, just create the account
-  // (magic-link flow lands in v0.4)
-  const handle = generateHandle(body.email);
-  const apiKey = generateApiKey();
+  const email = body.email.trim().toLowerCase();
+  const handle = generateHandle(email);
 
-  try {
-    const account = await prisma.account.create({
-      data: {
-        email: body.email,
-        handle,
-        displayName: body.display_name,
-        agentEndpoint: body.agent_endpoint,
-        agentPubkey: body.agent_pubkey,
-        apiKey,
-      },
-    });
-    return NextResponse.json({
-      handle: account.handle,
-      api_key: apiKey,  // shown ONCE — store on agent side
-      account_id: account.id,
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("Unique constraint")) {
-      return NextResponse.json({ error: "email_or_handle_taken" }, { status: 409 });
+  // Phase 3.1: account is created PENDING with no apiKey. Verified at the magic-link step.
+  // If account already exists:
+  //   - verified: tell them to use the existing API key (don't reveal whether it exists for privacy)
+  //   - pending:  resend the magic link
+  let account = await prisma.account.findUnique({ where: { email } });
+  let isResend = false;
+
+  if (account) {
+    if (account.emailVerifiedAt) {
+      // Already verified — for security, don't reveal that the account exists. Just say "check your email" anyway.
+      // (We could send a "you already have an account, here's how to reset" email, but for MVP, opaque is fine.)
+      return NextResponse.json({
+        handle: account.handle,
+        status: "verification_sent",
+        message: "If this email isn't already verified, you'll get a verification link shortly.",
+      });
     }
-    return NextResponse.json({ error: "server_error", detail: msg }, { status: 500 });
+    // Account exists but unverified -> resend
+    isResend = true;
+  } else {
+    // Create new pending account
+    try {
+      account = await prisma.account.create({
+        data: {
+          email,
+          handle,
+          displayName: body.display_name,
+          agentEndpoint: body.agent_endpoint,
+          agentPubkey: body.agent_pubkey,
+          // apiKey is null until verification
+        },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("Unique constraint")) {
+        return NextResponse.json({ error: "handle_taken", detail: "That handle is taken. Try a different email local part." }, { status: 409 });
+      }
+      return NextResponse.json({ error: "server_error", detail: msg }, { status: 500 });
+    }
   }
-}
 
+  // Generate a fresh magic-link token (invalidate old one if resending)
+  const token = generateMagicLinkToken();
+  if (isResend) {
+    // Mark any existing tokens for this email as consumed
+    await prisma.magicLink.updateMany({
+      where: { email, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+  }
+  await prisma.magicLink.create({
+    data: {
+      token,
+      email,
+      expiresAt: magicLinkExpiry(),
+    },
+  });
+
+  const sent = await sendVerificationEmail({ to: email, handle: account.handle, token });
+
+  return NextResponse.json({
+    handle: account.handle,
+    status: "verification_sent",
+    email_provider: sent ? "resend" : "log_only",
+    message: sent
+      ? `Check ${email} for a verification link. Expires in 24h.`
+      : "Verification link logged to broker stdout (no email provider configured yet).",
+  });
+}
