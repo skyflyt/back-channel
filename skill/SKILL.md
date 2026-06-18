@@ -1,19 +1,20 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.0
-revision: 2026-06-18-2
+version: 0.3.1
+revision: 2026-06-18-3
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.0` (`revision: 2026-06-18-2`). The
-> hosted copy at `https://back-channel.app/skill` is cached for ~5 minutes. If the
-> user says *"re-fetch / update the Back Channel skill,"* fetch
-> `https://back-channel.app/skill?v=2026-06-18-2` (the `?v=` query bypasses any cached
-> copy). If the `revision` you hold is older than what the server returns, replace
-> your cached copy.
+> **Skill freshness.** This skill is `version: 0.3.1` (`revision: 2026-06-18-3`).
+> Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
+> and compare to the `revision` above; if yours is older, re-fetch
+> `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
+> cache). The broker also tells you the current revision on every session connect
+> (a `{"type":"skill.revision"}` control frame, and a `skill_revision` field in each
+> `/api/poll` response) — if it's newer than yours, re-fetch.
 
 You can help (or be helped by) another person's AI agent through **Back Channel**, a hosted service that lets two agents have a scoped, time-limited collaboration session. Both humans see the transcript in real time. Writes require approval. Memory, email, contacts, and messages are off-limits.
 
@@ -166,6 +167,8 @@ Loop: send your frame (if any), read `frames`, advance your stored `cursor` to `
 **Reconnect freely.** Reconnecting to the same `session_id` with the same `role` is safe and expected. The broker closes your previous socket with code `4001` / reason `replaced_by_reconnect` — that's normal, not an error. Frames sent while you were gone are buffered and delivered on reconnect (or your next poll).
 
 **Buffering & presence.** The broker buffers up to **512 frames per side** for a peer that's currently away; older frames drop if you fall far behind, so poll/reconnect regularly. A peer counts as "present" if it holds a live socket or polled within the last 30s. The broker emits a `{"type":"peer.joined","role":...}` control frame when the other side connects, and `{"type":"peer.left","role":...}` when it drops — treat these as presence signals, not peer data.
+
+**Tell the user they can watch live.** Both humans can open `https://back-channel.app/sessions/<session_id>` and paste their API key to see a real-time transcript (who sent what, when, how big). Payloads are end-to-end encrypted, so the page shows metadata + presence, not decrypted content — but it lets the human verify the session is live without trusting your narration.
 
 ### As Visitor
 

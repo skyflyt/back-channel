@@ -1,0 +1,52 @@
+import { NextResponse } from "next/server";
+import { readFile } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const runtime = "nodejs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Short human-readable highlights per revision. Bump alongside SKILL.md's
+// `revision:` so agents can show users what changed when they re-fetch.
+const CHANGES: Record<string, string[]> = {
+  "2026-06-18-2": [
+    "Added HTTP polling transport (POST /api/poll) — no long-lived socket needed",
+    "Added GET /api/sessions/:id/peers presence check",
+    "Removed dead /accounts/me routes and the unused request-signing ceremony",
+    "Documented TEXT frames, reconnection, and offline-peer buffering",
+  ],
+  "2026-06-18-3": [
+    "Live session transcript page at /sessions/:id (both humans can watch)",
+    "GET /skill/revision freshness probe; broker announces skill_revision on connect/poll",
+  ],
+};
+
+/**
+ * GET /skill/revision — lightweight freshness probe. Agents compare the
+ * returned `revision` to the one in their cached skill; if older, re-fetch
+ * /skill (or /skill?v=<revision> to bypass cache). Reads the live SKILL.md so
+ * it never drifts from the served doc.
+ */
+export async function GET() {
+  const candidates = [
+    join(process.cwd(), "..", "..", "skill", "SKILL.md"),
+    join(process.cwd(), "skill", "SKILL.md"),
+    join(__dirname, "..", "..", "..", "..", "..", "..", "skill", "SKILL.md"),
+  ];
+
+  for (const path of candidates) {
+    try {
+      const content = await readFile(path, "utf8");
+      const revision = content.match(/^revision:\s*(.+)$/m)?.[1]?.trim() ?? null;
+      const version = content.match(/^version:\s*(.+)$/m)?.[1]?.trim() ?? null;
+      return NextResponse.json(
+        { revision, version, changes: revision ? CHANGES[revision] ?? [] : [] },
+        { headers: { "Cache-Control": "public, max-age=60, private" } },
+      );
+    } catch {
+      // try next
+    }
+  }
+  return NextResponse.json({ error: "skill_not_bundled" }, { status: 404 });
+}

@@ -79,6 +79,11 @@ const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
 // A polling role is considered "present" if it polled within this window.
 const POLL_PRESENCE_MS = 30 * 1000;
 
+// Current skill revision — surfaced to agents on connect / in poll responses so
+// a stale copy is noticed immediately. Keep in sync with skill/SKILL.md's
+// `revision:` frontmatter (GET /skill/revision reads the file authoritatively).
+const CURRENT_SKILL_REVISION = "2026-06-18-3";
+
 /** Shared across server.mjs's import and Next route bundles (same process). */
 /** @type {Map<string, PairedSession>} */
 const sessions = globalThis.__bcRelaySessions ?? (globalThis.__bcRelaySessions = new Map());
@@ -245,6 +250,10 @@ async function attachToSession(sessionId, role, ws) {
 
   await prisma.auditLog.create({ data: { sessionId, role, eventType: "relay.connected", detail: {} } });
 
+  // Tell the connecting agent the current skill revision so a stale copy shows
+  // a warning immediately.
+  try { ws.send(controlFrame({ type: "skill.revision", revision: CURRENT_SKILL_REVISION })); } catch {}
+
   const flushed = flushToWs(slot, role);
   if (flushed > 0) {
     await prisma.auditLog.create({ data: { sessionId, role, eventType: "relay.flushed", detail: { frames: flushed } } });
@@ -321,7 +330,12 @@ export async function pollSession({ sessionId, role, cursor, sendData, waitMs, s
   }
 
   const next = frames.length ? frames[frames.length - 1].seq : cur;
-  return { frames: frames.map((f) => f.data), next_cursor: next, peer_present: peerPresent(slot, role) };
+  return {
+    frames: frames.map((f) => f.data),
+    next_cursor: next,
+    peer_present: peerPresent(slot, role),
+    skill_revision: CURRENT_SKILL_REVISION,
+  };
 }
 
 function readSince(slot, role, cur) {
@@ -352,6 +366,39 @@ export function getPeers(sessionId) {
     };
   };
   return { visitor: role("visitor"), host: role("host") };
+}
+
+/** Best-effort preview of a frame for the human transcript. Returns a short
+ * printable string, or null for opaque (encrypted/binary) payloads. */
+function previewOf(text) {
+  const n = Math.min(text.length, 200);
+  let printable = 0;
+  for (let i = 0; i < n; i++) { const c = text.charCodeAt(i); if (c >= 32 && c < 127) printable++; }
+  if (!n || printable / n < 0.85) return null; // looks encrypted/binary
+  return text.length > 200 ? text.slice(0, 200) + "…" : text;
+}
+
+/**
+ * Merged chronological transcript for the human view. Each entry tags the
+ * SENDER role. Payloads are end-to-end encrypted between agents, so `preview`
+ * is null for opaque frames — the broker is content-blind and only sees what it
+ * relays. In-memory only (capped, ephemeral); never persisted.
+ * @param {string} sessionId
+ * @returns {Array<{from: Role, seq: number, ts: number, bytes: number, preview: string|null}>}
+ */
+export function getTranscript(sessionId) {
+  const slot = sessions.get(sessionId);
+  if (!slot) return [];
+  /** @type {Array<{from: Role, seq: number, ts: number, bytes: number, preview: string|null}>} */
+  const out = [];
+  for (const dest of /** @type {Role[]} */ (["visitor", "host"])) {
+    const sender = dest === "visitor" ? "host" : "visitor"; // log[dest] holds frames sent BY the other
+    for (const f of slot.log[dest]) {
+      out.push({ from: sender, seq: f.seq, ts: f.ts, bytes: Buffer.byteLength(f.data, "utf8"), preview: previewOf(f.data) });
+    }
+  }
+  out.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
+  return out;
 }
 
 /** Build a broker control frame (plaintext JSON, distinct from peer data frames). */
