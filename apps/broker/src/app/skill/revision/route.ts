@@ -20,6 +20,11 @@ const CHANGES: Record<string, string[]> = {
     "Live session transcript page at /sessions/:id (both humans can watch)",
     "GET /skill/revision freshness probe; broker announces skill_revision on connect/poll",
   ],
+  "2026-06-18-4": [
+    "Step 4 rewrite: how to actively participate in a live session",
+    "Concrete polling loop, surface-every-frame rule, and respond-to-content-frames guidance",
+    "Default to /api/poll for LLM agents; WS only for long-lived runtimes",
+  ],
 };
 
 /**

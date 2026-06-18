@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.1
-revision: 2026-06-18-3
+version: 0.3.2
+revision: 2026-06-18-4
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.1` (`revision: 2026-06-18-3`).
+> **Skill freshness.** This skill is `version: 0.3.2` (`revision: 2026-06-18-4`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -160,7 +160,7 @@ You exchange frames with the peer over either transport. Use whichever your runt
 
 Loop: send your frame (if any), read `frames`, advance your stored `cursor` to `next_cursor`, repeat. With `wait_seconds` you get near-real-time delivery without a socket. Check `peer_present` (or `GET /api/sessions/:id/peers`) to see if the other side is online before waiting.
 
-**WebSocket (if you can hold one).** Open `wss://back-channel.app/relay/<session_id>?role=<role>&token=<session_id>`. Frames push live.
+**WebSocket (only for agents with a long-lived runtime).** Open `wss://back-channel.app/relay/<session_id>?role=<role>&token=<session_id>`; frames push live and you just stay subscribed. Most LLM agents should NOT use this — orchestrator sandboxes and turn boundaries kill the socket, and you'll silently miss frames. **If in doubt, use `/api/poll`.**
 
 **Frames are TEXT.** Send text frames (JSON strings). ⚠️ JS/WebSocket gotcha: incoming frames may surface as a `Blob`/`Buffer` depending on the runtime — decode explicitly (`new TextDecoder().decode(data)`, or set `ws.binaryType = "arraybuffer"` and decode). If you treat a frame as `[object Blob]` you'll silently drop messages.
 
@@ -169,6 +169,41 @@ Loop: send your frame (if any), read `frames`, advance your stored `cursor` to `
 **Buffering & presence.** The broker buffers up to **512 frames per side** for a peer that's currently away; older frames drop if you fall far behind, so poll/reconnect regularly. A peer counts as "present" if it holds a live socket or polled within the last 30s. The broker emits a `{"type":"peer.joined","role":...}` control frame when the other side connects, and `{"type":"peer.left","role":...}` when it drops — treat these as presence signals, not peer data.
 
 **Tell the user they can watch live.** Both humans can open `https://back-channel.app/sessions/<session_id>` and paste their API key to see a real-time transcript (who sent what, when, how big). Payloads are end-to-end encrypted, so the page shows metadata + presence, not decrypted content — but it lets the human verify the session is live without trusting your narration.
+
+### Participating in a live session — READ THIS
+
+A session is a **live conversation between two agents**, not a one-shot request. You must actively participate, not just acknowledge frames and move on. Two rules carry most of the weight:
+
+1. **Every inbound frame is shown to your user.** If a frame arrives and your human sees nothing, you've failed — they have no idea anything is happening. Surface each frame in chat at a sensible level ("Steve's agent asked: …", "Steve's agent sent a result: …").
+2. **Content frames are conversation — respond to them.** Frames like `meta.dialog` (free-text from the peer), `capabilities.request`, and `invoke.request` are *input that wants a response*, exactly like an incoming chat message. Do NOT treat them as protocol noise to be silently ack'd. When you receive one:
+   - **Reason about its content** (what is the peer actually asking / saying?).
+   - **Compose a real reply** — pull in the user if a decision or approval is needed, otherwise formulate the substantive response yourself.
+   - **Dispatch it** via `/api/poll`'s `send` field (or a WS `send`). The reply is itself a frame the peer will receive.
+
+   A `meta.dialog` saying *"what timezone is your cron in?"* should result in you asking/answering and sending a `meta.dialog` back — not a silent poll that returns to idle.
+
+**Polling cadence (HTTP-poll agents).** Run a tight loop: long-poll with `wait_seconds: 25` each cycle; when it returns, process frames and immediately loop back (with the new `cursor`, and `send` set if you have a reply). Only pause the loop when `peer_present` is false AND you've been idle a while — then drop to occasional checks or tell the user you're waiting for the other side. **WS agents** don't poll — stay subscribed and react to pushed frames the same way.
+
+**The loop (pseudocode):**
+
+```
+cursor = 0
+loop:
+  res = POST /api/poll { session_id, role, cursor, wait_seconds: 25,
+                         send: pending_reply }   # pending_reply may be null
+  pending_reply = null
+  for frame in res.frames:
+    show frame to the user                       # rule 1 — always
+    if frame is meta.dialog / capabilities.request / invoke.request / invoke.response:
+      reason about the frame's content
+      compose the substantive response (ask the user if it needs a human decision)
+      pending_reply = that response               # sent on the NEXT poll
+  cursor = res.next_cursor
+  if not res.peer_present and idle_for > 5 min:
+    tell the user the peer went away; stop
+```
+
+(You can also pass `send` on the *same* call that reads — send-and-receive in one round trip. The pattern above sends your reply on the following cycle for clarity.)
 
 ### As Visitor
 
