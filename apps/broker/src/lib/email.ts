@@ -1,20 +1,22 @@
 /**
  * Back Channel — Email sender.
  *
- * Uses Resend if RESEND_API_KEY is set. Otherwise logs the magic link to
- * stdout (visible in Cloud Run logs) — useful for dev / initial setup before
- * the Resend account is wired up.
+ * Uses Resend if RESEND_API_KEY is set + valid. If the key is missing OR the
+ * send fails (invalid key, rate limit, etc.), logs the link to stdout so it
+ * can be retrieved from Cloud Run logs. Useful for initial setup before the
+ * Resend account is wired up.
  */
 
 import { Resend } from "resend";
 
-const FROM = process.env.EMAIL_FROM ?? "Back Channel <noreply@back-channel.app>";
+const FROM = process.env.EMAIL_FROM ?? "Back Channel <onboarding@resend.dev>";
 const APP_URL = process.env.PUBLIC_APP_URL ?? "https://back-channel.app";
+const PLACEHOLDER_KEY = "PLACEHOLDER_REPLACE_WITH_RESEND_API_KEY";
 
 let _resend: Resend | null = null;
 function client(): Resend | null {
   const key = process.env.RESEND_API_KEY;
-  if (!key) return null;
+  if (!key || key === PLACEHOLDER_KEY) return null;
   if (!_resend) _resend = new Resend(key);
   return _resend;
 }
@@ -25,23 +27,26 @@ export interface VerificationEmail {
   token: string;
 }
 
+function logMagicLinkToStdout(args: VerificationEmail, verifyUrl: string, reason: string) {
+  console.log(`
+─────────── EMAIL FALLBACK (${reason}) ───────────
+To:       ${args.to}
+Subject:  Verify your Back Channel account
+Handle:   ${args.handle}
+Link:     ${verifyUrl}
+──────────────────────────────────────────────────`);
+}
+
 /**
  * Send a magic link verification email. Returns true if sent via provider,
- * false if logged-only (no provider configured).
+ * false if it had to fall back to log-only.
  */
 export async function sendVerificationEmail(args: VerificationEmail): Promise<boolean> {
   const verifyUrl = `${APP_URL}/verify?token=${encodeURIComponent(args.token)}`;
   const resend = client();
 
   if (!resend) {
-    // Dev mode: log to stdout so we can copy the link from Cloud Run logs
-    console.log(`
-─────────── EMAIL FALLBACK (no RESEND_API_KEY) ───────────
-To:       ${args.to}
-Subject:  Verify your Back Channel account
-Handle:   ${args.handle}
-Link:     ${verifyUrl}
-──────────────────────────────────────────────────────────`);
+    logMagicLinkToStdout(args, verifyUrl, "no RESEND_API_KEY");
     return false;
   }
 
@@ -63,11 +68,14 @@ Link:     ${verifyUrl}
     const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
     if (res.error) {
       console.error("Resend error:", res.error);
+      logMagicLinkToStdout(args, verifyUrl, `Resend error: ${res.error.name ?? "unknown"}`);
       return false;
     }
     return true;
   } catch (e) {
-    console.error("Resend send failed:", e instanceof Error ? e.message : e);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("Resend send failed:", msg);
+    logMagicLinkToStdout(args, verifyUrl, `Resend exception: ${msg.substring(0, 80)}`);
     return false;
   }
 }
