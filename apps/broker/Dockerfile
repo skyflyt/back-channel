@@ -39,6 +39,8 @@ COPY --from=build /app/next.config.mjs ./next.config.mjs
 # The skill content (served by /skill route at runtime)
 COPY --from=build /skill /skill
 
+USER node
 EXPOSE 8080
 CMD ["node", "server.mjs"]
+
 
