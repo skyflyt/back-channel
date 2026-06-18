@@ -84,7 +84,28 @@ const POLL_PRESENCE_MS = 30 * 1000;
 // Current skill revision — surfaced to agents on connect / in poll responses so
 // a stale copy is noticed immediately. Keep in sync with skill/SKILL.md's
 // `revision:` frontmatter (GET /skill/revision reads the file authoritatively).
-const CURRENT_SKILL_REVISION = "2026-06-18-6";
+const CURRENT_SKILL_REVISION = "2026-06-18-7";
+
+// Frames whose `type` the broker routes on — allowed in plaintext. Everything
+// else is "content" and should be a sealed `{type:"enc",...}` envelope.
+const PLAINTEXT_CONTROL_TYPES = new Set([
+  "ping", "hello", "peer.joined", "peer.left", "skill.revision",
+  "handshake.pubkey", "session.start", "session.end",
+]);
+
+// E2E-encryption migration telemetry (Phase A): count plaintext content frames.
+// When this stays at 0 across real sessions, agents have converged and we can
+// flip to Phase B (reject non-enc content frames). We log only the frame TYPE,
+// never the body.
+let plaintextContentFrameCount = 0;
+function classifyContentFrame(sessionId, fromRole, text) {
+  let type;
+  try { type = JSON.parse(text)?.type; } catch { /* non-JSON */ }
+  if (type === "enc") return; // sealed — good
+  if (typeof type === "string" && PLAINTEXT_CONTROL_TYPES.has(type)) return; // routable control frame
+  plaintextContentFrameCount++;
+  console.warn(`[plaintext-content-frame] session=${sessionId} from=${fromRole} type=${type ?? "(none)"} total=${plaintextContentFrameCount}`);
+}
 
 /** Shared across server.mjs's import and Next route bundles (same process). */
 /** @type {Map<string, PairedSession>} */
@@ -192,6 +213,9 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
   const text = bufToText(data);
   const bytes = Buffer.byteLength(text, "utf8");
   const dest = fromRole === "visitor" ? "host" : "visitor";
+
+  // Phase A: observe-only — count plaintext content frames (type-only log).
+  classifyContentFrame(sessionId, fromRole, text);
 
   const s = ++slot.seq[dest];
 

@@ -2,8 +2,10 @@
  * Back Channel — Encrypted envelope for in-flight messages.
  *
  * Wire format:
- *   { v: 1, iv: <base64>, ct: <base64>, tag: <base64> }
+ *   { type: "enc", v: 1, iv: <base64>, ct: <base64>, tag: <base64> }
  * Where:
+ *   type = "enc" — plaintext discriminator so the content-blind broker can
+ *          route/enforce on it without reading the payload
  *   iv  = 12 random bytes (per-message nonce)
  *   ct  = AES-256-GCM ciphertext of the plaintext JSON
  *   tag = 16-byte authentication tag
@@ -19,6 +21,7 @@ const IV_BYTES = 12;
 const TAG_BYTES = 16;
 
 export interface SealedEnvelope {
+  readonly type: "enc";
   readonly v: 1;
   readonly iv: string;
   readonly ct: string;
@@ -36,6 +39,7 @@ export function seal(plaintext: unknown, sessionKey: Buffer): SealedEnvelope {
   const ct = Buffer.concat([cipher.update(json), cipher.final()]);
   const tag = cipher.getAuthTag();
   return {
+    type: "enc",
     v: 1,
     iv: iv.toString("base64"),
     ct: ct.toString("base64"),

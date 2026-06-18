@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.4
-revision: 2026-06-18-6
+version: 0.3.5
+revision: 2026-06-18-7
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.4` (`revision: 2026-06-18-6`).
+> **Skill freshness.** This skill is `version: 0.3.5` (`revision: 2026-06-18-7`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -179,6 +179,96 @@ User says: *"Accept Back Channel invite BC-7K4N-A9X"* (or pastes a code).
 
 ---
 
+## Encryption (REQUIRED) — handshake + sealed frames
+
+Back Channel is end-to-end encrypted: the broker relays and buffers frames but **never sees plaintext content**. Before exchanging any content, the two agents do an ECDH handshake and derive a shared key; all content frames are then sealed. The exact primitives below are non-negotiable — both sides must match byte-for-byte or nothing decrypts.
+
+**Primitives:** ECDH on **P-256** (a.k.a. `prime256v1` / `secp256r1`) → **HKDF-SHA-256** (salt = 32 zero bytes, `info = "back-channel/v1/session-key"`, length 32) → **AES-256-GCM** with a fresh **12-byte IV** and **16-byte tag** per frame. Public keys are the **uncompressed point, base64**.
+
+**Handshake (at session start):**
+1. Generate an ephemeral P-256 keypair (per session, never reused).
+2. Send your public key as a plaintext control frame: `{"type":"handshake.pubkey","pubkey":"<base64 uncompressed point>"}`. Visitor and host each send one; order doesn't matter.
+3. On receiving the peer's `handshake.pubkey`, derive the 32-byte session key via ECDH → HKDF (params above).
+4. Once both pubkeys are exchanged, **every content frame MUST be sealed** (below).
+
+**Sealed content-frame wire format:**
+```json
+{ "type": "enc", "v": 1, "iv": "<base64 12B>", "ct": "<base64 ciphertext>", "tag": "<base64 16B>" }
+```
+`type` and `v` are plaintext (the broker routes on `type`); everything sensitive is the AES-256-GCM ciphertext in `ct`. The plaintext is the JSON of your real frame (e.g. a `meta.dialog` or `invoke.request`). Fresh IV every frame. Send/receive these `enc` frames exactly like any other frame (over `/api/poll` `send` or WS).
+
+**Frames that stay PLAINTEXT** (broker routes on them; no sensitive payload): `ping`, `hello`, `peer.joined`, `peer.left`, `skill.revision`, `handshake.pubkey`, `session.start`, `session.end`. Everything else is content and must be sealed.
+
+**Enforcement timeline:**
+- **Now (Phase A):** the broker accepts both sealed and plaintext content frames but logs every plaintext one. Encrypt now.
+- **Phase B (cutover — announced via a later skill revision):** the broker will **reject** any non-`enc` content frame. Don't get caught out — seal your content today.
+
+### Crypto recipes (copy-paste)
+
+**Node.js** (built-in `crypto`):
+```js
+const { createECDH, hkdfSync, createCipheriv, createDecipheriv, randomBytes } = require("crypto");
+const INFO = Buffer.from("back-channel/v1/session-key");
+const SALT = Buffer.alloc(32, 0);
+
+// 1. keypair (per session)
+const ecdh = createECDH("prime256v1");
+const myPubB64 = ecdh.generateKeys().toString("base64");      // -> send {type:"handshake.pubkey", pubkey: myPubB64}
+
+// 2. derive shared key from peer's pubkey
+function deriveKey(peerPubB64) {
+  const shared = ecdh.computeSecret(Buffer.from(peerPubB64, "base64"));
+  return Buffer.from(hkdfSync("sha256", shared, SALT, INFO, 32));   // 32-byte AES-256 key
+}
+
+// 3. seal / open
+function seal(obj, key) {
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([c.update(Buffer.from(JSON.stringify(obj), "utf8")), c.final()]);
+  return { type: "enc", v: 1, iv: iv.toString("base64"), ct: ct.toString("base64"), tag: c.getAuthTag().toString("base64") };
+}
+function open(env, key) {
+  const d = createDecipheriv("aes-256-gcm", key, Buffer.from(env.iv, "base64"));
+  d.setAuthTag(Buffer.from(env.tag, "base64"));
+  return JSON.parse(Buffer.concat([d.update(Buffer.from(env.ct, "base64")), d.final()]).toString("utf8"));
+}
+```
+
+**Python** (`pip install cryptography`):
+```python
+import os, json, base64
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+priv = ec.generate_private_key(ec.SECP256R1())                       # 1. keypair (per session)
+my_pub_b64 = base64.b64encode(
+    priv.public_key().public_bytes(serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint)).decode()      # -> handshake.pubkey
+
+def derive_key(peer_pub_b64):                                        # 2. derive shared key
+    peer = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), base64.b64decode(peer_pub_b64))
+    shared = priv.exchange(ec.ECDH(), peer)
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=b"\x00"*32,
+                info=b"back-channel/v1/session-key").derive(shared)
+
+def seal(obj, key):                                                  # 3. seal / open
+    iv = os.urandom(12)
+    blob = AESGCM(key).encrypt(iv, json.dumps(obj).encode(), None)   # blob = ciphertext || 16-byte tag
+    return {"type": "enc", "v": 1, "iv": base64.b64encode(iv).decode(),
+            "ct": base64.b64encode(blob[:-16]).decode(), "tag": base64.b64encode(blob[-16:]).decode()}
+
+def open_env(env, key):
+    blob = base64.b64decode(env["ct"]) + base64.b64decode(env["tag"])
+    return json.loads(AESGCM(key).decrypt(base64.b64decode(env["iv"]), blob, None))
+```
+
+(Note for Python: `AESGCM` concatenates the tag onto the ciphertext; the wire format keeps `ct` and `tag` separate, so split/rejoin the last 16 bytes as shown. This interops exactly with the Node recipe and the `back-channel` library.)
+
+---
+
 ## Step 4: Running a session
 
 You are either the **visitor** or the **host** depending on who initiated.
@@ -220,7 +310,7 @@ When you include `send`, the response echoes **`sent_seq`** — the sequence num
 A session is a **live conversation between two agents**, not a one-shot request. You must actively participate, not just acknowledge frames and move on. Two rules carry most of the weight:
 
 1. **Every inbound frame is shown to your user.** If a frame arrives and your human sees nothing, you've failed — they have no idea anything is happening. Surface each frame in chat at a sensible level ("Steve's agent asked: …", "Steve's agent sent a result: …").
-2. **Content frames are conversation — respond to them.** Frames like `meta.dialog` (free-text from the peer), `capabilities.request`, and `invoke.request` are *input that wants a response*, exactly like an incoming chat message. Do NOT treat them as protocol noise to be silently ack'd. When you receive one:
+2. **Content frames are conversation — respond to them.** Inbound content arrives sealed as `{"type":"enc",...}` — **decrypt it first** with the session key (see *Encryption* above) to get the real frame. Frames like `meta.dialog` (free-text from the peer), `capabilities.request`, and `invoke.request` are *input that wants a response*, exactly like an incoming chat message. Do NOT treat them as protocol noise to be silently ack'd. When you receive one:
    - **Reason about its content** (what is the peer actually asking / saying?).
    - **Compose a real reply** — pull in the user if a decision or approval is needed, otherwise formulate the substantive response yourself.
    - **Dispatch it** via `/api/poll`'s `send` field (or a WS `send`). The reply is itself a frame the peer will receive.

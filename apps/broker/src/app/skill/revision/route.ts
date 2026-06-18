@@ -34,6 +34,11 @@ const CHANGES: Record<string, string[]> = {
     "GET /api/sessions/active: all your live sessions + unread frames in one call",
     "Step 1d: set up a stay-warm scheduled job at install (Cowork/Codex/cron recipes)",
   ],
+  "2026-06-18-7": [
+    "E2E encryption REQUIRED: ECDH P-256 + HKDF-SHA-256 + AES-256-GCM handshake",
+    "Content frames sealed as {type:enc,v,iv,ct,tag}; copy-paste Node + Python recipes",
+    "Phase A: broker logs plaintext content frames; Phase B will reject them",
+  ],
 };
 
 /**
