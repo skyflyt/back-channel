@@ -34,10 +34,17 @@ test("window resets after it expires", async () => {
   assert.equal(rateLimit("w", "k", 1, 20).ok, true, "fresh window after expiry");
 });
 
-test("clientIp takes the first X-Forwarded-For hop", () => {
-  assert.equal(clientIp("203.0.113.7, 35.191.0.1, 130.211.0.1"), "203.0.113.7");
+test("clientIp takes the RIGHTMOST X-Forwarded-For hop (Google-appended, trustworthy)", () => {
+  // Plain request on Cloud Run: just the real client IP.
   assert.equal(clientIp("203.0.113.7"), "203.0.113.7");
-  assert.equal(clientIp(["203.0.113.7, 10.0.0.1"]), "203.0.113.7"); // array form
+  // Spoof attempt: client prepends a fake; Cloud Run appends the real IP last.
+  // Verified live: `X-Forwarded-For: 1.2.3.4` arrives as "1.2.3.4,<real-ip>".
+  assert.equal(clientIp("1.2.3.4,203.0.113.7"), "203.0.113.7");
+  assert.equal(clientIp("9.9.9.9, 8.8.8.8, 203.0.113.7"), "203.0.113.7");
+  // Two spoofed leftmosts resolve to the SAME real client -> same bucket.
+  assert.equal(clientIp("1.1.1.1,203.0.113.7"), clientIp("2.2.2.2,203.0.113.7"));
+  // Array form (header seen more than once) -> last element, last hop.
+  assert.equal(clientIp(["1.2.3.4", "9.9.9.9,203.0.113.7"]), "203.0.113.7");
   assert.equal(clientIp(null), "unknown");
   assert.equal(clientIp(undefined), "unknown");
   assert.equal(clientIp(""), "unknown");

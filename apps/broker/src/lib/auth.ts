@@ -23,6 +23,18 @@ export function generateMagicLinkToken(): string {
   return randomBytes(32).toString("base64url");
 }
 
+// Recovery tokens reuse the MagicLink table but carry a "rec_" prefix so we can
+// tell them apart from verification tokens without a schema change. A recovery
+// token, when consumed, ROTATES the API key (vs verification, which issues the
+// first key). Keeping them in the same table keeps the schema small.
+const RECOVERY_PREFIX = "rec_";
+export function generateRecoveryToken(): string {
+  return RECOVERY_PREFIX + randomBytes(32).toString("base64url");
+}
+export function isRecoveryToken(token: string): boolean {
+  return token.startsWith(RECOVERY_PREFIX);
+}
+
 export function generateHandle(email: string): string {
   // skylar@example.com -> skylar@bc
   const local = email.split("@")[0]?.toLowerCase().replace(/[^a-z0-9-_.]/g, "");

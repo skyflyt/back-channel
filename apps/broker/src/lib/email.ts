@@ -80,6 +80,54 @@ export async function sendVerificationEmail(args: VerificationEmail): Promise<bo
   }
 }
 
+/**
+ * Send a key-recovery email to a VERIFIED account. Links to /recover?token=...
+ * which (on a human click) rotates the API key. Same provider/log-fallback
+ * behavior as sendVerificationEmail.
+ */
+export async function sendRecoveryEmail(args: VerificationEmail): Promise<boolean> {
+  const recoverUrl = `${APP_URL}/recover?token=${encodeURIComponent(args.token)}`;
+  const resend = client();
+
+  if (!resend) {
+    console.log(`
+─────────── EMAIL FALLBACK (no RESEND_API_KEY) ───────────
+To:       ${args.to}
+Subject:  Recover your Back Channel API key
+Handle:   ${args.handle}
+Link:     ${recoverUrl}
+──────────────────────────────────────────────────`);
+    return false;
+  }
+
+  const subject = "Recover your Back Channel API key";
+  const html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:24px;margin:0 0 16px">Recover your Back Channel API key</h2>
+  <p>Someone (hopefully you) asked to recover the API key for <strong>${escapeHtml(args.handle)}</strong>. Click below to issue a fresh key. <strong>Your old key will stop working immediately.</strong> The link expires in 24 hours.</p>
+  <p style="margin:32px 0"><a href="${recoverUrl}" style="display:inline-block;background:#0f172a;color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600">Recover my API key</a></p>
+  <p style="font-size:14px;color:#64748b">Or paste this URL into your browser:<br><code style="word-break:break-all;background:#f5f5f4;padding:6px 10px;border-radius:6px;display:inline-block;margin-top:4px">${recoverUrl}</code></p>
+  <hr style="border:0;border-top:1px solid #e5e5e5;margin:32px 0">
+  <p style="font-size:13px;color:#94a3b8">If you didn't request this, you can ignore this email — your key stays unchanged until the link is used.</p>
+</body></html>`.trim();
+
+  const text = `Recover your Back Channel API key.\nHandle: ${args.handle}\nClicking the link issues a new key and invalidates the old one.\nLink (expires in 24h): ${recoverUrl}`;
+
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
+    if (res.error) {
+      console.error("Resend error (recovery):", res.error);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("Resend send failed (recovery):", msg);
+    return false;
+  }
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")

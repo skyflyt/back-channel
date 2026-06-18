@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateApiKey } from "@/lib/auth";
+import { generateApiKey, isRecoveryToken } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -69,6 +69,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
   if (!token) return NextResponse.json({ error: "token_required" }, { status: 400 });
+  // Recovery tokens must go through /api/auth/recover-key (which rotates the
+  // key); they must not be consumable as a plain verification.
+  if (isRecoveryToken(token)) return NextResponse.json({ error: "invalid_token" }, { status: 404 });
 
   const link = await prisma.magicLink.findUnique({ where: { token } });
   if (!link) return NextResponse.json({ error: "invalid_token" }, { status: 404 });

@@ -32,11 +32,12 @@ export async function POST(req: NextRequest) {
   const handle = generateHandle(email);
 
   // Abuse guard: every successful path below sends an email (Resend quota +
-  // domain reputation) and may create an account. Cap per source IP and per
-  // target email so nobody can flood a victim's inbox with verify links.
-  // Check IP first (cheap, blocks floods before we touch the email bucket).
+  // domain reputation) and may create an account. The per-target-email cap
+  // (3/24h) is the real anti-spam control. The per-IP cap is loosened to 30/hr
+  // because corporate users onboard from behind a shared office NAT (one
+  // egress IP for the whole company) — 5/hr would 429 the 6th coworker.
   const ip = clientIp(req.headers.get("x-forwarded-for"));
-  const ipLimit = rateLimit("accounts:ip", ip, 5, HOUR);
+  const ipLimit = rateLimit("accounts:ip", ip, 30, HOUR);
   if (!ipLimit.ok) return tooMany(ipLimit.retryAfterSec);
 
   const emailLimit = rateLimit("accounts:email", email, 3, DAY);

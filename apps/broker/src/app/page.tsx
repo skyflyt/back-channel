@@ -116,6 +116,7 @@ export default function HomePage() {
             <p style={styles.stepNote}>
               Your agent calls <code>POST /api/accounts</code> with your email. You get a handle
               (something like <code>you@bc</code>) and an API key that stays on your machine.
+              {" "}Lost your key? <a href="/recover" style={styles.inlineLink}>Recover it here</a>.
             </p>
           </li>
           <li>
@@ -281,6 +282,11 @@ const styles = {
     color: "#64748b",
     margin: "8px 0 16px",
     fontStyle: "italic",
+  } as const,
+  inlineLink: {
+    color: "#6b21a8",
+    textDecoration: "underline",
+    fontStyle: "normal",
   } as const,
   grid: {
     display: "grid",

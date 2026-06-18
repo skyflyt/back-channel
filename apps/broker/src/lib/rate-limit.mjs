@@ -67,10 +67,20 @@ export function rateLimit(bucket, key, limit, windowMs) {
 /**
  * Extract the real client IP from the X-Forwarded-For header.
  *
- * On Cloud Run the trusted Google front-end appends the caller; the original
- * client is the FIRST entry. We deliberately do NOT use req.socket — behind
- * the proxy that's always the front-end, so every caller would share one
- * bucket. Falls back to "unknown" (one shared bucket) if the header is absent.
+ * Take the RIGHTMOST entry, not the leftmost. On Cloud Run a client can prepend
+ * its own X-Forwarded-For values and Google appends the real connection IP as
+ * the LAST entry. Verified empirically: a request sent with
+ * `X-Forwarded-For: 1.2.3.4` arrives at the container as
+ * "1.2.3.4,<real-client-ip>". So the leftmost is attacker-controlled (spoofable
+ * — an attacker could evade their own rate limit or poison a victim IP's
+ * bucket) and the rightmost is the trustworthy value Google guarantees.
+ *
+ * CAVEAT for future maintainers: this assumes the current topology (Cloud Run
+ * domain mapping via the Google Front End, which appends exactly one IP — the
+ * client — and no trailing load-balancer hop). If an external HTTPS Load
+ * Balancer is ever put in front, it appends ITS forwarding-rule IP after the
+ * client, making the client the SECOND-from-last entry — revisit then. Do not
+ * "fix" this back to leftmost: leftmost is the spoofable one.
  *
  * @param {string | string[] | null | undefined} xff  X-Forwarded-For value
  *   (Node may hand back an array if the header appears more than once)
@@ -78,9 +88,10 @@ export function rateLimit(bucket, key, limit, windowMs) {
  */
 export function clientIp(xff) {
   if (!xff) return "unknown";
-  const raw = Array.isArray(xff) ? xff[0] : xff;
-  const first = raw?.split(",")[0]?.trim();
-  return first || "unknown";
+  const raw = Array.isArray(xff) ? xff[xff.length - 1] : xff;
+  const parts = raw ? raw.split(",") : [];
+  const last = parts.length ? parts[parts.length - 1].trim() : "";
+  return last || "unknown";
 }
 
 /** Test/diagnostic helper — wipe all counters. */
