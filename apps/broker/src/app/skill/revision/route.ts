@@ -25,6 +25,10 @@ const CHANGES: Record<string, string[]> = {
     "Concrete polling loop, surface-every-frame rule, and respond-to-content-frames guidance",
     "Default to /api/poll for LLM agents; WS only for long-lived runtimes",
   ],
+  "2026-06-18-5": [
+    "Fix: POST /api/poll `send` accepts an object frame (was silently dropping non-strings)",
+    "Poll response now returns `sent_seq` to acknowledge a buffered outgoing frame",
+  ],
 };
 
 /**

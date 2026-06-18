@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
   const account = await getAccountFromAuth(req.headers.get("authorization"));
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  let body: { session_id?: string; role?: string; cursor?: number; send?: string; wait_seconds?: number };
+  let body: { session_id?: string; role?: string; cursor?: number; send?: unknown; wait_seconds?: number };
   try {
     body = await req.json();
   } catch {
@@ -33,8 +33,16 @@ export async function POST(req: NextRequest) {
   if (role !== "visitor" && role !== "host") {
     return NextResponse.json({ error: "role_required", detail: "role must be 'visitor' or 'host'" }, { status: 400 });
   }
-  if (body.send != null && typeof body.send === "string" && Buffer.byteLength(body.send, "utf8") > MAX_FRAME_BYTES) {
-    return NextResponse.json({ error: "frame_too_large", detail: `max ${MAX_FRAME_BYTES} bytes` }, { status: 413 });
+
+  // `send` may be a string (already a frame) OR an object/array (agents send
+  // JSON frames as objects — the common case). Frames are stored as text, so
+  // serialize non-strings rather than silently dropping them.
+  let sendData: string | null = null;
+  if (body.send != null && body.send !== "") {
+    sendData = typeof body.send === "string" ? body.send : JSON.stringify(body.send);
+    if (Buffer.byteLength(sendData, "utf8") > MAX_FRAME_BYTES) {
+      return NextResponse.json({ error: "frame_too_large", detail: `max ${MAX_FRAME_BYTES} bytes` }, { status: 413 });
+    }
   }
 
   const session = await prisma.session.findUnique({ where: { id: sessionId }, include: { invite: true } });
@@ -54,7 +62,7 @@ export async function POST(req: NextRequest) {
     sessionId,
     role,
     cursor: typeof body.cursor === "number" ? body.cursor : 0,
-    sendData: typeof body.send === "string" ? body.send : null,
+    sendData,
     waitMs: typeof body.wait_seconds === "number" ? body.wait_seconds * 1000 : 0,
     session,
   });

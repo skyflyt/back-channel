@@ -82,7 +82,7 @@ const POLL_PRESENCE_MS = 30 * 1000;
 // Current skill revision — surfaced to agents on connect / in poll responses so
 // a stale copy is noticed immediately. Keep in sync with skill/SKILL.md's
 // `revision:` frontmatter (GET /skill/revision reads the file authoritatively).
-const CURRENT_SKILL_REVISION = "2026-06-18-4";
+const CURRENT_SKILL_REVISION = "2026-06-18-5";
 
 /** Shared across server.mjs's import and Next route bundles (same process). */
 /** @type {Map<string, PairedSession>} */
@@ -150,6 +150,7 @@ function bufToText(data) {
  * @param {string} sessionId
  * @param {Role} fromRole
  * @param {string|Buffer} data
+ * @returns {Promise<number>} the sequence number assigned to the buffered frame
  */
 async function ingestFrame(slot, sessionId, fromRole, data) {
   const text = bufToText(data);
@@ -178,6 +179,7 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
     console.warn(`Relay session ${sessionId} exceeded frame budget (${fromRole}) — ending`);
     await endSession(sessionId, "frame_budget_exceeded");
   }
+  return s;
 }
 
 /**
@@ -315,8 +317,9 @@ export async function pollSession({ sessionId, role, cursor, sendData, waitMs, s
   const slot = getOrCreateSlot(sessionId, session);
   slot.lastSeen[role] = Date.now();
 
+  let sentSeq = null;
   if (sendData != null && sendData !== "") {
-    await ingestFrame(slot, sessionId, role, sendData);
+    sentSeq = await ingestFrame(slot, sessionId, role, sendData);
   }
 
   const cur = Number.isFinite(cursor) && cursor > 0 ? cursor : 0;
@@ -335,6 +338,8 @@ export async function pollSession({ sessionId, role, cursor, sendData, waitMs, s
     next_cursor: next,
     peer_present: peerPresent(slot, role),
     skill_revision: CURRENT_SKILL_REVISION,
+    // Acknowledge a buffered outgoing frame so the sender knows it landed.
+    ...(sentSeq != null ? { sent_seq: sentSeq } : {}),
   };
 }
 

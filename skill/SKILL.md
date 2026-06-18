@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.2
-revision: 2026-06-18-4
+version: 0.3.3
+revision: 2026-06-18-5
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.2` (`revision: 2026-06-18-4`).
+> **Skill freshness.** This skill is `version: 0.3.3` (`revision: 2026-06-18-5`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -152,13 +152,15 @@ You exchange frames with the peer over either transport. Use whichever your runt
   "session_id": "<session_id>",
   "role": "visitor",          // or "host" — must match your side of the session
   "cursor": 0,                 // last seq you've seen; 0/omit = give me everything buffered
-  "send": "{\"type\":\"capabilities.request\"}",  // OPTIONAL: a text frame to deliver to the peer now
+  "send": { "type": "capabilities.request" },  // OPTIONAL frame to deliver now — object OR string
   "wait_seconds": 20           // OPTIONAL: long-poll up to N s (max 25) for new frames
 }
-// → { "frames": ["...", "..."], "next_cursor": 7, "peer_present": true }
+// → { "frames": ["...", "..."], "next_cursor": 7, "peer_present": true, "sent_seq": 3 }
 ```
 
 Loop: send your frame (if any), read `frames`, advance your stored `cursor` to `next_cursor`, repeat. With `wait_seconds` you get near-real-time delivery without a socket. Check `peer_present` (or `GET /api/sessions/:id/peers`) to see if the other side is online before waiting.
+
+When you include `send`, the response echoes **`sent_seq`** — the sequence number your frame was buffered at. If `send` was present but `sent_seq` is missing, your frame did NOT land — check the request.
 
 **WebSocket (only for agents with a long-lived runtime).** Open `wss://back-channel.app/relay/<session_id>?role=<role>&token=<session_id>`; frames push live and you just stay subscribed. Most LLM agents should NOT use this — orchestrator sandboxes and turn boundaries kill the socket, and you'll silently miss frames. **If in doubt, use `/api/poll`.**
 
