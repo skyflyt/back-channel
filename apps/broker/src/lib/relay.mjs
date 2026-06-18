@@ -55,6 +55,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { parse } from "node:url";
 import { prisma } from "./db.mjs";
 import { rateLimit, clientIp } from "./rate-limit.mjs";
+import { notifyIdleRecipient } from "./notify.mjs";
 
 const UPGRADE_LIMIT_PER_MIN = 30;
 
@@ -84,7 +85,7 @@ const POLL_PRESENCE_MS = 30 * 1000;
 // Current skill revision — surfaced to agents on connect / in poll responses so
 // a stale copy is noticed immediately. Keep in sync with skill/SKILL.md's
 // `revision:` frontmatter (GET /skill/revision reads the file authoritatively).
-const CURRENT_SKILL_REVISION = "2026-06-18-8";
+const CURRENT_SKILL_REVISION = "2026-06-18-9";
 
 // Frames whose `type` the broker routes on — allowed in plaintext. Everything
 // else is "content" and should be a sealed `{type:"enc",...}` envelope.
@@ -98,14 +99,15 @@ const PLAINTEXT_CONTROL_TYPES = new Set([
 // flip to Phase B (reject non-enc content frames). We log only the frame TYPE,
 // never the body.
 let plaintextContentFrameCount = 0;
-function classifyContentFrame(sessionId, fromRole, text) {
-  let type;
-  try { type = JSON.parse(text)?.type; } catch { /* non-JSON */ }
-  if (type === "enc") return; // sealed — good
-  if (typeof type === "string" && PLAINTEXT_CONTROL_TYPES.has(type)) return; // routable control frame
-  plaintextContentFrameCount++;
-  console.warn(`[plaintext-content-frame] session=${sessionId} from=${fromRole} type=${type ?? "(none)"} total=${plaintextContentFrameCount}`);
+function frameType(text) {
+  try { return JSON.parse(text)?.type; } catch { return undefined; }
 }
+
+// Idle-recipient notifications: if a CONTENT frame is buffered for a role that
+// hasn't polled/connected in IDLE_NOTIFY_MS, email their human a nudge — at most
+// one per session+role per NOTIFY_RATE_MS (don't spam on a burst).
+const IDLE_NOTIFY_MS = 90 * 1000;
+const NOTIFY_RATE_MS = 5 * 60 * 1000;
 
 /** Shared across server.mjs's import and Next route bundles (same process). */
 /** @type {Map<string, PairedSession>} */
@@ -214,8 +216,13 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
   const bytes = Buffer.byteLength(text, "utf8");
   const dest = fromRole === "visitor" ? "host" : "visitor";
 
-  // Phase A: observe-only — count plaintext content frames (type-only log).
-  classifyContentFrame(sessionId, fromRole, text);
+  const type = frameType(text);
+  const isControl = typeof type === "string" && PLAINTEXT_CONTROL_TYPES.has(type);
+  // Phase A: observe-only — count plaintext (non-enc) content frames (type only).
+  if (!isControl && type !== "enc") {
+    plaintextContentFrameCount++;
+    console.warn(`[plaintext-content-frame] session=${sessionId} from=${fromRole} type=${type ?? "(none)"} total=${plaintextContentFrameCount}`);
+  }
 
   const s = ++slot.seq[dest];
 
@@ -253,6 +260,16 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
     console.warn(`Relay session ${sessionId} exceeded frame budget (${fromRole}) — ending`);
     await endSession(sessionId, "frame_budget_exceeded");
   }
+
+  // Nudge an idle recipient (content frames only; cheap idle + rate checks
+  // gate the DB lookup/email so this stays at most 1 per session+role/5min).
+  if (!isControl &&
+      Date.now() - (slot.lastSeen[dest] || 0) > IDLE_NOTIFY_MS &&
+      rateLimit("notify", `${sessionId}:${dest}`, 1, NOTIFY_RATE_MS).ok) {
+    const unread = Math.max(1, slot.seq[dest] - slot.lastPolledCursor[dest]);
+    void notifyIdleRecipient(sessionId, dest, unread);
+  }
+
   return s;
 }
 

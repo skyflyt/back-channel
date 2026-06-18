@@ -22,6 +22,7 @@ model Account {
   apiKey         String?   @unique
   createdAt       DateTime @default(now())
   emailVerifiedAt DateTime?
+  notifyIdleFrames Boolean @default(true) // email me when a frame arrives while I'm idle
 
   invitesAsHost    Invite[]  @relation("HostInvites")
   invitesAsVisitor Invite[]  @relation("VisitorInvites")

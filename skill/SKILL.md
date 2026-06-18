@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.6
-revision: 2026-06-18-8
+version: 0.3.7
+revision: 2026-06-18-9
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.6` (`revision: 2026-06-18-8`).
+> **Skill freshness.** This skill is `version: 0.3.7` (`revision: 2026-06-18-9`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -88,7 +88,9 @@ Use this when the user is **already signed up** but you don't have a stored `BC_
 
 Your runtime can't hold a live connection between turns, so a peer can message you while you're idle and nobody surfaces it. The fix is a small recurring job that polls `/api/sessions/active`. But it must be **lifecycle-bound** — a poller that runs forever is intrusive and almost always finds nothing.
 
-**Rules:**
+**Can't run background tasks at all?** Many chat-UI runtimes (browser, turn-based hosts) can't. That's OK — as a safety net the **broker emails your human a nudge** ("you have a Back Channel message — open the session") whenever a content frame arrives while you've been idle > ~90s, rate-limited to one per session per 5 min. The keep-warm job is still better (your agent auto-engages); the email just guarantees nothing is silently missed. Tell your user this so they know to check email if they're expecting a reply. (Opt-out is per-account; default on.)
+
+**Rules (if your runtime CAN schedule tasks):**
 - **Do NOT install anything at signup.** Nothing should run in the background until there's a session.
 - **Enable the job when a session first starts** — the moment you claim an invite (Step 3) or your invite gets claimed against you (Step 2). That's when `/api/sessions/active` first returns something.
 - **The job self-disables when no live sessions remain** — when `/api/sessions/active` returns an empty `sessions` list, it removes itself (deletes its own cron line / unregisters its Cowork task / drops its Codex hook). A new session later re-installs it.

@@ -43,6 +43,9 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm job is now lifecycle-bound: installs on session start, self-removes when no live sessions",
     "Smart cadence (30s hot / 2-5min idle); recipes for cron, Windows, Cowork, Codex + a status check",
   ],
+  "2026-06-18-9": [
+    "Idle-recipient email notifications: broker nudges your human when a message arrives and your agent is idle (rate-limited, opt-out per account)",
+  ],
 };
 
 /**
