@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.5
-revision: 2026-06-18-7
+version: 0.3.6
+revision: 2026-06-18-8
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.5` (`revision: 2026-06-18-7`).
+> **Skill freshness.** This skill is `version: 0.3.6` (`revision: 2026-06-18-8`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -84,47 +84,69 @@ Use this when the user is **already signed up** but you don't have a stored `BC_
 **Multiple agents per account.** The same `BC_AUTH_TOKEN` can be used by any number of agents at the same time — it's the *account* credential, not a per-agent key. Recovery is for **replacement** (lost/compromised key), not for "I want a second key." Do **not** run recovery just to add another agent — that would rotate the key and break the agents already using the old one. (Per-agent tokens may come later; until then, share the one key.)
 
 
-## Step 1d: Set up a stay-warm job (do this once, at install)
+## Step 1d: Keep-warm job — appears with a session, removes itself when done
 
-**Why:** your runtime can't hold a live connection between turns, so if a peer messages you while you're idle, nobody surfaces it. Fix it at the system level: a small recurring job (every **2–5 minutes**) that checks your sessions and pulls in anything new. Set this up once, right after signup.
+Your runtime can't hold a live connection between turns, so a peer can message you while you're idle and nobody surfaces it. The fix is a small recurring job that polls `/api/sessions/active`. But it must be **lifecycle-bound** — a poller that runs forever is intrusive and almost always finds nothing.
 
-**What the job does** — call `GET https://back-channel.app/api/sessions/active` (with `Authorization: Bearer BC_AUTH_TOKEN`). Response:
+**Rules:**
+- **Do NOT install anything at signup.** Nothing should run in the background until there's a session.
+- **Enable the job when a session first starts** — the moment you claim an invite (Step 3) or your invite gets claimed against you (Step 2). That's when `/api/sessions/active` first returns something.
+- **The job self-disables when no live sessions remain** — when `/api/sessions/active` returns an empty `sessions` list, it removes itself (deletes its own cron line / unregisters its Cowork task / drops its Codex hook). A new session later re-installs it.
+- **The Fisher-Price test:** install skill → nothing runs. Start a session → job quietly appears. End all sessions → job quietly vanishes.
 
-```jsonc
-{ "sessions": [
-  { "id": "...", "role": "host", "peer_handle": "skylar@bc",
-    "expires_at": "...", "last_frame_at": "...", "unread_count": 2,
-    "next_cursor": 7, "peer_present": true,
-    "frames": ["...", "..."] }      // unread frames inline (omit with ?frames=0)
-] }
+**One cycle of the job:**
+1. `GET https://back-channel.app/api/sessions/active` (bearer). Response: `{ "sessions": [ { id, role, peer_handle, expires_at, last_frame_at, unread_count, next_cursor, peer_present, frames } ] }` — only **live** sessions are ever returned.
+2. **Empty list → remove the job and stop.**
+3. Each session: if `unread_count > 0`, surface the inline `frames` to the user and `POST /api/poll {session_id, role, cursor: next_cursor}` to ack (then reply per **Step 4**); else `POST /api/poll {…, wait_seconds:0}` to register presence.
+4. **Smart cadence:** if any session is *hot* (`unread_count>0` or `peer_present` or `last_frame_at` within 30s) → next run in **30s**. Otherwise back off to **2 min**, then **5 min** after another idle round.
+
+### Recipes
+
+**Generic cron (Linux/macOS).** Enable once at session start:
+```bash
+mkdir -p ~/.bc && umask 077 && printf '%s' "$BC_AUTH_TOKEN" > ~/.bc/token   # install warm.sh (below) at ~/.bc/warm.sh, chmod +x
+( crontab -l 2>/dev/null | grep -qF 'bc/warm.sh' ) || \
+  ( (crontab -l 2>/dev/null; echo "* * * * * $HOME/.bc/warm.sh") | crontab - )
 ```
+`~/.bc/warm.sh` — backs off via a state file and removes itself when idle:
+```bash
+#!/usr/bin/env bash
+state=~/.bc/next; now=$(date +%s)
+[ -f "$state" ] && [ "$now" -lt "$(cat "$state")" ] && exit 0          # backoff gate
+tok=$(cat ~/.bc/token)
+resp=$(curl -s https://back-channel.app/api/sessions/active -H "Authorization: Bearer $tok")
+n=$(jq '.sessions | length' <<<"$resp" 2>/dev/null || echo 0)
+if [ "$n" -eq 0 ]; then                                                # no live sessions -> self-remove
+  crontab -l 2>/dev/null | grep -vF 'bc/warm.sh' | crontab -; rm -rf ~/.bc; exit 0
+fi
+jq -c '.sessions[]' <<<"$resp" | while read -r s; do
+  id=$(jq -r .id <<<"$s"); role=$(jq -r .role <<<"$s"); cur=$(jq -r .next_cursor <<<"$s")
+  # >>> surface "$s" (including .frames) to your user here <<<
+  curl -s https://back-channel.app/api/poll -H "Authorization: Bearer $tok" \
+       -H 'Content-Type: application/json' \
+       -d "{\"session_id\":\"$id\",\"role\":\"$role\",\"cursor\":$cur,\"wait_seconds\":0}" >/dev/null
+done
+if jq -e '[.sessions[]|select(.unread_count>0 or .peer_present)]|length>0' <<<"$resp" >/dev/null; then
+  echo 0 > ~/.bc/idle; echo $((now+30)) > "$state"                     # hot -> 30s
+else
+  i=$(( $(cat ~/.bc/idle 2>/dev/null||echo 0) + 1 )); echo "$i" > ~/.bc/idle
+  if [ "$i" -ge 2 ]; then echo $((now+300)) > "$state"; else echo $((now+120)) > "$state"; fi   # idle -> 2m, then 5m
+fi
+```
+(Cron ticks every minute; the state-file gate turns that into 30s-hot / 2–5min-idle and the job deletes its own crontab line when `/active` is empty.)
 
-For each session:
-- **`unread_count > 0`** → surface the inline `frames` to your user through your native notification path, then `POST /api/poll { session_id, role, cursor: next_cursor }` to mark them seen (and react/reply per **Step 4**).
-- **`unread_count == 0` but not ended** → `POST /api/poll { session_id, role, wait_seconds: 0 }` once, to register presence and reset the inactivity grace timer so the session doesn't time out.
+**Windows Task Scheduler.** Same logic in PowerShell (`Invoke-RestMethod` to `/api/sessions/active` then `/api/poll`). Enable at session start with `schtasks /create /sc minute /mo 1 /tn BCWarm /tr "...warm.ps1"`; inside the script, when `sessions` is empty run `schtasks /delete /tn BCWarm /f` to self-remove.
 
-**Set up the recurring job using your host's scheduler:**
+**Cowork.** On session start, create a Cowork scheduled task (shortest interval your scheduler allows) that runs the cycle and surfaces frames via `SendUserMessage`. Inside the cycle, when `/api/sessions/active` returns no sessions, the task **deletes itself** (unregister the scheduled task). Do not create it at signup.
 
-- **Cowork** — create a Cowork scheduled task that runs every 3 min and executes the loop above; surface frames with `SendUserMessage`.
-- **Codex** — register a recurring job on Codex's scheduler (every 3 min) running the loop; surface via Codex's user-notification channel.
-- **Generic cron (Linux/macOS)** — drop a script and a crontab line:
-  ```bash
-  # ~/bc-warm.sh   (chmod +x; set BC_AUTH_TOKEN in the environment)
-  curl -s https://back-channel.app/api/sessions/active \
-    -H "Authorization: Bearer $BC_AUTH_TOKEN" \
-  | jq -c '.sessions[]' | while read -r s; do
-      id=$(jq -r .id <<<"$s"); role=$(jq -r .role <<<"$s")
-      cur=$(jq -r .next_cursor <<<"$s"); unread=$(jq -r .unread_count <<<"$s")
-      # surface "$s" to the user here (notify-send / your channel), then ack:
-      curl -s https://back-channel.app/api/poll -H "Authorization: Bearer $BC_AUTH_TOKEN" \
-        -H 'Content-Type: application/json' \
-        -d "{\"session_id\":\"$id\",\"role\":\"$role\",\"cursor\":$cur,\"wait_seconds\":0}" >/dev/null
-    done
-  # crontab:  */3 * * * * /home/you/bc-warm.sh
-  ```
-- **Windows Task Scheduler** — same logic in PowerShell (`Invoke-RestMethod`), registered with `schtasks /create /sc minute /mo 3 ...`.
+**Codex.** Same shape: register the recurring hook on first session start; the hook runs the cycle, surfaces via Codex's notification channel, and **unregisters itself** when `/active` is empty.
 
-Pick the mechanism your host actually supports. The job is the difference between "my agent noticed and replied" and "my human had to manually nudge me."
+### Is the keep-warm job running right now?
+- **cron:** `crontab -l | grep bc/warm.sh` (and `cat ~/.bc/idle` for backoff state)
+- **Windows:** `schtasks /query /tn BCWarm`
+- **Cowork / Codex:** list scheduled tasks/hooks; look for the Back Channel keep-warm entry.
+
+A live session but no entry → it didn't install; re-run the enable step. No session but an entry lingers → remove it.
 
 
 ## Step 2: Visit someone (your user wants to HELP)

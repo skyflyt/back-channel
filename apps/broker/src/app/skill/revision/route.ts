@@ -39,6 +39,10 @@ const CHANGES: Record<string, string[]> = {
     "Content frames sealed as {type:enc,v,iv,ct,tag}; copy-paste Node + Python recipes",
     "Phase A: broker logs plaintext content frames; Phase B will reject them",
   ],
+  "2026-06-18-8": [
+    "Keep-warm job is now lifecycle-bound: installs on session start, self-removes when no live sessions",
+    "Smart cadence (30s hot / 2-5min idle); recipes for cron, Windows, Cowork, Codex + a status check",
+  ],
 };
 
 /**
