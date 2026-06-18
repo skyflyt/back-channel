@@ -1,10 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { generateApiKey } from "@/lib/auth";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
+const HOUR = 60 * 60 * 1000;
+
 export async function GET(req: NextRequest) {
+  // The token is a 256-bit random value looked up by primary key, so this
+  // isn't brute-forceable — but it's unauthenticated and hits the DB on every
+  // call, so cap per IP to keep it from being used as a DB-load amplifier.
+  const ip = clientIp(req.headers.get("x-forwarded-for"));
+  const rl = rateLimit("verify:ip", ip, 60, HOUR);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: "rate_limited", message: "Too many requests. Please try again later." },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } },
+    );
+  }
+
   const { searchParams } = new URL(req.url);
   const token = searchParams.get("token");
   if (!token) {

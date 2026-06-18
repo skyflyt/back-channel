@@ -2,8 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { generateHandle, generateMagicLinkToken, magicLinkExpiry } from "@/lib/auth";
 import { sendVerificationEmail } from "@/lib/email";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
+
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+
+function tooMany(retryAfterSec: number) {
+  return NextResponse.json(
+    { error: "rate_limited", message: "Too many requests. Please try again later." },
+    { status: 429, headers: { "Retry-After": String(retryAfterSec) } },
+  );
+}
 
 export async function POST(req: NextRequest) {
   let body: { email?: string; display_name?: string; agent_endpoint?: string; agent_pubkey?: string };
@@ -19,6 +30,17 @@ export async function POST(req: NextRequest) {
 
   const email = body.email.trim().toLowerCase();
   const handle = generateHandle(email);
+
+  // Abuse guard: every successful path below sends an email (Resend quota +
+  // domain reputation) and may create an account. Cap per source IP and per
+  // target email so nobody can flood a victim's inbox with verify links.
+  // Check IP first (cheap, blocks floods before we touch the email bucket).
+  const ip = clientIp(req.headers.get("x-forwarded-for"));
+  const ipLimit = rateLimit("accounts:ip", ip, 5, HOUR);
+  if (!ipLimit.ok) return tooMany(ipLimit.retryAfterSec);
+
+  const emailLimit = rateLimit("accounts:email", email, 3, DAY);
+  if (!emailLimit.ok) return tooMany(emailLimit.retryAfterSec);
 
   // Phase 3.1: account is created PENDING with no apiKey. Verified at the magic-link step.
   // If account already exists:

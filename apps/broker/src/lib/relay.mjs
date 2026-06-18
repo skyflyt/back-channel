@@ -26,8 +26,10 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { parse } from "node:url";
 import { prisma } from "./db.mjs";
+import { rateLimit, clientIp } from "./rate-limit.mjs";
 
 const MAX_BUFFER_FRAMES = 64;
+const UPGRADE_LIMIT_PER_MIN = 30;
 
 /** @type {Map<string, PairedSession>} */
 const sessions = new Map();
@@ -41,6 +43,19 @@ const wss = new WebSocketServer({ noServer: true });
  * @param {Buffer} head
  */
 export function handleRelayUpgrade(req, socket, head) {
+  // Cap upgrade attempts per IP. Each attempt below triggers a DB lookup, and
+  // an unauthenticated caller can spray guessed session IDs; this bounds the
+  // load. Legit clients connect once (visitor + host) per session.
+  const ip = clientIp(req.headers["x-forwarded-for"]);
+  const rl = rateLimit("relay:ip", ip, UPGRADE_LIMIT_PER_MIN, 60 * 1000);
+  if (!rl.ok) {
+    socket.write(
+      `HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${rl.retryAfterSec}\r\nConnection: close\r\n\r\n`,
+    );
+    socket.destroy();
+    return;
+  }
+
   const url = parse(req.url ?? "", true);
   const match = url.pathname?.match(/^\/relay\/([^/]+)$/);
   if (!match) {

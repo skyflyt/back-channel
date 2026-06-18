@@ -2,12 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromAuth, generateInviteCode } from "@/lib/auth";
 import { validateScopes } from "@/lib/scopes";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
+
+const HOUR = 60 * 60 * 1000;
 
 export async function POST(req: NextRequest) {
   const visitor = await getAccountFromAuth(req.headers.get("authorization"));
   if (!visitor) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  // Each invite creates an Invite + Session row. Cap per account so a
+  // compromised/abusive key can't fill the DB or spam invite codes at a host.
+  const rl = rateLimit("invites:account", visitor.id, 10, HOUR);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: "rate_limited", message: "Too many invites created. Please try again later." },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } },
+    );
+  }
 
   let body: { host_handle?: string; scopes?: string[]; ttl_minutes?: number; message?: string };
   try {
