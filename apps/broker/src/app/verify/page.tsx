@@ -11,20 +11,49 @@ interface VerifyResult {
 }
 
 export default function VerifyPage() {
-  const [state, setState] = useState<"loading" | "ok" | "error">("loading");
+  const [state, setState] = useState<"probing" | "ready" | "verifying" | "ok" | "error">("probing");
+  const [token, setToken] = useState<string | null>(null);
+  const [handle, setHandle] = useState<string>("");
   const [data, setData] = useState<VerifyResult | null>(null);
   const [errMsg, setErrMsg] = useState<string>("");
   const [copied, setCopied] = useState(false);
 
+  // On load we only PROBE (non-consuming GET) so that email-security scanners
+  // pre-fetching this link can't burn the token. The token is consumed by the
+  // POST below, which only fires on a real human button click.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get("token");
-    if (!token) {
+    const t = new URLSearchParams(window.location.search).get("token");
+    if (!t) {
       setErrMsg("No token in URL — make sure you clicked the link from your verification email.");
       setState("error");
       return;
     }
-    fetch(`/api/auth/verify?token=${encodeURIComponent(token)}`)
+    setToken(t);
+    fetch(`/api/auth/verify?token=${encodeURIComponent(t)}`)
+      .then(async (r) => {
+        const j = await r.json();
+        if (!r.ok) {
+          setErrMsg(j.error ?? "verification_failed");
+          setState("error");
+          return;
+        }
+        setHandle(j.handle ?? "");
+        setState("ready");
+      })
+      .catch((e) => {
+        setErrMsg(e instanceof Error ? e.message : String(e));
+        setState("error");
+      });
+  }, []);
+
+  const verify = () => {
+    if (!token) return;
+    setState("verifying");
+    fetch("/api/auth/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    })
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok) {
@@ -39,7 +68,7 @@ export default function VerifyPage() {
         setErrMsg(e instanceof Error ? e.message : String(e));
         setState("error");
       });
-  }, []);
+  };
 
   const copy = () => {
     if (!data) return;
@@ -51,10 +80,29 @@ export default function VerifyPage() {
   return (
     <main style={styles.page}>
       <div style={styles.card}>
-        {state === "loading" && (
+        {state === "probing" && (
           <>
-            <h1 style={styles.h1}>Verifying...</h1>
-            <p style={styles.lead}>Checking your magic link.</p>
+            <h1 style={styles.h1}>Checking your link...</h1>
+            <p style={styles.lead}>One moment.</p>
+          </>
+        )}
+
+        {(state === "ready" || state === "verifying") && (
+          <>
+            <h1 style={styles.h1}>Verify your account</h1>
+            <p style={styles.lead}>
+              You&apos;re about to verify{" "}
+              <strong style={{ color: "#0f172a" }}>{handle}</strong> and get your API key.
+            </p>
+            <p style={{ margin: "32px 0" }}>
+              <button onClick={verify} disabled={state === "verifying"} style={styles.verifyBtn}>
+                {state === "verifying" ? "Verifying..." : "Verify my account"}
+              </button>
+            </p>
+            <p style={styles.smallLead}>
+              We don&apos;t verify automatically so that automated email scanners can&apos;t use up
+              your one-time link before you do.
+            </p>
           </>
         )}
 
@@ -155,5 +203,15 @@ const styles = {
     fontWeight: 600,
     cursor: "pointer",
     fontSize: 14,
+  } as const,
+  verifyBtn: {
+    background: "#0f172a",
+    color: "#fff",
+    border: "none",
+    borderRadius: 10,
+    padding: "14px 28px",
+    fontWeight: 600,
+    fontSize: 16,
+    cursor: "pointer",
   } as const,
 };
