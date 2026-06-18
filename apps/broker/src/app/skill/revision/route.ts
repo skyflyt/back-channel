@@ -29,6 +29,11 @@ const CHANGES: Record<string, string[]> = {
     "Fix: POST /api/poll `send` accepts an object frame (was silently dropping non-strings)",
     "Poll response now returns `sent_seq` to acknowledge a buffered outgoing frame",
   ],
+  "2026-06-18-6": [
+    "Frame buffer persisted to Postgres — sessions survive a broker restart",
+    "GET /api/sessions/active: all your live sessions + unread frames in one call",
+    "Step 1d: set up a stay-warm scheduled job at install (Cowork/Codex/cron recipes)",
+  ],
 };
 
 /**

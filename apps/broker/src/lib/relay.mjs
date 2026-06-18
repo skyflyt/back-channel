@@ -42,6 +42,7 @@
  * @property {{ visitor: number, host: number }} seq        last seq assigned to frames FOR this role
  * @property {{ visitor: LoggedFrame[], host: LoggedFrame[] }} log   frames addressed TO this role
  * @property {{ visitor: number, host: number }} wsCursor   highest seq pushed to this role's WS
+ * @property {{ visitor: number, host: number }} lastPolledCursor  highest cursor this role has acked (for unread_count)
  * @property {{ visitor: number, host: number }} lastSeen   ms epoch of last WS/poll activity by this role
  * @property {Date} expiresAt
  * @property {ReturnType<typeof setTimeout> | null} graceTimer
@@ -83,7 +84,7 @@ const POLL_PRESENCE_MS = 30 * 1000;
 // Current skill revision — surfaced to agents on connect / in poll responses so
 // a stale copy is noticed immediately. Keep in sync with skill/SKILL.md's
 // `revision:` frontmatter (GET /skill/revision reads the file authoritatively).
-const CURRENT_SKILL_REVISION = "2026-06-18-5";
+const CURRENT_SKILL_REVISION = "2026-06-18-6";
 
 /** Shared across server.mjs's import and Next route bundles (same process). */
 /** @type {Map<string, PairedSession>} */
@@ -109,6 +110,7 @@ function newSlot(session) {
     seq: { visitor: 0, host: 0 },
     log: { visitor: [], host: [] },
     wsCursor: { visitor: 0, host: 0 },
+    lastPolledCursor: { visitor: 0, host: 0 },
     lastSeen: { visitor: 0, host: 0 },
     expiresAt: session.invite.expiresAt,
     graceTimer: null,
@@ -371,6 +373,9 @@ export async function pollSession({ sessionId, role, cursor, sendData, waitMs, s
   }
 
   const cur = Number.isFinite(cursor) && cursor > 0 ? cursor : 0;
+  // Record what this role has acked, so GET /api/sessions/active can compute
+  // unread_count. Monotonic — a stale lower cursor never rewinds it.
+  if (cur > slot.lastPolledCursor[role]) slot.lastPolledCursor[role] = cur;
   let frames = readSince(slot, role, cur);
 
   const deadline = Date.now() + Math.min(Math.max(waitMs || 0, 0), 25000);
@@ -451,6 +456,37 @@ export function getTranscript(sessionId) {
     }
   }
   out.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
+  return out;
+}
+
+/**
+ * Unread summary for one session+role, for GET /api/sessions/active. Lazily
+ * loads the slot (rebuilds from DB after a restart). Optionally returns the
+ * unread frame bodies inline (oldest-first, capped) so a scheduled job can
+ * surface them without a second round trip.
+ * @param {string} sessionId
+ * @param {Role} role
+ * @param {{ scopesGranted: string[], invite: { expiresAt: Date } }} session
+ * @param {{ includeFrames?: boolean, max?: number }} [opts]
+ * @returns {Promise<{ unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, frames?: string[], truncated?: boolean }>}
+ */
+export async function sessionUnread(sessionId, role, session, opts = {}) {
+  const slot = await getOrCreateSlot(sessionId, session);
+  const cur = slot.lastPolledCursor[role];
+  const unread = slot.log[role].filter((f) => f.seq > cur);
+  const last = slot.log[role][slot.log[role].length - 1];
+  const max = opts.max ?? 50;
+  /** @type {{ unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, frames?: string[], truncated?: boolean }} */
+  const out = {
+    unread_count: unread.length,
+    last_frame_at: last ? new Date(last.ts).toISOString() : null,
+    next_cursor: unread.length ? unread[Math.min(unread.length, max) - 1].seq : cur,
+    peer_present: peerPresent(slot, role),
+  };
+  if (opts.includeFrames) {
+    out.frames = unread.slice(0, max).map((f) => f.data);
+    if (unread.length > max) out.truncated = true;
+  }
   return out;
 }
 

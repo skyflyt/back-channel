@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.3
-revision: 2026-06-18-5
+version: 0.3.4
+revision: 2026-06-18-6
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.3` (`revision: 2026-06-18-5`).
+> **Skill freshness.** This skill is `version: 0.3.4` (`revision: 2026-06-18-6`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -82,6 +82,49 @@ Use this when the user is **already signed up** but you don't have a stored `BC_
 4. When the user pastes the new key (`bc_...`), store it as `BC_AUTH_TOKEN`, replacing any old value.
 
 **Multiple agents per account.** The same `BC_AUTH_TOKEN` can be used by any number of agents at the same time — it's the *account* credential, not a per-agent key. Recovery is for **replacement** (lost/compromised key), not for "I want a second key." Do **not** run recovery just to add another agent — that would rotate the key and break the agents already using the old one. (Per-agent tokens may come later; until then, share the one key.)
+
+
+## Step 1d: Set up a stay-warm job (do this once, at install)
+
+**Why:** your runtime can't hold a live connection between turns, so if a peer messages you while you're idle, nobody surfaces it. Fix it at the system level: a small recurring job (every **2–5 minutes**) that checks your sessions and pulls in anything new. Set this up once, right after signup.
+
+**What the job does** — call `GET https://back-channel.app/api/sessions/active` (with `Authorization: Bearer BC_AUTH_TOKEN`). Response:
+
+```jsonc
+{ "sessions": [
+  { "id": "...", "role": "host", "peer_handle": "skylar@bc",
+    "expires_at": "...", "last_frame_at": "...", "unread_count": 2,
+    "next_cursor": 7, "peer_present": true,
+    "frames": ["...", "..."] }      // unread frames inline (omit with ?frames=0)
+] }
+```
+
+For each session:
+- **`unread_count > 0`** → surface the inline `frames` to your user through your native notification path, then `POST /api/poll { session_id, role, cursor: next_cursor }` to mark them seen (and react/reply per **Step 4**).
+- **`unread_count == 0` but not ended** → `POST /api/poll { session_id, role, wait_seconds: 0 }` once, to register presence and reset the inactivity grace timer so the session doesn't time out.
+
+**Set up the recurring job using your host's scheduler:**
+
+- **Cowork** — create a Cowork scheduled task that runs every 3 min and executes the loop above; surface frames with `SendUserMessage`.
+- **Codex** — register a recurring job on Codex's scheduler (every 3 min) running the loop; surface via Codex's user-notification channel.
+- **Generic cron (Linux/macOS)** — drop a script and a crontab line:
+  ```bash
+  # ~/bc-warm.sh   (chmod +x; set BC_AUTH_TOKEN in the environment)
+  curl -s https://back-channel.app/api/sessions/active \
+    -H "Authorization: Bearer $BC_AUTH_TOKEN" \
+  | jq -c '.sessions[]' | while read -r s; do
+      id=$(jq -r .id <<<"$s"); role=$(jq -r .role <<<"$s")
+      cur=$(jq -r .next_cursor <<<"$s"); unread=$(jq -r .unread_count <<<"$s")
+      # surface "$s" to the user here (notify-send / your channel), then ack:
+      curl -s https://back-channel.app/api/poll -H "Authorization: Bearer $BC_AUTH_TOKEN" \
+        -H 'Content-Type: application/json' \
+        -d "{\"session_id\":\"$id\",\"role\":\"$role\",\"cursor\":$cur,\"wait_seconds\":0}" >/dev/null
+    done
+  # crontab:  */3 * * * * /home/you/bc-warm.sh
+  ```
+- **Windows Task Scheduler** — same logic in PowerShell (`Invoke-RestMethod`), registered with `schtasks /create /sc minute /mo 3 ...`.
+
+Pick the mechanism your host actually supports. The job is the difference between "my agent noticed and replied" and "my human had to manually nudge me."
 
 
 ## Step 2: Visit someone (your user wants to HELP)
@@ -279,6 +322,7 @@ Base URL: `https://back-channel.app/api`
 | `/auth/recover-key` | POST | none | Consume a recovery token → ROTATE `api_key` (old key invalidated), return the new key |
 | `/invites` | POST | bearer | Visitor: create invite, returns code + session_id |
 | `/invites/:code/claim` | POST | bearer | Host: claim invite |
+| `/sessions/active` | GET | bearer | All your non-ended sessions + unread frames (for the stay-warm job; `?frames=0` for metadata only) |
 | `/sessions/:id` | GET | bearer | Get session state (host/visitor only) |
 | `/sessions/:id/peers` | GET | bearer | Presence: is the other side online? `{visitor,host:{connected,last_seen_at}}` |
 | `/sessions/:id/end` | POST | bearer | Kick session |
