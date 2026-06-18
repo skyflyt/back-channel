@@ -7,7 +7,7 @@
  * agents that both connect to it.
  *
  *   const transport = await createBrokerTransport({
- *     relayUrl: "wss://backchannel.app/relay/abc-123?role=visitor&token=abc-123",
+ *     relayUrl: "wss://back-channel.app/relay/abc-123?role=visitor&token=abc-123",
  *   });
  *
  * The relayUrl typically comes from the Broker's API response:
@@ -46,7 +46,7 @@ function isHandshake(obj: unknown): obj is HandshakeFrame {
 export interface BrokerTransportOptions {
   /**
    * Full relay URL including query params, e.g.
-   *   "wss://backchannel.app/relay/<sessionId>?role=visitor&token=<token>"
+   *   "wss://back-channel.app/relay/<sessionId>?role=visitor&token=<token>"
    */
   readonly relayUrl: string;
   /** Optional override of how long to wait for handshake (default 30s). */
@@ -165,3 +165,4 @@ export function createBrokerTransport(
     }
   });
 }
+

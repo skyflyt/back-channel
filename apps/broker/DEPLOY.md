@@ -4,7 +4,7 @@ Step-by-step. Run these from a machine with `gcloud` installed and authed.
 
 **Prerequisites:**
 - A Google Cloud project with billing enabled
-- Domain `backchannel.app` (or whatever you choose) ready to map DNS
+- Domain `back-channel.app` (or whatever you choose) ready to map DNS
 - ~$15-25/month budget for Cloud Run + Cloud SQL
 
 ---
@@ -146,12 +146,12 @@ You should see the landing page, the skill content, and a JSON response with an 
 
 gcloud beta run domain-mappings create \
   --service=backchannel-broker \
-  --domain=backchannel.app \
+  --domain=back-channel.app \
   --region=us-west1
 
 # Get the DNS records to add
 gcloud beta run domain-mappings describe \
-  --domain=backchannel.app \
+  --domain=back-channel.app \
   --region=us-west1
 ```
 
@@ -189,7 +189,7 @@ gcloud run services logs tail backchannel-broker --region=us-west1
 gcloud run services describe backchannel-broker --region=us-west1
 ```
 
-Open `https://backchannel.app` in a browser. You should see the landing page.
+Open `https://back-channel.app` in a browser. You should see the landing page.
 
 ---
 
@@ -233,3 +233,4 @@ gcloud run services update-traffic backchannel-broker \
   --region=us-west1 \
   --to-revisions=backchannel-broker-00007-abc=100
 ```
+

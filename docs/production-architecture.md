@@ -5,7 +5,7 @@
 ## Big picture
 
 ```
-backchannel.app  (the Broker service + landing site)
+back-channel.app  (the Broker service + landing site)
 
 Public:
   GET  /skill                  -> skill.md (cacheable static)
@@ -29,7 +29,7 @@ UI (Next.js):
   /sessions/:id                -> live transcript + approve
 
 Stack: Next.js 15 (App Router) + Postgres + WebSocket
-Deploy: Google Cloud Run, hosted at backchannel.app
+Deploy: Google Cloud Run, hosted at back-channel.app
 ```
 
 Both agents call the Broker over HTTPS + WebSocket. The Broker is **content-blind** — it mediates connections but cannot read what the agents say to each other.
@@ -40,7 +40,7 @@ Both agents call the Broker over HTTPS + WebSocket. The Broker is **content-blin
 
 The user pastes a single URL into their agent:
 
-> "Load this skill: https://backchannel.app/skill"
+> "Load this skill: https://back-channel.app/skill"
 
 The agent fetches `SKILL.md`, learns the protocol. **Works for any agent that can follow markdown instructions** — Claude, Cowork, ChatGPT, custom setups.
 
@@ -51,7 +51,7 @@ User: *"Sign me up for Back Channel."*
 Agent (now skill-armed):
 1. Calls `POST /api/accounts` with the user's email
 2. Tells user: *"Check your email for the verification link."*
-3. User clicks the link → lands on `backchannel.app/account/claim?token=...`
+3. User clicks the link → lands on `back-channel.app/account/claim?token=...`
 4. Browser confirms identity, issues an auth token
 5. User copies the token back to their agent OR the agent gets it via a callback URL it owns
 
@@ -151,7 +151,7 @@ The Broker MUST NOT be able to read message content. Implementation:
 
 ## Live transcript (the host UI)
 
-When a session opens, both humans can navigate to `backchannel.app/sessions/[id]` and watch real-time:
+When a session opens, both humans can navigate to `back-channel.app/sessions/[id]` and watch real-time:
 
 - Capability invocations
 - Approval prompts (with diff/details)
@@ -240,7 +240,7 @@ Same Cloud Run pattern Skylar's ttx_forge uses. Personal infrastructure (not Coo
 3. **Cloud Run service**: `backchannel-broker`, region `us-west1` (matches Skylar's Reno latency).
 4. **Database**: Cloud SQL for PostgreSQL (smallest tier — `db-f1-micro` to start).
 5. **Email**: SendGrid or Postmark for magic links (env-configured).
-6. **Custom domain**: `backchannel.app` mapped to Cloud Run service.
+6. **Custom domain**: `back-channel.app` mapped to Cloud Run service.
 
 ### WebSocket on Cloud Run — the stateful-connection problem
 
@@ -320,7 +320,7 @@ gcloud run deploy backchannel-broker \
 # Map domain
 gcloud beta run domain-mappings create \
   --service backchannel-broker \
-  --domain backchannel.app \
+  --domain back-channel.app \
   --region us-west1
 `
 
@@ -332,7 +332,7 @@ Skylar's ttx_forge already has this exact shape; we'll mirror its layout 1:1.
 DATABASE_URL=postgresql://user:pass@/db?host=/cloudsql/<connection>
 NEXTAUTH_SECRET=<rotate>
 POSTMARK_API_KEY=<...>           # or SENDGRID_API_KEY
-PUBLIC_APP_URL=https://backchannel.app
+PUBLIC_APP_URL=https://back-channel.app
 AGENT_REGISTRY_PEPPER=<32 random bytes, server-side only>
 `
 
@@ -346,4 +346,5 @@ No secrets in repo. All injected at deploy time via `--set-env-vars` or Secret M
 - **Free vs paid**: where's the boundary? (Personal use free, org accounts paid? Per-session limits?)
 
 To be resolved during implementation. None are blockers for the architecture.
+
 

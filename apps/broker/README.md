@@ -1,6 +1,6 @@
 # Back Channel Broker
 
-The hosted service for Back Channel. Deployed to Google Cloud Run at `backchannel.app`.
+The hosted service for Back Channel. Deployed to Google Cloud Run at `back-channel.app`.
 
 ## What it does
 
@@ -81,3 +81,4 @@ What's NOT yet:
 - ❌ Multi-instance support (single instance, `--min/max=1`)
 
 Each of these is logged as a TODO in the relevant source file or in `docs/roadmap.md`.
+

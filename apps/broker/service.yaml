@@ -31,9 +31,10 @@ spec:
             - name: NODE_ENV
               value: production
             - name: PUBLIC_APP_URL
-              value: https://backchannel.app
+              value: https://back-channel.app
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: DATABASE_URL
                   key: latest
+

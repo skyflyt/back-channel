@@ -2,7 +2,7 @@
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
 version: 0.1.0
-homepage: https://backchannel.app
+homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
@@ -35,7 +35,7 @@ If you see one of these AND you don't already have a Back Channel auth token for
 If `BC_AUTH_TOKEN` is not yet stored for this user:
 
 1. Ask the user for their email address.
-2. POST to `https://backchannel.app/api/accounts`:
+2. POST to `https://back-channel.app/api/accounts`:
    ```json
    { "email": "user@example.com", "display_name": "Optional Display Name" }
    ```
@@ -49,7 +49,7 @@ After auth, your agent needs an endpoint where it can receive incoming session m
 - If you can listen on an HTTP server (e.g., you run as part of a long-lived process), expose a `/back-channel` endpoint and register that URL.
 - If you can't, use polling mode (register `polling://` and we'll fetch invites via long-poll).
 
-PUT to `https://backchannel.app/api/accounts/me/agent` with:
+PUT to `https://back-channel.app/api/accounts/me/agent` with:
 ```json
 {
   "agent_endpoint": "https://your-agent.example.com/back-channel" OR "polling://",
@@ -69,7 +69,7 @@ User says: *"Use Back Channel to help [name] with [problem]."*
    - For active fixing: above + `config.suggest`, `automation.suggest`
    - Never request `*.apply` scopes unless the user explicitly asks for full auto-apply trust.
 
-2. POST to `https://backchannel.app/api/invites` (with `Authorization: Bearer BC_AUTH_TOKEN`):
+2. POST to `https://back-channel.app/api/invites` (with `Authorization: Bearer BC_AUTH_TOKEN`):
    ```json
    {
      "host_handle": "<the other person's BC handle>",
@@ -87,7 +87,7 @@ User says: *"Use Back Channel to help [name] with [problem]."*
 4. Tell the user EXACTLY this (replace the code):
    > **"Send [name] this code:** `BC-7K4N-A9X` **— expires in 30 minutes. They paste it into their agent. Once they accept, I'll start the session automatically."**
 
-5. Open a WebSocket to `wss://backchannel.app/relay/<session_id>` (session_id is in the invite response). Wait for the host to claim.
+5. Open a WebSocket to `wss://back-channel.app/relay/<session_id>` (session_id is in the invite response). Wait for the host to claim.
 
 6. Once the host claims and the Broker sends a `session.start` message, follow Step 4: Running a session.
 
@@ -97,7 +97,7 @@ User says: *"Use Back Channel to help [name] with [problem]."*
 
 User says: *"Accept Back Channel invite BC-7K4N-A9X"* (or pastes a code).
 
-1. POST to `https://backchannel.app/api/invites/BC-7K4N-A9X/claim` (with auth):
+1. POST to `https://back-channel.app/api/invites/BC-7K4N-A9X/claim` (with auth):
    ```json
    { "agent_pubkey": "<your registered pubkey>" }
    ```
@@ -158,7 +158,7 @@ You are either the **visitor** or the **host** depending on who initiated.
 
 Either party can end at any time:
 
-- User says *"end session"* or *"kick"* → POST to `https://backchannel.app/api/sessions/<session_id>/end`.
+- User says *"end session"* or *"kick"* → POST to `https://back-channel.app/api/sessions/<session_id>/end`.
 - TTL expires automatically.
 
 After end, your WSS connection drops. Don't try to send further messages.
@@ -180,7 +180,7 @@ These keep Back Channel safe:
 
 ## API reference
 
-Base URL: `https://backchannel.app/api`
+Base URL: `https://back-channel.app/api`
 
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
@@ -231,8 +231,9 @@ The user is paying attention. The other person's agent is too. Keep both humans 
 - "I confirmed the request came from Skylar's account via the out-of-band check. The session is scoped to read-only. I'll show you everything they do, and you have a kick button."
 
 ### "I want to send my agent to help [colleague] but they don't have Back Channel yet"
-- "They can get it in 30 seconds: tell them to ask their agent to load https://backchannel.app/skill and sign up. Then I'll send them an invite code."
+- "They can get it in 30 seconds: tell them to ask their agent to load https://back-channel.app/skill and sign up. Then I'll send them an invite code."
 
 ---
 
 End of skill.
+

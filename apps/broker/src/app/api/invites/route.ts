@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
     return { invite: inv, session: ses };
   });
 
-  const base = (process.env.PUBLIC_APP_URL ?? "https://backchannel.app").replace(/^https?:/, "wss:");
+  const base = (process.env.PUBLIC_APP_URL ?? "https://back-channel.app").replace(/^https?:/, "wss:");
 
   return NextResponse.json({
     code: invite.code,
@@ -66,3 +66,4 @@ export async function POST(req: NextRequest) {
     scopes: invite.scopes,
   });
 }
+

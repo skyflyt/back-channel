@@ -43,7 +43,7 @@ steps:
       - --session-affinity
       - --allow-unauthenticated
       - --add-cloudsql-instances=$_CLOUDSQL_INSTANCE
-      - --set-env-vars=PUBLIC_APP_URL=https://backchannel.app,NODE_ENV=production
+      - --set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production
       - --set-secrets=DATABASE_URL=DATABASE_URL:latest
 
 images:
@@ -57,4 +57,5 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 timeout: 1200s
+
 

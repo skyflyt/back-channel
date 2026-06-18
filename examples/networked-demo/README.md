@@ -25,8 +25,9 @@ You'll see the visitor connect, do the handshake, discover capabilities, read th
 
 ## What this doesn't do (yet)
 
-- No Broker — the visitor connects directly to the host. In Phase 3 both agents connect to backchannel.app and the Broker relays.
+- No Broker — the visitor connects directly to the host. In Phase 3 both agents connect to back-channel.app and the Broker relays.
 - No auth — anyone who can reach the WS port can attempt a handshake. Phase 3 adds JWT session tokens + asymmetric agent identity verified by the Broker.
 - The public keys exchanged in the handshake aren't authenticated, so an active MITM on the network could substitute keys. Acceptable for a single-machine demo, NOT for the open internet. Phase 3 has the Broker check pubkeys against registered values.
 
 All of that lands in Phase 3 when the Broker comes online.
+

@@ -104,7 +104,7 @@ export default function HomePage() {
         <ol style={styles.steps}>
           <li>
             <p><strong>Tell your AI agent:</strong></p>
-            <pre style={styles.pre}>Load this skill: https://backchannel.app/skill</pre>
+            <pre style={styles.pre}>Load this skill: https://back-channel.app/skill</pre>
             <p>Your agent fetches the skill and learns the protocol. Works with Claude, Cowork,
               ChatGPT, custom — anything that reads markdown instructions.</p>
           </li>
@@ -305,3 +305,4 @@ const styles = {
     margin: 0,
   } as const,
 };
+
