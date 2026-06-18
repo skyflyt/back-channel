@@ -43,7 +43,11 @@ steps:
       - --session-affinity
       - --allow-unauthenticated
       - --add-cloudsql-instances=$_CLOUDSQL_INSTANCE
-      - --set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production
+      # NOTE: --set-env-vars REPLACES the entire env on every deploy, so EVERY
+      # var the service needs must be listed here or it gets dropped. EMAIL_FROM
+      # is required — without it the sender falls back to onboarding@resend.dev
+      # (Resend test mode, owner-email-only) and real signups fail to deliver.
+      - "--set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production,EMAIL_FROM=Back Channel <noreply@back-channel.app>"
       - --set-secrets=DATABASE_URL=DATABASE_URL:latest,RESEND_API_KEY=RESEND_API_KEY:latest
 
 images:
