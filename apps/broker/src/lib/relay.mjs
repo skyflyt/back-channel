@@ -28,6 +28,12 @@
  * @property {number} startedAt
  * @property {string[]} scopesGranted
  * @property {{ visitor: FrameStat, host: FrameStat }} stats
+ * @property {{ visitor: boolean, host: boolean }} connected     currently connected
+ * @property {{ visitor: boolean, host: boolean }} everConnected connected at least once
+ * @property {Date} expiresAt   invite TTL deadline (hard-end backstop)
+ * @property {ReturnType<typeof setTimeout> | null} graceTimer   both-disconnected countdown
+ * @property {ReturnType<typeof setTimeout> | null} ttlTimer     TTL backstop
+ * @property {boolean} ended
  */
 
 import { WebSocketServer, WebSocket } from "ws";
@@ -54,6 +60,12 @@ const AUDIT_FLUSH_EVERY = 100;
 // short messages) never hit it.
 const MAX_SESSION_FRAMES = 100_000;
 const MAX_SESSION_BYTES = 256 * 1024 * 1024;
+
+// Session-lifecycle grace. We only end a session for "both disconnected" once
+// BOTH peers have connected at least once AND both are simultaneously gone for
+// this long. LLM agent runtimes routinely close their socket between user turns
+// and reconnect to the same session_id, so the window must tolerate that.
+const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
 
 /** @type {Map<string, PairedSession>} */
 const sessions = new Map();
@@ -160,13 +172,32 @@ async function attachToSession(sessionId, role, ws) {
     scopesGranted: session.scopesGranted,
     buffer: [],
     stats: { visitor: newFrameStat(), host: newFrameStat() },
+    connected: { visitor: false, host: false },
+    everConnected: { visitor: false, host: false },
+    expiresAt: session.invite.expiresAt,
+    graceTimer: null,
+    ttlTimer: null,
+    ended: false,
   };
-  if (slot[role]) {
-    ws.close(4409, `${role} already connected`);
-    return;
+
+  // Reconnection support: an LLM agent runtime closes its socket between turns
+  // and reconnects to the same session_id with the same role+token. If this
+  // role already holds a socket (live or a not-yet-cleaned-up stale one),
+  // REPLACE it instead of rejecting as a duplicate. The old socket's close
+  // handler no-ops because slot[role] no longer points at it.
+  const existing = slot[role];
+  if (existing && existing !== ws) {
+    try { existing.close(4001, "replaced_by_reconnect"); } catch {}
   }
   slot[role] = ws;
+  slot.connected[role] = true;
+  slot.everConnected[role] = true;
   sessions.set(sessionId, slot);
+
+  // A peer just (re)connected: cancel any pending both-disconnected countdown,
+  // and arm the TTL backstop so a one-sided session can't linger past invite TTL.
+  cancelGraceEnd(slot);
+  armTtlTimer(sessionId, slot);
 
   await prisma.auditLog.create({
     data: { sessionId, role, eventType: "relay.connected", detail: {} },
@@ -179,6 +210,10 @@ async function attachToSession(sessionId, role, ws) {
       data: { sessionId, role, eventType: "relay.flushed", detail: { frames: flushedToMe } },
     });
   }
+
+  // Async presence signal so an idle peer learns the other side is live without
+  // waiting for a data frame.
+  notifyPeerJoined(slot, role);
 
   ws.on("message", async (data) => {
     // Frames larger than MAX_FRAME_BYTES never get here — ws rejects them at
@@ -215,26 +250,35 @@ async function attachToSession(sessionId, role, ws) {
   });
 
   ws.on("close", async () => {
+    // Ignore the close event of a socket we already replaced on reconnect.
+    if (slot[role] !== ws) return;
+
     // Flush any frames counted since the last threshold flush so the audit log
     // reflects the full session even if it ended mid-window.
     await flushFrameStats(sessionId, role, slot, "disconnect");
     slot[role] = undefined;
+    slot.connected[role] = false;
     await prisma.auditLog.create({
       data: { sessionId, role, eventType: "relay.disconnected", detail: {} },
     });
-    if (!slot.visitor && !slot.host) {
-      sessions.delete(sessionId);
-      const fresh = await prisma.session.findUnique({ where: { id: sessionId } });
-      if (fresh && !fresh.endedAt) {
-        await prisma.session.update({
-          where: { id: sessionId },
-          data: { endedAt: new Date(), endReason: "both_disconnected" },
-        });
-      }
-    } else {
-      // Other side still connected — notify them so they can clean up
-      const peer = role === "visitor" ? slot.host : slot.visitor;
-      try { peer?.close(4000, "peer_disconnected"); } catch {}
+
+    // Tell the surviving peer this side dropped — but keep THEM connected so the
+    // dropped side can reconnect to the same session. (Previously we force-closed
+    // the peer here, which tore the whole session down on any single disconnect.)
+    const peer = role === "visitor" ? slot.host : slot.visitor;
+    if (peer && peer.readyState === WebSocket.OPEN) {
+      try { peer.send(controlFrame({ type: "peer.left", role })); } catch {}
+    }
+
+    // Only start the end-session countdown once BOTH peers have connected at
+    // least once AND both are now simultaneously disconnected. A reconnect
+    // (above) cancels it. Sessions that only ever had one peer connect are NOT
+    // ended here — they end at the TTL backstop instead.
+    if (
+      slot.everConnected.visitor && slot.everConnected.host &&
+      !slot.connected.visitor && !slot.connected.host
+    ) {
+      scheduleGraceEnd(sessionId);
     }
   });
 
@@ -268,21 +312,89 @@ function flushBufferTo(slot, arrivingRole) {
   return count;
 }
 
+/** Build a broker control frame (plaintext JSON, distinct from peer data frames). */
+function controlFrame(obj) {
+  return JSON.stringify({ ...obj, ts: Date.now() });
+}
+
 /**
- * Force-close a session from the API (kick switch).
+ * Notify peers about presence when `joinerRole` (re)connects: tell the
+ * already-present peer the joiner is live, and tell the joiner the other side
+ * is already here. No-op if the other side isn't connected.
+ * @param {PairedSession} slot
+ * @param {Role} joinerRole
+ */
+function notifyPeerJoined(slot, joinerRole) {
+  const otherRole = joinerRole === "visitor" ? "host" : "visitor";
+  const other = slot[otherRole];
+  if (!other || other.readyState !== WebSocket.OPEN) return;
+  try { other.send(controlFrame({ type: "peer.joined", role: joinerRole })); } catch {}
+  const joiner = slot[joinerRole];
+  try { joiner?.send(controlFrame({ type: "peer.joined", role: otherRole })); } catch {}
+}
+
+/** Cancel a pending both-disconnected grace countdown. */
+function cancelGraceEnd(slot) {
+  if (slot.graceTimer) { clearTimeout(slot.graceTimer); slot.graceTimer = null; }
+}
+
+/**
+ * Arm the both-disconnected grace countdown. After DISCONNECT_GRACE_MS with both
+ * peers still gone, the session ends. Reconnecting cancels it.
+ * @param {string} sessionId
+ */
+function scheduleGraceEnd(sessionId) {
+  const slot = sessions.get(sessionId);
+  if (!slot || slot.ended) return;
+  cancelGraceEnd(slot);
+  slot.graceTimer = setTimeout(() => { void endSession(sessionId, "both_disconnected"); }, DISCONNECT_GRACE_MS);
+}
+
+/**
+ * Arm the TTL backstop (once) so a session ends at the invite's expiry even if a
+ * peer lingers or the other side never connects — prevents one-sided leaks.
+ * @param {string} sessionId
+ * @param {PairedSession} slot
+ */
+function armTtlTimer(sessionId, slot) {
+  if (slot.ttlTimer || slot.ended) return;
+  const ms = Math.max(0, slot.expiresAt.getTime() - Date.now());
+  slot.ttlTimer = setTimeout(() => { void endSession(sessionId, "ttl_expired"); }, ms);
+}
+
+/**
+ * End a session: clear timers, close both sockets, drop in-memory state, and
+ * persist endedAt/endReason (idempotent — first writer wins).
+ * @param {string} sessionId
+ * @param {string} reason
+ */
+export async function endSession(sessionId, reason) {
+  const slot = sessions.get(sessionId);
+  if (slot) {
+    if (slot.ended) return;
+    slot.ended = true;
+    cancelGraceEnd(slot);
+    if (slot.ttlTimer) { clearTimeout(slot.ttlTimer); slot.ttlTimer = null; }
+    try { slot.visitor?.close(4000, reason); } catch {}
+    try { slot.host?.close(4000, reason); } catch {}
+    sessions.delete(sessionId);
+  }
+  const fresh = await prisma.session.findUnique({ where: { id: sessionId } });
+  if (fresh && !fresh.endedAt) {
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: { endedAt: new Date(), endReason: reason },
+    });
+  }
+}
+
+/**
+ * Force-close a session from the API (kick switch). Thin wrapper over endSession.
  * @param {string} sessionId
  * @param {string} reason
  */
 export async function kickSession(sessionId, reason) {
-  const slot = sessions.get(sessionId);
-  if (!slot) return;
-  try { slot.visitor?.close(4000, reason); } catch {}
-  try { slot.host?.close(4000, reason); } catch {}
-  sessions.delete(sessionId);
-  await prisma.session.update({
-    where: { id: sessionId },
-    data: { endedAt: new Date(), endReason: reason },
-  });
+  await endSession(sessionId, reason);
 }
 
 /**
