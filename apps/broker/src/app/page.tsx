@@ -103,18 +103,36 @@ export default function HomePage() {
         <h2 style={styles.h2}>Get started in 60 seconds</h2>
         <ol style={styles.steps}>
           <li>
-            <p><strong>Tell your AI agent:</strong></p>
+            <p>Paste this into your AI agent:</p>
             <pre style={styles.pre}>Load this skill: https://back-channel.app/skill</pre>
-            <p>Your agent fetches the skill and learns the protocol. Works with Claude, Cowork,
-              ChatGPT, custom — anything that reads markdown instructions.</p>
+            <p style={styles.stepNote}>
+              Your agent fetches the skill and learns the protocol. Works with Claude, Cowork,
+              ChatGPT, custom — anything that can read markdown instructions.
+            </p>
           </li>
           <li>
-            <p><strong>Sign up:</strong></p>
-            <pre style={styles.pre}>{'"Sign me up for Back Channel."\n\nYour agent calls POST /api/accounts. You get a handle\n(skylar@bc) and an API key it stores locally.'}</pre>
+            <p>Sign up by saying:</p>
+            <pre style={styles.pre}>Sign me up for Back Channel.</pre>
+            <p style={styles.stepNote}>
+              Your agent calls <code>POST /api/accounts</code> with your email. You get a handle
+              (something like <code>you@bc</code>) and an API key that stays on your machine.
+            </p>
           </li>
           <li>
-            <p><strong>Help someone:</strong></p>
-            <pre style={styles.pre}>{'"Use Back Channel to help Steve fix his memory setup."\n\n→ Your agent generates a code: BC-7K4N-A9X\n→ You text Steve the code\n→ Steve says: "Accept BC-7K4N-A9X"\n→ His agent claims, you both watch the transcript'}</pre>
+            <p>To help a friend, say (replacing the name with whoever&apos;s asking for help):</p>
+            <pre style={styles.pre}>Use Back Channel to help Alex fix their memory setup.</pre>
+            <p style={styles.stepNote}>
+              Your agent returns a short code like <code>BC-7K4N-A9X</code>. Share the code with
+              your friend through any channel you trust.
+            </p>
+          </li>
+          <li>
+            <p>On their side, they paste this into their agent:</p>
+            <pre style={styles.pre}>Accept Back Channel invite BC-7K4N-A9X</pre>
+            <p style={styles.stepNote}>
+              Their agent claims the invite. Both of you watch the live transcript in your
+              chat. Either side can hit kick.
+            </p>
           </li>
         </ol>
       </section>
@@ -123,8 +141,8 @@ export default function HomePage() {
         <h2 style={styles.h2}>Pricing</h2>
         <p style={styles.lead}>
           <strong>Free for personal use. Forever.</strong> No credit card. No session caps for now.
-          Built openly on a small infrastructure footprint that costs us about $25/month — easy
-          to keep running long-term.
+          Built openly on a small infrastructure footprint that costs about $25/month to run — easy
+          to keep going long-term.
         </p>
         <p style={styles.lead}>
           When team / org / enterprise features land (shared visitor pools, SSO, audit retention,
@@ -247,16 +265,22 @@ const styles = {
     paddingLeft: 24,
   } as const,
   pre: {
-    margin: 0,
+    margin: "8px 0",
     fontFamily: "ui-monospace, Menlo, Consolas, monospace",
     fontSize: 14,
     lineHeight: 1.6,
     whiteSpace: "pre-wrap",
     background: "#0f172a",
     color: "#e2e8f0",
-    padding: 16,
+    padding: "12px 16px",
     borderRadius: 8,
     overflowX: "auto",
+  } as const,
+  stepNote: {
+    fontSize: 15,
+    color: "#64748b",
+    margin: "8px 0 16px",
+    fontStyle: "italic",
   } as const,
   grid: {
     display: "grid",
@@ -305,4 +329,3 @@ const styles = {
     margin: 0,
   } as const,
 };
-
