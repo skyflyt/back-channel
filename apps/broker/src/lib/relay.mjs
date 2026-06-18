@@ -47,6 +47,7 @@
  * @property {ReturnType<typeof setTimeout> | null} graceTimer
  * @property {ReturnType<typeof setTimeout> | null} ttlTimer
  * @property {boolean} ended
+ * @property {Promise<void> | null} loadPromise  in-flight DB rebuild on slot creation
  */
 
 import { WebSocketServer, WebSocket } from "ws";
@@ -113,23 +114,56 @@ function newSlot(session) {
     graceTimer: null,
     ttlTimer: null,
     ended: false,
+    loadPromise: null,
   };
 }
 
 /**
+ * Rebuild a slot's in-memory frame log from the persisted Frame table. Runs
+ * once when a slot is first created — this is how an in-flight session survives
+ * a broker restart/redeploy. Loads at most the last POLL_LOG_CAP frames per
+ * role and resumes seq numbering from the max.
+ * @param {string} sessionId
+ * @param {PairedSession} slot
+ */
+async function loadFramesFromDb(sessionId, slot) {
+  try {
+    for (const dest of /** @type {Role[]} */ (["visitor", "host"])) {
+      const rows = await prisma.frame.findMany({
+        where: { sessionId, roleDest: dest },
+        orderBy: { seq: "desc" },
+        take: POLL_LOG_CAP,
+      });
+      rows.reverse();
+      slot.log[dest] = rows.map((r) => ({ seq: r.seq, data: r.body, ts: r.createdAt.getTime() }));
+      slot.seq[dest] = rows.length ? rows[rows.length - 1].seq : 0;
+    }
+  } catch (e) {
+    console.error(`Frame load failed for ${sessionId}:`, e instanceof Error ? e.message : e);
+  }
+}
+
+/**
  * Get (or lazily create) the in-memory slot for a session. Callable from the WS
- * path AND the poll route (a polling session may have no WS at all).
+ * path AND the poll route (a polling session may have no WS at all). On first
+ * creation, rebuilds the frame log from Postgres so restarts don't lose frames.
+ * Concurrent callers share the one load.
  * @param {string} sessionId
  * @param {{ scopesGranted: string[], invite: { expiresAt: Date } }} session
- * @returns {PairedSession}
+ * @returns {Promise<PairedSession>}
  */
-function getOrCreateSlot(sessionId, session) {
+async function getOrCreateSlot(sessionId, session) {
   let slot = sessions.get(sessionId);
-  if (!slot) {
-    slot = newSlot(session);
-    sessions.set(sessionId, slot);
-    armTtlTimer(sessionId, slot);
+  if (slot) {
+    if (slot.loadPromise) await slot.loadPromise;
+    return slot;
   }
+  slot = newSlot(session);
+  sessions.set(sessionId, slot); // sync insert prevents a concurrent double-create
+  armTtlTimer(sessionId, slot);
+  slot.loadPromise = loadFramesFromDb(sessionId, slot);
+  await slot.loadPromise;
+  slot.loadPromise = null;
   return slot;
 }
 
@@ -158,8 +192,22 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
   const dest = fromRole === "visitor" ? "host" : "visitor";
 
   const s = ++slot.seq[dest];
+
+  // Persist before acking so a returned sent_seq means the frame is durable
+  // (survives a broker restart). Best-effort: if the DB write fails we still
+  // relay in-memory rather than dropping a live frame.
+  try {
+    await prisma.frame.create({ data: { sessionId, roleDest: dest, seq: s, body: text } });
+  } catch (e) {
+    console.error(`Frame persist failed ${sessionId}/${dest}/${s}:`, e instanceof Error ? e.message : e);
+  }
+
   slot.log[dest].push({ seq: s, data: text, ts: Date.now() });
-  if (slot.log[dest].length > POLL_LOG_CAP) slot.log[dest].shift();
+  if (slot.log[dest].length > POLL_LOG_CAP) {
+    const evicted = slot.log[dest].shift();
+    // Keep the DB buffer trimmed to the same cap (fire-and-forget).
+    void prisma.frame.deleteMany({ where: { sessionId, roleDest: dest, seq: { lte: evicted.seq } } }).catch(() => {});
+  }
 
   const destWs = slot[dest];
   if (destWs && destWs.readyState === WebSocket.OPEN) {
@@ -235,7 +283,7 @@ async function attachToSession(sessionId, role, ws) {
   if (!session) { ws.close(4404, "Unknown session"); return; }
   if (session.endedAt) { ws.close(4410, "Session already ended"); return; }
 
-  const slot = getOrCreateSlot(sessionId, session);
+  const slot = await getOrCreateSlot(sessionId, session);
 
   // Reconnection: same role+token replaces an existing socket (LLM runtimes
   // reopen per turn). The replaced socket's close handler no-ops.
@@ -314,7 +362,7 @@ function flushToWs(slot, role) {
  * @returns {Promise<{ frames: string[], next_cursor: number, peer_present: boolean }>}
  */
 export async function pollSession({ sessionId, role, cursor, sendData, waitMs, session }) {
-  const slot = getOrCreateSlot(sessionId, session);
+  const slot = await getOrCreateSlot(sessionId, session);
   slot.lastSeen[role] = Date.now();
 
   let sentSeq = null;
@@ -459,6 +507,9 @@ export async function endSession(sessionId, reason) {
   if (fresh && !fresh.endedAt) {
     await prisma.session.update({ where: { id: sessionId }, data: { endedAt: new Date(), endReason: reason } });
   }
+  // Purge the persisted frame buffer — the session is over (honors "artifacts
+  // purge"; bounds DB growth).
+  void prisma.frame.deleteMany({ where: { sessionId } }).catch(() => {});
 }
 
 /** Force-close a session from the API (kick switch). Thin wrapper. */

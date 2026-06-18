@@ -94,4 +94,22 @@ model MagicLink {
   @@index([expiresAt])
 }
 
+// Relay frame buffer, persisted so an in-flight session survives a broker
+// restart/redeploy (the in-memory globalThis buffer is rebuilt from here on the
+// first poll/connect after restart). Capped per (session, roleDest) at the same
+// 512-frame limit as memory; trimmed on eviction; purged when the session ends.
+// Bodies are the relayed frames (ideally end-to-end ciphertext) — transient,
+// not a long-term store.
+model Frame {
+  id        BigInt   @id @default(autoincrement())
+  sessionId String
+  roleDest  String   // "visitor" | "host" — the role this frame is addressed TO
+  seq       Int      // per-(session, roleDest) sequence number
+  body      String
+  createdAt DateTime @default(now())
+
+  @@unique([sessionId, roleDest, seq])
+  @@index([sessionId, roleDest, seq])
+}
+
 
