@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="6" fill="#0a0a0a"/>
-  <text x="16" y="22" font-family="system-ui" font-size="18" font-weight="700" text-anchor="middle" fill="#f0f0f0">BC</text>
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <rect width="256" height="256" fill="#0a0a0a" rx="56"/>
+  <path d="M 48 128 L 108 128 M 90 110 L 108 128 L 90 146" stroke="#ffffff" stroke-width="14" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 208 128 L 148 128 M 166 110 L 148 128 L 166 146" stroke="#ffffff" stroke-width="14" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="128" cy="128" r="7" fill="#10b981"/>
 </svg>
