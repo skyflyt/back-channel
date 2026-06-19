@@ -52,6 +52,11 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm job stays installed + auto-discovers new sessions; self-removes only after 6h idle; writes+surfaces a decrypted activity log",
     "Transcript page shows per-frame type + size + sender + time + live presence; re-fetch skill on claim",
   ],
+  "2026-06-19-2": [
+    "Onboarding asks 'first time or returning?' to route signup vs recovery (the broker can't reveal account existence)",
+    "Auto-fallback: if no verification email arrives, the agent automatically tries /api/accounts/recover",
+    "Keep-warm self-heal: a permanent hourly watcher re-arms the worker for new sessions after it self-removed",
+  ],
 };
 
 /**

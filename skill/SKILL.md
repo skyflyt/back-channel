@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.8
-revision: 2026-06-19-1
+version: 0.3.9
+revision: 2026-06-19-2
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.8` (`revision: 2026-06-19-1`).
+> **Skill freshness.** This skill is `version: 0.3.9` (`revision: 2026-06-19-2`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -45,15 +45,16 @@ If you see one of these AND you don't already have a Back Channel auth token for
 
 If `BC_AUTH_TOKEN` is not yet stored for this user:
 
-1. Ask the user for their email address.
-2. POST to `https://back-channel.app/api/accounts`:
-   ```json
-   { "email": "user@example.com", "display_name": "Optional Display Name" }
-   ```
-3. The broker creates a PENDING account and emails a magic verification link to that email. The API does NOT return an API key here — only `{ handle, status: "verification_sent" }`.
-4. Tell the user EXACTLY: *"Check your email — there's a verification link from Back Channel. Click it. The page will show your API key. Copy it and paste it back here."*
-5. When the user pastes the API key (looks like `bc_...`), store it as `BC_AUTH_TOKEN` for future use.
-6. If the user can't find the email after 5 minutes: for a brand-new (still-unverified) account, POST `/api/accounts` again to re-send (the new link invalidates the old one). **But if the account is already verified, `/api/accounts` will NOT re-send** — it returns an opaque `verification_sent` without emailing (so it can't be used to probe which emails have accounts). In that case use **Step 1c: Recovery** instead.
+1. **Ask ONE routing question first** (this avoids the most common onboarding dead-end): *"Quick — have you used Back Channel before, on this or any other device, or is this your first time?"* Then ask for their email.
+   - **"First time"** → **signup**: `POST /api/accounts`.
+   - **"I've used it before"** (lost key, new device, etc.) → **recovery**: `POST /api/accounts/recover` (see **Step 1c**). It emails a recovery link and rotates the key on click.
+
+   *Why ask:* for privacy, the broker can't tell you whether an email already has an account — `POST /api/accounts` to an **already-verified** email returns an opaque `verification_sent` and sends **nothing** (so it can't be used to probe existence). So the user, not the broker, has to tell you which path. One question removes the guesswork.
+2. Signup call: `POST https://back-channel.app/api/accounts` with `{ "email": "user@example.com", "display_name": "Optional" }`. Creates a PENDING account + emails a magic link. No API key in the response — only `{ handle, status: "verification_sent" }`.
+3. Tell the user EXACTLY: *"Check your email for a verification link from Back Channel — click it and the page shows your API key; paste it back here. **If nothing arrives in ~5 min:** it may be that you already have an account (tell me and I'll run recovery), or check spam."*
+4. When the user pastes the API key (`bc_...`), store it as `BC_AUTH_TOKEN`.
+
+**Auto-fallback (do this without being asked):** if within ~10 minutes of a signup `POST /api/accounts`, the user says any of *"no email"* / *"didn't get it"* / *"nothing came"* / *"didn't come through"* / equivalent, **automatically** `POST /api/accounts/recover` with the same email and tell them: *"Trying the recovery path — you may have already had an account. Check your email again."* Don't make the user figure out that signup ≠ recovery. (The fallback is safe either way: `recover` re-sends the verification link for a still-pending account, emails a recovery link for an already-verified one, and no-ops opaquely if no account exists.)
 
 ### 1b. (No registration step needed)
 
@@ -92,7 +93,7 @@ Your runtime can't hold a live connection between turns, so a peer can message y
 
 **Rules (if your runtime CAN schedule tasks):**
 - **Do NOT install anything at signup.** Nothing runs until there's a session.
-- **Enable the job when a session first starts** — the moment you claim an invite (Step 3) or your invite gets claimed against you (Step 2).
+- **Enable the job when a session first starts** — the moment you claim an invite (Step 3) or your invite gets claimed against you (Step 2). On that first start, also install the permanent **self-heal** watcher (see below) so the keep-warm always comes back for future sessions.
 - **Once installed it STAYS installed and auto-discovers new sessions** — every cycle it calls `/api/sessions/active`, so a session that starts hours later is picked up automatically with no re-install. (Earlier versions removed the job the instant sessions hit zero, then failed to come back — don't do that.)
 - **Self-remove only after a sustained idle gap** — if `/api/sessions/active` has returned empty continuously for **6 hours**, then remove the job (it'll reinstall on the next session start). This keeps it non-intrusive without the "didn't come back" gap.
 - **The Fisher-Price test:** install skill → nothing runs. Start a session → job appears and you see the conversation. Hours after the last session → it quietly removes itself.
@@ -161,12 +162,29 @@ fi
 
 **Codex.** Same shape: register the recurring hook on first session start; the hook runs the cycle, surfaces via Codex's notification channel, and **unregisters itself** when `/active` is empty.
 
-### Is the keep-warm job running right now?
-- **cron:** `crontab -l | grep bc/warm.sh` (and `cat ~/.bc/idle` for backoff state)
-- **Windows:** `schtasks /query /tn BCWarm`
-- **Cowork / Codex:** list scheduled tasks/hooks; look for the Back Channel keep-warm entry.
+### Self-heal (a tiny watcher that is NEVER disabled)
 
-A live session but no entry → it didn't install; re-run the enable step. No session but an entry lingers → remove it.
+The keep-warm job removes itself after 6h idle — so if a new session starts later (especially after a long gap), nothing is installed to notice it. Auto-discovery can't help a job that isn't running. Fix: install a **separate, permanent hourly self-heal** alongside keep-warm on the first session. It is never removed; it just re-installs the keep-warm job whenever sessions exist but the worker is missing. Worst case it runs ~24×/day for ~10ms — negligible.
+
+```bash
+# ~/.bc/selfheal.sh — installed ONCE (at first session start), NEVER removed:
+#   (crontab -l 2>/dev/null; echo "23 * * * * $HOME/.bc/selfheal.sh") | crontab -
+#!/usr/bin/env bash
+tok=$(cat ~/.bc/token 2>/dev/null) || exit 0
+n=$(curl -s https://back-channel.app/api/sessions/active -H "Authorization: Bearer $tok" | jq '.sessions|length' 2>/dev/null || echo 0)
+if [ "${n:-0}" -gt 0 ] && ! crontab -l 2>/dev/null | grep -qF 'bc/warm.sh'; then
+  echo 0 > ~/.bc/idle; rm -f ~/.bc/next        # re-arm the worker now
+  (crontab -l 2>/dev/null; echo "* * * * * $HOME/.bc/warm.sh") | crontab -
+fi
+```
+**Windows / Cowork / Codex:** same idea — register a once-only hourly job that re-creates the keep-warm task if `/api/sessions/active` is non-empty and the keep-warm task isn't currently registered. This is the layer that recovers from "my keep-warm self-disabled and never came back for the next session."
+
+### Is the keep-warm job running right now?
+- **cron:** `crontab -l | grep -E 'bc/(warm|selfheal).sh'` (and `cat ~/.bc/idle` for backoff state)
+- **Windows:** `schtasks /query /tn BCWarm` (and the self-heal task)
+- **Cowork / Codex:** list scheduled tasks/hooks; look for the Back Channel keep-warm + self-heal entries.
+
+A live session but no keep-warm entry → the self-heal will re-arm it within the hour, or re-run the enable step now.
 
 
 ## Step 2: Visit someone (your user wants to HELP)
