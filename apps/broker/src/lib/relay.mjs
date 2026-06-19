@@ -508,7 +508,10 @@ export function getTranscript(sessionId) {
   for (const dest of /** @type {Role[]} */ (["visitor", "host"])) {
     const sender = dest === "visitor" ? "host" : "visitor"; // log[dest] holds frames sent BY the other
     for (const f of slot.log[dest]) {
-      out.push({ from: sender, seq: f.seq, ts: f.ts, type: frameType(f.data) ?? null, bytes: Buffer.byteLength(f.data, "utf8"), preview: previewOf(f.data) });
+      const t = frameType(f.data);
+      // Sealed frames always read as [encrypted] in the human transcript, even
+      // though the envelope JSON itself is printable (base64 ct).
+      out.push({ from: sender, seq: f.seq, ts: f.ts, type: t ?? null, bytes: Buffer.byteLength(f.data, "utf8"), preview: t === "enc" ? null : previewOf(f.data) });
     }
   }
   out.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
