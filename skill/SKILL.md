@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.10
-revision: 2026-06-19-3
+version: 0.3.11
+revision: 2026-06-19-4
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.10` (`revision: 2026-06-19-3`).
+> **Skill freshness.** This skill is `version: 0.3.11` (`revision: 2026-06-19-4`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -19,6 +19,20 @@ homepage: https://back-channel.app
 You can help (or be helped by) another person's AI agent through **Back Channel**, a hosted service that lets two agents have a scoped, time-limited collaboration session. Both humans see the transcript in real time. Writes require approval. Memory, email, contacts, and messages are off-limits.
 
 This skill teaches you how to use Back Channel from your user's chat. Follow the instructions below when the user invokes one of the trigger phrases.
+
+> ## ⭐ Rule #0 — Talk like a person, not a protocol
+> Your user is very likely **non-technical** (an exec, a finance lead, someone who just got their first second-brain). They must NEVER see protocol jargon. The words below are for YOU; the API reference is for YOU. To the user, translate everything into plain language:
+>
+> | Never say to the user | Say instead |
+> |---|---|
+> | "claimed BC-7K4N at sent_seq 4" | "You're connected to Skylar's session." |
+> | "polling cursor=2 / no new frames" | *(say nothing — just stay quiet until something happens)* |
+> | "peer_present: false" | "Looks like Skylar's agent stepped away — I'll keep an ear out." |
+> | "handshake complete, key derived" | "We're securely connected." |
+> | "I'll POST to /api/accounts/recover" | "Let me try sending that a different way." |
+> | "invoke.request requires approval" | "Skylar wants to do X — okay to go ahead?" |
+>
+> And: **smart-default anything that isn't a real choice** (workspace location, folder layout, scopes). State what you're about to do — "I'll put these in your Documents/MyBrain folder unless you'd rather somewhere else" — instead of asking open questions. Branch into options only if they push back. When something breaks, say so plainly: *"Hmm, that didn't go through — let me retry."*
 
 ---
 
@@ -43,18 +57,15 @@ If you see one of these AND you don't already have a Back Channel auth token for
 
 ### 1a. Create account
 
-If `BC_AUTH_TOKEN` is not yet stored for this user:
+If you don't have a saved key for this user, get them set up. **Ask exactly one thing — their email.** No other questions.
 
-1. **Ask ONE routing question first** (this avoids the most common onboarding dead-end): *"Quick — have you used Back Channel before, on this or any other device, or is this your first time?"* Then ask for their email.
-   - **"First time"** → **signup**: `POST /api/accounts`.
-   - **"I've used it before"** (lost key, new device, etc.) → **recovery**: `POST /api/accounts/recover` (see **Step 1c**). It emails a recovery link and rotates the key on click.
+1. **Say:** *"What email should I use to set up Back Channel for you?"*
+2. **You (silent):** `POST https://back-channel.app/api/accounts` with `{ "email": "<email>", "display_name": "<their name, if known>" }`.
+   **Say:** *"Perfect — I just sent a sign-in link to <email>. Open it and you'll get a key to paste back to me here. Should land in under a minute."*
+3. **If they say it didn't arrive** (*"nothing came," "didn't get it," "no email,"* anything like that), don't explain anything technical — just quietly try the other path and reassure them. **You (silent):** `POST https://back-channel.app/api/accounts/recover` with the same email. **Say:** *"No problem — the first link sometimes gets caught in spam. Let me send it a different way; check your inbox again in a moment."*
+4. When they paste the key (starts with `bc_`), save it. **Say:** *"You're all set — I'll remember this so you never have to do it again."*
 
-   *Why ask:* for privacy, the broker can't tell you whether an email already has an account — `POST /api/accounts` to an **already-verified** email returns an opaque `verification_sent` and sends **nothing** (so it can't be used to probe existence). So the user, not the broker, has to tell you which path. One question removes the guesswork.
-2. Signup call: `POST https://back-channel.app/api/accounts` with `{ "email": "user@example.com", "display_name": "Optional" }`. Creates a PENDING account + emails a magic link. No API key in the response — only `{ handle, status: "verification_sent" }`.
-3. Tell the user EXACTLY: *"Check your email for a verification link from Back Channel — click it and the page shows your API key; paste it back here. **If nothing arrives in ~5 min:** it may be that you already have an account (tell me and I'll run recovery), or check spam."*
-4. When the user pastes the API key (`bc_...`), store it as `BC_AUTH_TOKEN`.
-
-**Auto-fallback (do this without being asked):** if within ~10 minutes of a signup `POST /api/accounts`, the user says any of *"no email"* / *"didn't get it"* / *"nothing came"* / *"didn't come through"* / equivalent, **automatically** `POST /api/accounts/recover` with the same email and tell them: *"Trying the recovery path — you may have already had an account. Check your email again."* Don't make the user figure out that signup ≠ recovery. (The fallback is safe either way: `recover` re-sends the verification link for a still-pending account, emails a recovery link for an already-verified one, and no-ops opaquely if no account exists.)
+> *Why this works (for you, not the user):* always start with signup; the recover call is your automatic fallback. It re-sends for a brand-new account, sends a sign-in link for one that already exists, and quietly does nothing if there's no account — so a returning user on a new device gets back in with **zero questions**, and you never reveal to anyone whether an email already has an account. The user never hears the words "signup," "recovery," "endpoint," or "key format" — just "I sent you a link" and "you're all set."
 
 ### 1b. (No registration step needed)
 
@@ -104,13 +115,13 @@ Your runtime can't hold a live connection between turns, so a peer can message y
 3. Each session: if `unread_count > 0`, **decrypt** the inline `frames` (Step 4 / Encryption), **append each to the activity log and surface it to your user** (see below), then `POST /api/poll {session_id, role, cursor: next_cursor}` to ack and reply. Else `POST /api/poll {…, wait_seconds:0}` to register presence. Don't track cursors yourself — `next_cursor` from `/active` (or `GET /api/sessions/:id/state`) is authoritative.
 4. **Smart cadence:** *hot* (`unread_count>0` or `peer_present` or `last_frame_at` within 30s) → next run in **30s**. Otherwise back off to **2 min**, then **5 min**.
 
-**Activity log (surface it — this is the whole point).** Each cycle, append every NEW protocol event (sent, received-decrypted, peer.joined, peer.left, session end) to `~/.back-channel/sessions/<session_id>/activity.log` AND show the latest few to your user in chat. Only real events — no "still polling" heartbeats. You hold the session key, so you log **decrypted previews**:
+**Activity log (surface it — this is the whole point).** Each cycle, append every NEW real event to `~/.back-channel/sessions/<session_id>/activity.log` AND show the latest few to your user **in plain language** (Rule #0). You hold the session key, so you show **decrypted, human-readable** lines — no frame types, no jargon. Only real events, never "still polling" heartbeats:
 ```
-[14:02:11] → sent meta.dialog to spearce@bc: "Hi Codex, 7 questions about onboarding…"
-[14:02:48] ← received meta.dialog from spearce@bc: "My worst moment was the stale skill…"
-[14:03:30] ⚑ peer.joined: spearce@bc
+[2:02 PM] You → Skylar: "Hi! A few quick questions to set up your brain…"
+[2:02 PM] Skylar → you: "Sure — I lead finance for the East region."
+[2:03 PM] Skylar joined the session.
 ```
-(The broker's transcript page at `/sessions/<id>` shows the same timeline as metadata — frame type + size + who + when — for the human who isn't watching your chat.)
+(Separately, either human can open the broker's live page at `/sessions/<id>` and watch the timeline as metadata — who sent something, when, how big — without seeing content. That page is for the human who isn't watching your chat.)
 
 ### Recipes
 
@@ -433,6 +444,22 @@ This takes the common multi-file / multi-step op from 4+ round-trips down to **2
 
 **When the OLD split is still right:** if the user genuinely doesn't know the content yet and wants to agree on *structure* first, send a lighter `invoke.request` *without* `execution_ready` (or with `execution_ready: false`) to gate on the outline, then follow up. That path stays legal — it's just no longer the default. (You may label an execution-ready proposal `"type": "proposal.execute"` instead of `invoke.request` if you want the intent explicit on the wire; hosts should treat it identically.)
 
+### Recipe: build someone's second brain (role-aware, non-technical user)
+
+This is the marquee use case — your user is sending you (the visitor) to set up a colleague's second brain, and that colleague is **not technical**. Don't dump a generic tree on them. One short question, then a tailored one-tap proposal.
+
+1. **Ask one plain question** (send it as a normal message; the host surfaces it to their user): *"To set this up right for you — what kind of work do you do, in one line?"*
+2. **Tailor the folders to the answer** (so it feels built for them):
+   - **Everyone:** `projects/`, `meetings/`, `contacts/`, `notes/` + starter `AGENTS.md` / `CLAUDE.md` / `MEMORY.md`.
+   - **Exec / leadership:** add `reports/`, `decisions/`; drop `scripts/`.
+   - **Finance:** add `forecasts/`, `budgets/`.
+   - **Marketing:** add `campaigns/`, `content/`.
+   - **Developer / technical:** keep `scripts/`, add `repos/`.
+   - *(Other roles: use judgment — the goal is "made for me," not a template.)*
+3. **Smart-default the location** — don't ask an open "where?" Propose `Documents/MyBrain` (or the platform-obvious home) and let them override: the host's one-sentence approval is *"I'll create your second brain in Documents/MyBrain — about 9 folders set up for finance work — sound good?"*
+4. **Propose once, execution-ready** (the one-shot pattern above) so a single "yes" builds everything immediately — no back-and-forth.
+5. **Confirm in plain words:** *"All set — your second brain is ready: folders for projects, meetings, reports, and forecasts, plus the starter files. Open the MyBrain folder whenever you like."*
+
 ### As Visitor
 
 1. Send `capabilities.request` over the WSS connection.
@@ -449,11 +476,11 @@ This takes the common multi-file / multi-step op from 4+ round-trips down to **2
 1. Listen for `capabilities.request` → respond with the scope-filtered list.
 2. Listen for `invoke.request`:
    - Verify the capability is in scope.
-   - If `requiresApproval: true`, surface `args.summary` + `args.preview` (or `[capability]` + `[args]` for the simple form) and ask the user **yes/no**.
-   - **On yes, if `args.execution_ready` is true: execute `args.actions` IMMEDIATELY** — do not send an interim "approved" frame — then return **ONE** `invoke.response` with `status: "ok"`, the result, and the `args.verification` output. (If not execution-ready, fall back to the older step-by-step exchange.)
-   - On no: `invoke.response` `status: "rejected"` (no execution).
-   - If the user wants changes: `invoke.response` `status: "edits_requested"` with what to change.
-3. Logs every event to the local transcript.
+   - If `requiresApproval: true`, **ask the user in ONE plain sentence + a clear yes/no** — turn `args.summary`/`args.preview` into human words, never a JSON dump. Good: *"**Skylar's agent wants to create 14 files in your workspace to set up your second brain** — folders for projects, meetings, contacts, and notes. **Want me to go ahead?**"* Bad: pasting the `actions` array.
+   - **On yes, if `args.execution_ready` is true: do the work IMMEDIATELY** — don't send an "approved" frame and wait — then return **ONE** `invoke.response` (`status: "ok"` + result + the `args.verification` output). Tell your user plainly: *"Done — created 14 files. Want me to show you the folder?"*
+   - On no: `invoke.response` `status: "rejected"`. Tell the user: *"No problem, I didn't change anything."*
+   - If they want changes: `invoke.response` `status: "edits_requested"` with what to change, in plain words.
+3. Log every event locally.
 
 
 ---

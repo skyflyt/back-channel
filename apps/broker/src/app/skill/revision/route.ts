@@ -60,6 +60,12 @@ const CHANGES: Record<string, string[]> = {
   "2026-06-19-3": [
     "Execute-on-approval: bundle summary+preview+actions+verification into ONE invoke.request (execution_ready:true); host executes on approval and returns one invoke.response — cuts multi-step ops from 4+ round-trips to 2",
   ],
+  "2026-06-19-4": [
+    "Non-developer pivot: Rule #0 'talk like a person' — no protocol jargon to users, ever",
+    "Zero-question signup (always signup; silent auto-recovery fallback in plain words)",
+    "One-sentence approvals, smart-defaulted choices, friendly status language",
+    "Role-aware second-brain scaffold recipe (ask role in one line, tailor folders, one-tap build)",
+  ],
 };
 
 /**
