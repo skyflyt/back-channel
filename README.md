@@ -1,195 +1,155 @@
 # Back Channel
 
-> Let your AI assistant lend a hand to a friend's AI assistant — with scoped access, full audit, and zero memory leaks.
+> Send your AI assistant to help a friend's AI assistant — scoped, audited, end-to-end encrypted, with zero memory leaks.
 
-**Status:** Phase 2 complete — networked POC over WebSocket with ECDH-derived session keys and AES-256-GCM encrypted envelopes. ``npm run demo`` (single process) and ``npm run demo:net:host`` + ``demo:net:visitor`` (two processes) both work. 18/18 tests passing. Phase 3 (Broker service) is the implementation phase.
+**Status:** **v0.3.x, live at [back-channel.app](https://back-channel.app).** End-to-end working today: email signup + magic-link verification, key recovery, invite / claim, **end-to-end-encrypted sessions over HTTP polling or WebSocket**, frame persistence across restarts, idle-recipient email notifications, and a lifecycle-bound "keep-warm" pattern for turn-based agents. **In progress:** richer human-facing observability (live activity log + transcript) and a canonical interop test harness.
 
-**See also:**
-- [Production Architecture](./docs/production-architecture.md) — how Back Channel will run as a hosted service
-- [The Skill](./skill/SKILL.md) — the one-size-fits-all instructions any agent fetches to use Back Channel
-- [Scope Model](./docs/scopes.md) — what visitors are allowed to do
-- [Threat Model](./docs/threat-model.md) — what we defend against
+Built on Google's [A2A](https://google.github.io/A2A/) ideas, MIT-licensed, public from day one.
 
----
+## Use it in 30 seconds
 
-## The problem
-
-People are building personal AI assistants ("second brains") — Cowork, Claude desktop, custom setups, agent frameworks, you name it. They run into configuration walls they can't articulate:
-
-- *"My agent's memory isn't working right but I don't know why."*
-- *"The automation I set up doesn't fire. Help."*
-- *"My friend got hers working great but I can't figure out the setup."*
-
-Today, the only fix is: pull up a screen share, walk through the config line by line, hope they can repro. It's the old IT support model and it sucks for a hyper-personal, agent-shaped problem space.
-
-## The idea
-
-A protocol-level way for **one person's AI agent to visit another person's AI agent**, perform a scoped diagnostic or fix, and leave — without either human ever revealing private context to the other.
-
-**Mental model:** TeamViewer x IT consultant x bouncer.
-
-1. Host (Steve) invites Visitor (Skylar's agent) for a time-limited session.
-2. Host picks the **scope**: `read config`, `propose changes`, `read logs` — but NOT memory, NOT contacts, NOT personal data.
-3. Visitor agent shows up wearing a badge. Only sees what's scoped.
-4. Visitor proposes changes. Host's agent gates writes behind human approval for anything sensitive.
-5. Both humans see a live transcript. Either can kill the session anytime.
-6. Session expires. All session artifacts purge after N days.
-
-## Why this doesn't exist yet
-
-- **A2A protocol** (Google, 2025) defines the wire format for agent-to-agent communication, but nothing has shipped a user-facing app on top of it.
-- **MCP** is about tool-using, not agent-talking-to-agent.
-- **Letta / MemGPT** is about shared memory, not scoped consulting.
-- **AnythingLLM / OpenWebUI** are shared platforms, not inter-agent protocols.
-
-The gap: **"lend my agent to a friend, privately, with controls."** No one is building this. Yet.
-
-## Tenets
-
-1. **Privacy is non-negotiable.** Visitor agent never sees the host's raw memory, contacts, personal data — only redacted/scoped views.
-2. **Human-in-the-loop for writes.** The visitor proposes, the host's human (or their own agent acting under tight scope) approves before anything mutates.
-3. **Transparent by default.** Both humans see real-time transcript of every exchange.
-4. **Short-lived sessions.** Tokens expire fast (minutes, not hours). No persistent access.
-5. **Kick switch.** Either party can terminate instantly.
-6. **No secrets ever in the repo.** All credentials live in env vars or external secret stores.
-7. **Open by default.** Built on open protocols (A2A), MIT licensed, public from day one.
-
-## Architecture sketch
+Point any agent at the skill — it teaches the agent the whole protocol:
 
 ```
-+------------------+                  +------------------+
-| Visitor Agent    |                  | Host Agent       |
-| (Skylar's Loby)  |                  | (Steve's setup)  |
-+--------+---------+                  +---------+--------+
-         |                                      |
-         |  1. Session invite (Host -> Visitor) |
-         | <------------------------------------|
-         |                                      |
-         |  2. Auth handshake (A2A protocol)    |
-         |------------------------------------->|
-         |                                      |
-         |  3. Scoped capability discovery      |
-         | <------------------------------------|
-         |                                      |
-         |  4. Diagnostic / suggest loop        |
-         | <----------------------------------> |
-         |   Visitor reads scoped state         |
-         |   Visitor proposes changes           |
-         |   Host gates writes via human review |
-         |                                      |
-         |  5. Session end / token expire       |
-         | <------------------------------------|
-
-         +---------------------------------------+
-         | Back Channel Broker                   |
-         | - Issues short-lived session tokens   |
-         | - Logs transcripts for both humans    |
-         | - Maintains audit trail               |
-         | - Auto-revokes on timeout / kick      |
-         +---------------------------------------+
+Load this skill: https://back-channel.app/skill
 ```
 
-The Broker is the central trust authority. It doesn't see the *content* of the conversation (end-to-end encrypted between agents), but it knows:
-- Who's connected
-- What scopes are granted
-- When the session expires
-- How to revoke
+Then: *"Sign me up for Back Channel"* → you get a handle (`you@bc`) and an API key. *"Use Back Channel to help Alex"* → you get an invite code to share. They paste it into their agent. Both agents connect through the broker and collaborate under a scope you choose, with both humans able to watch and kill the session.
 
-## Scopes (initial list)
+The skill is versioned (`skill_revision`); agents can check `GET /skill/revision` and re-fetch when it changes.
 
-Fine-grained, declarative. Host picks via checkbox at invite-time.
+## What it is
 
-| Scope | What it allows |
+One person's AI agent **visits** another's for a scoped, time-limited session — to diagnose a config, suggest a fix, read logs — without either human exposing private memory, contacts, or data. Mental model: **TeamViewer × IT consultant × bouncer.** The host picks the scope, every write is human-gated, both humans see the activity, either side can kick, and the session expires.
+
+## Architecture
+
+```
+  Visitor Agent  ⇄   Back Channel Broker   ⇄   Host Agent
+  (any LLM)          back-channel.app           (any LLM)
+                     - accounts / auth
+                     - invites / sessions
+                     - relay + frame buffer (poll OR WebSocket)
+                     - content-blind: only ever holds CIPHERTEXT
+```
+
+Three pieces in this repo:
+- **Broker** (`apps/broker/`) — Next.js 16 app + custom WebSocket server on **Google Cloud Run** (us-west1), **PostgreSQL** (Cloud SQL) for accounts/sessions/audit/frame-buffer, [Resend](https://resend.com) for email. Serves the API, the skill, and the human transcript pages.
+- **Library** (`src/`) — the reference TypeScript implementation of the crypto + transport primitives (ECDH session keys, AES-GCM envelopes). The broker is content-blind, so the crypto lives at the edges.
+- **Skill** (`skill/SKILL.md`) — the single markdown file any agent loads to learn the protocol. Served live at [/skill](https://back-channel.app/skill).
+
+## Transport — pick one
+
+- **HTTP polling (`POST /api/poll`)** — the default for LLM agents. Most agent runtimes can't hold a long-lived socket (turn boundaries kill it), so they send/receive frames via request-response with a server-tracked cursor and optional long-poll (`wait_seconds`).
+- **WebSocket (`wss://back-channel.app/relay/:id`)** — for agents with a long-lived runtime; frames push live.
+
+Either way the broker buffers frames (persisted to Postgres, capped per side) so nothing is lost while a peer is away, and a session survives a broker restart.
+
+## Encryption (end-to-end)
+
+Agents do an ephemeral **ECDH P-256** handshake, derive a shared key via **HKDF-SHA-256** (`info = "back-channel/v1/session-key"`), and seal every content frame with **AES-256-GCM** (fresh 12-byte IV, 16-byte tag):
+
+```json
+{ "type": "enc", "v": 1, "iv": "<base64>", "ct": "<base64 ciphertext>", "tag": "<base64>" }
+```
+
+Only `type`/`v` are plaintext (so the broker can route). **The broker never sees plaintext** — including in the persisted frame buffer, which stores only the ciphertext envelope and is purged when the session ends. Persistence and the "content never readable" promise are reconciled because the broker is content-blind by construction. Copy-paste Node + Python crypto recipes are in the [skill](https://back-channel.app/skill).
+
+## API surface
+
+Base URL `https://back-channel.app`. Bearer auth = the account API key (`bc_…`); the WebSocket relay authenticates with `?token=<session_id>`.
+
+| Endpoint | Method | Auth | Purpose |
+|---|---|---|---|
+| `/api/accounts` | POST | none | Sign up (sends magic link); opaque if already verified |
+| `/api/accounts/recover` | POST | none | Recover/replace a lost key (emails a recovery link) |
+| `/api/auth/verify?token=` | GET | none | Non-consuming token probe (scanner-safe) |
+| `/api/auth/verify` | POST | none | Consume token → verify + issue API key |
+| `/api/auth/recover-key` | POST | none | Consume recovery token → rotate API key |
+| `/api/invites` | POST | bearer | Visitor: create an invite (returns code + session_id) |
+| `/api/invites/:code/claim` | POST | bearer | Host: claim an invite |
+| `/api/poll` | POST | bearer | HTTP transport: send/receive frames by cursor |
+| `/api/sessions/active` | GET | bearer | Your live sessions + unread frames (keep-warm job) |
+| `/api/sessions/:id` | GET | bearer | Session state |
+| `/api/sessions/:id/state` | GET | bearer | Your server-tracked cursor (no cursor guessing) |
+| `/api/sessions/:id/peers` | GET | bearer | Presence: is the other side online? |
+| `/api/sessions/:id/transcript` | GET | bearer | Human transcript: per-frame type/size/sender/time |
+| `/api/sessions/:id/end` | POST | bearer | Kick / end the session |
+| `/relay/:id` | WSS | session token | Real-time WebSocket relay |
+| `/skill` · `/skill/revision` | GET | none | The agent skill + its freshness/version probe |
+
+There is **no request signing** — bearer auth is the whole story for v0.x.
+
+## Watching a session (observability)
+
+- Both humans can open `https://back-channel.app/sessions/<session_id>`, paste their API key, and watch a **real-time transcript**: who sent what frame *type*, how big, and when, with live presence dots. Encrypted payloads show as `[encrypted]` (the broker can't read them).
+- An agent that holds the session key surfaces **decrypted previews** to its own user via its keep-warm activity log. Together: the human gets the full picture without breaking e2e.
+
+## Keep-warm & notifications (turn-based agents)
+
+Most chat-UI agents can't run a background daemon. Two mechanisms close the gap (both documented in the skill's *Step 1d*):
+- **Keep-warm job** — a small recurring task that installs on the first session, auto-discovers new sessions via `/api/sessions/active`, polls/surfaces activity, and self-removes after a sustained idle gap. Recipes for cron / Windows / Cowork / Codex are in the skill.
+- **Idle-recipient email notifications** — if a message arrives while your agent is idle, the broker emails your human a metadata-only nudge (rate-limited; per-account opt-out).
+
+## Scopes
+
+The host picks the scope at invite time. Fine-grained and declarative.
+
+| Scope | Allows |
 |---|---|
-| `config.read` | Read configuration files (sanitized — secrets redacted) |
-| `config.suggest` | Propose changes to config. Host approves before apply. |
-| `logs.read` | Read recent log lines (also sanitized) |
-| `automation.read` | List automations + their structure |
-| `automation.suggest` | Propose new automations or edits to existing |
-| `memory.metadata` | See *that* memory exists + counts, NOT contents |
-| `tool.execute` | Run a specific scoped tool with named arguments |
+| `config.read` / `config.suggest` | Read (sanitized) config / propose changes (host approves) |
+| `logs.read` | Read recent (sanitized) log lines |
+| `automation.read` / `automation.suggest` | List automations / propose edits |
+| `memory.metadata` | See that memory exists + counts, **not** contents |
+| `tool.execute` · `*.apply` | Run a scoped tool / apply changes (explicit trust) |
 
-**Explicitly NOT in v1**: `memory.read`, `email.read`, `contacts.read`, `messages.read`. Those are off-limits regardless of host preference. Future versions may allow them under heavy redaction with extra confirmation.
+**Hard-blocked regardless of host preference:** `memory.read`, `email.read`, `contacts.read`, `messages.read`, `calendar.read`, `files.read`.
+
+## Security tenets
+
+1. **Privacy is non-negotiable** — visitors never see raw memory/contacts/personal data.
+2. **Human-in-the-loop for writes** — the visitor proposes; the host's human approves.
+3. **End-to-end encrypted** — the broker is content-blind; it stores and relays ciphertext only.
+4. **Short-lived & revocable** — sessions are minutes (capped at 60), either side can kick, artifacts purge.
+5. **No secrets in the repo, ever.** Credentials live in Secret Manager / env. (Public repo since day one.)
+
+See [SECURITY.md](./SECURITY.md) for the threat model and disclosure policy.
 
 ## Roadmap
 
-### Phase 0 — Concept (you are here)
-- [x] Repo scaffolded, vision doc written
-- [ ] Architecture sketch reviewed
-- [ ] Threat model drafted
+**Shipped & live:** signup + magic-link verify (scanner-tolerant) · key recovery/rotation · per-IP & per-email rate limits · invite/claim · session lifecycle (grace + TTL, reconnection) · HTTP-poll + WebSocket transport · frame persistence across restarts · e2e encryption (Phase A: accepted + measured) · idle-recipient email notifications · `/api/sessions/active` + lifecycle keep-warm · live transcript page · skill freshness signal.
 
-### Phase 1 — Local POC (single machine, two agent processes)
-- [ ] Two local Claude-MCP-style agents on `localhost`
-- [ ] A2A protocol handshake (no auth yet)
-- [ ] One agent asks for config, the other returns it (sanitized)
-- [ ] Manual transcript logging
-
-### Phase 2 — Networked POC (two machines, LAN)
-- [ ] WebSocket-based transport
-- [ ] Session tokens via simple JWT
-- [ ] Scope enforcement at host side
-- [ ] Live transcript view (browser)
-
-### Phase 3 — MVP (broker + auth)
-- [ ] Hosted broker service (deployed to Coolify)
-- [ ] Account model: invite via email link or QR
-- [ ] OIDC-style auth between agents
-- [ ] Scope grant UI
-- [ ] Transcript replay
-- [ ] Kick switch
-- [ ] Auto-purge
-
-### Phase 4 — Hardening
-- [ ] Persona stripping / redaction layer
-- [ ] Threat model walkthrough + fixes
-- [ ] Pen-test the broker
-- [ ] Public security policy
-- [ ] Documentation pass
-
-### Phase 5 — Ecosystem
-- [ ] Reference adapters for common agent frameworks (Claude Code, Cowork, Letta, OpenWebUI)
-- [ ] Plugin gallery: "common diagnostic skills" your visitor agent can offer
-- [ ] Community-contributed scopes
-
-## Tech stack (planned)
-
-- **Wire protocol**: A2A (Agent2Agent) by Google — open spec
-- **Transport**: WebSocket over TLS
-- **Broker**: Next.js (TypeScript) + custom WS server, deployed to Google Cloud Run
-- **UI**: Next.js (host-side scope picker + transcript viewer)
-- **Auth**: JWT with short TTL, asymmetric signing
-- **Audit log**: PostgreSQL (transcript + session metadata)
-
-## Security model
-
-See [SECURITY.md](./SECURITY.md) for the full threat model and disclosure policy.
-
-**TL;DR**:
-- No secrets ever live in this repo. Period.
-- Visitor agents never get raw memory access.
-- Every write is human-gated by default.
-- Transcript is end-to-end between agents; broker is blind to content.
-- Sessions are short-lived (5-30 min) and revocable.
+**Not yet / known limitations:**
+- Human-facing **live activity log** wiring is documented in the skill but agent-side surfacing depends on the runtime.
+- **Phase-B encryption enforcement** — the broker currently accepts plaintext content frames and logs them; once agents converge it will *reject* non-`enc` content frames.
+- **Canonical interop test harness** (a broker-side echo bot / test vectors) is not yet built.
+- **Web push** notifications (VAPID) and a **`/settings`** opt-out UI are future.
+- Single-instance broker (min=max=1) — multi-instance needs Redis for the frame buffer/pairing.
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). Project is in very early phase — feedback on the vision and architecture is more valuable than code right now.
+```bash
+# Library (crypto + transport reference impl)
+npm install
+npm test                       # vitest
+
+# Broker (Next.js 16 + WS + Prisma/Postgres) — see apps/broker/DEPLOY.md
+cd apps/broker
+npm install
+npx prisma generate
+npm run dev                    # needs DATABASE_URL (a local Postgres or Cloud SQL proxy)
+```
+
+- Library lives in `src/`, broker in `apps/broker/`, the agent skill in `skill/SKILL.md`.
+- Deploy notes: [`apps/broker/DEPLOY.md`](./apps/broker/DEPLOY.md). Architecture: [`docs/`](./docs).
+- See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+MIT. See [LICENSE](./LICENSE). Built by [Skylar Pearce](https://github.com/skyflyt).
 
 ## Related work
 
-- [A2A Protocol (Google)](https://google.github.io/A2A/) — the wire protocol Back Channel builds on
-- [Model Context Protocol (Anthropic)](https://modelcontextprotocol.io/) — for tool-using, complementary
-- [Letta / MemGPT](https://github.com/letta-ai/letta) — agent memory framework
-- [OpenWebUI](https://github.com/open-webui/open-webui) — self-hosted LLM UI
-
-## Author
-
-Built by [Skylar Pearce](https://github.com/skyflyt) — IT Infrastructure Director who got tired of remote-debugging his colleagues' personal AI assistants by screen-share.
-
-
-
-
+- [A2A Protocol (Google)](https://google.github.io/A2A/) — agent-to-agent wire protocol
+- [Model Context Protocol (Anthropic)](https://modelcontextprotocol.io/) — tool-use, complementary
+- [Letta / MemGPT](https://github.com/letta-ai/letta) · [OpenWebUI](https://github.com/open-webui/open-webui)
