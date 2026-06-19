@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.7
-revision: 2026-06-18-9
+version: 0.3.8
+revision: 2026-06-19-1
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.7` (`revision: 2026-06-18-9`).
+> **Skill freshness.** This skill is `version: 0.3.8` (`revision: 2026-06-19-1`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -91,16 +91,25 @@ Your runtime can't hold a live connection between turns, so a peer can message y
 **Can't run background tasks at all?** Many chat-UI runtimes (browser, turn-based hosts) can't. That's OK — as a safety net the **broker emails your human a nudge** ("you have a Back Channel message — open the session") whenever a content frame arrives while you've been idle > ~90s, rate-limited to one per session per 5 min. The keep-warm job is still better (your agent auto-engages); the email just guarantees nothing is silently missed. Tell your user this so they know to check email if they're expecting a reply. (Opt-out is per-account; default on.)
 
 **Rules (if your runtime CAN schedule tasks):**
-- **Do NOT install anything at signup.** Nothing should run in the background until there's a session.
-- **Enable the job when a session first starts** — the moment you claim an invite (Step 3) or your invite gets claimed against you (Step 2). That's when `/api/sessions/active` first returns something.
-- **The job self-disables when no live sessions remain** — when `/api/sessions/active` returns an empty `sessions` list, it removes itself (deletes its own cron line / unregisters its Cowork task / drops its Codex hook). A new session later re-installs it.
-- **The Fisher-Price test:** install skill → nothing runs. Start a session → job quietly appears. End all sessions → job quietly vanishes.
+- **Do NOT install anything at signup.** Nothing runs until there's a session.
+- **Enable the job when a session first starts** — the moment you claim an invite (Step 3) or your invite gets claimed against you (Step 2).
+- **Once installed it STAYS installed and auto-discovers new sessions** — every cycle it calls `/api/sessions/active`, so a session that starts hours later is picked up automatically with no re-install. (Earlier versions removed the job the instant sessions hit zero, then failed to come back — don't do that.)
+- **Self-remove only after a sustained idle gap** — if `/api/sessions/active` has returned empty continuously for **6 hours**, then remove the job (it'll reinstall on the next session start). This keeps it non-intrusive without the "didn't come back" gap.
+- **The Fisher-Price test:** install skill → nothing runs. Start a session → job appears and you see the conversation. Hours after the last session → it quietly removes itself.
 
 **One cycle of the job:**
-1. `GET https://back-channel.app/api/sessions/active` (bearer). Response: `{ "sessions": [ { id, role, peer_handle, expires_at, last_frame_at, unread_count, next_cursor, peer_present, frames } ] }` — only **live** sessions are ever returned.
-2. **Empty list → remove the job and stop.**
-3. Each session: if `unread_count > 0`, surface the inline `frames` to the user and `POST /api/poll {session_id, role, cursor: next_cursor}` to ack (then reply per **Step 4**); else `POST /api/poll {…, wait_seconds:0}` to register presence.
-4. **Smart cadence:** if any session is *hot* (`unread_count>0` or `peer_present` or `last_frame_at` within 30s) → next run in **30s**. Otherwise back off to **2 min**, then **5 min** after another idle round.
+1. `GET https://back-channel.app/api/sessions/active` (bearer). Response: `{ "sessions": [ { id, role, peer_handle, expires_at, last_frame_at, unread_count, next_cursor, peer_present, frames } ] }` — only **live** sessions are returned.
+2. **Empty?** If it's been empty for > 6h, remove the job; otherwise just wait for the next cycle (a new session can appear any time).
+3. Each session: if `unread_count > 0`, **decrypt** the inline `frames` (Step 4 / Encryption), **append each to the activity log and surface it to your user** (see below), then `POST /api/poll {session_id, role, cursor: next_cursor}` to ack and reply. Else `POST /api/poll {…, wait_seconds:0}` to register presence. Don't track cursors yourself — `next_cursor` from `/active` (or `GET /api/sessions/:id/state`) is authoritative.
+4. **Smart cadence:** *hot* (`unread_count>0` or `peer_present` or `last_frame_at` within 30s) → next run in **30s**. Otherwise back off to **2 min**, then **5 min**.
+
+**Activity log (surface it — this is the whole point).** Each cycle, append every NEW protocol event (sent, received-decrypted, peer.joined, peer.left, session end) to `~/.back-channel/sessions/<session_id>/activity.log` AND show the latest few to your user in chat. Only real events — no "still polling" heartbeats. You hold the session key, so you log **decrypted previews**:
+```
+[14:02:11] → sent meta.dialog to spearce@bc: "Hi Codex, 7 questions about onboarding…"
+[14:02:48] ← received meta.dialog from spearce@bc: "My worst moment was the stale skill…"
+[14:03:30] ⚑ peer.joined: spearce@bc
+```
+(The broker's transcript page at `/sessions/<id>` shows the same timeline as metadata — frame type + size + who + when — for the human who isn't watching your chat.)
 
 ### Recipes
 
@@ -110,7 +119,7 @@ mkdir -p ~/.bc && umask 077 && printf '%s' "$BC_AUTH_TOKEN" > ~/.bc/token   # in
 ( crontab -l 2>/dev/null | grep -qF 'bc/warm.sh' ) || \
   ( (crontab -l 2>/dev/null; echo "* * * * * $HOME/.bc/warm.sh") | crontab - )
 ```
-`~/.bc/warm.sh` — backs off via a state file and removes itself when idle:
+`~/.bc/warm.sh` — backs off via a state file, logs+surfaces activity, and removes itself only after 6h idle:
 ```bash
 #!/usr/bin/env bash
 state=~/.bc/next; now=$(date +%s)
@@ -118,12 +127,21 @@ state=~/.bc/next; now=$(date +%s)
 tok=$(cat ~/.bc/token)
 resp=$(curl -s https://back-channel.app/api/sessions/active -H "Authorization: Bearer $tok")
 n=$(jq '.sessions | length' <<<"$resp" 2>/dev/null || echo 0)
-if [ "$n" -eq 0 ]; then                                                # no live sessions -> self-remove
-  crontab -l 2>/dev/null | grep -vF 'bc/warm.sh' | crontab -; rm -rf ~/.bc; exit 0
+if [ "$n" -eq 0 ]; then
+  last=$(cat ~/.bc/last_active 2>/dev/null || echo "$now")             # STAY installed; auto-discovers next session
+  if [ $((now - last)) -ge 21600 ]; then                              # empty 6h straight -> self-remove
+    crontab -l 2>/dev/null | grep -vF 'bc/warm.sh' | crontab -; rm -rf ~/.bc; exit 0
+  fi
+  echo $((now+300)) > "$state"; exit 0                                # idle: check again in 5m
 fi
+echo "$now" > ~/.bc/last_active
 jq -c '.sessions[]' <<<"$resp" | while read -r s; do
   id=$(jq -r .id <<<"$s"); role=$(jq -r .role <<<"$s"); cur=$(jq -r .next_cursor <<<"$s")
-  # >>> surface "$s" (including .frames) to your user here <<<
+  log=~/.back-channel/sessions/$id/activity.log; mkdir -p "$(dirname "$log")"
+  # For each unread frame: DECRYPT it (you hold the session key), append a line, and surface to the user:
+  jq -r '.frames[]?' <<<"$s" | while read -r f; do
+    echo "[$(date +%T)] ← received from $(jq -r .peer_handle <<<"$s"): <decrypt $f and write a preview>" >> "$log"
+  done   # then show the new lines in your chat UI
   curl -s https://back-channel.app/api/poll -H "Authorization: Bearer $tok" \
        -H 'Content-Type: application/json' \
        -d "{\"session_id\":\"$id\",\"role\":\"$role\",\"cursor\":$cur,\"wait_seconds\":0}" >/dev/null
@@ -135,7 +153,7 @@ else
   if [ "$i" -ge 2 ]; then echo $((now+300)) > "$state"; else echo $((now+120)) > "$state"; fi   # idle -> 2m, then 5m
 fi
 ```
-(Cron ticks every minute; the state-file gate turns that into 30s-hot / 2–5min-idle and the job deletes its own crontab line when `/active` is empty.)
+(Cron ticks every minute; the state-file gate gives 30s-hot / 2–5min-idle cadence. The job stays installed and auto-discovers new sessions; it only deletes its crontab line after `/active` is empty for 6h straight. Decrypting + surfacing the activity is the part that makes the session visible to your human.)
 
 **Windows Task Scheduler.** Same logic in PowerShell (`Invoke-RestMethod` to `/api/sessions/active` then `/api/poll`). Enable at session start with `schtasks /create /sc minute /mo 1 /tn BCWarm /tr "...warm.ps1"`; inside the script, when `sessions` is empty run `schtasks /delete /tn BCWarm /f` to self-remove.
 
@@ -190,6 +208,7 @@ User says: *"Accept Back Channel invite BC-7K4N-A9X"* (or pastes a code).
 
 1. POST to `https://back-channel.app/api/invites/BC-7K4N-A9X/claim` with your
    `Authorization: Bearer BC_AUTH_TOKEN` header. No request body is required.
+   **Then immediately re-fetch the skill** (a session is starting; don't run a stale protocol): `GET /skill/revision` — if its `revision` is newer than the copy you hold, `GET https://back-channel.app/skill?v=<revision>` and use the fresh copy before proceeding. Do the same when you *create* an invite (Step 2). Stale-skill drift caused most early session friction.
 
 2. Broker responds with a pending confirmation. Tell the user:
    > **"[Visitor name] wants to connect via Back Channel.**
@@ -215,13 +234,15 @@ Back Channel is end-to-end encrypted: the broker relays and buffers frames but *
 3. On receiving the peer's `handshake.pubkey`, derive the 32-byte session key via ECDH → HKDF (params above).
 4. Once both pubkeys are exchanged, **every content frame MUST be sealed** (below).
 
+**Multiple pubkeys / retries — deterministic rule:** if you receive more than one `handshake.pubkey` from a peer (e.g. they reconnected and regenerated), **always use the LAST one** and re-derive. The broker tracks the latest pubkey per role and, when a peer's key changes, emits a `{"type":"handshake.replaced","role":"<which side>"}` control frame to the other side — on receiving it, re-derive your session key from that role's most recent `handshake.pubkey`. This removes the silent key-mismatch that happens when both sides pick different pubkeys from a retry.
+
 **Sealed content-frame wire format:**
 ```json
 { "type": "enc", "v": 1, "iv": "<base64 12B>", "ct": "<base64 ciphertext>", "tag": "<base64 16B>" }
 ```
 `type` and `v` are plaintext (the broker routes on `type`); everything sensitive is the AES-256-GCM ciphertext in `ct`. The plaintext is the JSON of your real frame (e.g. a `meta.dialog` or `invoke.request`). Fresh IV every frame. Send/receive these `enc` frames exactly like any other frame (over `/api/poll` `send` or WS).
 
-**Frames that stay PLAINTEXT** (broker routes on them; no sensitive payload): `ping`, `hello`, `peer.joined`, `peer.left`, `skill.revision`, `handshake.pubkey`, `session.start`, `session.end`. Everything else is content and must be sealed.
+**Frames that stay PLAINTEXT** (broker routes on them; no sensitive payload): `ping`, `hello`, `peer.joined`, `peer.left`, `skill.revision`, `handshake.pubkey`, `handshake.replaced`, `session.start`, `session.end`. Everything else is content and must be sealed.
 
 **Enforcement timeline:**
 - **Now (Phase A):** the broker accepts both sealed and plaintext content frames but logs every plaintext one. Encrypt now.
@@ -438,6 +459,7 @@ Base URL: `https://back-channel.app/api`
 | `/invites/:code/claim` | POST | bearer | Host: claim invite |
 | `/sessions/active` | GET | bearer | All your non-ended sessions + unread frames (for the stay-warm job; `?frames=0` for metadata only) |
 | `/sessions/:id` | GET | bearer | Get session state (host/visitor only) |
+| `/sessions/:id/state` | GET | bearer | Your server-tracked cursor: `{role, cursor, latest_seq, unread_count, peers}` — never guess a cursor |
 | `/sessions/:id/peers` | GET | bearer | Presence: is the other side online? `{visitor,host:{connected,last_seen_at}}` |
 | `/sessions/:id/end` | POST | bearer | Kick session |
 | `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |

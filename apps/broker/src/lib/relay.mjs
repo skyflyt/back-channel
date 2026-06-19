@@ -44,6 +44,7 @@
  * @property {{ visitor: number, host: number }} wsCursor   highest seq pushed to this role's WS
  * @property {{ visitor: number, host: number }} lastPolledCursor  highest cursor this role has acked (for unread_count)
  * @property {{ visitor: number, host: number }} lastSeen   ms epoch of last WS/poll activity by this role
+ * @property {{ visitor: string|null, host: string|null }} handshakePub  latest ECDH pubkey seen per role
  * @property {Date} expiresAt
  * @property {ReturnType<typeof setTimeout> | null} graceTimer
  * @property {ReturnType<typeof setTimeout> | null} ttlTimer
@@ -85,13 +86,13 @@ const POLL_PRESENCE_MS = 30 * 1000;
 // Current skill revision — surfaced to agents on connect / in poll responses so
 // a stale copy is noticed immediately. Keep in sync with skill/SKILL.md's
 // `revision:` frontmatter (GET /skill/revision reads the file authoritatively).
-const CURRENT_SKILL_REVISION = "2026-06-18-9";
+const CURRENT_SKILL_REVISION = "2026-06-19-1"; // keep in sync with skill/SKILL.md frontmatter
 
 // Frames whose `type` the broker routes on — allowed in plaintext. Everything
 // else is "content" and should be a sealed `{type:"enc",...}` envelope.
 const PLAINTEXT_CONTROL_TYPES = new Set([
   "ping", "hello", "peer.joined", "peer.left", "skill.revision",
-  "handshake.pubkey", "session.start", "session.end",
+  "handshake.pubkey", "handshake.replaced", "session.start", "session.end",
 ]);
 
 // E2E-encryption migration telemetry (Phase A): count plaintext content frames.
@@ -135,6 +136,7 @@ function newSlot(session) {
     wsCursor: { visitor: 0, host: 0 },
     lastPolledCursor: { visitor: 0, host: 0 },
     lastSeen: { visitor: 0, host: 0 },
+    handshakePub: { visitor: null, host: null },
     expiresAt: session.invite.expiresAt,
     graceTimer: null,
     ttlTimer: null,
@@ -216,7 +218,8 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
   const bytes = Buffer.byteLength(text, "utf8");
   const dest = fromRole === "visitor" ? "host" : "visitor";
 
-  const type = frameType(text);
+  const parsed = (() => { try { return JSON.parse(text); } catch { return undefined; } })();
+  const type = parsed?.type;
   const isControl = typeof type === "string" && PLAINTEXT_CONTROL_TYPES.has(type);
   // Phase A: observe-only — count plaintext (non-enc) content frames (type only).
   if (!isControl && type !== "enc") {
@@ -259,6 +262,18 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
   if (stat.totalFrames > MAX_SESSION_FRAMES || stat.totalBytes > MAX_SESSION_BYTES) {
     console.warn(`Relay session ${sessionId} exceeded frame budget (${fromRole}) — ending`);
     await endSession(sessionId, "frame_budget_exceeded");
+  }
+
+  // Handshake arbitration: if this role just sent a DIFFERENT pubkey than before
+  // (a retry), the peer who already derived from the old one must re-derive.
+  // Track the latest and signal the peer with handshake.replaced. Clients always
+  // use the LAST handshake.pubkey they received.
+  if (type === "handshake.pubkey" && typeof parsed?.pubkey === "string") {
+    const prev = slot.handshakePub[fromRole];
+    slot.handshakePub[fromRole] = parsed.pubkey;
+    if (prev && prev !== parsed.pubkey) {
+      await ingestFrame(slot, sessionId, fromRole, JSON.stringify({ type: "handshake.replaced", role: fromRole }));
+    }
   }
 
   // Nudge an idle recipient (content frames only; cheap idle + rate checks
@@ -493,11 +508,32 @@ export function getTranscript(sessionId) {
   for (const dest of /** @type {Role[]} */ (["visitor", "host"])) {
     const sender = dest === "visitor" ? "host" : "visitor"; // log[dest] holds frames sent BY the other
     for (const f of slot.log[dest]) {
-      out.push({ from: sender, seq: f.seq, ts: f.ts, bytes: Buffer.byteLength(f.data, "utf8"), preview: previewOf(f.data) });
+      out.push({ from: sender, seq: f.seq, ts: f.ts, type: frameType(f.data) ?? null, bytes: Buffer.byteLength(f.data, "utf8"), preview: previewOf(f.data) });
     }
   }
   out.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
   return out;
+}
+
+/**
+ * Server-tracked cursor state for the caller's role — so a client never has to
+ * guess "is my cursor 1 or 4?". `cursor` is what you've acked; poll from there.
+ * @param {string} sessionId
+ * @param {Role} role
+ * @param {{ scopesGranted: string[], invite: { expiresAt: Date } }} session
+ * @returns {Promise<{ role: Role, cursor: number, latest_seq: number, unread_count: number, peers: ReturnType<typeof getPeers> }>}
+ */
+export async function sessionState(sessionId, role, session) {
+  const slot = await getOrCreateSlot(sessionId, session);
+  const cursor = slot.lastPolledCursor[role];
+  const latest = slot.seq[role];
+  return {
+    role,
+    cursor,
+    latest_seq: latest,
+    unread_count: Math.max(0, latest - cursor),
+    peers: getPeers(sessionId),
+  };
 }
 
 /**

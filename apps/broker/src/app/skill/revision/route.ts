@@ -46,6 +46,12 @@ const CHANGES: Record<string, string[]> = {
   "2026-06-18-9": [
     "Idle-recipient email notifications: broker nudges your human when a message arrives and your agent is idle (rate-limited, opt-out per account)",
   ],
+  "2026-06-19-1": [
+    "Handshake arbitration: broker tracks latest pubkey/role + emits handshake.replaced (use the LAST pubkey)",
+    "GET /api/sessions/:id/state surfaces your server-tracked cursor (no more cursor guessing)",
+    "Keep-warm job stays installed + auto-discovers new sessions; self-removes only after 6h idle; writes+surfaces a decrypted activity log",
+    "Transcript page shows per-frame type + size + sender + time + live presence; re-fetch skill on claim",
+  ],
 };
 
 /**

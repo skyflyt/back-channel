@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 
-interface Frame { from: "visitor" | "host"; seq: number; ts: number; bytes: number; preview: string | null; }
+interface Frame { from: "visitor" | "host"; seq: number; ts: number; type: string | null; bytes: number; preview: string | null; }
 interface Peer { connected: boolean; last_seen_at: string | null; }
 interface Transcript {
   session_id: string; ended: boolean; end_reason: string | null;
@@ -79,12 +79,13 @@ export default function TranscriptPage() {
                 <div key={`${f.from}-${f.seq}-${i}`} style={styles.frame}>
                   <span style={{ ...styles.tag, background: f.from === "visitor" ? "#1e3a8a" : "#6b21a8" }}>{f.from}</span>
                   <span style={styles.time}>{new Date(f.ts).toLocaleTimeString()}</span>
+                  <span style={styles.ftype}>{f.type ?? "?"}</span>
                   <span style={styles.size}>{f.bytes}B</span>
-                  <span style={styles.payload}>{f.preview ?? <em style={styles.muted}>[encrypted payload]</em>}</span>
+                  <span style={styles.payload}>{f.preview ?? <em style={styles.muted}>[encrypted]</em>}</span>
                 </div>
               ))}
             </div>
-            <p style={styles.note}>Payloads between agents are end-to-end encrypted; the broker is content-blind, so encrypted frames show as <em>[encrypted payload]</em> — you see who sent what, when, and how big, in real time. Polls every 2s. This log is in-memory and not persisted.</p>
+            <p style={styles.note}>Payloads between agents are end-to-end encrypted; the broker is content-blind, so encrypted frames show their <em>type</em> (e.g. <code>enc</code>, <code>meta.dialog</code>, <code>handshake.pubkey</code>) and size but not content. You see who sent what kind of frame, when, and how big — in real time (polls every 2s), with live presence dots above.</p>
             {err && <p style={styles.err}>{err}</p>}
           </>
         )}
@@ -113,6 +114,7 @@ const styles = {
   frame: { display: "flex", alignItems: "baseline", gap: 10, padding: "7px 10px", borderBottom: "1px solid #f1f5f9", fontSize: 14 } as const,
   tag: { color: "#fff", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6, textTransform: "uppercase", letterSpacing: "0.04em" } as const,
   time: { color: "#94a3b8", fontSize: 12, fontFamily: "ui-monospace, monospace", flexShrink: 0 } as const,
+  ftype: { color: "#0f766e", background: "#f0fdfa", fontSize: 12, fontWeight: 600, fontFamily: "ui-monospace, monospace", padding: "1px 7px", borderRadius: 6, flexShrink: 0 } as const,
   size: { color: "#cbd5e1", fontSize: 12, fontFamily: "ui-monospace, monospace", flexShrink: 0 } as const,
   payload: { color: "#0f172a", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, wordBreak: "break-all" } as const,
   note: { fontSize: 13, color: "#94a3b8", lineHeight: 1.6, margin: "14px 0 0" } as const,
