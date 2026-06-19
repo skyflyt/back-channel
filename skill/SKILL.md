@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.9
-revision: 2026-06-19-2
+version: 0.3.10
+revision: 2026-06-19-3
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.9` (`revision: 2026-06-19-2`).
+> **Skill freshness.** This skill is `version: 0.3.10` (`revision: 2026-06-19-3`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -403,36 +403,56 @@ loop:
 
 (You can also pass `send` on the *same* call that reads — send-and-receive in one round trip. The pattern above sends your reply on the following cycle for clarity.)
 
+### Execute-on-approval — bundle everything into ONE invoke.request (DEFAULT)
+
+Each round-trip is a poll cycle (tens of seconds). Splitting a logical operation into "approve the outline" → "approve the content" → "execute" burns 4+ round-trips for one action. **Don't.** When you (visitor) already know *both the shape and the content* of what you're proposing, put **everything the host needs to surface AND execute in a single `invoke.request`** so that on approval the host runs it immediately — no "approved, now send me the content" round-trip.
+
+```json
+{
+  "type": "invoke.request",
+  "capability": "config.suggest",
+  "id": "scaffold-v1",
+  "args": {
+    "summary": "Create 14-file second-brain scaffold at /mnt/c/.../Codex",
+    "preview": "AGENTS.md (1KB), CLAUDE.md (300B), MEMORY.md (440B), …",
+    "execution_ready": true,
+    "actions": [ /* the full, ready-to-run action list — file contents and all */ ],
+    "verification": "ls workspace root + core/ after writes; return the listing",
+    "requiresApproval": true
+  }
+}
+```
+
+**Host contract when `execution_ready: true`:**
+- Surface `summary` + `preview` to the user and ask yes/no (because `requiresApproval`).
+- **Approved → execute `actions` immediately.** Do NOT send an "approved, what next?" frame. Go straight to execution, then send **ONE** `invoke.response` carrying `status: "ok"`, the result, and the `verification` data. One frame for *approved + executed + done*.
+- **Rejected →** `invoke.response` `status: "rejected"`, no execution.
+- **Wants changes →** `invoke.response` `status: "edits_requested"` with what to change; the visitor revises and re-sends a fresh execution-ready request.
+
+This takes the common multi-file / multi-step op from 4+ round-trips down to **2** (request + response).
+
+**When the OLD split is still right:** if the user genuinely doesn't know the content yet and wants to agree on *structure* first, send a lighter `invoke.request` *without* `execution_ready` (or with `execution_ready: false`) to gate on the outline, then follow up. That path stays legal — it's just no longer the default. (You may label an execution-ready proposal `"type": "proposal.execute"` instead of `invoke.request` if you want the intent explicit on the wire; hosts should treat it identically.)
+
 ### As Visitor
 
 1. Send `capabilities.request` over the WSS connection.
 2. You'll receive `capabilities.response` listing what scope-filtered capabilities exist.
 3. Show the user the list ("Steve's agent exposes 3 things under our scope: ...")
 4. Ask the user what to try, or propose your own plan.
-5. For each action, send an `invoke.request` like:
-   ```json
-   {
-     "type": "invoke.request",
-     "capability": "config.read-file",
-     "args": { "filename": "automations.yaml" }
-   }
-   ```
+5. For each action, send an `invoke.request`. For reads, just `{ "type":"invoke.request", "capability":"config.read-file", "args":{ "filename":"automations.yaml" } }`. **For anything you can fully specify up front (writes, multi-file ops), use the execution-ready form above** (`execution_ready: true` + `actions` + `verification`) so the host executes on approval in one shot — don't split outline-approval from content.
 6. Encrypt the payload with the session key (derived via ECDH at handshake).
-7. You'll get back an `invoke.response` with status `ok` / `denied` / `rejected` / `error`.
-8. Surface results to the user. Be transparent: *"Steve approved the change. Here's what was applied."*
+7. You'll get back an `invoke.response` with status `ok` / `rejected` / `edits_requested` / `error` — for an execution-ready request, `ok` already means *executed*, with the verification result attached.
+8. Surface results to the user. Be transparent: *"Steve approved and the change is applied — here's the verification."*
 
 ### As Host
 
 1. Listen for `capabilities.request` → respond with the scope-filtered list.
 2. Listen for `invoke.request`:
    - Verify the capability is in scope.
-   - If `requiresApproval: true`, ask the user in chat:
-     > **"Skylar's agent wants to do: [capability]**
-     > **With these args: [args]**
-     > **Description: [description]**
-     > **Approve? (yes/no)"**
-   - On yes: execute, return `invoke.response` with `status: "ok"`.
-   - On no: return `invoke.response` with `status: "rejected"`.
+   - If `requiresApproval: true`, surface `args.summary` + `args.preview` (or `[capability]` + `[args]` for the simple form) and ask the user **yes/no**.
+   - **On yes, if `args.execution_ready` is true: execute `args.actions` IMMEDIATELY** — do not send an interim "approved" frame — then return **ONE** `invoke.response` with `status: "ok"`, the result, and the `args.verification` output. (If not execution-ready, fall back to the older step-by-step exchange.)
+   - On no: `invoke.response` `status: "rejected"` (no execution).
+   - If the user wants changes: `invoke.response` `status: "edits_requested"` with what to change.
 3. Logs every event to the local transcript.
 
 

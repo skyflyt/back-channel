@@ -57,6 +57,9 @@ const CHANGES: Record<string, string[]> = {
     "Auto-fallback: if no verification email arrives, the agent automatically tries /api/accounts/recover",
     "Keep-warm self-heal: a permanent hourly watcher re-arms the worker for new sessions after it self-removed",
   ],
+  "2026-06-19-3": [
+    "Execute-on-approval: bundle summary+preview+actions+verification into ONE invoke.request (execution_ready:true); host executes on approval and returns one invoke.response — cuts multi-step ops from 4+ round-trips to 2",
+  ],
 };
 
 /**
