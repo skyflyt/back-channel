@@ -17,7 +17,10 @@ export const runtime = "nodejs";
  * carries through to /account?session=<id>.
  */
 export async function GET(req: NextRequest) {
-  const origin = req.nextUrl.origin;
+  // Behind Cloud Run, req.nextUrl.origin is the internal bind address
+  // (https://0.0.0.0:8080) — unusable for a browser redirect. Prefer the public
+  // app URL; fall back to the request origin only for local dev.
+  const origin = process.env.PUBLIC_APP_URL ?? req.nextUrl.origin;
   const token = req.nextUrl.searchParams.get("token");
   const fail = () => NextResponse.redirect(`${origin}/login?error=expired`, { status: 303 });
 
