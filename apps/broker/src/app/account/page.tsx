@@ -15,6 +15,7 @@ interface Sess {
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
+interface Skill { id: string; name: string; description: string | null; kind: string; shared_with: string[]; }
 
 /** Read the non-httpOnly bc_csrf cookie to echo in the x-bc-csrf header. */
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
@@ -28,6 +29,7 @@ export default function AccountPage() {
   const [inbox, setInbox] = useState<InboxReq[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [showAudit, setShowAudit] = useState(false);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [notify, setNotify] = useState(true);
@@ -60,6 +62,13 @@ export default function AccountPage() {
     } catch { /* leave as-is */ }
   }, []);
 
+  const loadSkills = useCallback(async () => {
+    try {
+      const r = await fetch("/api/skills", { credentials: "include" });
+      if (r.ok) setSkills((await r.json()).skills ?? []);
+    } catch { /* leave as-is */ }
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
@@ -83,9 +92,10 @@ export default function AccountPage() {
         loadSessions();
         loadTrust();
         loadInbox();
+        loadSkills();
       } catch { setState("error"); }
     })();
-  }, [loadSessions, loadTrust, loadInbox]);
+  }, [loadSessions, loadTrust, loadInbox, loadSkills]);
 
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
@@ -131,6 +141,22 @@ export default function AccountPage() {
     setBusy(`inbox:${id}`);
     await fetch(`/api/inbox/${id}/reject`, { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } }).catch(() => {});
     setBusy(""); loadInbox();
+  };
+
+  const shareSkill = async (skillId: string, handle: string, on: boolean) => {
+    setBusy(`skill:${skillId}:${handle}`);
+    try {
+      if (on) await fetch(`/api/skills/${skillId}/share`, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ peer_handle: handle }) });
+      else await fetch(`/api/skills/${skillId}/share/${encodeURIComponent(handle)}`, { method: "DELETE", credentials: "include", headers: { "x-bc-csrf": csrf() } });
+    } catch { /* ignore */ }
+    setBusy(""); loadSkills();
+  };
+
+  const deleteSkill = async (skillId: string, name: string) => {
+    if (!confirm(`Delete the skill "${name}"? Anyone you shared it with will lose access (template copies they already imported stay with them).`)) return;
+    setBusy(`skilldel:${skillId}`);
+    await fetch(`/api/skills/${skillId}`, { method: "DELETE", credentials: "include", headers: { "x-bc-csrf": csrf() } }).catch(() => {});
+    setBusy(""); loadSkills();
   };
 
   const toggleTrust = async (handle: string, on: boolean) => {
@@ -267,6 +293,41 @@ export default function AccountPage() {
           <p style={s.soon}>Text + browser notifications are coming later.</p>
         </section>
 
+        {/* Your Skills */}
+        <section style={s.card}>
+          <h2 style={s.h2}>Your Skills</h2>
+          <p style={s.soon}>Capabilities your agent has published. Share one with a trusted agent and they can run it during a session (it runs on your side — they only see the result).</p>
+          {skills.length === 0 && <p style={s.muted}>No skills published yet. Your agent publishes these; they show up here to share.</p>}
+          {skills.map((sk) => {
+            const trustedHandles = trust.filter((t) => t.trusted).map((t) => t.handle);
+            return (
+              <div key={sk.id} style={{ ...s.row, alignItems: "flex-start" }}>
+                <div style={s.rowMain}>
+                  <strong>{sk.name}</strong> <span style={s.roleTag}>{sk.kind}</span>
+                  {sk.description && <div style={s.goal}>{sk.description}</div>}
+                  <div style={s.rowMeta}>
+                    {sk.shared_with.length ? <>shared with: {sk.shared_with.join(", ")}</> : "private"}
+                  </div>
+                  {trustedHandles.length > 0 && (
+                    <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {trustedHandles.map((h) => {
+                        const on = sk.shared_with.includes(h);
+                        return (
+                          <button key={h} style={on ? s.chipOn : s.chipOff} disabled={busy === `skill:${sk.id}:${h}`}
+                            onClick={() => shareSkill(sk.id, h, !on)}>
+                            {on ? `✓ ${h}` : `share with ${h}`}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                <button style={s.endBtn} disabled={busy === `skilldel:${sk.id}`} onClick={() => deleteSkill(sk.id, sk.name)}>Delete</button>
+              </div>
+            );
+          })}
+        </section>
+
         {/* Activity (audit log) */}
         <section style={s.card}>
           <h2 style={s.h2}>Account activity</h2>
@@ -317,6 +378,8 @@ const s = {
   roleTag: { fontSize: 11, fontWeight: 700, color: "#6b21a8", background: "#faf5ff", padding: "1px 7px", borderRadius: 6, textTransform: "uppercase" } as const,
   okTag: { fontSize: 11, fontWeight: 700, color: "#0f766e", background: "#f0fdfa", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
   pendTag: { fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fffbeb", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
+  chipOn: { fontSize: 12, fontWeight: 600, color: "#fff", background: "#0f766e", border: "none", borderRadius: 999, padding: "3px 10px", cursor: "pointer" } as const,
+  chipOff: { fontSize: 12, fontWeight: 600, color: "#0f766e", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 999, padding: "3px 10px", cursor: "pointer" } as const,
   dot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 } as const,
   smallLink: { fontSize: 13, color: "#0f766e", textDecoration: "none", flexShrink: 0 } as const,
   endBtn: { background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "5px 12px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0 } as const,

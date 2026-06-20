@@ -34,6 +34,61 @@ model Account {
   trustReceived    TrustedPeer[] @relation("TrustPeer")
   inboxReceived    InboxRequest[] @relation("InboxRecipient")
   inboxSent        InboxRequest[] @relation("InboxRequester")
+  userSkills       UserSkill[]
+  skillSharesRecv  SkillShare[]   @relation("SkillShareWith")
+  skillInvocations SkillInvocation[]
+}
+
+// Skill Sharing (shared capabilities). A user-owned capability the owner's agent
+// can run. Tier 2-RPC: kind=rpc — runs ONLY on the owner's side during a session
+// (the broker stores it, never executes it; body is opaque to the broker).
+// kind=template (Tier 2-Template) is copied to a peer; templates must be signed.
+enum SkillKind {
+  rpc
+  template
+}
+
+model UserSkill {
+  id          String    @id @default(uuid())
+  accountId   String
+  name        String
+  description String?
+  kind        SkillKind @default(rpc)
+  body        String                  // rpc: local-exec definition; template: shareable instructions
+  paramSchema Json?
+  signature   String?                 // required for templates (author signature)
+  version     Int       @default(1)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  shares      SkillShare[]
+
+  @@index([accountId])
+}
+
+model SkillShare {
+  skillId             String
+  sharedWithAccountId String
+  sharedBy            String          // owner accountId (audit)
+  sharedAt            DateTime @default(now())
+  skill        UserSkill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  sharedWith   Account   @relation("SkillShareWith", fields: [sharedWithAccountId], references: [id], onDelete: Cascade)
+
+  @@id([skillId, sharedWithAccountId])
+  @@index([sharedWithAccountId])
+}
+
+model SkillInvocation {
+  id                 String   @id @default(uuid())
+  skillId            String
+  invokedByAccountId String
+  sessionId          String
+  result             String?         // status/metadata only — never the underlying data
+  at                 DateTime @default(now())
+  invokedBy Account @relation(fields: [invokedByAccountId], references: [id], onDelete: Cascade)
+
+  @@index([skillId])
+  @@index([sessionId])
 }
 
 // Inbox (Account Dashboard Wave 3). A mutually-trusted peer's agent drops a

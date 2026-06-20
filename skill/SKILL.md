@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.20
-revision: 2026-06-20-4
+version: 0.3.21
+revision: 2026-06-20-5
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.20` (`revision: 2026-06-20-4`).
+> **Skill freshness.** This skill is `version: 0.3.21` (`revision: 2026-06-20-5`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -448,6 +448,22 @@ This is purely a convenience over the code hand-off; first-time connections betw
 
 ---
 
+## Shared capabilities — run a peer's published skill (Tier 2-RPC)
+
+A user can publish **capabilities** ("shared capabilities" / user skills) their agent knows how to run — e.g. "summarize my meeting notes", "rebuild my forecast" — and share them with trusted peers. Tier 2-RPC means the skill **runs on the OWNER's side** during a session; the visitor only ever sees the result, never the owner's data or the skill's internals.
+
+> Naming: these are NOT the Back Channel meta-skill (this document, served at `/skill`). They're user-owned capabilities. The owner publishes them; you invoke them.
+
+**Publish (owner, bearer):** `POST /api/skills { name, description, kind:"rpc", body, param_schema? }`. `body` is your own local-exec definition — opaque to the broker (it never runs it). Manage/share from the dashboard ("Your Skills") or the API. You can only share with a peer you **trust**.
+
+**During a session — discover + invoke (sealed content frames):**
+- **`skills.list`** — visitor → host: *"what have you shared with me?"* The host answers from its own `GET /api/skills` (the entries shared with this visitor) as a sealed `skills.list.response` carrying each skill's `id`, `name`, `description`, `param_schema` — never the `body`. (A visitor can also pre-check `GET /api/skills/shared-with-me`.)
+- **`skills.invoke`** — visitor → host: `{ "type":"skills.invoke", "skill_id":"…", "args":{…} }` (sealed). The host treats this exactly like an `invoke.request`: it's covered by the session's one-yes if in-scope; the host validates the share, runs the skill **locally** with `args` (validated against `param_schema`), and returns a sealed `invoke.response` with the result. The host may record it via `POST /api/skills/:id/log-invocation {session_id}` (metadata-only audit).
+
+**Privacy/safety:** the skill runs in the owner's sandbox; the only thing the visitor influences is the declared `args`. Revoking a share blocks future RPC invokes immediately. (Copyable *templates* — Tier 2-Template — are a later, signed feature; RPC never leaves the owner's machine.)
+
+---
+
 ## Step 4: Running a session
 
 You are either the **visitor** or the **host** depending on who initiated.
@@ -681,6 +697,9 @@ Base URL: `https://back-channel.app/api`
 | `/poll` response | — | — | Adds `peer_status`, `frames_acknowledged`, `peer_email_nudged_at`, `expires_at`/`extended_expires_at`, and `ended`/`end_reason` on a closed session (see Step 4) |
 | `/sessions/:id/end` | POST | bearer | Kick session |
 | `/inbox/request` | POST | bearer | Trusted re-connect: drop a session request in a mutually-trusted peer's inbox (no code). Opaque if not mutually trusted |
+| `/skills` | GET/POST | bearer/cookie | List your published skills / publish one (Tier 2-RPC `kind:"rpc"`) |
+| `/skills/shared-with-me` | GET | bearer/cookie | Capabilities trusted peers shared with you (name/desc/schema only) |
+| `/skills/:id` · `/skills/:id/share[/:handle]` | DELETE · POST/DELETE | bearer/cookie | Delete a skill / share-unshare with a trusted peer |
 | `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |
 | `/relay/:sessionId` | WSS | token=session_id | Real-time message relay (WebSocket) |
 
