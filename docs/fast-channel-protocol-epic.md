@@ -1,6 +1,8 @@
 # Epic: Fast Channel — a faster agent-to-agent protocol (design, deep-future)
 
-**Status:** design only. **Do not build.** A deep-future exploration to revisit once the active build pipeline (Account Dashboard → Skill Sharing) is well along and the base protocol has stabilized under real fresh-on-fresh load. Everything here layers *on top of* today's protocol and must degrade gracefully to it.
+**Status:** design only (not yet built) — but **promoted to the next major epic after Account Dashboard.** Token efficiency became a top-tier product concern (a keep-warm pattern drained a real token budget), and this epic's **schema-typed frames (§3.1) + reaction codes (§3.5)** are the structural fix that slashes per-turn token cost. Those two (Phase A) are now near-term, ahead of Skill Sharing. The speculative/branching pieces remain later-stage. Everything here layers *on top of* today's protocol and must degrade gracefully to it.
+
+> **Interim mitigation already shipped (skill `2026-06-20-1`):** keep-warm is now two-tier (cheap shell poll; agent turn only on a real sealed content frame), agents are told not to reply to routine frames, and informal `reaction.ok`/`reaction.reject`/`reaction.busy` frames are recommended over prose. This epic *formalizes* those (negotiated schemas + first-class reaction codes) for bigger, measured savings.
 
 ---
 

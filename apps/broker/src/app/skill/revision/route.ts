@@ -91,6 +91,11 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
     "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
   ],
+  "2026-06-20-1": [
+    "TOKEN-WASTE FIX — keep-warm is now strictly TWO-TIER: Tier 1 is a cheap shell curl that classifies unread frames by plaintext type (zero LLM); Tier 2 spawns a full agent turn ONLY when a sealed content frame / handshake is actually waiting. Never run an LLM turn every tick (that drained a real token budget). Cowork/Codex recipes corrected to gate before reasoning.",
+    "Token discipline: don't reply to routine frames (acks/presence/progress) — 'don't ack the ack'; prefer short reaction frames (reaction.ok/reaction.reject/reaction.busy) over prose; keep real replies tight.",
+    "Fast Channel protocol epic promoted to the next major epic after Account Dashboard (schema-typed frames + reaction codes are the structural token fix).",
+  ],
 };
 
 /**

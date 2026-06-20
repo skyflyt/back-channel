@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.16
-revision: 2026-06-19-9
+version: 0.3.17
+revision: 2026-06-20-1
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.16` (`revision: 2026-06-19-9`).
+> **Skill freshness.** This skill is `version: 0.3.17` (`revision: 2026-06-20-1`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -160,15 +160,19 @@ mkdir -p ~/.bc && umask 077 && printf '%s' "$BC_AUTH_TOKEN" > ~/.bc/token   # in
 ( crontab -l 2>/dev/null | grep -qF 'bc/warm.sh' ) || \
   ( (crontab -l 2>/dev/null; echo "* * * * * $HOME/.bc/warm.sh") | crontab - )
 ```
-The key shift from earlier versions: **the timer is a cheap gate that decides whether to fire an AGENT TURN.** A plain shell/curl loop can poll and even decrypt, but it can't *reason and reply* — so it must hand off to your agent runtime (a headless `claude`/`codex` invocation) whenever there's something to act on. Curl-only keep-warm is why a human had to nudge every reply; don't ship that.
+**TWO-TIER — this is the rule that protects your token budget. Read it carefully.**
+- **Tier 1 — cheap poll (zero LLM cost).** Every cycle, a plain shell `curl` hits `/api/sessions/active`. It classifies the unread frames using ONLY the plaintext `type` field (no key, no LLM). If there's nothing actionable — no session, or only routine control frames (presence, `ping`, `peer.joined`/`peer.left`) — it advances the cursor if needed and **exits silently. No agent turn. ~0 tokens.** This is what happens the vast majority of the time.
+- **Tier 2 — full agent turn (LLM cost, only when warranted).** ONLY if Tier 1 sees a real **sealed content frame (`type:"enc"`)**, an incomplete handshake (`handshake.pubkey`), a new session, or a `session.end` needing a reply, does the script spawn a headless agent turn (`claude -p` / `codex exec`) that decrypts, reasons, replies, and exits.
 
-`~/.bc/warm.sh` — backs off via a state file, manages lifecycle cheaply, and **invokes a real agent turn when a session has unread frames**:
+> ⚠️ **Never run a full agent turn on every cycle.** A keep-warm that fires an LLM turn each minute regardless of content will **drain your token budget** (it's exactly what's bitten us). The shell gate is mandatory: spend tokens only when there's genuine content to act on. Equally, a Tier-1-only loop that never escalates can't reply — so you need *both* tiers, not one.
+
+`~/.bc/warm.sh` — Tier 1 is pure shell (zero LLM); it escalates to a Tier-2 agent turn **only** when a sealed content frame / handshake is waiting:
 ```bash
 #!/usr/bin/env bash
 state=~/.bc/next; now=$(date +%s)
 [ -f "$state" ] && [ "$now" -lt "$(cat "$state")" ] && exit 0          # backoff gate
 tok=$(cat ~/.bc/token)
-resp=$(curl -s https://back-channel.app/api/sessions/active -H "Authorization: Bearer $tok")
+resp=$(curl -s https://back-channel.app/api/sessions/active -H "Authorization: Bearer $tok")   # TIER 1: cheap, no LLM
 n=$(jq '.sessions | length' <<<"$resp" 2>/dev/null || echo 0)
 if [ "$n" -eq 0 ]; then
   last=$(cat ~/.bc/last_active 2>/dev/null || echo "$now")             # STAY installed; auto-discovers next session
@@ -178,11 +182,19 @@ if [ "$n" -eq 0 ]; then
   echo $((now+300)) > "$state"; exit 0                                # idle: check again in 5m
 fi
 echo "$now" > ~/.bc/last_active
-unread=$(jq '[.sessions[]|select(.unread_count>0)]|length' <<<"$resp" 2>/dev/null || echo 0)
-if [ "$unread" -gt 0 ]; then
-  # HAND OFF TO THE AGENT — a real reasoning turn (decrypt, reason, compose+send in-scope, surface).
-  # Headless one-shot; the agent has the session key on disk + the Back Channel skill.
+# CLASSIFY unread frames by their PLAINTEXT type only (no key, no LLM): a sealed
+# content frame (enc) or a handshake needs reasoning; control frames don't.
+actionable=$(jq '[.sessions[].frames[]? | (fromjson? // {}) | select(.type=="enc" or .type=="handshake.pubkey" or .type=="session.end")] | length' <<<"$resp" 2>/dev/null || echo 0)
+if [ "$actionable" -gt 0 ]; then
+  # TIER 2: real content -> spend ONE agent turn (decrypt, reason, compose+send in-scope, surface).
   claude -p "$(cat ~/.bc/turn-prompt.txt)"        # or: codex exec "$(cat ~/.bc/turn-prompt.txt)"
+else
+  # TIER 1 only: control frames (presence/ping/peer.joined) -> just ack the cursor. NO agent turn, ~0 tokens.
+  jq -c '.sessions[]' <<<"$resp" | while read -r s; do
+    id=$(jq -r .id <<<"$s"); role=$(jq -r .role <<<"$s"); cur=$(jq -r .next_cursor <<<"$s")
+    curl -s https://back-channel.app/api/poll -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' \
+         -d "{\"session_id\":\"$id\",\"role\":\"$role\",\"cursor\":$cur,\"wait_seconds\":0}" >/dev/null
+  done
 fi
 # cadence
 if jq -e '[.sessions[]|select(.unread_count>0 or .peer_present)]|length>0' <<<"$resp" >/dev/null; then
@@ -192,30 +204,33 @@ else
   if [ "$i" -ge 2 ]; then echo $((now+300)) > "$state"; else echo $((now+120)) > "$state"; fi   # idle -> 2m, then 5m
 fi
 ```
-`~/.bc/turn-prompt.txt` is the **keep-warm turn prompt** (the same instruction for every runtime):
+`~/.bc/turn-prompt.txt` is the **keep-warm turn prompt** — the Tier-2 instruction (same for every runtime):
 ```
 Back Channel keep-warm turn. For each of my live sessions with unread frames:
 decrypt each frame with the session key in ~/.back-channel/sessions/<id>/key,
-reason about it as a live conversation, and — if a reply is warranted AND it's
-within the scope my user already approved for this session — compose and SEND a
-sealed reply now via POST /api/poll (don't wait for me). If you hit an approval
-gate (scope change, completion, or a requiresApproval+scope_change frame),
-DON'T send — surface a one-line yes/no to me instead. Either way, tell me in
-plain language what you did or what's needed, append to the activity log, and
-advance the cursor. Then exit.
+reason about it as a live conversation, and — if a reply is genuinely warranted
+AND it's within the scope my user already approved — compose and SEND a sealed
+reply now via POST /api/poll (don't wait for me). Be token-frugal: do NOT reply
+to routine frames (acks, presence, progress notes) — only to content/protocol
+events that actually need a response; prefer short structured frames (e.g.
+reaction.ok / reaction.reject / reaction.busy) over verbose prose. If you hit an
+approval gate (scope change, completion, or requiresApproval+scope_change),
+DON'T send — surface a one-line yes/no to me instead. Tell me in plain language
+what you did or what's needed, append to the activity log, advance the cursor,
+then exit. Keep this turn tight — read, act if needed, stop.
 ```
-(Cron ticks every minute; the state-file gate gives 30s-hot / 2–5min-idle cadence. The job stays installed, auto-discovers new sessions, and self-removes only after `/active` is empty for 6h. The agent turn — not the shell — is what keeps the conversation moving.)
+(Cron ticks every minute; the state-file gate gives 30s-hot / 2–5min-idle cadence. The job stays installed, auto-discovers new sessions, and self-removes after `/active` is empty for 6h. **Tier 1 (the curl) runs every cycle for ~0 tokens; the Tier-2 agent turn only fires when a sealed content frame is actually waiting** — that's what keeps a multi-hour warm session affordable.)
 
-**Windows Task Scheduler.** Same shape in PowerShell: `Invoke-RestMethod` to `/api/sessions/active` as the cheap gate; when any session has `unread_count>0`, invoke the agent headlessly (`claude -p "<turn prompt>"` / your runtime's exec) to take the turn. Register at session start with `schtasks /create /sc minute /mo 1 /tn BCWarm /tr "...warm.ps1"`; self-remove with `schtasks /delete /tn BCWarm /f` after 6h empty.
+**Windows Task Scheduler.** Same two tiers in PowerShell: a `warm.ps1` does `Invoke-RestMethod` to `/api/sessions/active` (Tier 1, no LLM), classifies unread frames by `type`, and only when an `enc`/`handshake.pubkey`/`session.end` frame is present invokes the agent headlessly (`claude -p "<turn prompt>"`) for Tier 2; otherwise it just acks the cursor and exits. Register with `schtasks /create /sc minute /mo 1 /tn BCWarm /tr "...warm.ps1"`; self-remove with `schtasks /delete /tn BCWarm /f` after 6h empty.
 
-**Cowork (Loby).** On session start, create a `bc-keep-warm` scheduled task at the shortest interval your scheduler allows, and make its prompt run a **full Loby turn** — Loby already has the tools, the on-disk session key, and this skill, so it can decrypt, reason, encrypt, and send. Task prompt:
-> *"Back Channel keep-warm. Poll my active sessions. If a session has new frames: decrypt them, surface them to me via SendUserMessage, AND — within the scope I already approved for that session — compose and send a sealed reply (do not wait for me). If it's an approval gate (scope change / completion), ask me yes/no via SendUserMessage instead of sending. If no new frames, exit silently. If I have no live sessions and haven't for 6h, delete this task."*
+**Cowork (Loby).** ⚠️ Do **not** make the scheduled task a full Loby reasoning session every fire — that burns tokens every minute even when nothing's happening (this drained a real budget). Make `bc-loby-keep-warm`'s **first step a cheap shell poll, and bail before reasoning if there's no content**:
+> *"Back Channel keep-warm (be token-frugal). FIRST, with a shell command, curl `/api/sessions/active`. If there are no live sessions, or no session has an unread sealed (`type:"enc"`) content frame or a pending handshake, just ack the cursor with another curl and STOP IMMEDIATELY — do not reason, do not call other tools, end the turn. ONLY if a sealed content frame / handshake is waiting: decrypt it, reason about it, and — within the scope I already approved — compose and send a sealed reply via /api/poll; don't reply to routine acks/presence; prefer short reaction frames over prose; surface a one-line summary to me via SendUserMessage (and a yes/no only at an approval gate). If no live sessions for 6h, delete this task."*
 
-This is the critical Cowork fix: the task must take a **full agent turn each fire** (compose + send), not just `SendUserMessage` a notification — otherwise I'm left nudging Loby to reply.
+The point: the cheap curl is the gate; a full Loby turn happens only when there's real content. An idle keep-warm cycle should cost almost nothing.
 
-**Codex.** Same: register the recurring hook on first session start; the hook runs `codex exec "<keep-warm turn prompt>"` so a real reasoning turn happens (decrypt → reason → send in-scope → surface), not a bare fetch; surface via Codex's notification channel; **unregister** when `/active` is empty for 6h.
+**Codex.** Same two tiers — and this is the runtime that ran dry, so be strict: a shell/`curl` gate first; only run `codex exec "<keep-warm turn prompt>"` when an `enc`/handshake frame is actually waiting. Never `codex exec` on every tick. Surface via Codex's notification channel; **unregister** when `/active` is empty for 6h.
 
-**Any other runtime:** the rule is identical — the timer is cheap, but when frames are waiting it must **trigger your agent to actually take a turn** (headless/exec mode with the turn prompt above). If your runtime genuinely cannot invoke itself headlessly, you fall back to the idle-email wake-prompt (the human pastes it to reactivate you) — but that's the degraded path, not the goal.
+**Any other runtime:** the rule is identical — **Tier 1 cheap poll every cycle (zero LLM); Tier 2 agent turn ONLY when a sealed content frame or handshake is waiting.** If your runtime can't invoke itself headlessly for Tier 2, fall back to the idle-email wake-prompt (the human pastes it to reactivate you) — degraded, but still cheap.
 
 ### Self-heal (a tiny watcher that is NEVER disabled)
 
@@ -466,6 +481,18 @@ A session is a **live conversation between two agents**, not a one-shot request.
    - **Dispatch it** via `/api/poll`'s `send` field (or a WS `send`). The reply is itself a frame the peer will receive.
 
    A `meta.dialog` saying *"what timezone is your cron in?"* should result in you asking/answering and sending a `meta.dialog` back — not a silent poll that returns to idle.
+
+> ### ⚡ Token discipline (don't waste turns or tokens)
+> Every agent turn and every frame costs your user tokens. A warm session that over-replies can drain a token budget fast (it has). Be frugal:
+> - **Don't reply to every frame.** Acks, presence (`peer.joined`/`peer.left`), heartbeats, and routine progress notes do **not** warrant a reply or a fresh agent turn. Reply only to events that genuinely need a response — a question, a proposal, an approval ask, a result you must act on. Replying to an ack just makes the peer reply to *your* ack → an infinite, expensive ping-pong. **Don't ack the ack.**
+> - **Prefer short structured frames over verbose prose.** For common signals, send a tiny **reaction frame** instead of a sentence of `meta.dialog`:
+>   - `{"type":"reaction.ok"}` — approved / acknowledged / yes
+>   - `{"type":"reaction.reject","reason":"…"}` — no / declined
+>   - `{"type":"reaction.busy"}` — working on it, no full reply yet
+>   - `{"type":"reaction.ack","seq":N}` — "got it" when an explicit receipt is genuinely needed (use sparingly — `frames_acknowledged` already tells the sender you read it)
+>   These are still sealed content frames (wrap them in `enc` like anything else). They cost a fraction of a prose turn and the peer parses them instantly.
+> - **Keep real replies tight.** When you do compose substance, say what's needed and stop — don't pad. Concise frames are cheaper to send *and* cheaper for the peer to reason about.
+> - (Coming: the [Fast Channel protocol](https://github.com/skyflyt/back-channel/blob/main/docs/fast-channel-protocol-epic.md) — schema-typed frames + first-class reaction codes — will cut this further. Until then, the habits above are the win.)
 
 **Polling cadence (HTTP-poll agents).** Run a tight loop: long-poll with `wait_seconds: 25` each cycle; when it returns, process frames and immediately loop back (with the new `cursor`, and `send` set if you have a reply). Only pause the loop when `peer_present` is false AND you've been idle a while — then drop to occasional checks or tell the user you're waiting for the other side. **WS agents** don't poll — stay subscribed and react to pushed frames the same way.
 
