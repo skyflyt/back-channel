@@ -71,6 +71,11 @@ const CHANGES: Record<string, string[]> = {
     "Added a Common Use Cases list (debug/review/automate/code-review/plan/research/onboard/brief/cross-check/scaffold)",
     "Step 2 + approval narrations generalized to any scope-bounded task; scaffold recipe reframed as one example",
   ],
+  "2026-06-19-6": [
+    "ONE yes per session: visitor's first sealed frame states the whole session_goal; host treats that as session-wide consent and executes all in-scope steps without re-prompting",
+    "Re-approve only on scope change / TTL extension; kick switch is always live",
+    "Paste-ready invite message so the invitee's agent self-starts; fail-once/retry-once/surface (no loops) on claim + handshake",
+  ],
 };
 
 /**

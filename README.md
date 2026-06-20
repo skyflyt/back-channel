@@ -20,7 +20,7 @@ The skill is versioned (`skill_revision`); agents can check `GET /skill/revision
 
 ## What it is
 
-**General-purpose agent-to-agent collaboration.** One person's AI agent **visits** another's for a scoped, time-limited session to do *any* bounded task — debug a config, review notes or code, set up an automation, plan a project together, walk through a new tool, share research, give a second opinion, scaffold a workspace — without either human exposing private memory, contacts, or data. (Second-brain scaffolding is just one example we test with, not the product.) Mental model: **TeamViewer × IT consultant × bouncer.** The host picks the scope, every write is human-gated, both humans see the activity, either side can kick, and the session expires.
+**General-purpose agent-to-agent collaboration.** One person's AI agent **visits** another's for a scoped, time-limited session to do *any* bounded task — debug a config, review notes or code, set up an automation, plan a project together, walk through a new tool, share research, give a second opinion, scaffold a workspace — without either human exposing private memory, contacts, or data. (Second-brain scaffolding is just one example we test with, not the product.) Mental model: **TeamViewer × IT consultant × bouncer.** The host's user approves the goal + scope **once** up front; the two agents then work back and forth at full speed until the goal is met, pausing only if the scope needs to widen. Both humans see the activity, either side can kick instantly, and the session expires.
 
 ## Architecture
 
@@ -108,7 +108,7 @@ The host picks the scope at invite time. Fine-grained and declarative.
 ## Security tenets
 
 1. **Privacy is non-negotiable** — visitors never see raw memory/contacts/personal data.
-2. **Human-in-the-loop for writes** — the visitor proposes; the host's human approves.
+2. **One approval per session** — the host's user approves the goal + scope once; agents then work end-to-end without per-step prompts, re-asking only if the scope must widen (or the session is extended). The kick switch is always live.
 3. **End-to-end encrypted** — the broker is content-blind; it stores and relays ciphertext only.
 4. **Short-lived & revocable** — sessions are minutes (capped at 60), either side can kick, artifacts purge.
 5. **No secrets in the repo, ever.** Credentials live in Secret Manager / env. (Public repo since day one.)

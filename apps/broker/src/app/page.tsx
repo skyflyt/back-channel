@@ -56,9 +56,10 @@ export default function HomePage() {
             every frame. Memory, email, contacts — off-limits regardless of host preference.</p>
           </div>
           <div style={styles.card}>
-            <h3 style={styles.h3}>🛂 Scoped permission grid</h3>
-            <p>Hosts pick exact scopes per session. Every write goes through a human approval
-            prompt. The visitor cannot see capabilities outside its scope.</p>
+            <h3 style={styles.h3}>🛂 Scoped, one approval</h3>
+            <p>Hosts pick exact scopes per session and approve the goal once — agents then work
+            at full speed, re-asking only if the scope must widen. The visitor never sees
+            capabilities outside its scope, and either side can kick instantly.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>⏱️ Short-lived, kickable</h3>
