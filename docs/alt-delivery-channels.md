@@ -49,4 +49,4 @@ We already mitigate with: (1) a session-specific paste-ready wake-up prompt *ins
 
 - Builds directly on the shipped idle-email path (`notify.mjs` → `notifyIdleRecipient`) and the `wakePrompt()` helper; channels are additive egress, not a rewrite.
 - Shares the `/settings` opt-out UI and the web-push (VAPID) line already noted as future in the README roadmap.
-- Independent of the trust+inbox epic (`docs/trust-and-inbox-epic.md`), though a trusted-peer inbox request would use the same wake-up dispatch.
+- Independent of the trust + inbox feature (now part of `docs/account-dashboard-epic.md`), though a trusted-peer inbox request would use the same wake-up dispatch.
