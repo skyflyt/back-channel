@@ -201,14 +201,14 @@ This rides the dashboard's cookie auth (human tier) for management; actual invok
 
 ---
 
-## 8. Open questions (decide before build)
+## 8. Decisions (resolved 2026-06-20 — Loby's calls, Skylar pre-authorized; all adopt the in-doc recommendations)
 
-1. **Template-injection sandboxing** — is best-effort "treat as data + itemized action approval" enough, or do we need stronger isolation (a constrained sub-agent with no tool access, capability allow-lists)? Recommend: start best-effort + signing + itemized approval for Tier 2-Template; revisit before any broader exposure.
-2. **Reversible imports** — should an imported template be uninstallable, with an audit trail and a dashboard "uninstall" action? Recommend yes (`SkillImport` already records it; add removal).
-3. **Per-peer override granularity** — handles only (`skylar@bc`), or pattern-matched (`*.bhwk.com`)? Patterns are convenient but risk over-sharing on handle reissue. Recommend handles-only for v1.
-4. **Tier 2.5 discovery payload** — just names + descriptions, or include `paramSchema` too? Schema helps a peer decide if it's useful but leaks more design. Recommend names+descriptions only for v1.
-5. **Versioning** — when an owner updates a shared skill, do importers see the new version, the old, or both? For RPC (runs on owner side) the latest always runs. For templates (copied), the importer holds a snapshot — do we notify "a newer version exists"? Recommend: RPC = always latest; template = pinned snapshot + optional "update available" nudge.
-6. **Revoking a share vs already-imported templates** — revoking a Tier-2-Template share does **not** retract copies already imported on the peer's side (you can't claw back a copy). State this explicitly to users at share time. Revoking a Tier-2-RPC share **does** immediately block future invokes (nothing was copied). Confirm this asymmetry is acceptable.
+1. **Template-injection sandboxing — best-effort + signing + itemized action approval (v1).** Templates run with their instructions treated as untrusted data; every action they want needs explicit per-action user approval; templates must be author-signed. Stronger isolation (constrained no-tool sub-agent / capability allow-lists) is revisited before any exposure beyond direct trusted peers. *Rationale:* proportionate for a trusted-peer-only feature; don't over-build before there's broad exposure.
+2. **Reversible imports — YES.** Imported templates are uninstallable from the dashboard, with a `SkillImport` audit trail. *Rationale:* a copy you can't remove is a liability; the record already exists.
+3. **Per-peer override granularity — handles only (v1).** Share with explicit handles (`skylar@bc`), no pattern matching (`*.bhwk.com`). *Rationale:* patterns risk silent over-sharing on handle reissue; add patterns later if demand is real.
+4. **Tier 2.5 discovery payload — names + descriptions only (v1).** No `paramSchema` in discovery. *Rationale:* enough to decide "is this useful?" while leaking the least design; schema is available after a direct share.
+5. **Versioning — RPC = always latest; template = pinned snapshot + "update available" nudge.** RPC runs on the owner's side so it's inherently current; a copied template is a snapshot, with an optional nudge when the source advances. *Rationale:* matches each tier's execution model.
+6. **Revoke asymmetry — accepted, with explicit at-share-time warning.** Revoking a Tier-2-RPC share blocks future invokes immediately; revoking a Tier-2-Template share does NOT claw back already-imported copies (impossible). Users are told this when they share a template. *Rationale:* honest about what's technically retractable; the warning sets correct expectations.
 
 ---
 
@@ -226,3 +226,18 @@ This rides the dashboard's cookie auth (human tier) for management; actual invok
 - **Reuses:** the session handshake / one-yes-per-session / sealed-frame model; the `invoke.request`/`invoke.response` contract (Tier 2-RPC is a typed invoke); the dashboard cookie-auth tier; account-key signing (for template signatures).
 - **Does not touch:** the e2e crypto, the relay frame buffer, or the meta-skill at `/skill` (only adds new `skills.*` content frame types).
 - **Adjacent:** `docs/alt-delivery-channels.md` (unrelated, but both are post-trust product layers).
+
+---
+
+## Decision log (2026-06-20)
+
+| # | Decision | Source |
+|---|---|---|
+| 1 | Template sandboxing: best-effort (data + itemized approval) + signing, v1 | recommendation |
+| 2 | Imports are reversible (dashboard uninstall + audit) | recommendation |
+| 3 | Per-peer sharing by explicit handle only (no patterns) v1 | recommendation |
+| 4 | Tier 2.5 discovery shows names + descriptions only | recommendation |
+| 5 | RPC = always latest; template = pinned snapshot + update nudge | recommendation |
+| 6 | Revoke asymmetry accepted (RPC blocks; template copies persist) + share-time warning | recommendation |
+
+**Build-readiness:** open questions resolved → Tier 2-RPC ready to build once Trust+Inbox + Dashboard land (it's first in the sequence). Tier 2-Template needs the signing + sandbox-eval layer; Tier 2.5 is a small delta after. Tier 3 remains parked (§6).

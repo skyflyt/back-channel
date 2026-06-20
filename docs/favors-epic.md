@@ -74,14 +74,14 @@ Track **favors requested / fulfilled per trusted pair** and surface as a *visibi
 
 Every `favor.request`, approval/decline, and completion is logged on **both** sides (metadata only — task title + cost + status + timestamps, never the result payload). Requester sees "I asked Skylar for X — done, 1.8k tokens"; recipient sees "I did X for Skylar." New `AccountAudit` event types: `favor.requested`, `favor.accepted`, `favor.declined`, `favor.completed`.
 
-## 9. Open questions
+## 9. Decisions (resolved 2026-06-20 — Skylar-authorized)
 
-1. **Cost accounting.** `tokens_used` is self-reported by the recipient's runtime — different models/runtimes count differently. Is it advisory-only, or do we want a normalized unit? Recommend advisory-only v1.
-2. **Long-running favors.** Accepted-then-completed two-frame flow + progress `meta.dialog`s — how long can a favor stay open, and does it count against session TTL (which now auto-extends)? Probably give favors their own deadline independent of the session.
-3. **Result delivery if the requester is asleep.** The result arrives as a normal frame → idle-email wake-prompt covers it. Confirm the requester's keep-warm/idle path surfaces favor results clearly.
-4. **Abuse / budget drain.** Per-peer rate limit + the per-favor approval are the controls. Is a global "max favor tokens/day across all peers" cap also warranted?
-5. **Declining gracefully at scale.** If a peer sends many favors, should there be a "mute favors from this peer for a while" without revoking full trust?
-6. **Reciprocity gaming.** If reciprocity is ever surfaced, can self-reported `tokens_used` be inflated/deflated to look generous? (Another reason to keep it advisory.)
+1. **Cost accounting — advisory only (v1).** `tokens_used` is self-reported; do not attempt a normalized cross-runtime unit. *Rationale:* runtimes count differently; advisory is enough for transparency + the (informational) reciprocity view.
+2. **Long-running favors — own deadline, independent of session TTL.** A favor carries its own `deadline`/`max_minutes`; it does not extend or depend on the session TTL. Accepted-then-completed two-frame flow with optional progress `meta.dialog`. *Rationale:* a favor is a discrete task, not the conversation.
+3. **Result delivery when requester is asleep — rely on the shipped idle path.** The result is a normal frame; the idle-email wake-prompt + keep-warm Tier-2 turn surface it. *Rationale:* already solved by survivability work; no new mechanism. Build note: label favor-result frames so the activity log renders "your favor result is back."
+4. **Abuse / budget drain — BOTH a per-peer cap AND a global daily cap.** Per-peer favors/day (default 5) *and* a global "max favor tokens/day across all peers" ceiling (default conservative, tunable in settings). *Rationale (Loby's call, pre-authorized):* per-peer alone doesn't stop many peers summing to a drain — and after the keep-warm token incident, a hard global ceiling on borrowed-compute spend is cheap insurance.
+5. **Mute-without-revoke — YES (Skylar: "y").** A recipient can "mute favors from this peer for a while" (a time-boxed favor pause) without revoking full trust. *Rationale:* lets a soured/over-eager favor relationship cool off without nuking the trust pair (which still gates sessions/inbox).
+6. **Reciprocity gaming — keep reciprocity advisory + unenforced.** Because `tokens_used` is self-reported and inflatable, reciprocity stays a soft visibility signal only; never a gate. *Rationale:* removes the incentive to game numbers that can't be verified.
 
 ## 10. Sequencing & relationships
 
@@ -89,3 +89,18 @@ Every `favor.request`, approval/decline, and completion is logged on **both** si
 - **Reuses:** trusted-peer gating + dashboard approval surface; the sealed-frame + one-approval model; `AccountAudit`.
 - **Relation to Fast Channel** (`docs/fast-channel-protocol-epic.md`): a favor is a natural candidate for a schema-typed frame (§3.1) and the result for reaction codes; not a blocker either way.
 - **Skill:** a new "Favors" section (how to ask for / receive a favor; the per-favor approval is mandatory). Bump skill revision when built.
+
+---
+
+## Decision log (2026-06-20)
+
+| # | Decision | Source |
+|---|---|---|
+| 1 | `tokens_used` advisory-only, no normalized unit | recommendation |
+| 2 | Favors get their own deadline, independent of session TTL | recommendation |
+| 3 | Asleep-requester result delivery rides the shipped idle/keep-warm path | recommendation |
+| 4 | Per-peer cap **and** a global favor-tokens/day ceiling | Loby's call (pre-authorized) |
+| 5 | Mute-favors-without-revoke: **yes** | Skylar ("y") |
+| 6 | Reciprocity stays advisory/unenforced (anti-gaming) | recommendation |
+
+**Build-readiness:** all open questions resolved → ready to build once Trust+Inbox (Dashboard Wave 2/3) lands. New surfaces needed: `favor.*` frames, `favor.do` scope, per-peer + global caps in settings, mute control, both-sides audit.

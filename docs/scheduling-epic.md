@@ -65,7 +65,7 @@ Back Channel does **not** dictate how an agent reads or writes calendars. Each a
 
 No step books silently. `who_books` is agreed in `schedule.confirm` so exactly one side writes (see race condition in failure modes).
 
-## 6. Negotiation strategy (open question — start simple)
+## 6. Negotiation strategy (DECIDED — v1 first-overlap; see §9.1)
 
 - **v1: first-overlap-wins.** Intersect the two free/busy sets within `time_range` + `duration_min`, take the earliest few overlaps as candidates. Dead simple, predictable.
 - **v2: scored proposals.** Weight candidates by stated `preferences` (time-of-day, weekday vs weekend), location/distance, and "meeting density" (avoid back-to-back days). Each agent scores locally; `schedule.proposal.rationale` explains the pick.
@@ -82,15 +82,15 @@ Sharing free-slot times **leaks calendar density** to the trusted peer ("you're 
 - **Booking race.** Both sides must not book. `who_books` in `schedule.confirm` designates one; the other side treats booking as the booker's job and waits for `schedule.booked`. If `schedule.booked` doesn't arrive within a timeout, the non-booker asks (never books unilaterally). Idempotency: include the agreed `chosen` slot so a late/duplicate booked frame is recognizable.
 - **Calendar write fails locally** (Graph error, permission lapse) → booker sends `schedule.booked {error}` (or a `meta.dialog`) so the other side isn't left expecting an invite.
 
-## 9. Open questions
+## 9. Decisions (resolved 2026-06-20 — Loby's calls, Skylar pre-authorized)
 
-1. **Negotiation strategy** — first-overlap (v1) vs scored (v2); ship v1, measure.
-2. **Timezones** — all frames in UTC ISO-8601; each agent renders local. Confirm both agents normalize correctly (a classic bug source).
-3. **Multi-party (>2 participants).** The frames list `participants`, but the relay is pairwise today. Three-way scheduling needs either a coordinator agent fanning out pairwise, or a multi-party session — out of scope for v1 (two participants), but don't paint the frame contract into a corner.
-4. **Re-negotiation loops** — cap rounds to avoid two agents endlessly proposing/declining; after N rounds, surface to humans.
-5. **Booking authority + invites** — does the booker send the calendar invite to the other participant (so it lands on both calendars natively), or does each side book its own copy? Recommend booker-sends-invite to avoid double events.
-6. **Stale availability** — free/busy can change between `schedule.availability` and `schedule.confirm`. Re-check at confirm time on the booking side; if the chosen slot is now busy, fail gracefully back to proposal.
-7. **Scope creep** — `schedule.negotiate` must not become a backdoor to read event *contents*. Enforce free/busy-only at the agent layer; document that titles/attendees are never shared.
+1. **Negotiation strategy — v1 first-overlap.** Ship first-overlap-wins; the frame contract already supports v2 scored proposals without change. *Rationale:* simplest thing that works; measure before adding scoring.
+2. **Timezones — UTC ISO-8601 on the wire, render local.** All `schedule.*` times are UTC; each agent renders in its user's zone. *Rationale:* the one unambiguous representation; normalize at the edges.
+3. **Multi-party — v1 is two-participant only.** `participants` stays in the frame contract (forward-compatible), but v1 handles exactly two; 3+ is a later coordinator-fan-out or multi-party-session feature. *Rationale:* the relay is pairwise today; don't block the common 1:1 case on the hard case.
+4. **Re-negotiation loops — cap at 5 rounds, then surface to humans.** After 5 propose/decline cycles with no convergence, both agents stop and ask their users. *Rationale (Loby's call):* prevents an endless (token-burning) agent ping-pong; 5 is enough for a real overlap to surface or to conclude there isn't one.
+5. **Booking authority — booker-sends-invite.** The designated `who_books` side writes the event AND sends the calendar invite to the other participant (lands natively on both calendars); the other side does not book its own copy. *Rationale:* avoids double events; one source of truth.
+6. **Stale availability — re-check at confirm on the booking side.** Free/busy can drift between `availability` and `confirm`; the booker re-validates the chosen slot immediately before writing and falls back to a fresh proposal if it's now busy. *Rationale:* closes the obvious race without a locking protocol.
+7. **Scope creep — free/busy-only, enforced at the agent layer.** `schedule.negotiate` shares only busy/free within the requested window; never titles, attendees, or event contents. *Rationale:* keeps scheduling consistent with the content-blind/least-disclosure promise.
 
 ## 10. Sequencing & relationships
 
@@ -99,3 +99,19 @@ Sharing free-slot times **leaks calendar density** to the trusted peer ("you're 
 - **Relation to Fast Channel** (`docs/fast-channel-protocol-epic.md`): scheduling is a strong fit for schema-typed frames (§3.1) and speculative branching (§3.2 — "if you're free Tue propose Tue, else propose Thu" pre-computed), once both are stable.
 - **Relation to Favors** (`docs/favors-epic.md`): both are "agent acts on behalf of user via a trusted peer," but scheduling spends *calendar write authority* rather than tokens — hence the dedicated `schedule.book` scope + per-event approval.
 - **Skill:** a new "Scheduling" section (the propose→availability→proposal→confirm→booked flow; the mandatory final-time + booking approvals). Bump skill revision when built.
+
+---
+
+## Decision log (2026-06-20)
+
+| # | Decision | Source |
+|---|---|---|
+| 1 | v1 negotiation = first-overlap-wins (scored is v2) | recommendation |
+| 2 | UTC ISO-8601 on the wire, render local | recommendation |
+| 3 | v1 = two-participant only; `participants` stays forward-compatible | recommendation |
+| 4 | Cap re-negotiation at 5 rounds, then surface to humans | Loby's call |
+| 5 | Booker sends the invite (no double-booking) | recommendation |
+| 6 | Re-check the chosen slot at confirm; fall back if now busy | recommendation |
+| 7 | Free/busy-only, enforced agent-side; never titles/attendees | recommendation |
+
+**Build-readiness:** open questions resolved. Still the most involved autonomy feature (per-agent calendar integration touches each local stack) → ships AFTER Dashboard + Skill Sharing. Needs `schedule.negotiate`/`schedule.book` scopes, the five `schedule.*` frames, and each agent's own calendar adapter.

@@ -253,16 +253,16 @@ Sequencing rationale: Phase A is pure upside and de-risks the wire; Phase B trad
 
 ---
 
-## 6. Open questions (decide before any build)
+## 6. Decisions (resolved 2026-06-20 — Loby's calls, Skylar pre-authorized)
 
-1. **Versioning & upgrade.** How do `fast_channel.version` and per-feature versions (`plans@2`) evolve without breaking older agents mid-session? Hard-pin per session at `caps.hello`, or allow mid-session re-negotiation?
-2. **Negotiation trust.** `caps.hello` advertises features/schemas — is it plaintext-control (broker sees feature flags + schema field-names) or sealed? What's the privacy cost of the broker knowing two agents speak "branching"?
-3. **Fallback semantics.** Exact rules when capabilities only partially overlap, or when a peer advertises a feature but sends a malformed typed frame — fall back to text for *that frame*, the *capability*, or the *session*? Define precisely to avoid silent drops.
-4. **Transcript degradation policy.** Branching + reaction codes can make the human transcript less meaningful. Do we emit content-free *structural breadcrumbs* (`branch.took`, `rc`) as plaintext-control so the human sees "took branch 0 / approved" — accepting that the broker then learns that metadata? Or keep everything sealed and rely solely on the agent-side activity log? **This is the central product/privacy tradeoff of the epic.**
-5. **Malicious-use vectors.** Speculative branches + embeddings are potential covert channels / peer-state probes. What caps (branch count, predicate complexity, speculative-frame budget), validation, and post-hoc logging do we require? Does one-yes-per-session adequately gate a branch set, or do branch sets need their own approval surface?
-6. **Performance measurement.** How do we *prove* a win? Define metrics before building — round-trips per task, wall-clock to completion for turn-based pairs, wire bytes per session, % speculative frames wasted — and instrument the broker (frame counts/sizes are already content-blind metadata) so each technique can be A/B'd against the text baseline.
-7. **Predicate/DSL safety.** The branch predicate language and the action-plan DSL must be side-effect-free + sandboxed. What exact operations are allowed, and who audits a plan/predicate before a non-technical user approves it?
-8. **Interaction with one-yes-per-session.** Speculative branches and compiled plans pre-encode multiple actions. Does the host's single approval still cleanly cover "any branch within scope," and how is a branch/plan that would exceed scope detected *before* it runs?
+1. **Versioning — hard-pin per session at `caps.hello`; no mid-session re-negotiation (v1).** The feature set + versions are fixed for the session's life at negotiation. *Rationale:* removes a whole class of mid-stream upgrade bugs; a new session picks up new capabilities.
+2. **Negotiation trust — `caps.hello` is SEALED (`caps.hello.enc`).** Feature flags + schema field-names ride inside the encrypted envelope; the broker doesn't learn which features a pair speaks. *Rationale (Loby's call):* consistent with content-blind-by-default; the broker only needs to route, not know that two agents use "branching." Costs nothing meaningful.
+3. **Fallback semantics — fall back to text at the CAPABILITY level.** If a capability isn't mutually negotiated, or a peer sends a malformed typed frame for it, both sides drop that *capability* to the plain-text protocol for the rest of the session (not just the one frame, not the whole session). Log the downgrade. *Rationale:* per-frame flapping is fragile; whole-session is too blunt; per-capability is the right grain.
+4. **Transcript degradation (THE central tradeoff) — keep everything SEALED; rely on the agent-side activity log; NO plaintext breadcrumbs (v1).** Branch-taken / reaction signals stay encrypted; the human sees them via their own agent's decrypted activity log, not via broker-visible breadcrumbs. *Rationale (Loby's call):* privacy-first is the product's whole identity — don't leak approve/reject or branch-selection metadata to the broker to prettify a transcript. **The plaintext-breadcrumb option is equivalently valid and explicitly reserved as a future opt-in** if users decide they want richer broker-side transcripts and accept the metadata cost.
+5. **Malicious-use caps — bounded + gated + logged.** Branch sets ≤ 8 branches; predicate language is a fixed side-effect-free allow-list (see #7); speculative/pipelined frames count against the existing per-session frame budget + rate limits. A branch set is gated by the normal one-yes-per-session **plus** a pre-run scope check (#8) — no separate approval surface unless a branch would exceed scope. Post-hoc: log which branch ran (to the agent-side log). *Rationale:* makes the covert-channel/probe surface small and auditable; reuses existing budgets.
+6. **Performance measurement — define metrics BEFORE building, instrument the broker (metadata only).** Track round-trips/task, wall-clock-to-completion for turn-based pairs, wire bytes/session, and % speculative frames wasted; A/B each technique against the text baseline using content-blind frame counts/sizes. *Rationale:* "faster" must be proven, not assumed; the broker already holds the needed metadata.
+7. **Predicate/DSL safety — fixed side-effect-free allow-list; human approves the RENDERED plan.** Predicates/plan steps are limited to a small declarative allow-list (file_exists, value compares, capability checks, typed file/scaffold ops) — no arbitrary code, no network, no shell. Before a non-technical user approves, the agent renders the plan/predicate in plain language; they approve the rendering, not raw DSL. *Rationale:* a capability is executable intent; constrain it hard and make it legible.
+8. **One-yes-per-session interaction — one approval covers any IN-SCOPE branch/plan; out-of-scope detected pre-run.** The host's single session approval authorizes any branch/plan step within the granted scope. Before executing, the receiver scope-checks each step; anything exceeding scope is NOT run and triggers a fresh approval ask. *Rationale:* preserves the one-yes model while guaranteeing pre-encoded actions can't smuggle scope creep.
 
 ---
 
@@ -270,4 +270,21 @@ Sequencing rationale: Phase A is pure upside and de-risks the wire; Phase B trad
 - **Layers on** the current handshake + sealed `enc` frame model (SKILL.md *Encryption*); the broker stays content-blind throughout — no technique asks it to read payloads.
 - **Shares machinery with Skill-Sharing** (`docs/skill-sharing-epic.md`): schema-typed frames ≈ `paramSchema`; compiled action plans ≈ signed shared capabilities. Build the schema/DSL/signing layer once.
 - **Complements survivability** (shipped): TTL auto-extend + `peer_status` + wake-prompt keep turn-based sessions *alive* across gaps; Fast Channel *reduces the number and length of those gaps*.
-- **Auditability tension** is with the `/sessions/:id` transcript (broker content-blind by design) — open question 4 is where this epic must make an explicit call.
+- **Auditability tension** is with the `/sessions/:id` transcript (broker content-blind by design) — resolved in §6.4: keep everything sealed, rely on the agent-side activity log; plaintext breadcrumbs are a reserved future opt-in.
+
+---
+
+## Decision log (2026-06-20)
+
+| # | Decision | Source |
+|---|---|---|
+| 1 | Hard-pin capabilities per session at `caps.hello`; no mid-session re-negotiation | Loby's call |
+| 2 | `caps.hello` is sealed — broker never learns the feature set | Loby's call |
+| 3 | Fallback to text at the **capability** level (not frame, not session); log it | Loby's call |
+| 4 | **Transcript: everything stays sealed; agent-side log only; NO plaintext breadcrumbs** (plaintext is a reserved future opt-in) | Loby's call |
+| 5 | Branch sets ≤8; predicates allow-listed; speculative frames hit existing budgets; log taken branch | Loby's call |
+| 6 | Define perf metrics before build; A/B via content-blind broker metadata | recommendation |
+| 7 | DSL/predicates: side-effect-free allow-list; human approves rendered plan | recommendation |
+| 8 | One-yes covers in-scope branches; out-of-scope blocked pre-run, needs fresh approval | recommendation |
+
+**Build-readiness:** decisions resolved. **Phase A (schema-typed frames + reaction codes)** is the promoted near-term token win — ready to spec into a build after Account Dashboard. Phases B (pipelining/branching) and C (compiled plans, with Skill-Sharing) follow once Phase A is stable and the perf harness (§6.6) exists.

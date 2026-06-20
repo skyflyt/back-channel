@@ -127,16 +127,16 @@ These are written into the admin UI footer and the public privacy statement (§5
 
 ---
 
-## 7. Open questions
+## 7. Decisions (resolved 2026-06-20 — Loby's calls, Skylar pre-authorized)
 
-1. **Who can grant admin?** Only the admin-of-admins (Skylar), or any admin? Recommend: any admin can grant, but **the last admin cannot be revoked** (lockout guard), and all grants are audited.
-2. **Aggregation freshness vs cost.** Compute on-the-fly per query (simple, fine at current scale) vs a periodic rollup table (needed only at larger scale). Recommend on-the-fly first; add rollups when query latency bites.
-3. **Liveness across restart / multi-instance.** Live counters come from the in-memory relay Map — they reset on redeploy and would be per-instance if we ever scale past min=max=1. Acceptable for "right now" counters? Document that liveness is point-in-time, not historical.
-4. **Failed-handshake signal.** Is an opt-in client `decrypt.failed` report worth the protocol surface, or do we infer handshake trouble from "handshake exchanged but no content frame followed within N min"? Recommend the inference first (no new frame), add the explicit report only if needed.
-5. **Resend webhook.** Wiring delivery/bounce/complaint events gives real email deliverability numbers (valuable given the corporate-inbox friction) — but adds a public webhook endpoint to secure (signature verification). Worth it? Recommend yes, but deferred to its own small task.
-6. **IP aggregates boundary.** Exactly which IP-derived metrics are allowed (unique-IP count, rate-limit hotspots) and how we guarantee they're never joinable to handles in storage or UI. Needs a concrete rule before building anything IP-touching.
-7. **Per-account drill-down line.** Where exactly is the line between "useful operational counts" and "creepy per-user surveillance"? Define the maximum per-account granularity the admin UI will ever show, and bake it into the API (don't return more than that).
-8. **Retention.** How long are aggregates / audit events kept? Align with any stated data-retention policy.
+1. **Granting admin — any admin can grant/revoke; the last admin can't be revoked (lockout guard); all grants audited.** *Rationale:* avoids a single point of failure while preventing accidental self-lockout.
+2. **Aggregation — compute on-the-fly per query (v1); add rollup tables only when query latency bites.** *Rationale:* trivial at current scale; don't build a rollup pipeline prematurely.
+3. **Liveness — point-in-time only, explicitly documented as such.** Live counters come from the in-memory relay Map (reset on redeploy, per-instance if ever scaled); the UI labels them "right now," not historical. *Rationale:* honest about what the number means; no need to persist ephemeral liveness.
+4. **Failed-handshake — inference first, no new protocol frame.** Infer trouble from "handshake exchanged but no content frame within N minutes"; only add an opt-in client `decrypt.failed` report if the inference proves insufficient. *Rationale:* don't expand the wire protocol for a metric we can approximate.
+5. **Resend webhook — yes, but deferred to its own small task.** Real delivery/bounce/complaint numbers are worth it (esp. given corporate-inbox friction), but the secured public webhook is separable from the core analytics build. *Rationale:* valuable, not blocking; sequence it after the read-only analytics ship.
+6. **IP aggregates — count-level only, never joined to identity.** Allowed: unique-IP counts, rate-limit hotspot counts. Forbidden: any stored or displayed join of IP↔handle, any per-account IP history. Enforced in the API (it never returns IP-per-account). *Rationale:* operational signal without per-user IP surveillance.
+7. **Per-account drill-down ceiling — coarse counts only.** The maximum the admin UI/API will ever show about an individual: counts (e.g. # sessions, # trust pairs, # frames). Never per-session detail, peers, timings, or anything approaching content/relationship reconstruction. Baked into the API response shape. *Rationale:* the bright line between operations and surveillance; abuse investigation uses `AccountAudit`, not analytics.
+8. **Retention — aggregates kept indefinitely (they're just counts); raw `AccountAudit`/admin-query events kept 180 days, then pruned.** *Rationale (Loby's call):* aggregate counts carry no per-user risk; raw events do, so they age out. Adjust if a formal data-retention policy sets a different number.
 
 ---
 
@@ -145,3 +145,20 @@ These are written into the admin UI footer and the public privacy statement (§5
 - **Captures from day one:** Trust + Inbox metrics (build analytics after that epic so nothing is backfilled).
 - **Content-blind by construction** — consistent with the broker's core promise; this epic adds *visibility into operations*, never into conversations.
 - **Landing/privacy:** adds the operator-transparency line (§5) to the public privacy statement.
+
+---
+
+## Decision log (2026-06-20)
+
+| # | Decision | Source |
+|---|---|---|
+| 1 | Any admin grants/revokes; last-admin lockout guard; audited | recommendation |
+| 2 | On-the-fly aggregation v1; rollups only if latency bites | recommendation |
+| 3 | Liveness is point-in-time, labeled as such | recommendation |
+| 4 | Failed-handshake by inference; no new frame v1 | recommendation |
+| 5 | Resend webhook: yes, deferred to its own task | recommendation |
+| 6 | IP metrics count-level only; never joined to identity | Loby's call |
+| 7 | Per-account ceiling = coarse counts; never per-session detail | Loby's call |
+| 8 | Aggregates indefinite; raw audit/admin events pruned at 180 days | Loby's call |
+
+**Build-readiness:** open questions resolved → build AFTER Trust+Inbox (so trust metrics land from day one). Needs `Account.admin` (seed `skylar@bc`), `/api/admin/analytics`, grant/revoke, the metadata-only counters, and the `/admin` UI (reuses dashboard cookie auth).

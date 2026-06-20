@@ -263,19 +263,19 @@ Dependency notes: Waves 2 & 3 add new endpoints but **reuse Wave-1 cookie auth**
 
 ---
 
-## 8. Open questions (decide before build)
+## 8. Decisions (resolved 2026-06-20 — Skylar-reviewed)
 
-1. **Key rotation from a view-link** — allow from a 15-min emailed link (recommended, + rotate-notice email), or require a second confirmation? emailed link is good
-2. **View-token vs cookie lifetimes** — 15 min token / 24 h cookie proposed. Too long a cookie on a shared machine is a risk; too short annoys. Add an idle timeout? 24h is probably a good start
-3. **History retention + label** — 30 days proposed. The human-readable session label: use the invite `message` (plaintext, host-chosen) — confirm we never attempt to show encrypted goal/content. ok
-4. **Manual trust-add from dashboard** — v1 (post-session prompt only) or allow "trust skylar@bc" from the dashboard? Manual-add weakens the "after a real mutual session" guarantee — recommend v2 at most, gated on a prior session having existed.   trust should be controllable from the dashboard but only for agents that you they have had a session with already.  for those historoical connections you should be able to 
-5. **N-hours mutual-trust window** — 24h proposed.
-6. **Scope ceiling on inbox requests** — cap at `scopeDefaults` (recommended yes).
-7. **Re-establish after revoke** — fresh coded session re-enables, or cooldown?
-8. **Notification fatigue** — inbox requests email + keep-warm surface + dashboard; same rate-limit/quiet rules as idle email.
-9. **Account deletion / handle reissue** — cascade trust + tokens on delete; behavior if a handle is reused.
-10. **Multi-instance** — `ViewToken`/`BrowserSession`/`TrustedPeer`/`InboxRequest` are all in Postgres (durable, multi-instance-safe), unlike the in-memory relay buffer. Good — the dashboard doesn't add to the single-instance constraint.
-11. **CSRF** — cookie-authed write endpoints (rotate, revoke, end, accept) need CSRF protection (SameSite=Lax helps; add a token for state-changing POSTs).
+1. **Key rotation from a view-link — ALLOWED (Skylar: "emailed link is good").** Rotate from the 15-min emailed view-link; no second confirmation. Always `key.rotated` audit + a "key rotated" notice email (both shipped in Phase 2a). *Rationale:* same trust level as the existing `/recover` flow, and the notice makes a surprise rotation visible.
+2. **Lifetimes — 15-min view-token / 24-h cookie, no idle timeout v1 (Skylar: "24h is probably a good start").** *Rationale:* good balance; revisit an idle timeout only if shared-machine risk shows up.
+3. **History — 30 days, label = invite `message` (Skylar: "ok").** Never attempt to render encrypted goal/content; the host-chosen plaintext `message` is the human label. *Rationale:* content-blind; already implemented this way in Phase 2a.
+4. **Trust control from dashboard — YES, but ONLY for peers you've had a prior session with (Skylar).** The dashboard lets you **enable/disable trust for any peer with whom a real session previously existed** — not arbitrary handles. So the gate isn't "a mutual post-session prompt was clicked" but "a session has happened between us"; given that history, either side may toggle trust on/off from the dashboard at will. *Rationale:* Skylar's call — makes trust a managed setting over your real connection history, not a one-shot prompt, while still preventing cold-trusting a stranger. **Schema impact:** trust establishment no longer strictly requires the mutual-establish-within-N-hours dance (§6) — a prior session between the pair is the eligibility gate; mutual *enable* still required for trust to be active (both sides must have it on).
+5. **Mutual-trust window — configurable, default generous, up to infinite (Skylar: "adjustable up to infinite").** The N-hours window becomes a setting; "infinite" (no expiry on the eligibility to establish) is allowed. Combined with #4, the practical model: once you've had a session, that pair stays eligible to trust indefinitely; each side toggles it. *Rationale:* Skylar's call; removes artificial expiry friction.
+6. **Scope ceiling on inbox requests — YES, cap at `scopeDefaults` (Skylar: "yes").** Inbox-requested scopes may not exceed the peer's `scopeDefaults`; widening needs a fresh coded invite. *Rationale:* trust waives the code, not the scope ceiling.
+7. **Re-establish after revoke — no cooldown; immediate re-enable (Loby's call, pre-authorized).** Since trust is now a dashboard toggle over session history (#4), a revoke is just "off"; the user can toggle it back on anytime (the pair stays eligible). No fresh coded session required, no cooldown. *Rationale:* consistent with the toggle model; a cooldown would be surprising for a setting you control. (A cooldown is an equivalently-valid future change if abuse appears.)
+8. **Notification fatigue — same rate-limit/quiet rules as idle email (Skylar: "yes rate limit").** Inbox-request emails + keep-warm surfacing obey the existing per-recipient rate limit / quiet windows. *Rationale:* one consistent nudge policy across all notification types.
+9. **Account deletion / handle reissue — cascade on delete; trust is account-keyed, not handle-keyed (Skylar: "your call").** Deleting an account cascades its `ViewToken`/`SessionCookie`/`TrustedPeer`/`InboxRequest`/`AccountAudit` rows. Handles are **not** reused across accounts; trust references `accountId`, so even if a handle string were ever reissued, trust never transfers to a different account. *Rationale (Loby's call):* simplest safe behavior; no accidental trust inheritance.
+10. **Multi-instance — resolved, no action.** All dashboard/trust tables are in Postgres (durable, multi-instance-safe); the dashboard doesn't add to the single-instance relay constraint.
+11. **CSRF — required: SameSite=Lax + a double-submit token on state-changing cookie POSTs (Loby's call, pre-authorized).** Rotate/revoke/end/accept get a CSRF token in addition to the existing SameSite=Lax cookie. *Rationale:* SameSite=Lax blocks most cross-site POSTs but a defense-in-depth token is cheap and standard. **Build note:** add to Phase 2/3 cookie-authed mutations (the Phase-2a ones — rotate/settings/end — should get the token retrofitted before Phase 3 adds trust/inbox mutations).
 
 ---
 
@@ -284,3 +284,25 @@ Dependency notes: Waves 2 & 3 add new endpoints but **reuse Wave-1 cookie auth**
 - **Absorbs:** the former `docs/trust-and-inbox-epic.md` (now deleted; its content is §6 here).
 - **Adjacent:** `docs/alt-delivery-channels.md` (Settings toggles for SMS/Slack/Teams/web-push wire in at Wave 4).
 - **Skill:** Wave 2 adds the post-session trust prompt; otherwise the dashboard is a human surface and doesn't change the agent protocol. Bump skill revision only when the trust prompt ships.
+
+---
+
+## Decision log (2026-06-20)
+
+| # | Decision | Source |
+|---|---|---|
+| 1 | Key rotation allowed from the 15-min view-link (+ audit + notice) | Skylar |
+| 2 | 15-min token / 24-h cookie; no idle timeout v1 | Skylar |
+| 3 | 30-day history; label = invite `message` (never encrypted content) | Skylar |
+| 4 | **Trust is a dashboard toggle, eligible for any peer you've had a prior session with** (not arbitrary handles); supersedes the strict mutual-prompt-within-N-hours model in §6 | Skylar |
+| 5 | Trust-eligibility window configurable up to infinite | Skylar |
+| 6 | Inbox-request scopes capped at peer `scopeDefaults` | Skylar |
+| 7 | Revoke → immediate re-enable, no cooldown (toggle model) | Loby's call |
+| 8 | Inbox/keep-warm nudges obey the idle-email rate-limit/quiet rules | Skylar |
+| 9 | Cascade dashboard/trust rows on account delete; trust is accountId-keyed (no handle-reissue inheritance) | Skylar ("your call") |
+| 10 | Multi-instance: no action (all Postgres-backed) | recommendation |
+| 11 | CSRF: SameSite=Lax + double-submit token on cookie mutations | Loby's call |
+
+> **§6 reconciliation note:** decisions #4/#5 update the Trust model — eligibility to trust a peer is now "a real session has occurred between us" (kept indefinitely), and trust is an enable/disable toggle each side controls from the dashboard, rather than a one-shot mutual prompt that must both fire within N hours. Trust is still **mutual** (active only when both sides have it enabled) and **accountId-keyed**. §6's endpoints/schema stand; the *establishment trigger* is what changed. Phase 3 builds to this resolved model.
+
+**Build-readiness:** Phase 1 + 2a shipped. Phase 2b (email overhaul) + CSRF retrofit pending. Phase 3 (trust + inbox) is now **unblocked** — all trust decisions resolved (build to the toggle-over-session-history model above).

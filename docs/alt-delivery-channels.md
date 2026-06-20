@@ -37,16 +37,30 @@ We already mitigate with: (1) a session-specific paste-ready wake-up prompt *ins
 - **Verification flows:** SMS needs a code round-trip; Slack/Teams need OAuth/app install; web push needs the subscription handshake. All belong behind the authed account API + a `/settings` UI (also currently future).
 - **Skill:** when a channel is connected, the keep-warm/idle story is unchanged — these are purely the human-nudge egress. Document in Step 1d that the human can connect SMS/Slack/Teams for faster nudges than email.
 
-## Open questions (decide before building)
+## Decisions (resolved 2026-06-20 — Loby's calls, Skylar pre-authorized)
 
-1. **Which channel first?** Teams is most on-target for the JEI/M365 rollout; SMS is the most universal; web push is the cheapest. Recommend prototyping **one** (likely Teams or SMS) and measuring.
-2. **Consent + compliance.** SMS carries TCPA/opt-in obligations; store explicit consent + a STOP path.
-3. **Link vs full prompt.** SMS length limits → probably send a short line + link to `/sessions/:id` (which now shows the full copy-block); Slack/Teams can carry the whole prompt.
-4. **Fallback vs fan-out.** Single preferred channel with email fallback (recommended) vs. notify-all. Single-channel respects the "don't triple-buzz" principle.
-5. **Reputation maturation.** If allowlisting + warmed-up sending reputation makes email land cleanly for most corporate recipients, this epic may stay unbuilt. Revisit after a few weeks of real JEI usage.
+1. **First channel — Microsoft Teams.** Prototype Teams first (the JEI/M365 rollout is the live use case; an Adaptive Card carries the full wake-prompt + an Open button). SMS second (most universal), web push later (cheapest but needs a registered PWA). *Rationale:* build for the actual users we have; measure before adding more.
+2. **Consent + compliance — explicit opt-in + STOP per channel.** SMS especially: store explicit consent and honor a STOP path (TCPA). Each channel is opt-in, default off. *Rationale:* non-negotiable for SMS; good hygiene for all.
+3. **Payload — SMS = short line + link to `/sessions/:id`; Slack/Teams = full prompt.** Length-limited channels send a teaser + the dashboard link (which shows the full copy-block); rich channels carry the whole paste-ready prompt. *Rationale:* fit the medium.
+4. **Routing — single preferred channel + email fallback (no fan-out).** Deliver to the user's highest-priority enabled channel; email is the always-on fallback. Never notify all channels for one nudge. *Rationale:* respects the "don't triple-buzz" rule + the shipped rate-limit policy.
+5. **Reputation gate — may stay unbuilt.** If allowlisting + warmed sending reputation makes email land cleanly for corporate recipients, this epic stays parked. Revisit after a few weeks of real JEI usage. *Rationale:* don't build delivery infra we may not need; let real deliverability data decide.
 
 ## Relationship to existing work
 
 - Builds directly on the shipped idle-email path (`notify.mjs` → `notifyIdleRecipient`) and the `wakePrompt()` helper; channels are additive egress, not a rewrite.
 - Shares the `/settings` opt-out UI and the web-push (VAPID) line already noted as future in the README roadmap.
 - Independent of the trust + inbox feature (now part of `docs/account-dashboard-epic.md`), though a trusted-peer inbox request would use the same wake-up dispatch.
+
+---
+
+## Decision log (2026-06-20)
+
+| # | Decision | Source |
+|---|---|---|
+| 1 | First channel = Microsoft Teams (then SMS, then web push) | Loby's call |
+| 2 | Per-channel explicit opt-in + STOP (TCPA for SMS) | recommendation |
+| 3 | SMS = short + link; Slack/Teams = full prompt | recommendation |
+| 4 | Single preferred channel + email fallback; no fan-out | recommendation |
+| 5 | May stay unbuilt if email reputation matures | recommendation |
+
+**Build-readiness:** decisions resolved, but this epic is **gated on a real need** — only build if email deliverability to corporate inboxes stays poor after allowlisting + reputation warm-up. Lowest priority of the shelf.
