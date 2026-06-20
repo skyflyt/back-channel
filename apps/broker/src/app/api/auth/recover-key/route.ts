@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateApiKey, isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC } from "@/lib/auth";
+import { generateApiKey, isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, CSRF_COOKIE_NAME, generateCsrfToken } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -69,5 +69,6 @@ export async function POST(req: NextRequest) {
   const rawCookie = generateSessionCookieToken();
   await prisma.sessionCookie.create({ data: { token: hashToken(rawCookie), accountId: updated.id, expiresAt: sessionCookieExpiry() } });
   res.cookies.set(SESSION_COOKIE_NAME, rawCookie, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: SESSION_COOKIE_MAX_AGE_SEC });
+  res.cookies.set(CSRF_COOKIE_NAME, generateCsrfToken(), { httpOnly: false, secure: true, sameSite: "lax", path: "/", maxAge: SESSION_COOKIE_MAX_AGE_SEC });
   return res;
 }

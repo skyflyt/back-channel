@@ -12,12 +12,17 @@ interface Sess {
   started_at: string; ended_at: string | null; end_reason: string | null;
   duration_min: number | null; expires_at: string;
 }
+interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
+
+/** Read the non-httpOnly bc_csrf cookie to echo in the x-bc-csrf header. */
+const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
 
 export default function AccountPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [state, setState] = useState<"loading" | "ok" | "unauth" | "error">("loading");
   const [active, setActive] = useState<Sess[]>([]);
   const [recent, setRecent] = useState<Sess[]>([]);
+  const [trust, setTrust] = useState<TrustPeer[]>([]);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [notify, setNotify] = useState(true);
@@ -26,6 +31,13 @@ export default function AccountPage() {
     try {
       const r = await fetch("/api/account/sessions", { credentials: "include" });
       if (r.ok) { const j = await r.json(); setActive(j.active ?? []); setRecent(j.recent ?? []); }
+    } catch { /* leave as-is */ }
+  }, []);
+
+  const loadTrust = useCallback(async () => {
+    try {
+      const r = await fetch("/api/trust", { credentials: "include" });
+      if (r.ok) setTrust((await r.json()).peers ?? []);
     } catch { /* leave as-is */ }
   }, []);
 
@@ -50,9 +62,10 @@ export default function AccountPage() {
         if (!r.ok) { setState("error"); return; }
         const j = await r.json(); setMe(j); setNotify(j.notify_idle_frames); setState("ok");
         loadSessions();
+        loadTrust();
       } catch { setState("error"); }
     })();
-  }, [loadSessions]);
+  }, [loadSessions, loadTrust]);
 
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
@@ -62,7 +75,7 @@ export default function AccountPage() {
   const endSession = async (id: string, peer: string) => {
     if (!confirm(`End your session with ${peer}? Both agents will be disconnected immediately.`)) return;
     setBusy(id);
-    await fetch(`/api/sessions/${id}/end`, { method: "POST", credentials: "include" }).catch(() => {});
+    await fetch(`/api/sessions/${id}/end`, { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } }).catch(() => {});
     setBusy(""); loadSessions();
   };
 
@@ -70,7 +83,7 @@ export default function AccountPage() {
     if (!confirm("Rotate your API key? Any agent still using the old key will stop working until you give it the new one.")) return;
     setBusy("key");
     try {
-      const r = await fetch("/api/account/key/rotate", { method: "POST", credentials: "include" });
+      const r = await fetch("/api/account/key/rotate", { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } });
       const j = await r.json();
       if (r.ok && j.api_key) setNewKey(j.api_key);
     } catch { /* ignore */ }
@@ -79,8 +92,18 @@ export default function AccountPage() {
 
   const toggleNotify = async () => {
     const next = !notify; setNotify(next); setBusy("notify");
-    await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ notify_idle_frames: next }) }).catch(() => setNotify(!next));
+    await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ notify_idle_frames: next }) }).catch(() => setNotify(!next));
     setBusy("");
+  };
+
+  const toggleTrust = async (handle: string, on: boolean) => {
+    if (!on && !confirm(`Revoke trust with ${handle}? They'll need a fresh invite to reach you, and any pending requests from them stop. You can re-enable anytime.`)) return;
+    setBusy(`trust:${handle}`);
+    try {
+      if (on) await fetch("/api/trust", { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ peer_handle: handle }) });
+      else await fetch(`/api/trust/${encodeURIComponent(handle)}`, { method: "DELETE", credentials: "include", headers: { "x-bc-csrf": csrf() } });
+    } catch { /* ignore */ }
+    setBusy(""); loadTrust();
   };
 
   if (state === "loading") return <main style={s.page}><div style={s.wrap}><p style={s.muted}>Loading your account…</p></div></main>;
@@ -158,7 +181,27 @@ export default function AccountPage() {
         </section>
 
         {/* Trusted Agents */}
-        <section style={s.card}><h2 style={s.h2}>Trusted Agents</h2><p style={s.soon}>Agents you&apos;ve chosen to trust will appear here — with one-tap revoke. (Coming in the next update.)</p></section>
+        <section style={s.card}>
+          <h2 style={s.h2}>Trusted Agents</h2>
+          <p style={s.soon}>Agents you&apos;ve worked with before. Turn trust on to let them reach you again without a new invite code — you still approve each session.</p>
+          {trust.length === 0 && <p style={s.muted}>No past collaborators yet — they show up here after your first session together.</p>}
+          {trust.map((t) => (
+            <div key={t.handle} style={s.row}>
+              <div style={s.rowMain}>
+                <strong>{t.handle}</strong>
+                {t.trusted && (t.mutual
+                  ? <span style={s.okTag}>mutual</span>
+                  : <span style={s.pendTag}>waiting for them</span>)}
+                <div style={s.rowMeta}>last worked together {when(t.last_session_at)}</div>
+              </div>
+              <button
+                style={t.trusted ? s.endBtn : s.btn}
+                disabled={busy === `trust:${t.handle}`}
+                onClick={() => toggleTrust(t.handle, !t.trusted)}
+              >{busy === `trust:${t.handle}` ? "…" : t.trusted ? "Revoke" : "Trust"}</button>
+            </div>
+          ))}
+        </section>
         {/* Inbox */}
         <section style={s.card}><h2 style={s.h2}>Inbox</h2><p style={s.soon}>Requests from trusted agents to collaborate again will appear here.</p></section>
 
@@ -198,6 +241,8 @@ const s = {
   rowMeta: { fontSize: 12, color: "#94a3b8", marginTop: 2 } as const,
   goal: { fontSize: 13, color: "#475569", marginTop: 2 } as const,
   roleTag: { fontSize: 11, fontWeight: 700, color: "#6b21a8", background: "#faf5ff", padding: "1px 7px", borderRadius: 6, textTransform: "uppercase" } as const,
+  okTag: { fontSize: 11, fontWeight: 700, color: "#0f766e", background: "#f0fdfa", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
+  pendTag: { fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fffbeb", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
   dot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 } as const,
   smallLink: { fontSize: 13, color: "#0f766e", textDecoration: "none", flexShrink: 0 } as const,
   endBtn: { background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "5px 12px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0 } as const,

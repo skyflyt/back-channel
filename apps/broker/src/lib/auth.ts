@@ -105,6 +105,21 @@ export function sessionCookieExpiry(): Date {
 }
 export const SESSION_COOKIE_MAX_AGE_SEC = SESSION_COOKIE_TTL_MS / 1000;
 
+// ── CSRF (double-submit) for cookie-authed mutations ───────────────────────
+// bc_csrf is a NON-httpOnly cookie set alongside bc_session; the dashboard JS
+// reads it and echoes it in the x-bc-csrf header on state-changing requests.
+// A cross-site attacker can ride the bc_session cookie (SameSite=Lax helps but
+// isn't airtight) but cannot read bc_csrf to forge the matching header.
+export const CSRF_COOKIE_NAME = "bc_csrf";
+export const CSRF_HEADER = "x-bc-csrf";
+export function generateCsrfToken(): string {
+  return randomBytes(18).toString("base64url");
+}
+/** True if the header token matches the cookie token (both present, equal). */
+export function csrfValid(headerToken: string | null | undefined, cookieToken: string | null | undefined): boolean {
+  return !!headerToken && !!cookieToken && headerToken === cookieToken;
+}
+
 /**
  * Resolve an account from EITHER the bearer key OR the bc_session cookie.
  * For endpoints that legitimately serve both the agent (bearer) and the human

@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateApiKey, isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC } from "@/lib/auth";
+import { generateApiKey, isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, CSRF_COOKIE_NAME, generateCsrfToken } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 /** Issue a dashboard browser session for `accountId` and attach the bc_session
- *  cookie to `res` — so a freshly verified/recovered user lands on /account
- *  already authenticated (no separate sign-in). */
+ *  + bc_csrf cookies to `res` — so a freshly verified/recovered user lands on
+ *  /account already authenticated (no separate sign-in). */
 async function attachDashboardSession(res: NextResponse, accountId: string) {
   const raw = generateSessionCookieToken();
   await prisma.sessionCookie.create({ data: { token: hashToken(raw), accountId, expiresAt: sessionCookieExpiry() } });
   res.cookies.set(SESSION_COOKIE_NAME, raw, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: SESSION_COOKIE_MAX_AGE_SEC });
+  res.cookies.set(CSRF_COOKIE_NAME, generateCsrfToken(), { httpOnly: false, secure: true, sameSite: "lax", path: "/", maxAge: SESSION_COOKIE_MAX_AGE_SEC });
 }
 
 export const runtime = "nodejs";

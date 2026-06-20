@@ -6,6 +6,8 @@ import {
   sessionCookieExpiry,
   SESSION_COOKIE_NAME,
   SESSION_COOKIE_MAX_AGE_SEC,
+  CSRF_COOKIE_NAME,
+  generateCsrfToken,
 } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -44,5 +46,6 @@ export async function POST(req: NextRequest) {
   const session = vt.purpose?.startsWith("session:") ? vt.purpose.slice("session:".length) : null;
   const res = NextResponse.json({ ok: true, handle: account.handle, session });
   res.cookies.set(SESSION_COOKIE_NAME, rawCookie, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: SESSION_COOKIE_MAX_AGE_SEC });
+  res.cookies.set(CSRF_COOKIE_NAME, generateCsrfToken(), { httpOnly: false, secure: true, sameSite: "lax", path: "/", maxAge: SESSION_COOKIE_MAX_AGE_SEC });
   return res;
 }

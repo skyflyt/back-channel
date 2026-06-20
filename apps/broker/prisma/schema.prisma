@@ -30,6 +30,29 @@ model Account {
   viewTokens       ViewToken[]
   sessionCookies   SessionCookie[]
   accountAudits    AccountAudit[]
+  trustGiven       TrustedPeer[] @relation("TrustOwner")
+  trustReceived    TrustedPeer[] @relation("TrustPeer")
+}
+
+// Trust (Account Dashboard Wave 2). DIRECTED: one row = "this account trusts
+// that peer." Mutual trust (required to actually collaborate code-free) = both
+// directed rows present. Per the resolved spec it's a dashboard enable/disable
+// toggle: eligibility = the pair has had a real session before; enabling
+// creates this row, revoking deletes it. accountId-keyed (survives handle
+// changes; never transfers on handle reissue).
+model TrustedPeer {
+  id               String   @id @default(uuid())
+  accountId        String   // the owner of this trust record
+  trustedAccountId String   // the peer they trust
+  establishedAt    DateTime @default(now())
+  lastUsedAt       DateTime?
+  scopeDefaults    String[] // ceiling for what this peer may request via inbox (Wave 3)
+  account        Account @relation("TrustOwner", fields: [accountId],        references: [id], onDelete: Cascade)
+  trustedAccount Account @relation("TrustPeer",  fields: [trustedAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, trustedAccountId])  // one directed row per pair
+  @@index([accountId])
+  @@index([trustedAccountId])
 }
 
 // Account Dashboard — short-lived, single-use token emailed to a verified
