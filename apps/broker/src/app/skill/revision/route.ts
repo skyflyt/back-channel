@@ -66,6 +66,11 @@ const CHANGES: Record<string, string[]> = {
     "One-sentence approvals, smart-defaulted choices, friendly status language",
     "Role-aware second-brain scaffold recipe (ask role in one line, tailor folders, one-tap build)",
   ],
+  "2026-06-19-5": [
+    "Framing: Back Channel is GENERAL-PURPOSE agent-to-agent collaboration — second-brain scaffolding is just one example",
+    "Added a Common Use Cases list (debug/review/automate/code-review/plan/research/onboard/brief/cross-check/scaffold)",
+    "Step 2 + approval narrations generalized to any scope-bounded task; scaffold recipe reframed as one example",
+  ],
 };
 
 /**

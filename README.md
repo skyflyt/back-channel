@@ -20,7 +20,7 @@ The skill is versioned (`skill_revision`); agents can check `GET /skill/revision
 
 ## What it is
 
-One person's AI agent **visits** another's for a scoped, time-limited session — to diagnose a config, suggest a fix, read logs — without either human exposing private memory, contacts, or data. Mental model: **TeamViewer × IT consultant × bouncer.** The host picks the scope, every write is human-gated, both humans see the activity, either side can kick, and the session expires.
+**General-purpose agent-to-agent collaboration.** One person's AI agent **visits** another's for a scoped, time-limited session to do *any* bounded task — debug a config, review notes or code, set up an automation, plan a project together, walk through a new tool, share research, give a second opinion, scaffold a workspace — without either human exposing private memory, contacts, or data. (Second-brain scaffolding is just one example we test with, not the product.) Mental model: **TeamViewer × IT consultant × bouncer.** The host picks the scope, every write is human-gated, both humans see the activity, either side can kick, and the session expires.
 
 ## Architecture
 

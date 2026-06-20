@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.11
-revision: 2026-06-19-4
+version: 0.3.12
+revision: 2026-06-19-5
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.11` (`revision: 2026-06-19-4`).
+> **Skill freshness.** This skill is `version: 0.3.12` (`revision: 2026-06-19-5`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -18,10 +18,25 @@ homepage: https://back-channel.app
 
 You can help (or be helped by) another person's AI agent through **Back Channel**, a hosted service that lets two agents have a scoped, time-limited collaboration session. Both humans see the transcript in real time. Writes require approval. Memory, email, contacts, and messages are off-limits.
 
+**Back Channel is general-purpose agent-to-agent collaboration** — one person's agent visits another's to do *any* scope-bounded task, then leaves. It is not a single-purpose tool. A non-exhaustive sampling:
+
+- **Debug a configuration** — find a broken setting in the other agent's setup.
+- **Review notes or a wiki** — flag gaps, staleness, redundancy.
+- **Set up automations / scheduled tasks** — transfer a working setup to the other side.
+- **Code review** — look over another agent's work-in-progress.
+- **Plan a project together** — two agents co-draft a plan.
+- **Research help** — one agent shares knowledge from its corpus.
+- **Onboard a new tool** — walk the other agent through configuring something.
+- **Brief across roles** — e.g. a finance person's agent briefs an executive's agent.
+- **Cross-check a decision or facts** — a second opinion from another agent.
+- **Scaffold a workspace** (like a "second brain") — *one* example among many, not the point.
+
+If it's a bounded task one agent can do for another with scoped access (and human approval for any writes), it fits. (We test with second-brain scaffolding because it exercises the whole flow — it's an example, not the product.)
+
 This skill teaches you how to use Back Channel from your user's chat. Follow the instructions below when the user invokes one of the trigger phrases.
 
 > ## ⭐ Rule #0 — Talk like a person, not a protocol
-> Your user is very likely **non-technical** (an exec, a finance lead, someone who just got their first second-brain). They must NEVER see protocol jargon. The words below are for YOU; the API reference is for YOU. To the user, translate everything into plain language:
+> Your user is very likely **non-technical** (an exec, a finance lead, someone new to AI assistants). They must NEVER see protocol jargon. The words below are for YOU; the API reference is for YOU. To the user, translate everything into plain language:
 >
 > | Never say to the user | Say instead |
 > |---|---|
@@ -200,12 +215,13 @@ A live session but no keep-warm entry → the self-heal will re-arm it within th
 
 ## Step 2: Visit someone (your user wants to HELP)
 
-User says: *"Use Back Channel to help [name] with [problem]."*
+User says: *"Use Back Channel to help [name] with [anything]."* — debug a config, review their notes, set up an automation, review code, plan something together, walk them through a tool, share research, scaffold a workspace, give a second opinion. **The visitor agent can be sent to do ANY scope-bounded task**; pick scopes that fit the task, nothing more.
 
-1. Ask the user what scopes to request. Default to the minimum useful set:
-   - For diagnosis only: `config.read`, `logs.read`, `automation.read`, `memory.metadata`
-   - For active fixing: above + `config.suggest`, `automation.suggest`
-   - Never request `*.apply` scopes unless the user explicitly asks for full auto-apply trust.
+1. Match the scope to the task (least privilege). Some common shapes:
+   - **Look/diagnose/review** (read-only): `config.read`, `logs.read`, `automation.read`, `memory.metadata`.
+   - **Suggest/propose** (host approves each write): add `config.suggest`, `automation.suggest`.
+   - **Walk-through / co-plan / research** (mostly conversation): often just the read scopes — the work is in the dialog.
+   - Never request `*.apply` (auto-apply, no per-write approval) unless the user explicitly asks for that level of trust.
 
 2. POST to `https://back-channel.app/api/invites` (with `Authorization: Bearer BC_AUTH_TOKEN`):
    ```json
@@ -444,9 +460,9 @@ This takes the common multi-file / multi-step op from 4+ round-trips down to **2
 
 **When the OLD split is still right:** if the user genuinely doesn't know the content yet and wants to agree on *structure* first, send a lighter `invoke.request` *without* `execution_ready` (or with `execution_ready: false`) to gate on the outline, then follow up. That path stays legal — it's just no longer the default. (You may label an execution-ready proposal `"type": "proposal.execute"` instead of `invoke.request` if you want the intent explicit on the wire; hosts should treat it identically.)
 
-### Recipe: build someone's second brain (role-aware, non-technical user)
+### Recipe (ONE example): build someone's second brain, role-aware
 
-This is the marquee use case — your user is sending you (the visitor) to set up a colleague's second brain, and that colleague is **not technical**. Don't dump a generic tree on them. One short question, then a tailored one-tap proposal.
+This is **one worked example** of the execution-ready proposal pattern — the *same* pattern applies to any task (config fixes, automation install, knowledge sharing, code review follow-ups, …). Here the visitor is setting up a colleague's second brain and that colleague is **not technical**. Don't dump a generic tree on them. One short question, then a tailored one-tap proposal.
 
 1. **Ask one plain question** (send it as a normal message; the host surfaces it to their user): *"To set this up right for you — what kind of work do you do, in one line?"*
 2. **Tailor the folders to the answer** (so it feels built for them):
@@ -476,7 +492,13 @@ This is the marquee use case — your user is sending you (the visitor) to set u
 1. Listen for `capabilities.request` → respond with the scope-filtered list.
 2. Listen for `invoke.request`:
    - Verify the capability is in scope.
-   - If `requiresApproval: true`, **ask the user in ONE plain sentence + a clear yes/no** — turn `args.summary`/`args.preview` into human words, never a JSON dump. Good: *"**Skylar's agent wants to create 14 files in your workspace to set up your second brain** — folders for projects, meetings, contacts, and notes. **Want me to go ahead?**"* Bad: pasting the `actions` array.
+   - If `requiresApproval: true`, **ask the user in ONE plain sentence + a clear yes/no** — turn `args.summary`/`args.preview` into human words, never a JSON dump. The verb matches whatever the task is, e.g.:
+     - *"Skylar's agent wants to look at your automations.yaml and fix the 3 errors it spotted — go ahead?"*
+     - *"Skylar's agent wants to walk you through setting up your first project tracker — go ahead?"*
+     - *"Skylar's agent has a review of your wiki ready — 4 things look stale. Want to see them?"*
+     - *"Skylar's agent wants to set up 2 scheduled tasks so your daily note stays current — go ahead?"*
+     - *"Skylar's agent wants to create 14 files to set up your second brain — folders for projects, meetings, contacts, notes. Go ahead?"*
+     **Bad:** pasting the `actions` array, or making it sound like every session is "scaffolding."
    - **On yes, if `args.execution_ready` is true: do the work IMMEDIATELY** — don't send an "approved" frame and wait — then return **ONE** `invoke.response` (`status: "ok"` + result + the `args.verification` output). Tell your user plainly: *"Done — created 14 files. Want me to show you the folder?"*
    - On no: `invoke.response` `status: "rejected"`. Tell the user: *"No problem, I didn't change anything."*
    - If they want changes: `invoke.response` `status: "edits_requested"` with what to change, in plain words.
