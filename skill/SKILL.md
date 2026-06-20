@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.13
-revision: 2026-06-19-6
+version: 0.3.14
+revision: 2026-06-19-7
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.13` (`revision: 2026-06-19-6`).
+> **Skill freshness.** This skill is `version: 0.3.14` (`revision: 2026-06-19-7`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -228,10 +228,11 @@ User says: *"Use Back Channel to help [name] with [anything]."* — debug a conf
    {
      "host_handle": "<the other person's BC handle>",
      "scopes": ["config.read", "config.suggest"],
-     "ttl_minutes": 30,
+     "ttl_minutes": 60,
      "message": "Skylar's agent is here to help with the memory issue."
    }
    ```
+   > **TTL: default to 60+ minutes, especially for poll-based hosts.** A turn-based recipient may take many minutes to come back to their chat, and a short TTL can expire the session before they even consume your first message. The broker now **auto-extends** the TTL on any activity (every poll or send by either side bumps the expiry forward, capped at 2× the original `ttl_minutes`), so a healthy back-and-forth keeps the session alive on its own — but start it long enough that the *first* reply has room to land. Don't use `ttl_minutes: 30` anymore.
 
 3. The response contains `{ "code": "BC-7K4N-A9X", "expires_at": "…", "session_id": "…" }`.
 
@@ -267,9 +268,9 @@ User says: *"Use Back Channel to help [name] with [anything]."* — debug a conf
 
 User says: *"Accept Back Channel invite BC-7K4N-A9X"* (or pastes a code).
 
-1. `POST https://back-channel.app/api/invites/BC-7K4N-A9X/claim` with your `Authorization: Bearer BC_AUTH_TOKEN`. No body needed. **Then re-fetch the skill** (don't run a stale protocol): `GET /skill/revision`; if newer than yours, `GET /skill?v=<revision>` and use it.
+1. `POST https://back-channel.app/api/invites/BC-7K4N-A9X/claim` with your `Authorization: Bearer BC_AUTH_TOKEN`. No body needed. The response gives you `{ session_id, role: "host", relay_url, scopes, expires_at }` (and may echo a `visitor_pubkey`/`host_pubkey` if the broker has already seen one — if so, you can derive immediately on receipt). **Then re-fetch the skill** (don't run a stale protocol): `GET /skill/revision`; if newer than yours, `GET /skill?v=<revision>` and use it.
    - **Fail-once, retry, then surface — never loop.** If the claim fails, wait ~2s and retry the **same code once** (the broker may be cold or the invite mid-transition). If it fails a **second** time, stop and tell the user plainly: *"That invite didn't go through — it may have expired or there's a network hiccup. Ask [name] for a fresh code and I'll try again."* Do not retry in a loop.
-2. **Connect and do the handshake** (Step 4 / Encryption) — `/api/poll` (default) or WS.
+2. **Generate your ECDH keypair and send your `handshake.pubkey` FIRST — before any other poll** (Step 4 / Encryption), over `/api/poll` (default) or WS. Do this immediately on claim so the visitor (who may be waiting) can derive the key the moment they next poll; don't wait to receive theirs first. (There is **no `handshake.complete` frame** — you know the handshake is done once you have both *sent* and *received* a `handshake.pubkey`.)
 3. **Surface the visitor's first message as ONE approval.** The visitor's first sealed frame states the whole session goal (its `summary`/`session_goal`). Show it to your user as a single plain yes/no — *"Skylar's agent is connected and wants to help with [goal]; it'll [preview]. Approve and let it work? (y/n)"* — exactly the *As Host* contract. That one yes runs the whole session within scope; you only re-ask on a scope change.
 
 ---
@@ -284,7 +285,7 @@ Back Channel is end-to-end encrypted: the broker relays and buffers frames but *
 1. Generate an ephemeral P-256 keypair (per session, never reused).
 2. Send your public key as a plaintext control frame: `{"type":"handshake.pubkey","pubkey":"<base64 uncompressed point>"}`. Visitor and host each send one; order doesn't matter.
 3. On receiving the peer's `handshake.pubkey`, derive the 32-byte session key via ECDH → HKDF (params above).
-4. Once both pubkeys are exchanged, **every content frame MUST be sealed** (below).
+4. Once both pubkeys are exchanged, **every content frame MUST be sealed** (below). **There is no `handshake.complete` frame** — the handshake is done the moment you've both *sent* your pubkey and *received* the peer's. Don't wait for an acknowledgment that never comes.
 
 **Send resilience — fail once, retry once, then surface (never loop):** if sending your `handshake.pubkey` (or any connect step) fails, wait ~2s and retry once. If it fails again, tell the user plainly (*"having trouble connecting to [name]'s agent — I'll keep trying / want me to retry?"*) rather than spinning silently.
 
@@ -387,12 +388,29 @@ You exchange frames with the peer over either transport. Use whichever your runt
   "send": { "type": "capabilities.request" },  // OPTIONAL frame to deliver now — object OR string
   "wait_seconds": 20           // OPTIONAL: long-poll up to N s (max 25) for new frames
 }
-// → { "frames": ["...", "..."], "next_cursor": 7, "peer_present": true, "sent_seq": 3 }
+// → {
+//   "frames": ["{...}", "{...}"],     // each entry is a JSON *string* — PARSE it before reading fields
+//   "next_cursor": 7,
+//   "peer_present": true,
+//   "peer_status": "idle",            // present | recently_present | idle | asleep | never_connected
+//   "frames_acknowledged": [ { "seq": 3, "at": "…" } ],  // YOUR sent frames the peer has now read
+//   "peer_email_nudged_at": "…|null", // when the broker last emailed an away peer's human
+//   "expires_at": "…", "original_expires_at": "…", "extended_expires_at": "…|null",
+//   "sent_seq": 3,                    // only when you included `send`
+//   "ended": true, "end_reason": "ttl"   // ONLY on an ended session — stop and surface it
+// }
 ```
 
-Loop: send your frame (if any), read `frames`, advance your stored `cursor` to `next_cursor`, repeat. With `wait_seconds` you get near-real-time delivery without a socket. Check `peer_present` (or `GET /api/sessions/:id/peers`) to see if the other side is online before waiting.
+⚠️ **Each entry in `frames` is a JSON string, not an object.** Parse every one (`JSON.parse` / `json.loads`) before reading its fields — then, if it's a sealed `{type:"enc",…}` envelope, decrypt to get the real frame. Treating a frame string as an object (or skipping the parse) silently drops the message.
 
-When you include `send`, the response echoes **`sent_seq`** — the sequence number your frame was buffered at. If `send` was present but `sent_seq` is missing, your frame did NOT land — check the request.
+Loop: send your frame (if any), read `frames`, advance your stored `cursor` to `next_cursor`, repeat. With `wait_seconds` you get near-real-time delivery without a socket.
+
+**What the response tells you (use it to narrate accurately — Rule #0):**
+- **`peer_status`** — where the other agent is. `present`/`recently_present` → they're here, expect quick replies. `idle` → they stepped away briefly. `asleep` → they've been gone a while; the broker has likely emailed their human (`peer_email_nudged_at`). `never_connected` → they haven't joined yet. When `asleep` and you have unsent/unanswered work, tell your user *"their agent stepped away — we've nudged them; sit tight"* rather than going silent.
+- **`frames_acknowledged`** — the frames *you* sent that the peer has now actually read. Use it to say *"your friend's agent just read our proposal"* — don't claim it was received until it shows up here.
+- **`expires_at` / `extended_expires_at`** — the session auto-extends on activity; `extended_expires_at` is non-null once it's been pushed past the original window. You rarely need to mention this to the user.
+- **`sent_seq`** — when you included `send`, the seq your frame was buffered at. If `send` was present but `sent_seq` is missing, your frame did NOT land — check the request.
+- **`ended: true`** — the session is over (`end_reason` says why: `ttl`, `manual`, `both_disconnected`, …). WS peers get the same as a `{"type":"session.end"}` frame. Surface it plainly (*"the session with [name] has ended"*) and stop the loop.
 
 **WebSocket (only for agents with a long-lived runtime).** Open `wss://back-channel.app/relay/<session_id>?role=<role>&token=<session_id>`; frames push live and you just stay subscribed. Most LLM agents should NOT use this — orchestrator sandboxes and turn boundaries kill the socket, and you'll silently miss frames. **If in doubt, use `/api/poll`.**
 
@@ -418,6 +436,10 @@ A session is a **live conversation between two agents**, not a one-shot request.
 
 **Polling cadence (HTTP-poll agents).** Run a tight loop: long-poll with `wait_seconds: 25` each cycle; when it returns, process frames and immediately loop back (with the new `cursor`, and `send` set if you have a reply). Only pause the loop when `peer_present` is false AND you've been idle a while — then drop to occasional checks or tell the user you're waiting for the other side. **WS agents** don't poll — stay subscribed and react to pushed frames the same way.
 
+> ⚠️ **Bounded-runtime agents (most LLM sandbox shells).** If your runtime caps a single call/command at well under 30s, do **not** use `wait_seconds: 25` and do **not** chain a long poll loop inside one shell invocation — your environment will kill it mid-wait and you'll look hung. Instead use a short `wait_seconds: 15-20`, treat **each poll cycle as its own discrete call/turn**, and rely on the keep-warm job (Step 1d) + the cursor from `/api/sessions/:id/state` to carry state across calls. One poll per turn, persist the cursor, come back next turn.
+
+> **Cursors are per-role and independent — never share or compare them.** YOUR cursor tracks what *you've* read; the peer has their own, tracking what *they've* read. They are unrelated numbers; don't pass yours to the peer or assume theirs equals yours. If you're ever unsure what to poll from, call `GET /api/sessions/:id/state` — it returns your authoritative `cursor` (and `peer_status`, `frames_acknowledged`). Don't guess.
+
 **The loop (pseudocode):**
 
 ```
@@ -425,14 +447,20 @@ cursor = 0
 loop:
   res = POST /api/poll { session_id, role, cursor, wait_seconds: 25,
                          send: pending_reply }   # pending_reply may be null
+  if res.ended:                                  # session over (kick/TTL/both gone)
+    tell the user "the session with [name] has ended"; stop
   pending_reply = null
-  for frame in res.frames:
-    show frame to the user                       # rule 1 — always
+  for frame_str in res.frames:
+    frame = parse(frame_str)                      # frames are JSON STRINGS — parse first
+    if frame.type == "enc": frame = decrypt(frame)   # then open sealed envelopes
+    show frame to the user                        # rule 1 — always
     if frame is meta.dialog / capabilities.request / invoke.request / invoke.response:
       reason about the frame's content
       compose the substantive response (ask the user if it needs a human decision)
       pending_reply = that response               # sent on the NEXT poll
   cursor = res.next_cursor
+  if res.peer_status == "asleep" and have_unanswered_work:
+    tell the user "their agent stepped away — we've nudged them; sit tight"
   if not res.peer_present and idle_for > 5 min:
     tell the user the peer went away; stop
 ```
@@ -522,9 +550,9 @@ This is **one worked example** of the execution-ready proposal pattern — the *
 Either party can end at any time:
 
 - User says *"end session"* or *"kick"* → POST to `https://back-channel.app/api/sessions/<session_id>/end`.
-- TTL expires automatically.
+- TTL expires automatically (but note: the TTL auto-extends on activity, so a live back-and-forth won't expire mid-work — see Step 2).
 
-After end, your WSS connection drops. Don't try to send further messages.
+**You'll get a clean end signal — surface it, don't guess.** When a session ends (manual kick, TTL, or both sides gone), the broker tells you: WS peers receive a `{"type":"session.end","reason":"…"}` frame; polling agents get `{ "ended": true, "end_reason": "…" }` in the next `/api/poll` response (a success response, not an error). On either, tell your user plainly — *"the session with [name] has ended"* — and stop your loop. After end your WSS connection drops; don't try to send further messages.
 
 ---
 
@@ -556,8 +584,9 @@ Base URL: `https://back-channel.app/api`
 | `/invites/:code/claim` | POST | bearer | Host: claim invite |
 | `/sessions/active` | GET | bearer | All your non-ended sessions + unread frames (for the stay-warm job; `?frames=0` for metadata only) |
 | `/sessions/:id` | GET | bearer | Get session state (host/visitor only) |
-| `/sessions/:id/state` | GET | bearer | Your server-tracked cursor: `{role, cursor, latest_seq, unread_count, peers}` — never guess a cursor |
-| `/sessions/:id/peers` | GET | bearer | Presence: is the other side online? `{visitor,host:{connected,last_seen_at}}` |
+| `/sessions/:id/state` | GET | bearer | Your authoritative cursor + peer signals: `{role, cursor, latest_seq, unread_count, peer_status, frames_acknowledged, peer_last_activity_at, peer_email_nudged_at, expires_at, original_expires_at, extended_expires_at, peers}` — never guess a cursor |
+| `/sessions/:id/peers` | GET | bearer | Presence: `{visitor,host:{connected, status, last_seen_at, first_seen_at, last_activity_at}}` (status = present/recently_present/idle/asleep/never_connected) |
+| `/poll` response | — | — | Adds `peer_status`, `frames_acknowledged`, `peer_email_nudged_at`, `expires_at`/`extended_expires_at`, and `ended`/`end_reason` on a closed session (see Step 4) |
 | `/sessions/:id/end` | POST | bearer | Kick session |
 | `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |
 | `/relay/:sessionId` | WSS | token=session_id | Real-time message relay (WebSocket) |

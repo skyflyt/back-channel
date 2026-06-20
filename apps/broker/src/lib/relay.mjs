@@ -83,10 +83,21 @@ const DISCONNECT_GRACE_MS = 5 * 60 * 1000;
 // A polling role is considered "present" if it polled within this window.
 const POLL_PRESENCE_MS = 30 * 1000;
 
+// peer_status thresholds (since the peer's last activity — poll OR send).
+const PEER_IDLE_MS = 5 * 60 * 1000; // recently_present < 30s; idle < 5m; asleep beyond.
+
+// TTL auto-extension (C1): ANY activity by either side (a poll or a send) bumps
+// the session's expiry to now + this, so a turn-based pair doesn't time out
+// between turns. Capped at 2× the original TTL (see newSlot.maxExpiresAt).
+const TTL_EXTEND_MS = 30 * 60 * 1000;
+// Don't write the DB on every frame — only persist the extended expiry when it
+// has moved more than this past the last persisted value.
+const TTL_PERSIST_THRESHOLD_MS = 60 * 1000;
+
 // Current skill revision — surfaced to agents on connect / in poll responses so
 // a stale copy is noticed immediately. Keep in sync with skill/SKILL.md's
 // `revision:` frontmatter (GET /skill/revision reads the file authoritatively).
-const CURRENT_SKILL_REVISION = "2026-06-19-6"; // keep in sync with skill/SKILL.md frontmatter
+const CURRENT_SKILL_REVISION = "2026-06-19-7"; // keep in sync with skill/SKILL.md frontmatter
 
 // Frames whose `type` the broker routes on — allowed in plaintext. Everything
 // else is "content" and should be a sealed `{type:"enc",...}` envelope.
@@ -123,10 +134,18 @@ function newFrameStat() {
   return { pendingFrames: 0, pendingBytes: 0, totalFrames: 0, totalBytes: 0 };
 }
 
-/** @param {{ scopesGranted: string[], invite: { expiresAt: Date } }} session */
+/** @param {{ scopesGranted: string[], invite: { id: string, createdAt: Date, ttlMinutes: number, expiresAt: Date } }} session */
 function newSlot(session) {
+  const inv = session.invite;
+  const created = (inv.createdAt instanceof Date ? inv.createdAt : new Date(inv.createdAt)).getTime();
+  const ttlMs = Math.max(1, inv.ttlMinutes || 60) * 60 * 1000;
+  // `expiresAt` is the live, possibly-extended expiry; `originalExpiresAt` is the
+  // creation-time TTL (immutable, derived from createdAt+ttl so it survives
+  // restart even after we bump Invite.expiresAt); `maxExpiresAt` caps extension
+  // at 2× the original TTL (C1).
   return {
     startedAt: Date.now(),
+    inviteId: inv.id,
     scopesGranted: session.scopesGranted,
     stats: { visitor: newFrameStat(), host: newFrameStat() },
     connected: { visitor: false, host: false },
@@ -136,13 +155,58 @@ function newSlot(session) {
     wsCursor: { visitor: 0, host: 0 },
     lastPolledCursor: { visitor: 0, host: 0 },
     lastSeen: { visitor: 0, host: 0 },
+    firstSeen: { visitor: 0, host: 0 },
+    lastNudge: { visitor: 0, host: 0 }, // ms epoch we last idle-emailed this role's human (C2)
     handshakePub: { visitor: null, host: null },
-    expiresAt: session.invite.expiresAt,
+    expiresAt: inv.expiresAt,
+    originalExpiresAt: new Date(created + ttlMs),
+    maxExpiresAt: new Date(created + 2 * ttlMs),
+    persistedExpiresAt: inv.expiresAt,
     graceTimer: null,
     ttlTimer: null,
     ended: false,
     loadPromise: null,
   };
+}
+
+/** Mark a role active (poll OR send). Drives presence, peer_status, first-seen. */
+function markSeen(slot, role) {
+  const now = Date.now();
+  slot.lastSeen[role] = now;
+  if (!slot.firstSeen[role]) slot.firstSeen[role] = now;
+}
+
+/**
+ * C1 — extend the session TTL on activity. Bumps expiry to now + TTL_EXTEND_MS,
+ * capped at maxExpiresAt (2× original). Re-arms the TTL timer and persists the
+ * new expiry (throttled) so it survives a broker restart. No-op if it wouldn't
+ * move the expiry forward.
+ */
+function extendTtlOnActivity(sessionId, slot) {
+  if (slot.ended) return;
+  const target = Math.min(Date.now() + TTL_EXTEND_MS, slot.maxExpiresAt.getTime());
+  if (target <= slot.expiresAt.getTime()) return; // already at/beyond (or capped)
+  slot.expiresAt = new Date(target);
+  if (slot.ttlTimer) { clearTimeout(slot.ttlTimer); slot.ttlTimer = null; }
+  armTtlTimer(sessionId, slot);
+  if (target - slot.persistedExpiresAt.getTime() > TTL_PERSIST_THRESHOLD_MS) {
+    slot.persistedExpiresAt = new Date(target);
+    if (slot.inviteId) {
+      void prisma.invite.update({ where: { id: slot.inviteId }, data: { expiresAt: new Date(target) } }).catch(() => {});
+    }
+  }
+}
+
+/** peer_status (C2/M5): present | recently_present | idle | asleep | never_connected. */
+function peerStatus(slot, role) {
+  const other = role === "visitor" ? "host" : "visitor";
+  if (slot[other] && slot[other].readyState === WebSocket.OPEN) return "present";
+  const seen = slot.lastSeen[other] || 0;
+  if (!seen) return "never_connected";
+  const age = Date.now() - seen;
+  if (age < POLL_PRESENCE_MS) return "recently_present";
+  if (age < PEER_IDLE_MS) return "idle";
+  return "asleep";
 }
 
 /**
@@ -218,6 +282,11 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
   const bytes = Buffer.byteLength(text, "utf8");
   const dest = fromRole === "visitor" ? "host" : "visitor";
 
+  // Sending is activity: it keeps presence fresh AND extends the TTL (C1) so a
+  // turn-based pair doesn't expire mid-exchange.
+  markSeen(slot, fromRole);
+  extendTtlOnActivity(sessionId, slot);
+
   const parsed = (() => { try { return JSON.parse(text); } catch { return undefined; } })();
   const type = parsed?.type;
   const isControl = typeof type === "string" && PLAINTEXT_CONTROL_TYPES.has(type);
@@ -238,7 +307,8 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
     console.error(`Frame persist failed ${sessionId}/${dest}/${s}:`, e instanceof Error ? e.message : e);
   }
 
-  slot.log[dest].push({ seq: s, data: text, ts: Date.now() });
+  const frame = { seq: s, data: text, ts: Date.now(), consumedAt: 0 };
+  slot.log[dest].push(frame);
   if (slot.log[dest].length > POLL_LOG_CAP) {
     const evicted = slot.log[dest].shift();
     // Keep the DB buffer trimmed to the same cap (fire-and-forget).
@@ -247,7 +317,7 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
 
   const destWs = slot[dest];
   if (destWs && destWs.readyState === WebSocket.OPEN) {
-    try { destWs.send(text); } catch {}
+    try { destWs.send(text); frame.consumedAt = Date.now(); } catch {} // live-delivered = consumed (C3)
     slot.wsCursor[dest] = s;
   }
 
@@ -282,6 +352,7 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
       Date.now() - (slot.lastSeen[dest] || 0) > IDLE_NOTIFY_MS &&
       rateLimit("notify", `${sessionId}:${dest}`, 1, NOTIFY_RATE_MS).ok) {
     const unread = Math.max(1, slot.seq[dest] - slot.lastPolledCursor[dest]);
+    slot.lastNudge[dest] = Date.now(); // surfaced as peer_email_nudged_at (C2)
     void notifyIdleRecipient(sessionId, dest, unread);
   }
 
@@ -352,9 +423,10 @@ async function attachToSession(sessionId, role, ws) {
   slot[role] = ws;
   slot.connected[role] = true;
   slot.everConnected[role] = true;
-  slot.lastSeen[role] = Date.now();
+  markSeen(slot, role);
   cancelGraceEnd(slot);
   armTtlTimer(sessionId, slot);
+  extendTtlOnActivity(sessionId, slot); // connecting is activity (C1)
 
   await prisma.auditLog.create({ data: { sessionId, role, eventType: "relay.connected", detail: {} } });
 
@@ -370,7 +442,7 @@ async function attachToSession(sessionId, role, ws) {
   notifyPeerJoined(slot, role);
 
   ws.on("message", async (data) => {
-    slot.lastSeen[role] = Date.now();
+    markSeen(slot, role);
     await ingestFrame(slot, sessionId, role, data);
   });
 
@@ -421,7 +493,8 @@ function flushToWs(slot, role) {
  */
 export async function pollSession({ sessionId, role, cursor, sendData, waitMs, session }) {
   const slot = await getOrCreateSlot(sessionId, session);
-  slot.lastSeen[role] = Date.now();
+  markSeen(slot, role);
+  extendTtlOnActivity(sessionId, slot); // polling is activity (C1)
 
   let sentSeq = null;
   if (sendData != null && sendData !== "") {
@@ -432,6 +505,7 @@ export async function pollSession({ sessionId, role, cursor, sendData, waitMs, s
   // Record what this role has acked, so GET /api/sessions/active can compute
   // unread_count. Monotonic — a stale lower cursor never rewinds it.
   if (cur > slot.lastPolledCursor[role]) slot.lastPolledCursor[role] = cur;
+  stampConsumed(slot, role); // C3: frames this role has now read get a consumedAt
   let frames = readSince(slot, role, cur);
 
   const deadline = Date.now() + Math.min(Math.max(waitMs || 0, 0), 25000);
@@ -442,14 +516,46 @@ export async function pollSession({ sessionId, role, cursor, sendData, waitMs, s
   }
 
   const next = frames.length ? frames[frames.length - 1].seq : cur;
+  const other = role === "visitor" ? "host" : "visitor";
   return {
     frames: frames.map((f) => f.data),
     next_cursor: next,
     peer_present: peerPresent(slot, role),
+    peer_status: peerStatus(slot, role),
+    // C3: which of MY sent frames the peer has now consumed (read/live-delivered).
+    frames_acknowledged: ackedFrames(slot, role),
+    // C2: when the broker last idle-emailed the peer's human (null if never).
+    peer_email_nudged_at: slot.lastNudge[other] ? new Date(slot.lastNudge[other]).toISOString() : null,
+    // C1: TTL transparency.
+    expires_at: slot.expiresAt.toISOString(),
+    original_expires_at: slot.originalExpiresAt.toISOString(),
+    extended_expires_at: slot.expiresAt.getTime() > slot.originalExpiresAt.getTime() ? slot.expiresAt.toISOString() : null,
     skill_revision: CURRENT_SKILL_REVISION,
     // Acknowledge a buffered outgoing frame so the sender knows it landed.
     ...(sentSeq != null ? { sent_seq: sentSeq } : {}),
   };
+}
+
+/** C3: stamp consumedAt on frames addressed to `role` that it has now read. */
+function stampConsumed(slot, role) {
+  const cur = slot.lastPolledCursor[role];
+  const now = Date.now();
+  for (const f of slot.log[role]) {
+    if (f.seq <= cur && !f.consumedAt) f.consumedAt = now;
+  }
+}
+
+/**
+ * C3: frames `role` SENT (they live in the peer's inbox) that the peer has
+ * consumed — so the sender can say "your friend's agent just read our proposal".
+ * Most-recent ~20, oldest-first.
+ */
+function ackedFrames(slot, role) {
+  const peerInbox = role === "visitor" ? "host" : "visitor"; // frames I sent land in peer's inbox
+  return slot.log[peerInbox]
+    .filter((f) => f.consumedAt)
+    .slice(-20)
+    .map((f) => ({ seq: f.seq, at: new Date(f.consumedAt).toISOString() }));
 }
 
 function readSince(slot, role, cur) {
@@ -470,13 +576,20 @@ function peerPresent(slot, role) {
 export function getPeers(sessionId) {
   const slot = sessions.get(sessionId);
   const role = (r) => {
-    if (!slot) return { connected: false, last_seen_at: null };
+    if (!slot) return { connected: false, status: "never_connected", last_seen_at: null, first_seen_at: null, last_activity_at: null };
     const live = !!(slot[r] && slot[r].readyState === WebSocket.OPEN);
-    const seen = slot.lastSeen[r] || 0;
+    const seen = slot.lastSeen[r] || 0;            // ALL activity: WS connect, WS msg, poll, send (M5)
+    const first = slot.firstSeen[r] || 0;
     const recent = Date.now() - seen < POLL_PRESENCE_MS;
+    const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
     return {
       connected: live || recent,
-      last_seen_at: seen ? new Date(seen).toISOString() : null,
+      // status from the OTHER side's vantage point would need a role arg; here we
+      // report this role's own liveness band so /peers shows both sides uniformly.
+      status: live ? "present" : !seen ? "never_connected" : recent ? "recently_present" : (Date.now() - seen < PEER_IDLE_MS ? "idle" : "asleep"),
+      last_seen_at: iso(seen),
+      first_seen_at: iso(first),
+      last_activity_at: iso(seen),
     };
   };
   return { visitor: role("visitor"), host: role("host") };
@@ -528,13 +641,23 @@ export function getTranscript(sessionId) {
  */
 export async function sessionState(sessionId, role, session) {
   const slot = await getOrCreateSlot(sessionId, session);
+  stampConsumed(slot, role); // a state read also acknowledges what you've cursored past
   const cursor = slot.lastPolledCursor[role];
   const latest = slot.seq[role];
+  const other = role === "visitor" ? "host" : "visitor";
   return {
     role,
     cursor,
     latest_seq: latest,
     unread_count: Math.max(0, latest - cursor),
+    peer_status: peerStatus(slot, role),
+    peer_first_seen_at: slot.firstSeen[other] ? new Date(slot.firstSeen[other]).toISOString() : null,
+    peer_last_activity_at: slot.lastSeen[other] ? new Date(slot.lastSeen[other]).toISOString() : null,
+    peer_email_nudged_at: slot.lastNudge[other] ? new Date(slot.lastNudge[other]).toISOString() : null,
+    frames_acknowledged: ackedFrames(slot, role),
+    expires_at: slot.expiresAt.toISOString(),
+    original_expires_at: slot.originalExpiresAt.toISOString(),
+    extended_expires_at: slot.expiresAt.getTime() > slot.originalExpiresAt.getTime() ? slot.expiresAt.toISOString() : null,
     peers: getPeers(sessionId),
   };
 }
@@ -615,6 +738,13 @@ export async function endSession(sessionId, reason) {
     slot.ended = true;
     cancelGraceEnd(slot);
     if (slot.ttlTimer) { clearTimeout(slot.ttlTimer); slot.ttlTimer = null; }
+    // C4: tell both live peers the session is over (clean end, no extra fetch).
+    // Pollers learn the same via the poll route's `ended:true` response.
+    const endFrame = controlFrame({ type: "session.end", reason });
+    for (const r of /** @type {Role[]} */ (["visitor", "host"])) {
+      const ws = slot[r];
+      if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(endFrame); } catch {} }
+    }
     try { slot.visitor?.close(4000, reason); } catch {}
     try { slot.host?.close(4000, reason); } catch {}
     sessions.delete(sessionId);

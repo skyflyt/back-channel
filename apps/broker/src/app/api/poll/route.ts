@@ -47,7 +47,18 @@ export async function POST(req: NextRequest) {
 
   const session = await prisma.session.findUnique({ where: { id: sessionId }, include: { invite: true } });
   if (!session) return NextResponse.json({ error: "session_not_found" }, { status: 404 });
-  if (session.endedAt) return NextResponse.json({ error: "session_ended", reason: session.endReason }, { status: 410 });
+  // C4: an ended session returns a clean, success-shaped end signal (not a bare
+  // 410) so a polling agent can surface "the session has ended" in one read,
+  // mirroring the `session.end` control frame WS peers receive.
+  if (session.endedAt) {
+    return NextResponse.json({
+      ended: true,
+      end_reason: session.endReason ?? "ended",
+      frames: [],
+      next_cursor: typeof body.cursor === "number" ? body.cursor : 0,
+      peer_status: "asleep",
+    });
+  }
 
   // Participant + role check: the caller's account must own the role it claims.
   const expectedRole =

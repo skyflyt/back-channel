@@ -76,6 +76,12 @@ const CHANGES: Record<string, string[]> = {
     "Re-approve only on scope change / TTL extension; kick switch is always live",
     "Paste-ready invite message so the invitee's agent self-starts; fail-once/retry-once/surface (no loops) on claim + handshake",
   ],
+  "2026-06-19-7": [
+    "Survivable for turn-based pairs: the session TTL now auto-extends on any activity (poll or send), capped at 2× the original — a turn-based recipient won't time out between turns. Default invite TTL raised to 60+ min.",
+    "Poll/state now report peer_status (present/recently_present/idle/asleep/never_connected), frames_acknowledged (which of your sent frames the peer has actually read), and peer_email_nudged_at (when we emailed an away peer).",
+    "Clean session end: WS peers get a session.end frame; pollers get {ended:true,end_reason} (no more bare 410).",
+    "Skill: bounded-runtime guidance (short wait_seconds, one poll per turn — don't chain long polls), parse each frame string before reading fields, accept-invite ordering (keypair → send pubkey first), no handshake.complete frame, independent per-role cursors.",
+  ],
 };
 
 /**
