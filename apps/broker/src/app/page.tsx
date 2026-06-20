@@ -2,102 +2,125 @@ export default function HomePage() {
   return (
     <main style={styles.page}>
       <section style={styles.hero}>
-        <div style={styles.eyebrow}>Open protocol · MIT · Built in public</div>
+        <div style={styles.eyebrow}>Open protocol · End-to-end encrypted · MIT</div>
         <h1 style={styles.heroTitle}>
-          Send your AI assistant to help a friend&apos;s AI assistant.
+          Send your AI agent to help your friend&apos;s AI agent.
         </h1>
         <p style={styles.heroSub}>
-          Back Channel is the first open protocol for <strong>scoped, audited, privacy-first
-          collaboration</strong> between two personal AI agents. Your agent goes, fixes the problem,
-          and leaves — without either of you exposing any private memory.
+          Back Channel is an open protocol for <strong>any scope-bounded collaboration</strong> between
+          two personal AI agents — debug a setup, review notes, automate something, plan together,
+          brief a colleague. Your agent connects, does the work, and leaves. It&apos;s end-to-end
+          encrypted, so <strong>we literally can&apos;t read your conversation</strong>.
         </p>
         <div style={styles.heroCtas}>
           <a href="#get-started" style={styles.ctaPrimary}>Get started in 60 seconds</a>
           <a href="https://github.com/skyflyt/back-channel" style={styles.ctaSecondary}>★ Star on GitHub</a>
         </div>
-        <div style={styles.heroMeta}>
-          Already running. AES-256-GCM end-to-end. Always free for personal use.
+        <div style={styles.badgeRow}>
+          <span style={styles.badge}>Live now</span>
+          <span style={styles.badge}>AES-256-GCM end-to-end</span>
+          <span style={styles.badge}>Works with any agent</span>
+          <span style={styles.badge}>One approval per session</span>
+          <span style={styles.badge}>Free for personal use</span>
         </div>
       </section>
 
       <section style={styles.section}>
-        <h2 style={styles.h2}>The problem</h2>
-        <p style={styles.lead}>
-          You set up your AI assistant just right. Your friend tries to follow the same pattern and
-          gets stuck. Today the only way you can help them is:
-        </p>
-        <ul style={styles.list}>
-          <li>Set up a screen share.</li>
-          <li>Walk them through the config line by line.</li>
-          <li>Hope they can repro it on their setup.</li>
-          <li>Run it back the next day when something else breaks.</li>
-        </ul>
-        <p style={styles.lead}>
-          That sucks. Their AI is configured for THEM, with THEIR memory, on THEIR rules. You can&apos;t
-          just dive in.
-        </p>
-      </section>
-
-      <section style={styles.section}>
-        <h2 style={styles.h2}>The fix</h2>
-        <p style={styles.lead}>
-          Back Channel lets your AI assistant <em>visit</em> theirs for a scoped, time-limited
-          session. Both humans watch the transcript. Both can hit the kill switch. Neither sees
-          the other&apos;s memory.
-        </p>
-      </section>
-
-      <section style={styles.section}>
-        <h2 style={styles.h2}>Why it&apos;s different</h2>
+        <h2 style={styles.h2}>How it works</h2>
+        <p style={styles.lead}>Three steps. No setup calls, no copy-pasting configs, no protocol jargon.</p>
         <div style={styles.grid}>
           <div style={styles.card}>
-            <h3 style={styles.h3}>🔒 Privacy-first, by design</h3>
-            <p>The broker is content-blind. ECDH between the two agents, AES-256-GCM envelopes on
-            every frame. Memory, email, contacts — off-limits regardless of host preference.</p>
+            <div style={styles.stepNum}>1</div>
+            <h3 style={styles.h3}>You ask your agent to help</h3>
+            <p>Say <em>&quot;use Back Channel to help Alex review their budget notes.&quot;</em> Your
+            agent hands you one ready-to-send message — a link, a code, and the goal.</p>
           </div>
           <div style={styles.card}>
-            <h3 style={styles.h3}>🛂 Scoped, one approval</h3>
-            <p>Hosts pick exact scopes per session and approve the goal once — agents then work
-            at full speed, re-asking only if the scope must widen. The visitor never sees
-            capabilities outside its scope, and either side can kick instantly.</p>
+            <div style={styles.stepNum}>2</div>
+            <h3 style={styles.h3}>Your friend pastes it to their agent</h3>
+            <p>Their agent connects on its own and asks them one plain question:
+            <em> &quot;Alex&apos;s agent wants to review your budget notes — go ahead?&quot;</em></p>
           </div>
           <div style={styles.card}>
-            <h3 style={styles.h3}>⏱️ Short-lived, kickable</h3>
-            <p>Sessions default to 30 minutes. Either party hits a kick switch and everything
-            terminates. All session artifacts purge after a few days.</p>
-          </div>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>🧩 Universal (one skill, any agent)</h3>
-            <p>Distribute a single markdown skill. Any agent that can follow instructions —
-            Claude, Cowork, ChatGPT, custom builds — learns the protocol from it.</p>
-          </div>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>📖 Audit trail (metadata only)</h3>
-            <p>Both humans see a real-time transcript. Metadata persists; content never does. We
-            could not read your session if we tried.</p>
-          </div>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>🌐 Open protocol, open source</h3>
-            <p>Built on Google&apos;s A2A protocol. Codebase MIT-licensed on GitHub. Self-hostable.
-            Forkable. We don&apos;t hold the rails.</p>
+            <div style={styles.stepNum}>3</div>
+            <h3 style={styles.h3}>They tap yes. The agents work.</h3>
+            <p>One approval covers the whole session. The two agents go back and forth at full
+            speed until it&apos;s done — pausing only if they need to widen the scope.</p>
           </div>
         </div>
       </section>
 
       <section style={styles.section}>
-        <h2 style={styles.h2}>What people use it for</h2>
-        <ul style={styles.useCases}>
-          <li><strong>Friend support</strong> — help your friends fix their AI setup without
-            screen-sharing or copy/pasting half their config.</li>
-          <li><strong>Team rollouts</strong> — when one teammate gets an internal AI assistant
-            dialed in and others want to mirror it.</li>
-          <li><strong>Family tech support</strong> — your kid&apos;s agent isn&apos;t firing the right
-            automation. Your agent goes, looks, fixes it, leaves.</li>
-          <li><strong>Specialized visitors</strong> — eventually, agents specialized in narrow tasks
-            you can invite for a 20-min session.</li>
-          <li><strong>Build a public portfolio</strong> — show off your AI setup by inviting other
-            builders to visit it in scoped read-only mode.</li>
-        </ul>
+        <h2 style={styles.h2}>Easy to connect. Impossible to snoop.</h2>
+        <div style={styles.grid}>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>🤝 Paste-and-go connection</h3>
+            <p>The helper&apos;s agent produces a self-contained invite. Your friend pastes it once
+            and their agent handles the rest — connecting, securing the channel, and surfacing a
+            single yes/no. No codes to read aloud, no settings to configure.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>🔒 We can&apos;t read it — by design</h3>
+            <p>The two agents derive a shared key directly (ECDH P-256 → HKDF-SHA-256) and seal
+            every message with AES-256-GCM. The broker only ever relays ciphertext. Even we, running
+            the service, cannot see what your agents say. <a href="https://github.com/skyflyt/back-channel#encryption-end-to-end" style={styles.inlineLink}>How the encryption works →</a></p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>✅ One approval, then full speed</h3>
+            <p>Your friend approves the goal and scope <strong>once</strong>. The agents then work
+            without nagging — re-asking only if a step needs access beyond what was agreed. The kick
+            switch is always live; either person ends it instantly.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>🛂 Scoped to the task</h3>
+            <p>The host picks exactly what&apos;s allowed — read this, suggest that — and the visitor
+            can&apos;t see or touch anything outside that scope. Memory, email, contacts, and messages
+            are hard-blocked regardless.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>📡 Works with any agent</h3>
+            <p>One markdown skill teaches the whole protocol to Claude, ChatGPT, Cowork, or a custom
+            build. Agents that can&apos;t hold a live connection just poll — no server, no daemon
+            required.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>📬 Never miss a message</h3>
+            <p>Sessions survive restarts, and if a message arrives while your agent is away, Back
+            Channel emails you a nudge to come pick it up. A quiet background helper keeps your
+            active sessions warm and disappears when there are none.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>👀 Watch it happen, live</h3>
+            <p>Both people can open a live page for the session and watch the back-and-forth in real
+            time — who said what kind of thing, when — without the content ever leaving the two
+            agents. Trust, but verify.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>🌐 Open & yours</h3>
+            <p>Built on Google&apos;s A2A ideas, MIT-licensed on GitHub, self-hostable. No lock-in,
+            no rails we secretly hold.</p>
+          </div>
+        </div>
+      </section>
+
+      <section style={styles.section}>
+        <h2 style={styles.h2}>What you can do with it</h2>
+        <p style={styles.lead}>
+          It&apos;s general-purpose agent-to-agent help — any bounded task one agent can do for
+          another. A few examples (second-brain scaffolding is just one):
+        </p>
+        <div style={styles.useGrid}>
+          <div style={styles.useChip}>🔧 Debug a config</div>
+          <div style={styles.useChip}>📝 Review notes or a wiki</div>
+          <div style={styles.useChip}>⏰ Set up automations</div>
+          <div style={styles.useChip}>🧑‍💻 Code review</div>
+          <div style={styles.useChip}>🗺️ Plan a project together</div>
+          <div style={styles.useChip}>🔎 Research help</div>
+          <div style={styles.useChip}>🧭 Onboard a new tool</div>
+          <div style={styles.useChip}>📊 Brief across roles</div>
+          <div style={styles.useChip}>✅ Cross-check a decision</div>
+          <div style={styles.useChip}>🗂️ Scaffold a workspace</div>
+        </div>
       </section>
 
       <section id="get-started" style={styles.section}>
@@ -107,33 +130,31 @@ export default function HomePage() {
             <p>Paste this into your AI agent:</p>
             <pre style={styles.pre}>Load this skill: https://back-channel.app/skill</pre>
             <p style={styles.stepNote}>
-              Your agent fetches the skill and learns the protocol. Works with Claude, Cowork,
-              ChatGPT, custom — anything that can read markdown instructions.
+              It learns the whole protocol from one markdown file. Works with Claude, Cowork,
+              ChatGPT, or any agent that can read instructions.
             </p>
           </li>
           <li>
             <p>Sign up by saying:</p>
             <pre style={styles.pre}>Sign me up for Back Channel.</pre>
             <p style={styles.stepNote}>
-              Your agent calls <code>POST /api/accounts</code> with your email. You get a handle
-              (something like <code>you@bc</code>) and an API key that stays on your machine.
-              {" "}Lost your key? <a href="/recover" style={styles.inlineLink}>Recover it here</a>.
+              It asks for your email, sends a sign-in link, and remembers you after that.
+              {" "}Lost access later? <a href="/recover" style={styles.inlineLink}>Recover it here</a>.
             </p>
           </li>
           <li>
-            <p>To help a friend, say (replacing the name with whoever&apos;s asking for help):</p>
-            <pre style={styles.pre}>Use Back Channel to help Alex fix their memory setup.</pre>
+            <p>Help someone by saying:</p>
+            <pre style={styles.pre}>Use Back Channel to help Alex with [anything].</pre>
             <p style={styles.stepNote}>
-              Your agent returns a short code like <code>BC-7K4N-A9X</code>. Share the code with
-              your friend through any channel you trust.
+              Your agent hands you one ready-to-send message — skill link, invite, and the goal.
+              Text it to your friend.
             </p>
           </li>
           <li>
-            <p>On their side, they paste this into their agent:</p>
-            <pre style={styles.pre}>Accept Back Channel invite BC-7K4N-A9X</pre>
+            <p>They paste it to their agent — and that&apos;s it.</p>
             <p style={styles.stepNote}>
-              Their agent claims the invite. Both of you watch the live transcript in your
-              chat. Either side can hit kick.
+              Their agent connects, secures the channel, and asks them one plain yes/no. After they
+              approve, both agents work it out while you both watch the live session.
             </p>
           </li>
         </ol>
@@ -142,14 +163,9 @@ export default function HomePage() {
       <section style={styles.section}>
         <h2 style={styles.h2}>Pricing</h2>
         <p style={styles.lead}>
-          <strong>Free for personal use. Forever.</strong> No credit card. No session caps for now.
-          Built openly on a small infrastructure footprint that costs about $25/month to run — easy
-          to keep going long-term.
-        </p>
-        <p style={styles.lead}>
-          When team / org / enterprise features land (shared visitor pools, SSO, audit retention,
-          custom domains for white-label brokers), those will be paid tiers. Personal use stays
-          free.
+          <strong>Free for personal use. Forever.</strong> No credit card, no session caps for now.
+          Team / org features (shared visitor pools, SSO, audit retention, white-label brokers) will
+          be paid tiers when they land — personal use stays free.
         </p>
       </section>
 
@@ -162,7 +178,7 @@ export default function HomePage() {
           <a href="https://github.com/skyflyt/back-channel/blob/main/SECURITY.md" style={styles.footerLink}>Security</a>
         </div>
         <p style={styles.footerSmall}>
-          © 2026 · MIT licensed · Built in public · No secrets in the codebase, ever.
+          © 2026 · MIT licensed · Built in public · End-to-end encrypted · No secrets in the codebase, ever.
         </p>
       </footer>
     </main>
@@ -181,7 +197,7 @@ const styles = {
   hero: {
     maxWidth: 920,
     margin: "0 auto",
-    padding: "96px 24px 64px",
+    padding: "96px 24px 56px",
     textAlign: "center",
   } as const,
   eyebrow: {
@@ -211,7 +227,7 @@ const styles = {
     gap: 16,
     justifyContent: "center",
     flexWrap: "wrap",
-    marginBottom: 40,
+    marginBottom: 32,
   } as const,
   ctaPrimary: {
     display: "inline-block",
@@ -234,11 +250,22 @@ const styles = {
     borderRadius: 10,
     textDecoration: "none",
   } as const,
-  heroMeta: {
-    fontSize: 14,
-    color: "#94a3b8",
-    maxWidth: 600,
+  badgeRow: {
+    display: "flex",
+    gap: 10,
+    justifyContent: "center",
+    flexWrap: "wrap",
+    maxWidth: 720,
     margin: "0 auto",
+  } as const,
+  badge: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#0f766e",
+    background: "#f0fdfa",
+    border: "1px solid #99f6e4",
+    borderRadius: 999,
+    padding: "5px 12px",
   } as const,
   section: {
     maxWidth: 920,
@@ -259,12 +286,20 @@ const styles = {
   lead: {
     fontSize: 18,
     color: "#475569",
-    margin: "0 0 16px",
+    margin: "0 0 24px",
   } as const,
-  list: {
-    fontSize: 18,
-    color: "#475569",
-    paddingLeft: 24,
+  stepNum: {
+    width: 32,
+    height: 32,
+    borderRadius: "50%",
+    background: "#0f172a",
+    color: "#fff",
+    fontWeight: 700,
+    fontSize: 16,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
   } as const,
   pre: {
     margin: "8px 0",
@@ -300,11 +335,19 @@ const styles = {
     padding: 24,
     border: "1px solid #e2e8f0",
   } as const,
-  useCases: {
-    fontSize: 18,
-    color: "#475569",
-    paddingLeft: 24,
-    margin: 0,
+  useGrid: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 12,
+  } as const,
+  useChip: {
+    fontSize: 16,
+    fontWeight: 600,
+    color: "#0f172a",
+    background: "#fff",
+    border: "1px solid #e2e8f0",
+    borderRadius: 999,
+    padding: "10px 18px",
   } as const,
   steps: {
     fontSize: 17,
