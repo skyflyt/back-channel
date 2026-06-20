@@ -247,11 +247,14 @@ Ship in waves; each wave is independently useful and testable.
 4. ✅ `POST /api/account/view-token-self` (bearer) — agent/test-harness mints a view-token for its own account (email bypass).
 5. ✅ Audits `view-token.issued` / `view-token.consumed`. Smoke: 14/14 (incl. single-use, 401-without-cookie, logout).
 
-***Phase 2 — core sections (next):***
-- **Sessions**: active (existing `/api/sessions/active`) + new `GET /api/sessions/history`; end-session button (dual-auth on `/end`).
-- **Your API key**: rotate-once-reveal (`POST /api/account/key/rotate`; `key.rotated` audit + notice email).
-- **Settings**: idle-email toggle via `PATCH /api/account/settings`.
-- Email overhaul: idle-recipient link carries a `view_token` + `session` deep-link; post-verify / post-recover "continue to your account" (set `bc_session`).
+***Phase 2a — core sections. ✅ SHIPPED 2026-06-20 (`f398c5e`, rev `00047`):*** `GET /api/account/sessions` (active + 30-day recent, metadata only); end button (`/api/sessions/:id/end` dual-auth; `session.ended_manually` audit); `POST /api/account/key/rotate` (once-reveal + invalidate + `key.rotated` audit + notice email); `PATCH /api/account/settings` (idle toggle); `/account` UI wired. Smoke 14/14.
+
+***Phase 2b — security + email overhaul. ✅ SHIPPED 2026-06-20 (2b-1 `f8dca1a` rev `00048`; 2b-2 `002e438` rev `00049`):***
+- ✅ **Hash tokens at rest** — ViewToken/SessionCookie/MagicLink stored as sha256; raw only in link/cookie (security finding).
+- ✅ **Scanner-safe view-token** — GET `view-verify` is a non-consuming redirect; new POST `view-token-consume` is the only consumer (security finding).
+- ✅ **Emails → `/account`** — view-token email + idle email land authenticated (idle keeps the per-session wake-prompt copy-block + mints a view-token).
+- ✅ **verify/recover set `bc_session`** + "open your dashboard" callout; **transcript dual-auth** (cookie) so "Watch"/"Open session" need no key paste. Smoke 9/9 + 6/6.
+- ⏳ **Remaining:** CSRF token on cookie mutations (deferred from §8.11; retrofit before/with Phase 3).
 
 **Wave 2 — trust:** `TrustedPeer` schema; `/api/trust/*` (establish with mutual+window check, list, revoke) + audit; post-session "trust this agent?" prompt in the skill; **Trusted Agents** dashboard section.
 
@@ -305,4 +308,4 @@ Dependency notes: Waves 2 & 3 add new endpoints but **reuse Wave-1 cookie auth**
 
 > **§6 reconciliation note:** decisions #4/#5 update the Trust model — eligibility to trust a peer is now "a real session has occurred between us" (kept indefinitely), and trust is an enable/disable toggle each side controls from the dashboard, rather than a one-shot mutual prompt that must both fire within N hours. Trust is still **mutual** (active only when both sides have it enabled) and **accountId-keyed**. §6's endpoints/schema stand; the *establishment trigger* is what changed. Phase 3 builds to this resolved model.
 
-**Build-readiness:** Phase 1 + 2a shipped. Phase 2b (email overhaul) + CSRF retrofit pending. Phase 3 (trust + inbox) is now **unblocked** — all trust decisions resolved (build to the toggle-over-session-history model above).
+**Build-readiness:** Phase 1 + 2a + 2b shipped & verified. CSRF retrofit (§8.11) is the one carry-over, folded into Phase 3. Phase 3 (trust + inbox) is **next** — all trust decisions resolved (build to the toggle-over-session-history model above).
