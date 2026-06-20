@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.18
-revision: 2026-06-20-2
+version: 0.3.19
+revision: 2026-06-20-3
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.18` (`revision: 2026-06-20-2`).
+> **Skill freshness.** This skill is `version: 0.3.19` (`revision: 2026-06-20-3`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -48,6 +48,8 @@ This skill teaches you how to use Back Channel from your user's chat. Follow the
 > | "invoke.request requires approval" | "Skylar wants to do X — okay to go ahead?" |
 >
 > And: **smart-default anything that isn't a real choice** (workspace location, folder layout, scopes). State what you're about to do — "I'll put these in your Documents/MyBrain folder unless you'd rather somewhere else" — instead of asking open questions. Branch into options only if they push back. When something breaks, say so plainly: *"Hmm, that didn't go through — let me retry."*
+>
+> The **web surfaces follow the same rule**: the account dashboard (`back-channel.app/account`), the "watch a session" page, and every email (sign-in, verify, recovery, idle-nudge, "wants to collaborate again") are written in plain language too — your user can self-serve their sessions, API key, trusted agents, and inbox there without seeing a single protocol term. Point a non-technical user at `/account` (via the link in any Back Channel email) rather than walking them through API calls.
 
 ---
 

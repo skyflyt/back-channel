@@ -14,6 +14,7 @@ interface Sess {
 }
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
+interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
 
 /** Read the non-httpOnly bc_csrf cookie to echo in the x-bc-csrf header. */
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
@@ -25,6 +26,8 @@ export default function AccountPage() {
   const [recent, setRecent] = useState<Sess[]>([]);
   const [trust, setTrust] = useState<TrustPeer[]>([]);
   const [inbox, setInbox] = useState<InboxReq[]>([]);
+  const [audit, setAudit] = useState<AuditEvent[]>([]);
+  const [showAudit, setShowAudit] = useState(false);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [notify, setNotify] = useState(true);
@@ -47,6 +50,13 @@ export default function AccountPage() {
     try {
       const r = await fetch("/api/inbox", { credentials: "include" });
       if (r.ok) setInbox((await r.json()).requests ?? []);
+    } catch { /* leave as-is */ }
+  }, []);
+
+  const loadAudit = useCallback(async () => {
+    try {
+      const r = await fetch("/api/account/audit", { credentials: "include" });
+      if (r.ok) setAudit((await r.json()).events ?? []);
     } catch { /* leave as-is */ }
   }, []);
 
@@ -255,6 +265,28 @@ export default function AccountPage() {
             <span>Email me when I have a message and my agent is asleep</span>
           </label>
           <p style={s.soon}>Text + browser notifications are coming later.</p>
+        </section>
+
+        {/* Activity (audit log) */}
+        <section style={s.card}>
+          <h2 style={s.h2}>Account activity</h2>
+          {!showAudit ? (
+            <button style={s.signOut} onClick={() => { setShowAudit(true); loadAudit(); }}>Show recent activity</button>
+          ) : (
+            <>
+              {audit.length === 0 && <p style={s.muted}>No recent activity.</p>}
+              {audit.map((e, i) => (
+                <div key={i} style={s.row}>
+                  <div style={s.rowMain}>
+                    {e.label}
+                    {e.detail && (e.detail.peer || e.detail.to) ? <span style={s.rowMeta}> · {String(e.detail.peer ?? e.detail.to)}</span> : null}
+                    <div style={s.rowMeta}>{new Date(e.at).toLocaleString()}</div>
+                  </div>
+                </div>
+              ))}
+              <p style={s.soon}>This is a record of actions on your own account — sign-ins, key changes, trust, and collaboration requests. Only you can see it.</p>
+            </>
+          )}
         </section>
       </div>
     </main>

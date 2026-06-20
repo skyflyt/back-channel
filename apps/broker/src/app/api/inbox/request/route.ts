@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromAuth } from "@/lib/auth";
+import { getAccountFromAuth, generateViewToken, viewTokenExpiry, hashToken } from "@/lib/auth";
+import { sendInboxRequestEmail } from "@/lib/email";
 import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
 const DAY = 24 * 60 * 60 * 1000;
+const APP_URL = process.env.PUBLIC_APP_URL ?? "https://back-channel.app";
 
 // Opaque error — never reveal whether the handle exists or whether trust is
 // mutual. A non-trusted target looks identical to an unknown one.
@@ -61,5 +63,14 @@ export async function POST(req: NextRequest) {
     },
   });
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "inbox.requested", detail: { to: recipient.handle, scopes: body.scopes } } });
+
+  // Nudge the recipient by email if verified + opted in — lands them on /account
+  // (authenticated via a fresh view-token) to approve/decline. Best-effort.
+  if (recipient.emailVerifiedAt && recipient.notifyIdleFrames !== false) {
+    const raw = generateViewToken();
+    await prisma.viewToken.create({ data: { token: hashToken(raw), accountId: recipient.id, purpose: "account", expiresAt: viewTokenExpiry() } }).catch(() => {});
+    void sendInboxRequestEmail({ to: recipient.email, recipientHandle: recipient.handle, requesterHandle: account.handle, vtUrl: `${APP_URL}/account?vt=${encodeURIComponent(raw)}` });
+  }
+
   return NextResponse.json({ ok: true, request_id: reqRow.id, status: "pending", expires_at: reqRow.expiresAt.toISOString() });
 }

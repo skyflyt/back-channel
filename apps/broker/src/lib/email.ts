@@ -129,6 +129,31 @@ Link:     ${recoverUrl}
 }
 
 /**
+ * Notify a recipient that a trusted peer's agent wants to collaborate again
+ * (an inbox request). Lands them on /account (authenticated via view-token) to
+ * approve/decline. Metadata only — never the task content.
+ */
+export async function sendInboxRequestEmail(args: { to: string; recipientHandle: string; requesterHandle: string; vtUrl: string }): Promise<boolean> {
+  const resend = client();
+  if (!resend) { console.log(`[inbox-email] (log-only) to=${args.recipientHandle} from=${args.requesterHandle}`); return false; }
+  const subject = `${args.requesterHandle} wants to collaborate on Back Channel`;
+  const html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:22px;margin:0 0 16px">${escapeHtml(args.requesterHandle)} wants to work with your agent again</h2>
+  <p>You've trusted each other before, so they can reach you without a new invite code. Open your account to see what they're asking and approve or decline — nothing happens until you say yes.</p>
+  <p style="margin:28px 0"><a href="${args.vtUrl}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Review the request</a></p>
+  <p style="font-size:13px;color:#94a3b8">You're in control — you approve every session, and you can turn off trust anytime from your account.</p>
+</body></html>`.trim();
+  const text = `${args.requesterHandle} wants to collaborate with your agent on Back Channel.\nReview and approve or decline: ${args.vtUrl}\n(Nothing happens until you approve.)`;
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
+    if (res.error) { console.error("Resend error (inbox-request):", res.error); return false; }
+    return true;
+  } catch (e) { console.error("Resend send failed (inbox-request):", e instanceof Error ? e.message : e); return false; }
+}
+
+/**
  * Notify an account that its API key was rotated from the dashboard. No link —
  * purely a "this happened; if it wasn't you, recover" security notice.
  */

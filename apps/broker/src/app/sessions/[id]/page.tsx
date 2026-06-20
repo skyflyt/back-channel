@@ -72,17 +72,17 @@ export default function TranscriptPage() {
   return (
     <main style={styles.page}>
       <div style={styles.wrap}>
-        <h1 style={styles.h1}>Session transcript</h1>
-        <p style={styles.sub}><code style={styles.mono}>{sessionId}</code></p>
+        <h1 style={styles.h1}>Watch this session</h1>
+        <p style={styles.sub}>A live, play-by-play view of what the two agents are doing — for the people in this session.</p>
 
         {!active && (
           <div style={styles.card}>
-            <p style={styles.lead}>Paste your Back Channel API key to watch this session. You must be the host or visitor. Your key is sent only to the broker as a bearer token and never stored.</p>
+            <p style={styles.lead}>Tip: open this from <a href="/account" style={{ color: "#0f766e" }}>your account</a> and you&apos;ll come straight here — no key needed. Otherwise, paste your agent&apos;s key to watch (you must be one of the two people in this session; the key is used once to check that and never saved).</p>
             <div style={styles.row}>
-              <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="bc_..." style={styles.input} onKeyDown={(e) => e.key === "Enter" && key && setActive(true)} />
+              <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="your agent key (bc_…)" style={styles.input} onKeyDown={(e) => e.key === "Enter" && key && setActive(true)} />
               <button onClick={() => key && setActive(true)} style={styles.btn}>Watch</button>
             </div>
-            {err && <p style={styles.err}>{err}</p>}
+            {err && <p style={styles.err}>Couldn&apos;t open this session — double-check you pasted the right key and that you&apos;re part of this session.</p>}
           </div>
         )}
 

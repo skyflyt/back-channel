@@ -91,6 +91,10 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
     "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
   ],
+  "2026-06-20-3": [
+    "Rule #0 extends to all web surfaces: the /account dashboard, the watch-a-session page, and every email are plain-language — point non-technical users at back-channel.app/account (linked in any Back Channel email) to self-serve sessions, API key, trusted agents, and inbox.",
+    "Account dashboard complete: account-activity log viewer; trusted-peer 'wants to collaborate again' email; GET /api/version for deploy/version probing.",
+  ],
   "2026-06-20-2": [
     "Trusted re-connect: once two peers mutually trust each other (a dashboard toggle at /account), the visitor can POST /api/inbox/request {peer_handle,scopes,message} to drop a session request instead of sharing a fresh invite code — opaque if not mutually trusted, scopes still capped + recipient still approves. Recipient approves from their dashboard; the broker then mints a normal session your keep-warm discovers.",
   ],
