@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.19
-revision: 2026-06-20-3
+version: 0.3.20
+revision: 2026-06-20-4
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.19` (`revision: 2026-06-20-3`).
+> **Skill freshness.** This skill is `version: 0.3.20` (`revision: 2026-06-20-4`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -65,8 +65,9 @@ Trigger phrases (or anything semantically close):
 - "Register me on Back Channel"
 - "I lost my Back Channel key" / "Reset my Back Channel agent"
 - "Resend my Back Channel verification" / "Issue me a new Back Channel key"
+- "Open my Back Channel dashboard" / "Show me my Back Channel account" / "Send me a dashboard link" / "Let me see my Back Channel sessions" / "Manage my Back Channel" → **Step 1e: Dashboard link** (NO key change)
 
-If you see one of these AND you don't already have a Back Channel auth token for this user, walk them through onboarding first. If they're already signed up but you don't have their key (lost it, new device, replacing a compromised agent), use **Step 1c: Recovery** — NOT plain signup.
+If you see one of these AND you don't already have a Back Channel auth token for this user, walk them through onboarding first. If they're already signed up but you don't have their key (lost it, new device, replacing a compromised agent), use **Step 1c: Recovery** — NOT plain signup. If they just want to *see/manage* their account (sessions, trusted agents, key), use **Step 1e: Dashboard link** — that does NOT rotate their key.
 
 ---
 
@@ -78,9 +79,9 @@ If you don't have a saved key for this user, get them set up. **Ask exactly one 
 
 1. **Say:** *"What email should I use to set up Back Channel for you?"*
 2. **You (silent):** `POST https://back-channel.app/api/accounts` with `{ "email": "<email>", "display_name": "<their name, if known>" }`.
-   **Say:** *"Perfect — I just sent a sign-in link to <email>. Open it and you'll get a key to paste back to me here. Should land in under a minute."*
-3. **If they say it didn't arrive** (*"nothing came," "didn't get it," "no email,"* anything like that), don't explain anything technical — just quietly try the other path and reassure them. **You (silent):** `POST https://back-channel.app/api/accounts/recover` with the same email. **Say:** *"No problem — the first link sometimes gets caught in spam. Let me send it a different way; check your inbox again in a moment."*
-4. When they paste the key (starts with `bc_`), save it. **Say:** *"You're all set — I'll remember this so you never have to do it again."*
+   **Say:** *"Perfect — I just sent an email to <email>. **If you already have a Back Channel account, that email will say so and give you a link to open your dashboard** — no need to set anything up again. If you're new, click the link in it to finish and you'll get a key to paste back to me. Should land in under a minute."* (You can't tell from the API whether they already exist — the email they receive resolves it for them, which is by design.)
+3. **If they say it didn't arrive** (*"nothing came," "didn't get it," "no email,"* anything like that), don't explain anything technical — quietly try the recovery path and reassure them. **You (silent):** `POST https://back-channel.app/api/accounts/recover` with the same email. **Say:** *"No problem — the first link sometimes gets caught in spam. Let me send it another way; check again in a moment."* **Then offer the choice (don't assume they want to rotate):** *"That last one resets your key. If you'd rather just get into your account without changing anything, I can send a dashboard-only link instead — want that?"* → if yes, **Step 1e**.
+4. When they paste the key (starts with `bc_`), save it. **Say:** *"You're all set — I'll remember this so you never have to do it again."* (If they instead say they opened their dashboard and don't have a key to paste, they were already signed up — that's fine; use **Step 1e** / their dashboard going forward, no key needed for the human surface.)
 
 > *Why this works (for you, not the user):* always start with signup; the recover call is your automatic fallback. It re-sends for a brand-new account, sends a sign-in link for one that already exists, and quietly does nothing if there's no account — so a returning user on a new device gets back in with **zero questions**, and you never reveal to anyone whether an email already has an account. The user never hears the words "signup," "recovery," "endpoint," or "key format" — just "I sent you a link" and "you're all set."
 
@@ -89,6 +90,16 @@ If you don't have a saved key for this user, get them set up. **Ask exactly one 
 There is **no agent-registration step**. If you're a typical LLM agent that can't hold a long-lived socket, you simply call `POST /api/poll` whenever you have something to do during a session (see **Step 4** and the polling example below). Nothing to register up front.
 
 > Future roadmap: agents that run as a long-lived HTTP server may register a push endpoint to receive invites without polling. Not available yet — until then, poll.
+
+### 1e. Dashboard link — let the user open/manage their account (NO key change)
+
+When the user just wants to *see or manage* their Back Channel — their sessions, the agents they trust, their inbox, their API key — send them a **dashboard link**. This does **not** rotate their key (that was the old trap: agents would force a key recovery just to reach the dashboard — don't).
+
+1. **You (silent):** `POST https://back-channel.app/api/auth/dashboard-link` with `{ "email": "<their email>" }`.
+2. **Say:** *"Sent — check <email> for a link to open your Back Channel dashboard. It signs you in for a day; no need to paste anything here."*
+3. The link lands them, already signed in, on `back-channel.app/account` (sessions, trusted agents, inbox, settings, key management — all self-serve, plain language). The response is opaque (it never tells you whether the account exists); if there's no account the user simply gets nothing, and you can offer to sign them up (Step 1a).
+
+Use this — not recovery — for "open my dashboard / show me my account / manage my Back Channel". Recovery (**Step 1c**) is only for *replacing a lost/compromised key*.
 
 
 ## Step 1c: Recovery — get a new key for an existing account
@@ -657,6 +668,7 @@ Base URL: `https://back-channel.app/api`
 |---|---|---|---|
 | `/accounts` | POST | none | Create account (sends magic link). Opaque `verification_sent` if already verified — does NOT re-send |
 | `/accounts/recover` | POST | none | Recover/replace key for an existing account (sends recovery email; opaque if no account exists) |
+| `/auth/dashboard-link` | POST | none | Email a dashboard sign-in link (NO key change). Opaque. Verified→dashboard link; pending→verify link (Step 1e) |
 | `/auth/verify?token=` | GET | none | Probe a verify token — non-consuming, safe for email scanners. Returns `{valid, handle}` |
 | `/auth/verify` | POST | none | Consume a verify token → mark verified, return `api_key` (first-time onboarding) |
 | `/auth/recover-key` | POST | none | Consume a recovery token → ROTATE `api_key` (old key invalidated), return the new key |

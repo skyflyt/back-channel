@@ -91,6 +91,11 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
     "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
   ],
+  "2026-06-20-4": [
+    "Dashboard-only link (no key rotation): POST /api/auth/dashboard-link {email} emails a sign-in link to /account (Step 1e). New trigger phrases: 'open my Back Channel dashboard / show me my account / manage my Back Channel'.",
+    "Blind signup is now self-resolving: a signup attempt on an already-verified email emails the owner a 'you already have an account — open your dashboard' link (API stays opaque). Agent tells the user the email will point them to the right path.",
+    "Signup + recovery emails now carry a dashboard link; the auto-recovery fallback offers a dashboard-only option instead of forcing a key rotation.",
+  ],
   "2026-06-20-3": [
     "Rule #0 extends to all web surfaces: the /account dashboard, the watch-a-session page, and every email are plain-language — point non-technical users at back-channel.app/account (linked in any Back Channel email) to self-serve sessions, API key, trusted agents, and inbox.",
     "Account dashboard complete: account-activity log viewer; trusted-peer 'wants to collaborate again' email; GET /api/version for deploy/version probing.",

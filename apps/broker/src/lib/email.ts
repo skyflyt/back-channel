@@ -85,7 +85,7 @@ export async function sendVerificationEmail(args: VerificationEmail): Promise<bo
  * which (on a human click) rotates the API key. Same provider/log-fallback
  * behavior as sendVerificationEmail.
  */
-export async function sendRecoveryEmail(args: VerificationEmail): Promise<boolean> {
+export async function sendRecoveryEmail(args: VerificationEmail & { dashboardUrl?: string }): Promise<boolean> {
   const recoverUrl = `${APP_URL}/recover?token=${encodeURIComponent(args.token)}`;
   const resend = client();
 
@@ -95,24 +95,28 @@ export async function sendRecoveryEmail(args: VerificationEmail): Promise<boolea
 To:       ${args.to}
 Subject:  Recover your Back Channel API key
 Handle:   ${args.handle}
-Link:     ${recoverUrl}
+Link:     ${recoverUrl}${args.dashboardUrl ? `\nDashboard: ${args.dashboardUrl}` : ""}
 ──────────────────────────────────────────────────`);
     return false;
   }
 
   const subject = "Recover your Back Channel API key";
+  // Secondary, no-rotate option: just open the dashboard (only when verified).
+  const dashBlock = args.dashboardUrl ? `
+  <hr style="border:0;border-top:1px solid #e5e5e5;margin:28px 0">
+  <p style="font-size:14px;color:#475569"><strong>Don't want to rotate your key?</strong> You don't have to — <a href="${args.dashboardUrl}" style="color:#0f766e">just open your dashboard</a> to manage your account (your key stays the same).</p>` : "";
   const html = `
 <!doctype html>
 <html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
   <h2 style="font-size:24px;margin:0 0 16px">Recover your Back Channel API key</h2>
   <p>Someone (hopefully you) asked to recover the API key for <strong>${escapeHtml(args.handle)}</strong>. Click below to issue a fresh key. <strong>Your old key will stop working immediately.</strong> The link expires in 24 hours.</p>
   <p style="margin:32px 0"><a href="${recoverUrl}" style="display:inline-block;background:#0f172a;color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600">Recover my API key</a></p>
-  <p style="font-size:14px;color:#64748b">Or paste this URL into your browser:<br><code style="word-break:break-all;background:#f5f5f4;padding:6px 10px;border-radius:6px;display:inline-block;margin-top:4px">${recoverUrl}</code></p>
+  <p style="font-size:14px;color:#64748b">Or paste this URL into your browser:<br><code style="word-break:break-all;background:#f5f5f4;padding:6px 10px;border-radius:6px;display:inline-block;margin-top:4px">${recoverUrl}</code></p>${dashBlock}
   <hr style="border:0;border-top:1px solid #e5e5e5;margin:32px 0">
   <p style="font-size:13px;color:#94a3b8">If you didn't request this, you can ignore this email — your key stays unchanged until the link is used.</p>
 </body></html>`.trim();
 
-  const text = `Recover your Back Channel API key.\nHandle: ${args.handle}\nClicking the link issues a new key and invalidates the old one.\nLink (expires in 24h): ${recoverUrl}`;
+  const text = `Recover your Back Channel API key.\nHandle: ${args.handle}\nClicking the link issues a new key and invalidates the old one.\nLink (expires in 24h): ${recoverUrl}${args.dashboardUrl ? `\n\nOr, to manage your account WITHOUT rotating your key, open your dashboard: ${args.dashboardUrl}` : ""}`;
 
   try {
     const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
@@ -126,6 +130,35 @@ Link:     ${recoverUrl}
     console.error("Resend send failed (recovery):", msg);
     return false;
   }
+}
+
+/**
+ * Sent when someone tries to SIGN UP with an email that already has a VERIFIED
+ * account. The API response stays opaque (never reveals existence to the
+ * caller), but the legitimate owner — via their own inbox — learns they're
+ * already set up and gets a one-click dashboard link (no key rotation needed),
+ * plus a pointer to reset the key if they actually lost it.
+ */
+export async function sendAlreadyRegisteredEmail(args: { to: string; handle: string; dashboardUrl: string }): Promise<boolean> {
+  const resend = client();
+  if (!resend) { console.log(`[already-registered] (log-only) to=${args.handle} dash=${args.dashboardUrl}`); return false; }
+  const subject = "You already have a Back Channel account";
+  const html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:22px;margin:0 0 16px">You're already set up 🎉</h2>
+  <p>Someone just tried to start a new Back Channel signup for this email — but <strong>${escapeHtml(args.handle)}</strong> already exists. No need to sign up again. Open your dashboard to see your sessions, trusted agents, and settings:</p>
+  <p style="margin:28px 0"><a href="${args.dashboardUrl}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Open my dashboard</a></p>
+  <p style="font-size:14px;color:#64748b">Lost your API key and need a new one? Reset it at <a href="${APP_URL}/recover" style="color:#0f766e">${APP_URL}/recover</a> — that rotates your key (any agent using the old one will need the new key).</p>
+  <hr style="border:0;border-top:1px solid #e5e5e5;margin:32px 0">
+  <p style="font-size:13px;color:#94a3b8">If this wasn't you, you can ignore this email — nothing changed.</p>
+</body></html>`.trim();
+  const text = `You already have a Back Channel account (${args.handle}).\nOpen your dashboard (no key change): ${args.dashboardUrl}\nLost your key? Reset it: ${APP_URL}/recover`;
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
+    if (res.error) { console.error("Resend error (already-registered):", res.error); return false; }
+    return true;
+  } catch (e) { console.error("Resend send failed (already-registered):", e instanceof Error ? e.message : e); return false; }
 }
 
 /**

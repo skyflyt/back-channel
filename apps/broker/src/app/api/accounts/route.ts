@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateHandle, generateMagicLinkToken, magicLinkExpiry, hashToken } from "@/lib/auth";
-import { sendVerificationEmail } from "@/lib/email";
+import { generateHandle, generateMagicLinkToken, magicLinkExpiry, hashToken, generateViewToken, viewTokenExpiry } from "@/lib/auth";
+import { sendVerificationEmail, sendAlreadyRegisteredEmail } from "@/lib/email";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
+const APP_URL = process.env.PUBLIC_APP_URL ?? "https://back-channel.app";
 
 function tooMany(retryAfterSec: number) {
   return NextResponse.json(
@@ -52,12 +53,17 @@ export async function POST(req: NextRequest) {
 
   if (account) {
     if (account.emailVerifiedAt) {
-      // Already verified — for security, don't reveal that the account exists. Just say "check your email" anyway.
-      // (We could send a "you already have an account, here's how to reset" email, but for MVP, opaque is fine.)
+      // Already verified. API stays opaque (never reveal existence to the
+      // caller), but email the OWNER a "you're already set up — here's your
+      // dashboard" note with a one-click view-token link (no key rotation). This
+      // is how a blind agent signup resolves to "open your dashboard" for the user.
+      const raw = generateViewToken();
+      await prisma.viewToken.create({ data: { token: hashToken(raw), accountId: account.id, purpose: "account", expiresAt: viewTokenExpiry() } }).catch(() => {});
+      void sendAlreadyRegisteredEmail({ to: email, handle: account.handle, dashboardUrl: `${APP_URL}/account?vt=${encodeURIComponent(raw)}` });
       return NextResponse.json({
         handle: account.handle,
         status: "verification_sent",
-        message: "If this email isn't already verified, you'll get a verification link shortly.",
+        message: "Check your email — if you already have an account it'll point you to your dashboard; otherwise click the link to finish signing up.",
       });
     }
     // Account exists but unverified -> resend

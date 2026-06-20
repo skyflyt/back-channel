@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateMagicLinkToken, generateRecoveryToken, magicLinkExpiry, hashToken } from "@/lib/auth";
+import { generateMagicLinkToken, generateRecoveryToken, magicLinkExpiry, hashToken, generateViewToken, viewTokenExpiry } from "@/lib/auth";
 import { sendVerificationEmail, sendRecoveryEmail } from "@/lib/email";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
@@ -62,7 +62,11 @@ export async function POST(req: NextRequest) {
     // Verified -> recovery token that ROTATES the key when consumed.
     const token = generateRecoveryToken();
     await prisma.magicLink.create({ data: { token: hashToken(token), email, expiresAt: magicLinkExpiry() } });
-    const sent = await sendRecoveryEmail({ to: email, handle: account.handle, token });
+    // Secondary no-rotate option: a dashboard view-token link in the same email.
+    const vt = generateViewToken();
+    await prisma.viewToken.create({ data: { token: hashToken(vt), accountId: account.id, purpose: "account", expiresAt: viewTokenExpiry() } }).catch(() => {});
+    const appUrl = process.env.PUBLIC_APP_URL ?? "https://back-channel.app";
+    const sent = await sendRecoveryEmail({ to: email, handle: account.handle, token, dashboardUrl: `${appUrl}/account?vt=${encodeURIComponent(vt)}` });
     return opaque(sent ? "resend" : "log_only");
   }
 
