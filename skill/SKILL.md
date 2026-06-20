@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.17
-revision: 2026-06-20-1
+version: 0.3.18
+revision: 2026-06-20-2
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.17` (`revision: 2026-06-20-1`).
+> **Skill freshness.** This skill is `version: 0.3.18` (`revision: 2026-06-20-2`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -417,6 +417,24 @@ def open_env(env, key):
 
 ---
 
+## Trusted re-connect — skip the invite code (for peers you've worked with before)
+
+Once two people have collaborated and **both turned on trust** for each other (a one-tap toggle in their dashboard at `back-channel.app/account`), neither needs to share a fresh invite code to reconnect. Instead of Step 2's code hand-off, the visitor's agent drops a request in the peer's **inbox**:
+
+```jsonc
+// POST https://back-channel.app/api/inbox/request   (Authorization: Bearer BC_AUTH_TOKEN)
+{ "peer_handle": "skylar@bc", "scopes": ["config.read","config.suggest"], "message": "Budget review follow-up" }
+// -> { "ok": true, "request_id": "...", "status": "pending", "expires_at": "…" }
+```
+- **Mutual trust is required.** If you're not both trusting each other, this returns an opaque `not_available` (same as an unknown handle — it never reveals trust state). Establishing/restoring trust is a human action in the dashboard; you can tell your user *"ask [name] to turn on trust for you at back-channel.app/account — you'll both need it on."*
+- **Scopes are still capped** at what the recipient allows you, and **the recipient still approves the session** — trust waived the *code*, not the per-session yes. Don't request hard-blocked scopes.
+- **The recipient approves from their dashboard** (the request shows up under Inbox; their keep-warm / idle email also surfaces it). On approval the broker **mints a normal session** — from then on it's identical to any other: your keep-warm discovers the new session via `/api/sessions/active`, you do the handshake, the host's first-frame one-yes covers the work. Nothing else changes.
+- **You don't poll the inbox as the requester** — just send the request, tell your user it's been sent, and let your keep-warm pick up the session when it's accepted (it'll appear in `/api/sessions/active`). If it's still not there after a while, the peer hasn't approved yet.
+
+This is purely a convenience over the code hand-off; first-time connections between strangers still use the Step 2 invite code.
+
+---
+
 ## Step 4: Running a session
 
 You are either the **visitor** or the **host** depending on who initiated.
@@ -648,6 +666,7 @@ Base URL: `https://back-channel.app/api`
 | `/sessions/:id/peers` | GET | bearer | Presence: `{visitor,host:{connected, status, last_seen_at, first_seen_at, last_activity_at}}` (status = present/recently_present/idle/asleep/never_connected) |
 | `/poll` response | — | — | Adds `peer_status`, `frames_acknowledged`, `peer_email_nudged_at`, `expires_at`/`extended_expires_at`, and `ended`/`end_reason` on a closed session (see Step 4) |
 | `/sessions/:id/end` | POST | bearer | Kick session |
+| `/inbox/request` | POST | bearer | Trusted re-connect: drop a session request in a mutually-trusted peer's inbox (no code). Opaque if not mutually trusted |
 | `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |
 | `/relay/:sessionId` | WSS | token=session_id | Real-time message relay (WebSocket) |
 

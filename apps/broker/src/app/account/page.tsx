@@ -13,6 +13,7 @@ interface Sess {
   duration_min: number | null; expires_at: string;
 }
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
+interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 
 /** Read the non-httpOnly bc_csrf cookie to echo in the x-bc-csrf header. */
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
@@ -23,6 +24,7 @@ export default function AccountPage() {
   const [active, setActive] = useState<Sess[]>([]);
   const [recent, setRecent] = useState<Sess[]>([]);
   const [trust, setTrust] = useState<TrustPeer[]>([]);
+  const [inbox, setInbox] = useState<InboxReq[]>([]);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [notify, setNotify] = useState(true);
@@ -38,6 +40,13 @@ export default function AccountPage() {
     try {
       const r = await fetch("/api/trust", { credentials: "include" });
       if (r.ok) setTrust((await r.json()).peers ?? []);
+    } catch { /* leave as-is */ }
+  }, []);
+
+  const loadInbox = useCallback(async () => {
+    try {
+      const r = await fetch("/api/inbox", { credentials: "include" });
+      if (r.ok) setInbox((await r.json()).requests ?? []);
     } catch { /* leave as-is */ }
   }, []);
 
@@ -63,9 +72,10 @@ export default function AccountPage() {
         const j = await r.json(); setMe(j); setNotify(j.notify_idle_frames); setState("ok");
         loadSessions();
         loadTrust();
+        loadInbox();
       } catch { setState("error"); }
     })();
-  }, [loadSessions, loadTrust]);
+  }, [loadSessions, loadTrust, loadInbox]);
 
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
@@ -94,6 +104,23 @@ export default function AccountPage() {
     const next = !notify; setNotify(next); setBusy("notify");
     await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ notify_idle_frames: next }) }).catch(() => setNotify(!next));
     setBusy("");
+  };
+
+  const acceptInbox = async (id: string, who: string) => {
+    if (!confirm(`Approve ${who}'s request to collaborate? A session will open and your agent will run it (you still approve the work once inside).`)) return;
+    setBusy(`inbox:${id}`);
+    try {
+      const r = await fetch(`/api/inbox/${id}/accept`, { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } });
+      const j = await r.json();
+      if (r.ok && j.session_id) { window.location.href = `/sessions/${j.session_id}`; return; }
+    } catch { /* ignore */ }
+    setBusy(""); loadInbox(); loadSessions();
+  };
+
+  const rejectInbox = async (id: string) => {
+    setBusy(`inbox:${id}`);
+    await fetch(`/api/inbox/${id}/reject`, { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } }).catch(() => {});
+    setBusy(""); loadInbox();
   };
 
   const toggleTrust = async (handle: string, on: boolean) => {
@@ -203,7 +230,22 @@ export default function AccountPage() {
           ))}
         </section>
         {/* Inbox */}
-        <section style={s.card}><h2 style={s.h2}>Inbox</h2><p style={s.soon}>Requests from trusted agents to collaborate again will appear here.</p></section>
+        <section style={s.card}>
+          <h2 style={s.h2}>Inbox{inbox.length ? ` (${inbox.length})` : ""}</h2>
+          <p style={s.soon}>Requests from trusted agents to collaborate again. Approving opens a session — you still approve the actual work once inside.</p>
+          {inbox.length === 0 && <p style={s.muted}>No pending requests.</p>}
+          {inbox.map((r) => (
+            <div key={r.id} style={s.row}>
+              <div style={s.rowMain}>
+                <strong>{r.requester_handle}</strong> wants to collaborate
+                {r.message && <div style={s.goal}>&ldquo;{r.message}&rdquo;</div>}
+                <div style={s.rowMeta}>scopes: {r.scopes.join(", ")} · {when(r.created_at)}</div>
+              </div>
+              <button style={s.btn} disabled={busy === `inbox:${r.id}`} onClick={() => acceptInbox(r.id, r.requester_handle)}>{busy === `inbox:${r.id}` ? "…" : "Approve & open"}</button>
+              <button style={s.endBtn} disabled={busy === `inbox:${r.id}`} onClick={() => rejectInbox(r.id)}>Decline</button>
+            </div>
+          ))}
+        </section>
 
         {/* Settings */}
         <section style={s.card}>

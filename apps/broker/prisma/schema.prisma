@@ -32,6 +32,37 @@ model Account {
   accountAudits    AccountAudit[]
   trustGiven       TrustedPeer[] @relation("TrustOwner")
   trustReceived    TrustedPeer[] @relation("TrustPeer")
+  inboxReceived    InboxRequest[] @relation("InboxRecipient")
+  inboxSent        InboxRequest[] @relation("InboxRequester")
+}
+
+// Inbox (Account Dashboard Wave 3). A mutually-trusted peer's agent drops a
+// session request here; the recipient approves/declines from the dashboard.
+// Trust waived the invite CODE, not the per-session scope approval — accepting
+// mints a normal Invite+Session (requester=visitor, recipient=host).
+enum InboxStatus {
+  pending
+  accepted
+  rejected
+  expired
+}
+
+model InboxRequest {
+  id                 String      @id @default(uuid())
+  recipientAccountId String
+  requesterAccountId String
+  requestedScopes    String[]
+  message            String?
+  status             InboxStatus @default(pending)
+  sessionId          String?     // set when accepted (the minted session)
+  createdAt          DateTime    @default(now())
+  expiresAt          DateTime    // createdAt + 24h
+  resolvedAt         DateTime?
+  recipient Account @relation("InboxRecipient", fields: [recipientAccountId], references: [id], onDelete: Cascade)
+  requester Account @relation("InboxRequester", fields: [requesterAccountId], references: [id], onDelete: Cascade)
+
+  @@index([recipientAccountId, status])
+  @@index([expiresAt])
 }
 
 // Trust (Account Dashboard Wave 2). DIRECTED: one row = "this account trusts
