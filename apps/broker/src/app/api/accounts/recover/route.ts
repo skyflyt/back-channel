@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateMagicLinkToken, generateRecoveryToken, magicLinkExpiry } from "@/lib/auth";
+import { generateMagicLinkToken, generateRecoveryToken, magicLinkExpiry, hashToken } from "@/lib/auth";
 import { sendVerificationEmail, sendRecoveryEmail } from "@/lib/email";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
   if (account.emailVerifiedAt) {
     // Verified -> recovery token that ROTATES the key when consumed.
     const token = generateRecoveryToken();
-    await prisma.magicLink.create({ data: { token, email, expiresAt: magicLinkExpiry() } });
+    await prisma.magicLink.create({ data: { token: hashToken(token), email, expiresAt: magicLinkExpiry() } });
     const sent = await sendRecoveryEmail({ to: email, handle: account.handle, token });
     return opaque(sent ? "resend" : "log_only");
   }
@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
   // Pending (never verified) -> normal verification token, so a user stuck in
   // either state gets a working link from this one endpoint.
   const token = generateMagicLinkToken();
-  await prisma.magicLink.create({ data: { token, email, expiresAt: magicLinkExpiry() } });
+  await prisma.magicLink.create({ data: { token: hashToken(token), email, expiresAt: magicLinkExpiry() } });
   const sent = await sendVerificationEmail({ to: email, handle: account.handle, token });
   return opaque(sent ? "resend" : "log_only");
 }

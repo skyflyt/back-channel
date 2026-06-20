@@ -157,7 +157,8 @@ export async function sendKeyRotatedEmail(to: string, handle: string): Promise<b
  * the user on /account. Same provider/log-fallback behavior as the others.
  */
 export async function sendViewTokenEmail(args: VerificationEmail): Promise<boolean> {
-  const url = `${APP_URL}/api/auth/view-verify?token=${encodeURIComponent(args.token)}`;
+  // Land on the /account page (scanner-safe): the page POSTs view-token-consume.
+  const url = `${APP_URL}/account?vt=${encodeURIComponent(args.token)}`;
   const resend = client();
 
   if (!resend) {

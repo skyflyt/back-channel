@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateApiKey, isRecoveryToken } from "@/lib/auth";
+import { generateApiKey, isRecoveryToken, hashToken } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -35,13 +35,14 @@ export async function POST(req: NextRequest) {
   // Only recovery tokens belong here; verification tokens go to /api/auth/verify.
   if (!isRecoveryToken(token)) return NextResponse.json({ error: "invalid_token" }, { status: 404 });
 
-  const link = await prisma.magicLink.findUnique({ where: { token } });
+  const h = hashToken(token);
+  const link = await prisma.magicLink.findUnique({ where: { token: h } });
   if (!link) return NextResponse.json({ error: "invalid_token" }, { status: 404 });
   if (link.expiresAt < new Date()) return NextResponse.json({ error: "token_expired" }, { status: 410 });
 
   // Atomic claim: first POST to flip consumedAt wins (stops double-click double-rotate).
   const claim = await prisma.magicLink.updateMany({
-    where: { token, consumedAt: null },
+    where: { token: h, consumedAt: null },
     data: { consumedAt: new Date() },
   });
   if (claim.count === 0) return NextResponse.json({ error: "token_already_used" }, { status: 410 });

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromAuth, generateViewToken, viewTokenExpiry } from "@/lib/auth";
+import { getAccountFromAuth, generateViewToken, viewTokenExpiry, hashToken } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -32,13 +32,14 @@ export async function POST(req: NextRequest) {
 
   const token = generateViewToken();
   const expiresAt = viewTokenExpiry();
-  await prisma.viewToken.create({ data: { token, accountId: account.id, purpose, expiresAt } });
+  await prisma.viewToken.create({ data: { token: hashToken(token), accountId: account.id, purpose, expiresAt } });
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "view-token.issued", detail: { via: "self" } } });
 
   const appUrl = process.env.PUBLIC_APP_URL ?? new URL(req.url).origin;
   return NextResponse.json({
-    view_token: token,
-    view_url: `${appUrl}/api/auth/view-verify?token=${encodeURIComponent(token)}`,
+    view_token: token,                                  // raw (handed to user/harness; only the hash is stored)
+    view_url: `${appUrl}/account?vt=${encodeURIComponent(token)}`,   // human lands here; page POSTs consume
+    consume_url: `${appUrl}/api/auth/view-token-consume`,            // POST {token} -> sets bc_session cookie
     expires_at: expiresAt.toISOString(),
   });
 }

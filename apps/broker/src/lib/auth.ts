@@ -8,12 +8,24 @@
  * Tokens are random base64url strings, 32 bytes, stored in MagicLink table with 24h TTL.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./db";
 import type { Account } from "@prisma/client";
 
 const KEY_PREFIX = "bc_";
 const TOKEN_TTL_HOURS = 24;
+
+/**
+ * Hash a single-use/secret token for AT-REST storage. We hand the RAW token to
+ * the user (email link, cookie) but only ever store/look up its SHA-256 hash —
+ * so a DB read (or leak) never exposes a usable token. Lookup = hash the
+ * incoming raw, query by hash. (API keys are intentionally NOT hashed: they're
+ * long-lived bearer creds the agent presents on every call and that we must
+ * return at issue time; tokens here are short-lived secrets.)
+ */
+export function hashToken(raw: string): string {
+  return createHash("sha256").update(raw).digest("hex");
+}
 
 export function generateApiKey(): string {
   return KEY_PREFIX + randomBytes(24).toString("base64url");
@@ -117,15 +129,16 @@ export function maskApiKey(key: string | null): string | null {
  */
 export async function getAccountFromCookie(cookieToken: string | null | undefined): Promise<Account | null> {
   if (!cookieToken || !cookieToken.startsWith(COOKIE_TOKEN_PREFIX)) return null;
-  const sc = await prisma.sessionCookie.findUnique({ where: { token: cookieToken }, include: { account: true } });
+  const h = hashToken(cookieToken); // stored as a hash; look up by hash
+  const sc = await prisma.sessionCookie.findUnique({ where: { token: h }, include: { account: true } });
   if (!sc) return null;
   if (sc.expiresAt.getTime() < Date.now()) {
-    void prisma.sessionCookie.delete({ where: { token: cookieToken } }).catch(() => {});
+    void prisma.sessionCookie.delete({ where: { token: h } }).catch(() => {});
     return null;
   }
   const last = sc.lastUsedAt?.getTime() ?? 0;
   if (Date.now() - last > 60_000) {
-    void prisma.sessionCookie.update({ where: { token: cookieToken }, data: { lastUsedAt: new Date() } }).catch(() => {});
+    void prisma.sessionCookie.update({ where: { token: h }, data: { lastUsedAt: new Date() } }).catch(() => {});
   }
   return sc.account;
 }

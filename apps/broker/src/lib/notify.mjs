@@ -10,7 +10,23 @@
  */
 
 import { Resend } from "resend";
+import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./db.mjs";
+
+// Token helpers (kept in sync with auth.ts — runtime JS can't import the .ts).
+const hashToken = (raw) => createHash("sha256").update(raw).digest("hex");
+const VIEW_TOKEN_TTL_MS = 15 * 60 * 1000;
+/** Mint a single-use dashboard view-token for an account; store only its hash,
+ *  return the raw for the email link. Lets the idle email land authenticated. */
+async function mintViewToken(accountId, sessionId) {
+  const raw = "vt_" + randomBytes(32).toString("base64url");
+  try {
+    await prisma.viewToken.create({
+      data: { token: hashToken(raw), accountId, purpose: `session:${sessionId}`, expiresAt: new Date(Date.now() + VIEW_TOKEN_TTL_MS) },
+    });
+    return raw;
+  } catch { return null; }
+}
 
 const FROM = process.env.EMAIL_FROM ?? "Back Channel <onboarding@resend.dev>";
 const APP_URL = process.env.PUBLIC_APP_URL ?? "https://back-channel.app";
@@ -64,7 +80,13 @@ export async function notifyIdleRecipient(sessionId, destRole, unread) {
     if (recipient.notifyIdleFrames === false) return;            // opted out
 
     const resend = client();
-    const link = `${APP_URL}/sessions/${encodeURIComponent(sessionId)}`;
+    // Mint a view-token so the button lands the human AUTHENTICATED on their
+    // dashboard (no API-key paste), deep-linked to this session. Falls back to
+    // the plain dashboard link if minting fails.
+    const vt = await mintViewToken(recipient.id, sessionId);
+    const link = vt
+      ? `${APP_URL}/account?vt=${encodeURIComponent(vt)}&session=${encodeURIComponent(sessionId)}`
+      : `${APP_URL}/account`;
     if (!resend) {
       console.log(`[idle-notify] (log-only, no RESEND_API_KEY) session=${sessionId} to=${recipient.handle} from=${peer.handle}`);
       return;
@@ -77,12 +99,12 @@ export async function notifyIdleRecipient(sessionId, destRole, unread) {
 <html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
   <h2 style="font-size:22px;margin:0 0 16px">You have ${escapeHtml(n)} on Back Channel</h2>
   <p><strong>${escapeHtml(peer.handle)}</strong>'s agent is messaging <strong>${escapeHtml(recipient.handle)}</strong> and your agent is idle. Wake your agent so it can pick up where it left off — two ways:</p>
-  <p style="margin:24px 0 16px"><a href="${link}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Open the session</a></p>
+  <p style="margin:24px 0 16px"><a href="${link}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Open my dashboard</a></p>
   <p style="margin:24px 0 8px;font-weight:600">💬 Or paste this to your AI assistant to wake it up:</p>
   <pre style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#0f172a">${escapeHtml(prompt)}</pre>
   <p style="font-size:13px;color:#94a3b8;margin-top:20px">Message content is end-to-end encrypted — we can't read it; this notice is metadata only. Idle-frame notifications are on for your account.</p>
 </body></html>`.trim();
-    const text = `${peer.handle} sent ${n} to ${recipient.handle} on Back Channel.\n\nOpen the session: ${link}\n\nOr paste this to your AI assistant to wake it up:\n${prompt}\n\n(Content is end-to-end encrypted; metadata-only notice.)`;
+    const text = `${peer.handle} sent ${n} to ${recipient.handle} on Back Channel.\n\nOpen your dashboard: ${link}\n\nOr paste this to your AI assistant to wake it up:\n${prompt}\n\n(Content is end-to-end encrypted; metadata-only notice.)`;
 
     const res = await resend.emails.send({ from: FROM, to: [recipient.email], subject, html, text });
     if (res.error) {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateApiKey, isRecoveryToken } from "@/lib/auth";
+import { generateApiKey, isRecoveryToken, hashToken } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
   const token = new URL(req.url).searchParams.get("token");
   if (!token) return NextResponse.json({ error: "token_required" }, { status: 400 });
 
-  const link = await prisma.magicLink.findUnique({ where: { token } });
+  const link = await prisma.magicLink.findUnique({ where: { token: hashToken(token) } });
   if (!link) return NextResponse.json({ error: "invalid_token" }, { status: 404 });
   if (link.consumedAt) return NextResponse.json({ error: "token_already_used" }, { status: 410 });
   if (link.expiresAt < new Date()) return NextResponse.json({ error: "token_expired" }, { status: 410 });
@@ -73,7 +73,8 @@ export async function POST(req: NextRequest) {
   // key); they must not be consumable as a plain verification.
   if (isRecoveryToken(token)) return NextResponse.json({ error: "invalid_token" }, { status: 404 });
 
-  const link = await prisma.magicLink.findUnique({ where: { token } });
+  const h = hashToken(token);
+  const link = await prisma.magicLink.findUnique({ where: { token: h } });
   if (!link) return NextResponse.json({ error: "invalid_token" }, { status: 404 });
   if (link.expiresAt < new Date()) return NextResponse.json({ error: "token_expired" }, { status: 410 });
 
@@ -81,7 +82,7 @@ export async function POST(req: NextRequest) {
   // null wins. This is the lock — it stops a double-click (or a retry) from
   // rotating an already-issued API key.
   const claim = await prisma.magicLink.updateMany({
-    where: { token, consumedAt: null },
+    where: { token: h, consumedAt: null },
     data: { consumedAt: new Date() },
   });
   if (claim.count === 0) return NextResponse.json({ error: "token_already_used" }, { status: 410 });

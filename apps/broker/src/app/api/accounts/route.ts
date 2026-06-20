@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateHandle, generateMagicLinkToken, magicLinkExpiry } from "@/lib/auth";
+import { generateHandle, generateMagicLinkToken, magicLinkExpiry, hashToken } from "@/lib/auth";
 import { sendVerificationEmail } from "@/lib/email";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
   }
   await prisma.magicLink.create({
     data: {
-      token,
+      token: hashToken(token),   // store the hash; the raw token only travels in the email link
       email,
       expiresAt: magicLinkExpiry(),
     },

@@ -32,6 +32,19 @@ export default function AccountPage() {
   useEffect(() => {
     (async () => {
       try {
+        // If we arrived from an email/sign-in link (?vt=…), consume it via POST
+        // (scanner-safe — a pre-fetch GET of this page never consumes the token)
+        // to set the bc_session cookie, then strip it from the URL.
+        const url = new URL(window.location.href);
+        const vt = url.searchParams.get("vt");
+        if (vt) {
+          await fetch("/api/auth/view-token-consume", {
+            method: "POST", credentials: "include",
+            headers: { "content-type": "application/json" }, body: JSON.stringify({ token: vt }),
+          }).catch(() => {});
+          url.searchParams.delete("vt");
+          window.history.replaceState({}, "", url.pathname + url.search);
+        }
         const r = await fetch("/api/account/me", { credentials: "include" });
         if (r.status === 401) { setState("unauth"); return; }
         if (!r.ok) { setState("error"); return; }

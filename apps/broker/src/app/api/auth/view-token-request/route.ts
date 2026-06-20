@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateViewToken, viewTokenExpiry } from "@/lib/auth";
+import { generateViewToken, viewTokenExpiry, hashToken } from "@/lib/auth";
 import { sendViewTokenEmail } from "@/lib/email";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
   }
 
   const token = generateViewToken();
-  await prisma.viewToken.create({ data: { token, accountId: account.id, expiresAt: viewTokenExpiry() } });
+  await prisma.viewToken.create({ data: { token: hashToken(token), accountId: account.id, expiresAt: viewTokenExpiry() } });
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "view-token.issued", detail: { ip } } });
 
   await sendViewTokenEmail({ to: email, handle: account.handle, token });
