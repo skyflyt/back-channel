@@ -128,6 +128,54 @@ Link:     ${recoverUrl}
   }
 }
 
+/**
+ * Send an account-dashboard sign-in link. The token is a view-token; the link
+ * hits /api/auth/view-verify which sets the browser session cookie and lands
+ * the user on /account. Same provider/log-fallback behavior as the others.
+ */
+export async function sendViewTokenEmail(args: VerificationEmail): Promise<boolean> {
+  const url = `${APP_URL}/api/auth/view-verify?token=${encodeURIComponent(args.token)}`;
+  const resend = client();
+
+  if (!resend) {
+    console.log(`
+─────────── EMAIL FALLBACK (no RESEND_API_KEY) ───────────
+To:       ${args.to}
+Subject:  Sign in to your Back Channel account
+Handle:   ${args.handle}
+Link:     ${url}
+──────────────────────────────────────────────────`);
+    return false;
+  }
+
+  const subject = "Sign in to your Back Channel account";
+  const html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:24px;margin:0 0 16px">Sign in to Back Channel</h2>
+  <p>Click below to open your account — see your sessions, the agents you've trusted, and your API key. The link works once and expires in 15 minutes.</p>
+  <p style="margin:32px 0"><a href="${url}" style="display:inline-block;background:#0f172a;color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600">Open my account</a></p>
+  <p style="font-size:14px;color:#64748b">Or paste this URL into your browser:<br><code style="word-break:break-all;background:#f5f5f4;padding:6px 10px;border-radius:6px;display:inline-block;margin-top:4px">${url}</code></p>
+  <hr style="border:0;border-top:1px solid #e5e5e5;margin:32px 0">
+  <p style="font-size:13px;color:#94a3b8">If you didn't ask to sign in, you can ignore this email — nothing changes.</p>
+</body></html>`.trim();
+
+  const text = `Sign in to your Back Channel account.\nHandle: ${args.handle}\nLink (works once, expires in 15 min): ${url}`;
+
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
+    if (res.error) {
+      console.error("Resend error (view-token):", res.error);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("Resend send failed (view-token):", msg);
+    return false;
+  }
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")

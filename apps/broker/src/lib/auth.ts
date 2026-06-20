@@ -58,5 +58,65 @@ export async function getAccountFromAuth(authHeader: string | null): Promise<Acc
   if (!m) return null;
   const key = m[1];
   if (!key.startsWith(KEY_PREFIX)) return null;
-  return prisma.account.findUnique({ where: { apiKey: key } });
+  const account = await prisma.account.findUnique({ where: { apiKey: key } });
+  // Touch apiKeyLastUsedAt (throttled to ~once/min) so the dashboard can show
+  // "last used" without a write on every authed call.
+  if (account) {
+    const last = account.apiKeyLastUsedAt?.getTime() ?? 0;
+    if (Date.now() - last > 60_000) {
+      void prisma.account.update({ where: { id: account.id }, data: { apiKeyLastUsedAt: new Date() } }).catch(() => {});
+    }
+  }
+  return account;
+}
+
+// ── Account Dashboard: view-tokens + browser session cookies ────────────────
+
+const VIEW_TOKEN_PREFIX = "vt_";
+const COOKIE_TOKEN_PREFIX = "cs_";
+/** httpOnly cookie name backing a dashboard browser session. */
+export const SESSION_COOKIE_NAME = "bc_session";
+const VIEW_TOKEN_TTL_MS = 15 * 60 * 1000;       // single-use, 15 min
+const SESSION_COOKIE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+export function generateViewToken(): string {
+  return VIEW_TOKEN_PREFIX + randomBytes(32).toString("base64url");
+}
+export function generateSessionCookieToken(): string {
+  return COOKIE_TOKEN_PREFIX + randomBytes(32).toString("base64url");
+}
+export function viewTokenExpiry(): Date {
+  return new Date(Date.now() + VIEW_TOKEN_TTL_MS);
+}
+export function sessionCookieExpiry(): Date {
+  return new Date(Date.now() + SESSION_COOKIE_TTL_MS);
+}
+export const SESSION_COOKIE_MAX_AGE_SEC = SESSION_COOKIE_TTL_MS / 1000;
+
+/** Mask an API key for display: bc_••••••••G7Yx (never reveal the full key). */
+export function maskApiKey(key: string | null): string | null {
+  if (!key) return null;
+  const tail = key.slice(-4);
+  return `${KEY_PREFIX}${"•".repeat(8)}${tail}`;
+}
+
+/**
+ * Resolve the dashboard browser session from the bc_session cookie value.
+ * Returns the account if the cookie maps to a live (non-expired) SessionCookie,
+ * else null. Touches lastUsedAt (throttled). This is the HUMAN tier — callers
+ * must NOT treat it as the agent bearer (no invite/claim/poll/send).
+ */
+export async function getAccountFromCookie(cookieToken: string | null | undefined): Promise<Account | null> {
+  if (!cookieToken || !cookieToken.startsWith(COOKIE_TOKEN_PREFIX)) return null;
+  const sc = await prisma.sessionCookie.findUnique({ where: { token: cookieToken }, include: { account: true } });
+  if (!sc) return null;
+  if (sc.expiresAt.getTime() < Date.now()) {
+    void prisma.sessionCookie.delete({ where: { token: cookieToken } }).catch(() => {});
+    return null;
+  }
+  const last = sc.lastUsedAt?.getTime() ?? 0;
+  if (Date.now() - last > 60_000) {
+    void prisma.sessionCookie.update({ where: { token: cookieToken }, data: { lastUsedAt: new Date() } }).catch(() => {});
+  }
+  return sc.account;
 }

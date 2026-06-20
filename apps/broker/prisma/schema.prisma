@@ -20,12 +20,62 @@ model Account {
   agentPubkey     String?
   agentEndpoint   String?
   apiKey         String?   @unique
+  apiKeyLastUsedAt DateTime?              // dashboard "last used"; touched (throttled) by getAccountFromAuth
   createdAt       DateTime @default(now())
   emailVerifiedAt DateTime?
   notifyIdleFrames Boolean @default(true) // email me when a frame arrives while I'm idle
 
   invitesAsHost    Invite[]  @relation("HostInvites")
   invitesAsVisitor Invite[]  @relation("VisitorInvites")
+  viewTokens       ViewToken[]
+  sessionCookies   SessionCookie[]
+  accountAudits    AccountAudit[]
+}
+
+// Account Dashboard — short-lived, single-use token emailed to a verified
+// account; exchanged at /api/auth/view-verify for a browser session cookie.
+// Lets a human reach /account from email without pasting their bearer key.
+model ViewToken {
+  token     String   @id            // random urlsafe ("vt_...")
+  accountId String
+  purpose   String   @default("account") // "account" | "session:<id>" deep-link hint
+  createdAt DateTime @default(now())
+  expiresAt DateTime                 // createdAt + 15 min
+  usedAt    DateTime?
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([expiresAt])
+}
+
+// Server-side browser session backing the httpOnly `bc_session` cookie. Grants
+// the human dashboard tier (view/manage), a strict subset of the agent bearer
+// key (cannot create invites / claim / poll / send).
+model SessionCookie {
+  token      String   @id            // random urlsafe ("cs_..."); value of bc_session cookie
+  accountId  String
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime                 // createdAt + 24h
+  lastUsedAt DateTime?
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([expiresAt])
+}
+
+// Account-scoped audit (distinct from session-scoped AuditLog, which is FK-bound
+// to a collaboration Session). Holds dashboard/account events: view-token.issued,
+// view-token.consumed, key.rotated, trust.revoked, session.ended_manually, etc.
+model AccountAudit {
+  id        BigInt   @id @default(autoincrement())
+  accountId String
+  ts        DateTime @default(now())
+  eventType String
+  detail    Json     // metadata only — never plaintext content
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([ts])
 }
 
 model Invite {
