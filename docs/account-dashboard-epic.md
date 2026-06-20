@@ -256,9 +256,9 @@ Ship in waves; each wave is independently useful and testable.
 - ✅ **verify/recover set `bc_session`** + "open your dashboard" callout; **transcript dual-auth** (cookie) so "Watch"/"Open session" need no key paste. Smoke 9/9 + 6/6.
 - ⏳ **Remaining:** CSRF token on cookie mutations (deferred from §8.11; retrofit before/with Phase 3).
 
-**Wave 2 — trust:** `TrustedPeer` schema; `/api/trust/*` (establish with mutual+window check, list, revoke) + audit; post-session "trust this agent?" prompt in the skill; **Trusted Agents** dashboard section.
+**Wave 2 — trust (Phase 3a). ✅ SHIPPED 2026-06-20 (`edb2c9d`, rev `00050`):** `TrustedPeer` schema; `/api/trust` (GET list + POST enable) + `/api/trust/:handle` (DELETE revoke) + audit; **Trusted Agents** dashboard section; CSRF double-submit on cookie mutations. Built to the resolved *toggle-over-session-history* model (eligibility = a prior session; enable/disable from the dashboard), **not** the old mutual-prompt-within-N-hours pattern. Smoke 10/10.
 
-**Wave 3 — inbox:** `InboxRequest` schema; `/api/inbox/*` (request w/ trust check + rate limit + scope ceiling, list, accept→session, reject) + expiry sweep; keep-warm + email integration ("Skylar's agent wants to collaborate again"); **Inbox** dashboard section.
+**Wave 3 — inbox (Phase 3b). ✅ SHIPPED 2026-06-20 (`4dba765`, rev `00051`):** `InboxRequest` schema (+ `InboxStatus`); `POST /api/inbox/request` (bearer; mutual-trust gated opaque, scope ceiling, 5/day rate limit), `GET /api/inbox` (cookie), `/accept` (cookie+CSRF → mints normal Invite+Session), `/reject`; **Inbox** dashboard section; skill "Trusted re-connect" (rev `2026-06-20-2`). Smoke 11/11. *(Deferred, non-blocking: the "Skylar's agent wants to collaborate again" email + an expiry sweep — pending requests already self-hide past `expiresAt`.)*
 
 **Wave 4 — polish/v2:** manual "add trusted agent" from dashboard (if 4.4 says yes); richer history; SMS/web-push settings (ties to alt-delivery-channels epic).
 
@@ -308,4 +308,4 @@ Dependency notes: Waves 2 & 3 add new endpoints but **reuse Wave-1 cookie auth**
 
 > **§6 reconciliation note:** decisions #4/#5 update the Trust model — eligibility to trust a peer is now "a real session has occurred between us" (kept indefinitely), and trust is an enable/disable toggle each side controls from the dashboard, rather than a one-shot mutual prompt that must both fire within N hours. Trust is still **mutual** (active only when both sides have it enabled) and **accountId-keyed**. §6's endpoints/schema stand; the *establishment trigger* is what changed. Phase 3 builds to this resolved model.
 
-**Build-readiness:** Phase 1 + 2a + 2b shipped & verified. CSRF retrofit (§8.11) is the one carry-over, folded into Phase 3. Phase 3 (trust + inbox) is **next** — all trust decisions resolved (build to the toggle-over-session-history model above).
+**Build-readiness:** Phases 1, 2a, 2b, 3a, 3b all shipped & verified — **the Account Dashboard core epic is functionally complete** (view-token auth, sessions, key rotation, settings, email→/account, trust toggle, inbox, CSRF). Remaining: **Phase 4 polish** (confirmation modals are partly there via `confirm()`; an audit-log viewer + a Rule #0 copy pass + the deferred inbox-request email/expiry-sweep). After Phase 4 → Skill Sharing (`docs/skill-sharing-epic.md`).
