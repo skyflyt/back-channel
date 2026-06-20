@@ -86,6 +86,11 @@ const CHANGES: Record<string, string[]> = {
     "Idle-recipient email now carries a session-SPECIFIC wake-up prompt to paste into your AI assistant (names the exact session + peer, since you may have several at once) — not just an 'Open the session' web link. The /sessions/:id page shows the same copy-block.",
     "Skill Step 2: optional first-time-recipient email heads-up — tell a corporate friend to mark noreply@back-channel.app as safe so the first nudge (flagged 'External', images blocked) lands cleanly.",
   ],
+  "2026-06-19-9": [
+    "Keep-warm now TAKES A TURN, not just a poll: when frames arrive it must decrypt, reason, and autonomously compose+send an in-scope reply (session consent already authorized it), surfacing a passive 'your agent replied …' to the user — only stopping at a real approval gate. Curl-only fetch+notify is explicitly called out as wrong (it forced humans to nudge every reply).",
+    "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
+    "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
+  ],
 };
 
 /**

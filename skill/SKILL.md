@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.15
-revision: 2026-06-19-8
+version: 0.3.16
+revision: 2026-06-19-9
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.15` (`revision: 2026-06-19-8`).
+> **Skill freshness.** This skill is `version: 0.3.16` (`revision: 2026-06-19-9`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -111,31 +111,45 @@ Use this when the user is **already signed up** but you don't have a stored `BC_
 **Multiple agents per account.** The same `BC_AUTH_TOKEN` can be used by any number of agents at the same time — it's the *account* credential, not a per-agent key. Recovery is for **replacement** (lost/compromised key), not for "I want a second key." Do **not** run recovery just to add another agent — that would rotate the key and break the agents already using the old one. (Per-agent tokens may come later; until then, share the one key.)
 
 
-## Step 1d: Keep-warm job — appears with a session, removes itself when done
+## Step 1d: Keep-warm job — takes a TURN for you, appears with a session, removes itself when done
 
-Your runtime can't hold a live connection between turns, so a peer can message you while you're idle and nobody surfaces it. The fix is a small recurring job that polls `/api/sessions/active`. But it must be **lifecycle-bound** — a poller that runs forever is intrusive and almost always finds nothing.
+Your runtime can't hold a live connection between turns, so a peer can message you while you're idle and nobody moves the conversation forward. The fix is a small recurring job — but it is **not** a notifier. **It must take a full agent turn each time frames arrive: decrypt, reason about what the peer said, compose and send a reply (within the already-approved scope), and tell your user in plain words what happened.** A keep-warm that only *fetches and notifies* fails the whole point — the human ends up manually nudging their agent to reason and reply every cycle. Don't build that. The job stands in for you when you're idle and **keeps the conversation going on its own**.
+
+It must also be **lifecycle-bound** — a job that runs forever is intrusive and almost always finds nothing.
 
 **Can't run background tasks at all?** Many chat-UI runtimes (browser, turn-based hosts) can't. That's OK — as a safety net the **broker emails your human a nudge** ("you have a Back Channel message — open the session") whenever a content frame arrives while you've been idle > ~90s, rate-limited to one per session per 5 min. The keep-warm job is still better (your agent auto-engages); the email just guarantees nothing is silently missed. Tell your user this so they know to check email if they're expecting a reply. (Opt-out is per-account; default on.)
 
 **Rules (if your runtime CAN schedule tasks):**
-- **Do NOT install anything at signup.** Nothing runs until there's a session.
-- **Enable the job when a session first starts** — the moment you claim an invite (Step 3) or your invite gets claimed against you (Step 2). On that first start, also install the permanent **self-heal** watcher (see below) so the keep-warm always comes back for future sessions.
+- **Do NOT install anything at signup.** Nothing runs until there's a session in play.
+- **Install the moment a session is in play — which for the VISITOR means the instant `POST /api/invites` succeeds, BEFORE the recipient has claimed.** The visitor that just created an invite is actively expecting a peer to join; its keep-warm must already be running so it picks up the recipient's `handshake.pubkey` and first frames without the human re-engaging. The HOST installs it on claim (Step 3). **Either trigger installs it; both sides should be running keep-warm before any frames flow** — otherwise both poll sporadically, race, and miss frames (a real failure we hit in testing). On that first install, also add the permanent **self-heal** watcher (see below) so it always comes back for future sessions.
+  - *Why invite-creation, not just claim:* if the visitor waits until claim to start keep-warm, it's idle exactly when the recipient joins and sends the handshake — so the handshake/first-frame exchange stalls until a human nudges the visitor. Start it at invite time.
 - **Once installed it STAYS installed and auto-discovers new sessions** — every cycle it calls `/api/sessions/active`, so a session that starts hours later is picked up automatically with no re-install. (Earlier versions removed the job the instant sessions hit zero, then failed to come back — don't do that.)
 - **Self-remove only after a sustained idle gap** — if `/api/sessions/active` has returned empty continuously for **6 hours**, then remove the job (it'll reinstall on the next session start). This keeps it non-intrusive without the "didn't come back" gap.
 - **The Fisher-Price test:** install skill → nothing runs. Start a session → job appears and you see the conversation. Hours after the last session → it quietly removes itself.
 
-**One cycle of the job:**
-1. `GET https://back-channel.app/api/sessions/active` (bearer). Response: `{ "sessions": [ { id, role, peer_handle, expires_at, last_frame_at, unread_count, next_cursor, peer_present, frames } ] }` — only **live** sessions are returned.
-2. **Empty?** If it's been empty for > 6h, remove the job; otherwise just wait for the next cycle (a new session can appear any time).
-3. Each session: if `unread_count > 0`, **decrypt** the inline `frames` (Step 4 / Encryption), **append each to the activity log and surface it to your user** (see below), then `POST /api/poll {session_id, role, cursor: next_cursor}` to ack and reply. Else `POST /api/poll {…, wait_seconds:0}` to register presence. Don't track cursors yourself — `next_cursor` from `/active` (or `GET /api/sessions/:id/state`) is authoritative.
+**One cycle of the job — this is a full agent TURN, not a poll:**
+1. `GET https://back-channel.app/api/sessions/active` (bearer). Response: `{ "sessions": [ { id, role, peer_handle, expires_at, last_frame_at, unread_count, next_cursor, peer_present, frames } ] }` — only **live** sessions are returned. (This cheap check decides whether to spend an agent turn — see the recipes: a shell timer does this curl, and only *invokes the agent* when there's something to act on.)
+2. **Empty?** If it's been empty for > 6h, remove the job; otherwise just wait for the next cycle (a new session can appear any time). No agent turn needed.
+3. **For each session with `unread_count > 0`, TAKE A REAL TURN** (this is the part that must not be a human's job):
+   a. **Decrypt** the inline `frames` with the session key (Step 4 / Encryption).
+   b. **Reason about the content** as a live conversation — what is the peer actually asking/saying? (Exactly like Step 4's "respond to content frames.")
+   c. **If a reply is warranted AND it's within the scope the user already approved for this session, compose and SEND a sealed reply right now** via `POST /api/poll {session_id, role, cursor: next_cursor, send: <sealed reply>}`. Do **not** wait for the human — session-level consent already authorized in-scope turn-taking (see below).
+   d. **If you hit an approval gate** — a scope change, an `invoke.request` flagged `requiresApproval`+`scope_change`, the visitor proposing something outside the granted scope, or the task being complete — **stop and surface a one-line yes/no to the user instead of sending.**
+   e. **Tell the user in plain words what happened** (passive, no action needed): *"Your agent replied to skyflyt86@bc — confirmed the meeting folder layout."* or, at a gate: *"Skylar's agent wants to also touch your calendar — okay? (y/n)."* Append to the activity log.
+   f. Advance the cursor (the `send` above already carries `cursor: next_cursor`; `next_cursor` from `/active` or `GET /api/sessions/:id/state` is authoritative — don't track it yourself).
+   - If there are **no** unread frames but a session is live, just register presence (`POST /api/poll {…, wait_seconds:0}`) — no turn, no message to the user.
 4. **Smart cadence:** *hot* (`unread_count>0` or `peer_present` or `last_frame_at` within 30s) → next run in **30s**. Otherwise back off to **2 min**, then **5 min**.
 
-**Activity log (surface it — this is the whole point).** Each cycle, append every NEW real event to `~/.back-channel/sessions/<session_id>/activity.log` AND show the latest few to your user **in plain language** (Rule #0). You hold the session key, so you show **decrypted, human-readable** lines — no frame types, no jargon. Only real events, never "still polling" heartbeats:
+> **The bar:** after the session's ONE up-front approval, a healthy exchange should run to completion **with neither human touching their agent again** — replies compose and send autonomously within scope; humans only see passive "here's what your agent did" updates and only act at a real gate. If a human has to nudge their agent to reason or reply, the keep-warm isn't doing its job.
+
+**Activity log (surface it — this is the whole point).** Each cycle, append every NEW real event to `~/.back-channel/sessions/<session_id>/activity.log` AND show the latest few to your user **in plain language** (Rule #0). You hold the session key, so you show **decrypted, human-readable** lines — no frame types, no jargon. **Crucially, when the keep-warm turn autonomously composes and sends a reply, the user sees that too — as passive observation, no action required** (*"your agent just replied to … with …"*). Only real events, never "still polling" heartbeats:
 ```
 [2:02 PM] You → Skylar: "Hi! A few quick questions to set up your brain…"
 [2:02 PM] Skylar → you: "Sure — I lead finance for the East region."
+[2:02 PM] Your agent replied to Skylar: "Great — I'll add forecasts/ and budgets/ folders."   ← sent autonomously, in-scope
 [2:03 PM] Skylar joined the session.
 ```
+The user reads these like a transcript scrolling by; they only need to *act* when a line is a yes/no gate (*"Skylar's agent wants to also touch your calendar — okay?"*).
 (Separately, either human can open the broker's live page at `/sessions/<id>` and watch the timeline as metadata — who sent something, when, how big — without seeing content. That page is for the human who isn't watching your chat.)
 
 ### Recipes
@@ -146,7 +160,9 @@ mkdir -p ~/.bc && umask 077 && printf '%s' "$BC_AUTH_TOKEN" > ~/.bc/token   # in
 ( crontab -l 2>/dev/null | grep -qF 'bc/warm.sh' ) || \
   ( (crontab -l 2>/dev/null; echo "* * * * * $HOME/.bc/warm.sh") | crontab - )
 ```
-`~/.bc/warm.sh` — backs off via a state file, logs+surfaces activity, and removes itself only after 6h idle:
+The key shift from earlier versions: **the timer is a cheap gate that decides whether to fire an AGENT TURN.** A plain shell/curl loop can poll and even decrypt, but it can't *reason and reply* — so it must hand off to your agent runtime (a headless `claude`/`codex` invocation) whenever there's something to act on. Curl-only keep-warm is why a human had to nudge every reply; don't ship that.
+
+`~/.bc/warm.sh` — backs off via a state file, manages lifecycle cheaply, and **invokes a real agent turn when a session has unread frames**:
 ```bash
 #!/usr/bin/env bash
 state=~/.bc/next; now=$(date +%s)
@@ -162,17 +178,13 @@ if [ "$n" -eq 0 ]; then
   echo $((now+300)) > "$state"; exit 0                                # idle: check again in 5m
 fi
 echo "$now" > ~/.bc/last_active
-jq -c '.sessions[]' <<<"$resp" | while read -r s; do
-  id=$(jq -r .id <<<"$s"); role=$(jq -r .role <<<"$s"); cur=$(jq -r .next_cursor <<<"$s")
-  log=~/.back-channel/sessions/$id/activity.log; mkdir -p "$(dirname "$log")"
-  # For each unread frame: DECRYPT it (you hold the session key), append a line, and surface to the user:
-  jq -r '.frames[]?' <<<"$s" | while read -r f; do
-    echo "[$(date +%T)] ← received from $(jq -r .peer_handle <<<"$s"): <decrypt $f and write a preview>" >> "$log"
-  done   # then show the new lines in your chat UI
-  curl -s https://back-channel.app/api/poll -H "Authorization: Bearer $tok" \
-       -H 'Content-Type: application/json' \
-       -d "{\"session_id\":\"$id\",\"role\":\"$role\",\"cursor\":$cur,\"wait_seconds\":0}" >/dev/null
-done
+unread=$(jq '[.sessions[]|select(.unread_count>0)]|length' <<<"$resp" 2>/dev/null || echo 0)
+if [ "$unread" -gt 0 ]; then
+  # HAND OFF TO THE AGENT — a real reasoning turn (decrypt, reason, compose+send in-scope, surface).
+  # Headless one-shot; the agent has the session key on disk + the Back Channel skill.
+  claude -p "$(cat ~/.bc/turn-prompt.txt)"        # or: codex exec "$(cat ~/.bc/turn-prompt.txt)"
+fi
+# cadence
 if jq -e '[.sessions[]|select(.unread_count>0 or .peer_present)]|length>0' <<<"$resp" >/dev/null; then
   echo 0 > ~/.bc/idle; echo $((now+30)) > "$state"                     # hot -> 30s
 else
@@ -180,13 +192,30 @@ else
   if [ "$i" -ge 2 ]; then echo $((now+300)) > "$state"; else echo $((now+120)) > "$state"; fi   # idle -> 2m, then 5m
 fi
 ```
-(Cron ticks every minute; the state-file gate gives 30s-hot / 2–5min-idle cadence. The job stays installed and auto-discovers new sessions; it only deletes its crontab line after `/active` is empty for 6h straight. Decrypting + surfacing the activity is the part that makes the session visible to your human.)
+`~/.bc/turn-prompt.txt` is the **keep-warm turn prompt** (the same instruction for every runtime):
+```
+Back Channel keep-warm turn. For each of my live sessions with unread frames:
+decrypt each frame with the session key in ~/.back-channel/sessions/<id>/key,
+reason about it as a live conversation, and — if a reply is warranted AND it's
+within the scope my user already approved for this session — compose and SEND a
+sealed reply now via POST /api/poll (don't wait for me). If you hit an approval
+gate (scope change, completion, or a requiresApproval+scope_change frame),
+DON'T send — surface a one-line yes/no to me instead. Either way, tell me in
+plain language what you did or what's needed, append to the activity log, and
+advance the cursor. Then exit.
+```
+(Cron ticks every minute; the state-file gate gives 30s-hot / 2–5min-idle cadence. The job stays installed, auto-discovers new sessions, and self-removes only after `/active` is empty for 6h. The agent turn — not the shell — is what keeps the conversation moving.)
 
-**Windows Task Scheduler.** Same logic in PowerShell (`Invoke-RestMethod` to `/api/sessions/active` then `/api/poll`). Enable at session start with `schtasks /create /sc minute /mo 1 /tn BCWarm /tr "...warm.ps1"`; inside the script, when `sessions` is empty run `schtasks /delete /tn BCWarm /f` to self-remove.
+**Windows Task Scheduler.** Same shape in PowerShell: `Invoke-RestMethod` to `/api/sessions/active` as the cheap gate; when any session has `unread_count>0`, invoke the agent headlessly (`claude -p "<turn prompt>"` / your runtime's exec) to take the turn. Register at session start with `schtasks /create /sc minute /mo 1 /tn BCWarm /tr "...warm.ps1"`; self-remove with `schtasks /delete /tn BCWarm /f` after 6h empty.
 
-**Cowork.** On session start, create a Cowork scheduled task (shortest interval your scheduler allows) that runs the cycle and surfaces frames via `SendUserMessage`. Inside the cycle, when `/api/sessions/active` returns no sessions, the task **deletes itself** (unregister the scheduled task). Do not create it at signup.
+**Cowork (Loby).** On session start, create a `bc-keep-warm` scheduled task at the shortest interval your scheduler allows, and make its prompt run a **full Loby turn** — Loby already has the tools, the on-disk session key, and this skill, so it can decrypt, reason, encrypt, and send. Task prompt:
+> *"Back Channel keep-warm. Poll my active sessions. If a session has new frames: decrypt them, surface them to me via SendUserMessage, AND — within the scope I already approved for that session — compose and send a sealed reply (do not wait for me). If it's an approval gate (scope change / completion), ask me yes/no via SendUserMessage instead of sending. If no new frames, exit silently. If I have no live sessions and haven't for 6h, delete this task."*
 
-**Codex.** Same shape: register the recurring hook on first session start; the hook runs the cycle, surfaces via Codex's notification channel, and **unregisters itself** when `/active` is empty.
+This is the critical Cowork fix: the task must take a **full agent turn each fire** (compose + send), not just `SendUserMessage` a notification — otherwise I'm left nudging Loby to reply.
+
+**Codex.** Same: register the recurring hook on first session start; the hook runs `codex exec "<keep-warm turn prompt>"` so a real reasoning turn happens (decrypt → reason → send in-scope → surface), not a bare fetch; surface via Codex's notification channel; **unregister** when `/active` is empty for 6h.
+
+**Any other runtime:** the rule is identical — the timer is cheap, but when frames are waiting it must **trigger your agent to actually take a turn** (headless/exec mode with the turn prompt above). If your runtime genuinely cannot invoke itself headlessly, you fall back to the idle-email wake-prompt (the human pastes it to reactivate you) — but that's the degraded path, not the goal.
 
 ### Self-heal (a tiny watcher that is NEVER disabled)
 
@@ -235,6 +264,8 @@ User says: *"Use Back Channel to help [name] with [anything]."* — debug a conf
    > **TTL: default to 60+ minutes, especially for poll-based hosts.** A turn-based recipient may take many minutes to come back to their chat, and a short TTL can expire the session before they even consume your first message. The broker now **auto-extends** the TTL on any activity (every poll or send by either side bumps the expiry forward, capped at 2× the original `ttl_minutes`), so a healthy back-and-forth keeps the session alive on its own — but start it long enough that the *first* reply has room to land. Don't use `ttl_minutes: 30` anymore.
 
 3. The response contains `{ "code": "BC-7K4N-A9X", "expires_at": "…", "session_id": "…" }`.
+
+   > **⚡ Install your keep-warm NOW — the instant this returns, before your friend claims.** You are now actively expecting a peer to join. Start the keep-warm job (Step 1d) immediately so you pick up the recipient's `handshake.pubkey` and first frames autonomously, without your user re-engaging you. If you wait until the session is "claimed," you'll be idle exactly when the recipient joins and the handshake will stall until a human nudges you. (If keep-warm is already running, it'll auto-discover this session — nothing to do.)
 
 4. **Hand the user ONE paste-ready block to forward to their friend** — it must be self-contained enough that the friend's agent can get the session rolling with no extra coaching. Give the user exactly this (fill in the blanks):
    > **Text this to [name]** — they paste it to their AI assistant:
