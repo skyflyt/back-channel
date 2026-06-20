@@ -72,6 +72,9 @@ Base URL `https://back-channel.app`. Bearer auth = the account API key (`bc_…`
 | `/api/auth/view-verify?token=` | GET | none | Consume view-token → set `bc_session` cookie → redirect to `/account` |
 | `/api/auth/logout` | POST | cookie | Clear the dashboard browser session |
 | `/api/account/me` | GET | cookie | Dashboard identity + summary (masked key only) |
+| `/api/account/sessions` | GET | cookie | Dashboard: my active + 30-day-recent sessions (metadata only) |
+| `/api/account/key/rotate` | POST | cookie | Dashboard: rotate API key (new key shown once, old invalidated) |
+| `/api/account/settings` | PATCH | cookie | Dashboard: toggle settings (e.g. idle-email) |
 | `/api/account/view-token-self` | POST | bearer | Agent mints a view-token for its own account (deep-link human to `/account`) |
 | `/api/invites` | POST | bearer | Visitor: create an invite (returns code + session_id) |
 | `/api/invites/:code/claim` | POST | bearer | Host: claim an invite |

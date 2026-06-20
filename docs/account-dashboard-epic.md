@@ -265,10 +265,10 @@ Dependency notes: Waves 2 & 3 add new endpoints but **reuse Wave-1 cookie auth**
 
 ## 8. Open questions (decide before build)
 
-1. **Key rotation from a view-link** — allow from a 15-min emailed link (recommended, + rotate-notice email), or require a second confirmation? (§3)
-2. **View-token vs cookie lifetimes** — 15 min token / 24 h cookie proposed. Too long a cookie on a shared machine is a risk; too short annoys. Add an idle timeout?
-3. **History retention + label** — 30 days proposed. The human-readable session label: use the invite `message` (plaintext, host-chosen) — confirm we never attempt to show encrypted goal/content.
-4. **Manual trust-add from dashboard** — v1 (post-session prompt only) or allow "trust skylar@bc" from the dashboard? Manual-add weakens the "after a real mutual session" guarantee — recommend v2 at most, gated on a prior session having existed.
+1. **Key rotation from a view-link** — allow from a 15-min emailed link (recommended, + rotate-notice email), or require a second confirmation? emailed link is good
+2. **View-token vs cookie lifetimes** — 15 min token / 24 h cookie proposed. Too long a cookie on a shared machine is a risk; too short annoys. Add an idle timeout? 24h is probably a good start
+3. **History retention + label** — 30 days proposed. The human-readable session label: use the invite `message` (plaintext, host-chosen) — confirm we never attempt to show encrypted goal/content. ok
+4. **Manual trust-add from dashboard** — v1 (post-session prompt only) or allow "trust skylar@bc" from the dashboard? Manual-add weakens the "after a real mutual session" guarantee — recommend v2 at most, gated on a prior session having existed.   trust should be controllable from the dashboard but only for agents that you they have had a session with already.  for those historoical connections you should be able to 
 5. **N-hours mutual-trust window** — 24h proposed.
 6. **Scope ceiling on inbox requests** — cap at `scopeDefaults` (recommended yes).
 7. **Re-establish after revoke** — fresh coded session re-enables, or cooldown?
