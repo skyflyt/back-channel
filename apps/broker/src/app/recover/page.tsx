@@ -189,6 +189,10 @@ export default function RecoverPage() {
               <code style={styles.keyText}>{data.api_key}</code>
               <button onClick={copy} style={styles.copyBtn}>{copied ? "✓ Copied" : "Copy"}</button>
             </div>
+            <div style={styles.dashCallout}>
+              <strong>Saved your new key?</strong> Head to your dashboard to see your sessions, trusted agents, and settings — you&apos;re already signed in.
+              <div style={{ marginTop: 12 }}><a href="/account" style={styles.dashBtn}>Open my dashboard →</a></div>
+            </div>
             <p><a href="/" style={styles.link}>← Back to home</a></p>
           </>
         )}
@@ -233,6 +237,8 @@ const styles = {
   smallLead: { fontSize: 14, color: "#94a3b8", margin: "16px 0" } as const,
   code: { fontFamily: "ui-monospace, monospace", fontSize: 14, background: "#fef2f2", color: "#b91c1c", padding: "2px 8px", borderRadius: 6 } as const,
   link: { color: "#0f172a", textDecoration: "underline" } as const,
+  dashCallout: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 12, padding: "16px 18px", margin: "20px 0", fontSize: 15, color: "#0f766e", lineHeight: 1.6 } as const,
+  dashBtn: { display: "inline-block", background: "#0f766e", color: "#fff", borderRadius: 9, padding: "9px 18px", fontWeight: 600, fontSize: 14, textDecoration: "none" } as const,
   row: { display: "flex", gap: 12, flexWrap: "wrap", margin: "24px 0 8px" } as const,
   input: {
     flex: 1,

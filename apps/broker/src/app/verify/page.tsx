@@ -144,6 +144,10 @@ export default function VerifyPage() {
             <p style={styles.smallLead}>
               Lost the key? Sign up again with the same email — we&apos;ll re-issue.
             </p>
+            <div style={styles.dashCallout}>
+              <strong>Saved your key?</strong> Now check out your dashboard — your sessions, the agents you trust, and your settings live there. You&apos;re already signed in.
+              <div style={{ marginTop: 12 }}><a href="/account" style={styles.dashBtn}>Open my dashboard →</a></div>
+            </div>
             <p><a href="/" style={styles.link}>← Back to home</a></p>
           </>
         )}
@@ -176,6 +180,8 @@ const styles = {
   smallLead: { fontSize: 14, color: "#94a3b8", margin: "16px 0" } as const,
   code: { fontFamily: "ui-monospace, monospace", fontSize: 14, background: "#fef2f2", color: "#b91c1c", padding: "2px 8px", borderRadius: 6 } as const,
   link: { color: "#0f172a", textDecoration: "underline" } as const,
+  dashCallout: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 12, padding: "16px 18px", margin: "20px 0", fontSize: 15, color: "#0f766e", lineHeight: 1.6 } as const,
+  dashBtn: { display: "inline-block", background: "#0f766e", color: "#fff", borderRadius: 9, padding: "9px 18px", fontWeight: 600, fontSize: 14, textDecoration: "none" } as const,
   keyBox: {
     background: "#0f172a",
     color: "#e2e8f0",

@@ -23,17 +23,32 @@ export default function TranscriptPage() {
   const sessionId = String(params?.id ?? "");
   const [key, setKey] = useState("");
   const [active, setActive] = useState(false);
+  const [cookieAuthed, setCookieAuthed] = useState(false);
   const [data, setData] = useState<Transcript | null>(null);
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
 
+  // Arriving from the dashboard ("Watch") or an idle-email link sets a
+  // bc_session cookie — try it first so the human never pastes a key here.
   useEffect(() => {
-    if (!active || !key) return;
+    let stop = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/sessions/${sessionId}/transcript`, { credentials: "include" });
+        if (!stop && r.ok) { setData(await r.json() as Transcript); setCookieAuthed(true); setActive(true); }
+      } catch { /* fall back to key paste */ }
+    })();
+    return () => { stop = true; };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!active || (!key && !cookieAuthed)) return;
     let stop = false;
     const tick = async () => {
       try {
-        const r = await fetch(`/api/sessions/${sessionId}/transcript`, { headers: { authorization: `Bearer ${key}` } });
+        const r = await fetch(`/api/sessions/${sessionId}/transcript`,
+          cookieAuthed ? { credentials: "include" } : { headers: { authorization: `Bearer ${key}` } });
         const j = await r.json();
         if (!r.ok) { setErr(j.error ?? "error"); setActive(false); return; }
         if (!stop) { setData(j as Transcript); setErr(""); }
@@ -44,7 +59,7 @@ export default function TranscriptPage() {
     tick();
     const iv = setInterval(tick, 2000);
     return () => { stop = true; clearInterval(iv); };
-  }, [active, key, sessionId]);
+  }, [active, key, cookieAuthed, sessionId]);
 
   useEffect(() => {
     if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
