@@ -8,7 +8,14 @@ interface Peer { connected: boolean; last_seen_at: string | null; }
 interface Transcript {
   session_id: string; ended: boolean; end_reason: string | null;
   host_handle: string; visitor_handle: string;
+  your_role?: "visitor" | "host"; peer_handle?: string;
   peers: { visitor: Peer; host: Peer }; frames: Frame[];
+}
+
+/** Session-specific wake-up prompt — matches notify.mjs's wakePrompt() so the
+ *  email and this page hand the user the same paste-ready text. */
+function wakePrompt(sessionId: string, peerHandle: string) {
+  return `Check my Back Channel inbox — I have unread messages from ${peerHandle} in Back Channel session ${sessionId}. Using the Back Channel skill you've already loaded: call GET /api/sessions/${sessionId}/state for the current cursor, poll /api/poll for this session, decrypt any sealed frames with the per-session key already in your local Back Channel state, show me what's there in plain language, and continue the session.`;
 }
 
 export default function TranscriptPage() {
@@ -18,6 +25,7 @@ export default function TranscriptPage() {
   const [active, setActive] = useState(false);
   const [data, setData] = useState<Transcript | null>(null);
   const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -73,6 +81,18 @@ export default function TranscriptPage() {
                 {data.ended ? `ended · ${data.end_reason ?? ""}` : "● live"}
               </span>
             </div>
+            {!data.ended && data.peer_handle && (
+              <div style={styles.wakeCard}>
+                <p style={styles.wakeLabel}>💬 Agent asleep? Paste this into your AI assistant to wake it up for this session:</p>
+                <pre style={styles.wakePre}>{wakePrompt(sessionId, data.peer_handle)}</pre>
+                <button
+                  style={styles.copyBtn}
+                  onClick={async () => {
+                    try { await navigator.clipboard.writeText(wakePrompt(sessionId, data.peer_handle ?? "")); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* clipboard unavailable */ }
+                  }}
+                >{copied ? "Copied ✓" : "Copy prompt"}</button>
+              </div>
+            )}
             <div ref={feedRef} style={styles.feed}>
               {data.frames.length === 0 && <p style={styles.muted}>No frames yet. Waiting for the agents to talk…</p>}
               {data.frames.map((f, i) => (
@@ -117,6 +137,10 @@ const styles = {
   ftype: { color: "#0f766e", background: "#f0fdfa", fontSize: 12, fontWeight: 600, fontFamily: "ui-monospace, monospace", padding: "1px 7px", borderRadius: 6, flexShrink: 0 } as const,
   size: { color: "#cbd5e1", fontSize: 12, fontFamily: "ui-monospace, monospace", flexShrink: 0 } as const,
   payload: { color: "#0f172a", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, wordBreak: "break-all" } as const,
+  wakeCard: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 12, padding: "14px 16px", marginBottom: 12 } as const,
+  wakeLabel: { fontSize: 14, fontWeight: 600, color: "#0f766e", margin: "0 0 10px" } as const,
+  wakePre: { background: "#fff", border: "1px solid #cbd5e1", borderRadius: 10, padding: "12px 14px", fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "ui-monospace, Menlo, monospace", color: "#0f172a", margin: "0 0 10px" } as const,
+  copyBtn: { background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer" } as const,
   note: { fontSize: 13, color: "#94a3b8", lineHeight: 1.6, margin: "14px 0 0" } as const,
   muted: { color: "#94a3b8" } as const,
   err: { color: "#b91c1c", fontSize: 14, marginTop: 12 } as const,

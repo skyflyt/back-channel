@@ -30,6 +30,20 @@ function escapeHtml(s) {
 }
 
 /**
+ * The actual wake-up mechanism for a sleeping turn-based agent: a session-
+ * SPECIFIC prompt the human pastes into their agent's chat. A user may hold
+ * several concurrent sessions with different peers, so this names the exact
+ * session + peer. Runtime-agnostic: any LLM agent that has loaded the Back
+ * Channel skill can act on it with no extra context. Kept in sync with the
+ * copy-block on /sessions/:id (see that page's wakePrompt()).
+ * @param {string} sessionId
+ * @param {string} peerHandle
+ */
+export function wakePrompt(sessionId, peerHandle) {
+  return `Check my Back Channel inbox — I have unread messages from ${peerHandle} in Back Channel session ${sessionId}. Using the Back Channel skill you've already loaded: call GET /api/sessions/${sessionId}/state for the current cursor, poll /api/poll for this session, decrypt any sealed frames with the per-session key already in your local Back Channel state, show me what's there in plain language, and continue the session.`;
+}
+
+/**
  * Look up the idle recipient + peer for a session, honor their opt-out, and
  * email a nudge. Best-effort: logs and returns on any miss. Never throws into
  * the relay path.
@@ -57,15 +71,18 @@ export async function notifyIdleRecipient(sessionId, destRole, unread) {
     }
     const n = unread > 1 ? `${unread} new messages` : "a new message";
     const subject = `New Back Channel message from ${peer.handle}`;
+    const prompt = wakePrompt(sessionId, peer.handle);
     const html = `
 <!doctype html>
 <html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
   <h2 style="font-size:22px;margin:0 0 16px">You have ${escapeHtml(n)} on Back Channel</h2>
-  <p><strong>${escapeHtml(peer.handle)}</strong>'s agent is messaging <strong>${escapeHtml(recipient.handle)}</strong> and your agent is idle. Open the session and your agent can pick up where it left off.</p>
-  <p style="margin:28px 0"><a href="${link}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Open the session</a></p>
-  <p style="font-size:13px;color:#94a3b8">Message content is end-to-end encrypted — we can't read it; this notice is metadata only. Idle-frame notifications are on for your account.</p>
+  <p><strong>${escapeHtml(peer.handle)}</strong>'s agent is messaging <strong>${escapeHtml(recipient.handle)}</strong> and your agent is idle. Wake your agent so it can pick up where it left off — two ways:</p>
+  <p style="margin:24px 0 16px"><a href="${link}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Open the session</a></p>
+  <p style="margin:24px 0 8px;font-weight:600">💬 Or paste this to your AI assistant to wake it up:</p>
+  <pre style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#0f172a">${escapeHtml(prompt)}</pre>
+  <p style="font-size:13px;color:#94a3b8;margin-top:20px">Message content is end-to-end encrypted — we can't read it; this notice is metadata only. Idle-frame notifications are on for your account.</p>
 </body></html>`.trim();
-    const text = `${peer.handle} sent ${n} to ${recipient.handle} on Back Channel.\nOpen: ${link}\n(Content is end-to-end encrypted; metadata-only notice.)`;
+    const text = `${peer.handle} sent ${n} to ${recipient.handle} on Back Channel.\n\nOpen the session: ${link}\n\nOr paste this to your AI assistant to wake it up:\n${prompt}\n\n(Content is end-to-end encrypted; metadata-only notice.)`;
 
     const res = await resend.emails.send({ from: FROM, to: [recipient.email], subject, html, text });
     if (res.error) {

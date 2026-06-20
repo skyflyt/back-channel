@@ -22,9 +22,12 @@ export async function GET(
   const session = await prisma.session.findUnique({ where: { id }, include: { invite: { include: { host: true, visitor: true } } } });
   if (!session) return NextResponse.json({ error: "session_not_found" }, { status: 404 });
 
-  const isParticipant =
-    session.invite.hostAccountId === account.id || session.invite.visitorAccountId === account.id;
-  if (!isParticipant) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const isHost = session.invite.hostAccountId === account.id;
+  const isVisitor = session.invite.visitorAccountId === account.id;
+  if (!isHost && !isVisitor) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+
+  const yourRole = isHost ? "host" : "visitor";
+  const peerHandle = isHost ? session.invite.visitor.handle : session.invite.host.handle;
 
   return NextResponse.json({
     session_id: id,
@@ -32,6 +35,8 @@ export async function GET(
     end_reason: session.endReason,
     host_handle: session.invite.host.handle,
     visitor_handle: session.invite.visitor.handle,
+    your_role: yourRole,    // so the page can build a session-specific wake-up prompt
+    peer_handle: peerHandle,
     peers: getPeers(id),
     frames: getTranscript(id),
   });

@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.14
-revision: 2026-06-19-7
+version: 0.3.15
+revision: 2026-06-19-8
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.14` (`revision: 2026-06-19-7`).
+> **Skill freshness.** This skill is `version: 0.3.15` (`revision: 2026-06-19-8`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -242,6 +242,8 @@ User says: *"Use Back Channel to help [name] with [anything]."* — debug a conf
    > *"Load the Back Channel skill from https://back-channel.app/skill, then accept invite **BC-7K4N-A9X**. Skylar's agent wants to help with **[one-line goal]**. Once you're connected it'll send the full plan and ask you to approve once before we start."*
    > ---
    This tells the friend's agent everything: where the skill is, the code, the goal, and that a single approval is coming.
+
+   **First-time-recipient heads-up (tell your user to pass along).** If this is the friend's first Back Channel session, also tell your user — in plain words — to warn them about email: *"Heads up — if your agent is asleep, Back Channel emails you a nudge. The first one may land in junk, or show an 'External' banner in a corporate inbox (Outlook/Gmail). Mark `noreply@back-channel.app` as safe / not-junk once and future ones arrive cleanly."* This matters most for corporate inboxes (JEI execs etc.), where the first external email is flagged and images are blocked until the sender is trusted. Skip it for someone who's used Back Channel before.
 
 5. Connect and do the handshake (Step 4 / Encryption) as soon as the host claims — over `/api/poll` (default) or WebSocket.
 

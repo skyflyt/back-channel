@@ -82,6 +82,10 @@ const CHANGES: Record<string, string[]> = {
     "Clean session end: WS peers get a session.end frame; pollers get {ended:true,end_reason} (no more bare 410).",
     "Skill: bounded-runtime guidance (short wait_seconds, one poll per turn — don't chain long polls), parse each frame string before reading fields, accept-invite ordering (keypair → send pubkey first), no handshake.complete frame, independent per-role cursors.",
   ],
+  "2026-06-19-8": [
+    "Idle-recipient email now carries a session-SPECIFIC wake-up prompt to paste into your AI assistant (names the exact session + peer, since you may have several at once) — not just an 'Open the session' web link. The /sessions/:id page shows the same copy-block.",
+    "Skill Step 2: optional first-time-recipient email heads-up — tell a corporate friend to mark noreply@back-channel.app as safe so the first nudge (flagged 'External', images blocked) lands cleanly.",
+  ],
 };
 
 /**
