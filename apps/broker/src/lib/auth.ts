@@ -93,6 +93,15 @@ export function sessionCookieExpiry(): Date {
 }
 export const SESSION_COOKIE_MAX_AGE_SEC = SESSION_COOKIE_TTL_MS / 1000;
 
+/**
+ * Resolve an account from EITHER the bearer key OR the bc_session cookie.
+ * For endpoints that legitimately serve both the agent (bearer) and the human
+ * dashboard (cookie) — e.g. ending a session. Bearer wins if both present.
+ */
+export async function getAccountDual(authHeader: string | null, cookieToken: string | null | undefined): Promise<Account | null> {
+  return (await getAccountFromAuth(authHeader)) ?? (await getAccountFromCookie(cookieToken));
+}
+
 /** Mask an API key for display: bc_••••••••G7Yx (never reveal the full key). */
 export function maskApiKey(key: string | null): string | null {
   if (!key) return null;

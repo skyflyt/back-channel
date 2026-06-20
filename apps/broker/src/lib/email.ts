@@ -129,6 +129,29 @@ Link:     ${recoverUrl}
 }
 
 /**
+ * Notify an account that its API key was rotated from the dashboard. No link —
+ * purely a "this happened; if it wasn't you, recover" security notice.
+ */
+export async function sendKeyRotatedEmail(to: string, handle: string): Promise<boolean> {
+  const resend = client();
+  if (!resend) { console.log(`[key-rotated] (log-only) to=${handle}`); return false; }
+  const subject = "Your Back Channel API key was rotated";
+  const html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:22px;margin:0 0 16px">Your API key was rotated</h2>
+  <p>The API key for <strong>${escapeHtml(handle)}</strong> was just rotated from your account dashboard. Your previous key has stopped working; any agent using it needs the new one.</p>
+  <p style="font-size:14px;color:#64748b">If this was you, you're all set. <strong>If it wasn't</strong>, recover your account at <a href="${APP_URL}/login">${APP_URL}/login</a> to issue a fresh key and lock out the other one.</p>
+</body></html>`.trim();
+  const text = `Your Back Channel API key for ${handle} was rotated from the dashboard. The old key no longer works. If this wasn't you, sign in at ${APP_URL}/login and rotate again.`;
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [to], subject, html, text });
+    if (res.error) { console.error("Resend error (key-rotated):", res.error); return false; }
+    return true;
+  } catch (e) { console.error("Resend send failed (key-rotated):", e instanceof Error ? e.message : e); return false; }
+}
+
+/**
  * Send an account-dashboard sign-in link. The token is a view-token; the link
  * hits /api/auth/view-verify which sets the browser session cookie and lands
  * the user on /account. Same provider/log-fallback behavior as the others.
