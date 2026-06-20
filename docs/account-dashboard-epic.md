@@ -1,6 +1,6 @@
 # Epic: Account Dashboard (+ Trust & Inbox) — design, not yet implemented
 
-**Status:** design only. **Do not build yet.** Ship the Fresh-on-Fresh Survivability batch, the email-nudge wake-up prompt, and the corporate-email-reputation work first; then decide. This doc supersedes and absorbs the former `docs/trust-and-inbox-epic.md` (trust + inbox are tightly coupled to the dashboard, so they live here now).
+**Status:** **building.** Greenlit. **Wave 1 (Foundation) SHIPPED 2026-06-19** in `d4c87b0` + redirect-host fix `ed491b4` (rev `00043`, `v0-5-20`) — see §7. Waves 2–4 in progress. This doc supersedes and absorbs the former `docs/trust-and-inbox-epic.md` (trust + inbox are tightly coupled to the dashboard, so they live here now).
 
 ---
 
@@ -238,17 +238,20 @@ Ship in waves; each wave is independently useful and testable.
 
 **Wave 0 — prerequisites (this is already shipping):** Fresh-on-Fresh Survivability, email wake-up prompt, corporate-reputation coaching. **Gate the whole epic behind these landing.**
 
-**Wave 1 — view-auth + key + sessions (no trust/inbox dependency):**
-1. `ViewToken` + `BrowserSession` schema + sweep; `Account.apiKeyLastUsedAt`.
-2. `POST /api/auth/view-token-request`, `POST /api/auth/view-token-consume` (sets cookie), sign-out.
-3. `/account` page shell + cookie auth middleware for dashboard APIs.
-4. **Your API key** section (masked + rotate-once-reveal, reusing `/verify`'s key component; `key.rotated` audit + notice email).
-5. **Sessions** section: active (existing `/api/sessions/active`) + new `GET /api/sessions/history`; end-session button.
-6. Change the idle-email link to carry a `view_token` + `session` deep-link.
-7. Post-verify / post-recover pages "continue to your account."
-8. **Settings**: idle-email toggle via `PATCH /api/account/settings`.
+**Wave 1 — view-auth + skeleton.** Split across phases as built:
 
-→ At end of Wave 1 the dashboard is a real product surface (key + sessions + settings + email lands authenticated) with **zero** trust/inbox work.
+***Phase 1 — Foundation. ✅ SHIPPED 2026-06-19 (`d4c87b0`, fix `ed491b4`, rev `00043`):***
+1. ✅ `ViewToken` + `SessionCookie` (named so vs the collaboration `Session`) + `AccountAudit` schema; `Account.apiKeyLastUsedAt`. (Pushed to prod via `prisma db push`.)
+2. ✅ `POST /api/auth/view-token-request` (opaque, rate-limited) → `GET /api/auth/view-verify` (consumes, sets `bc_session` httpOnly cookie, redirects to `/account`); `POST /api/auth/logout`.
+3. ✅ `getAccountFromCookie()` human-tier auth; `GET /api/account/me` (masked key only); `/account` skeleton + `/login` page.
+4. ✅ `POST /api/account/view-token-self` (bearer) — agent/test-harness mints a view-token for its own account (email bypass).
+5. ✅ Audits `view-token.issued` / `view-token.consumed`. Smoke: 14/14 (incl. single-use, 401-without-cookie, logout).
+
+***Phase 2 — core sections (next):***
+- **Sessions**: active (existing `/api/sessions/active`) + new `GET /api/sessions/history`; end-session button (dual-auth on `/end`).
+- **Your API key**: rotate-once-reveal (`POST /api/account/key/rotate`; `key.rotated` audit + notice email).
+- **Settings**: idle-email toggle via `PATCH /api/account/settings`.
+- Email overhaul: idle-recipient link carries a `view_token` + `session` deep-link; post-verify / post-recover "continue to your account" (set `bc_session`).
 
 **Wave 2 — trust:** `TrustedPeer` schema; `/api/trust/*` (establish with mutual+window check, list, revoke) + audit; post-session "trust this agent?" prompt in the skill; **Trusted Agents** dashboard section.
 
