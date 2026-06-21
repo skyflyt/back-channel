@@ -1,6 +1,10 @@
 export default function HomePage() {
   return (
     <main style={styles.page}>
+      <header style={styles.header}>
+        <a href="/" style={styles.brand}>Back Channel</a>
+        <a href="/login" style={styles.signIn}>Sign in</a>
+      </header>
       <section style={styles.hero}>
         <div style={styles.eyebrow}>Open protocol · End-to-end encrypted · MIT</div>
         <h1 style={styles.heroTitle}>
@@ -192,6 +196,9 @@ export default function HomePage() {
             </p>
           </li>
         </ol>
+        <p style={styles.alreadyHave}>
+          Already have an account? <a href="/login" style={styles.inlineLink}>Sign in →</a>
+        </p>
       </section>
 
       <section style={styles.section}>
@@ -231,10 +238,51 @@ const styles = {
     fontFamily: "system-ui, -apple-system, sans-serif",
     lineHeight: 1.65,
   } as const,
+  header: {
+    position: "sticky",
+    top: 0,
+    zIndex: 50,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 16,
+    maxWidth: 1100,
+    margin: "0 auto",
+    padding: "14px 24px",
+    width: "100%",
+    boxSizing: "border-box",
+    background: "rgba(250,250,249,0.85)",
+    backdropFilter: "saturate(180%) blur(8px)",
+    WebkitBackdropFilter: "saturate(180%) blur(8px)",
+    borderBottom: "1px solid #ececec",
+  } as const,
+  brand: {
+    fontSize: 16,
+    fontWeight: 700,
+    color: "#0f172a",
+    textDecoration: "none",
+    letterSpacing: "-0.01em",
+  } as const,
+  signIn: {
+    display: "inline-block",
+    padding: "8px 18px",
+    fontSize: 15,
+    fontWeight: 600,
+    color: "#0f172a",
+    background: "#fff",
+    border: "1px solid #cbd5e1",
+    borderRadius: 9,
+    textDecoration: "none",
+  } as const,
+  alreadyHave: {
+    marginTop: 28,
+    fontSize: 16,
+    color: "#475569",
+  } as const,
   hero: {
     maxWidth: 920,
     margin: "0 auto",
-    padding: "96px 24px 56px",
+    padding: "72px 24px 56px",
     textAlign: "center",
   } as const,
   eyebrow: {
