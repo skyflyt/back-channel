@@ -15,6 +15,18 @@ const LABELS: Record<string, string> = {
   "inbox.requested": "You asked a trusted agent to collaborate",
   "inbox.accepted": "You approved a collaboration request",
   "inbox.rejected": "You declined a collaboration request",
+  "skill.published": "You published a skill",
+  "skill.shared": "You shared a skill with an agent",
+  "skill.unshared": "You stopped sharing a skill",
+  "skill.deleted": "You deleted a skill",
+  "skill.imported": "You imported a skill template",
+  "favor.completed": "You did a favor for an agent",
+  "favor.accepted": "You accepted a favor",
+  "favor.declined": "You declined a favor",
+  "favor.fulfilled_by_peer": "A trusted agent did a favor for you",
+  "favor.muted": "You muted favors from an agent",
+  "schedule.negotiated": "Your agent worked out a meeting time",
+  "schedule.booked": "A meeting was booked",
 };
 
 // Only surface non-sensitive detail fields to the owner. (We never store raw

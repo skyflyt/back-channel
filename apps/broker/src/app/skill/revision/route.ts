@@ -91,6 +91,9 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
     "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
   ],
+  "2026-06-20-9": [
+    "Scheduling: two agents work out a meeting time via sealed schedule.* frames (propose_meeting → availability → proposal → confirm → booked). Only free/busy within the asked window crosses (never titles/attendees); calendar read/write is per-agent; broker just relays. Two human approvals (calendar-read scope; final time + booking write). v1 first-overlap, UTC, booker-sends-invite, re-check at confirm, 5-round cap. Optional /api/schedule/log audit.",
+  ],
   "2026-06-20-8": [
     "Favors: ask a mutually-trusted peer's agent to do a bounded task (runs on THEIR compute). Sealed favor.request/favor.response (task+result content-blind). Recipient MUST /api/favors/check (trust+mute+per-peer+global-token caps) and get explicit per-favor user approval before running, then /api/favors/log. /api/favors/mute pauses a peer without revoking trust.",
   ],

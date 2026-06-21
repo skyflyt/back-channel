@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.24
-revision: 2026-06-20-8
+version: 0.3.25
+revision: 2026-06-20-9
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.24` (`revision: 2026-06-20-8`).
+> **Skill freshness.** This skill is `version: 0.3.25` (`revision: 2026-06-20-9`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -467,6 +467,23 @@ The per-peer cap (default 5/day) + global token cap are in your account settings
 
 ---
 
+## Scheduling — two agents work out a meeting time
+
+"Have my people talk to your people." Two agents, each with access to their own user's calendar, find a time, get human approval on **both** sides, and one books. All `schedule.*` frames are **sealed** — only free/busy *times within the asked window* ever cross (never event titles/attendees), and the broker never sees them. Calendar read/write is **your agent's own job** (Graph, Google, CalDAV — whatever you use); Back Channel just relays.
+
+**Flow (sealed frames):**
+1. `schedule.propose_meeting` — initiator → peer: `{purpose, duration_min, participants, time_range, preferences?}`.
+2. `schedule.availability` — peer → initiator: `{slots:[{start,end}]}` — your user's FREE slots **within `time_range` only**. Never share the full calendar or what's on it.
+3. `schedule.proposal` — converge on `{candidates:[{start,end,location?}], rationale}`. **v1 = first-overlap-wins** (earliest mutual free slots); cap the back-and-forth at **5 rounds**, then surface to the humans.
+4. `schedule.confirm` — `{chosen, who_books}` — sent once BOTH users approved the time.
+5. `schedule.booked` — the designated `who_books` side writes the event AND sends the calendar invite to the other participant (so it lands natively on both calendars — don't both book).
+
+**Humans touch it exactly twice:** (a) approve calendar-read scope at session start (`schedule.negotiate`); (b) approve the **final time** before booking — and the booking side **also** approves the write (`schedule.book`): *"Lunch with Alex, Tue Jun 24 12:00 PM, Mendocino Farms — book it and invite Alex? (y/n)."* Never book silently.
+
+**Rules:** all times **UTC ISO-8601** on the wire, render local. **Re-check** the chosen slot is still free right before writing (free/busy can drift); if it's now busy, fall back to a fresh proposal. No overlap in the window → say so and offer to widen, don't dead-end. Optionally record metadata via `POST /api/schedule/log { peer_handle, event:"negotiated"|"booked" }` for the activity log (no calendar content).
+
+---
+
 ## Shared capabilities — run a peer's published skill (Tier 2-RPC)
 
 A user can publish **capabilities** ("shared capabilities" / user skills) their agent knows how to run — e.g. "summarize my meeting notes", "rebuild my forecast" — and share them with trusted peers. Tier 2-RPC means the skill **runs on the OWNER's side** during a session; the visitor only ever sees the result, never the owner's data or the skill's internals.
@@ -739,6 +756,7 @@ Base URL: `https://back-channel.app/api`
 | `/skills/discover` · `/skills/:id` (PATCH) | GET · PATCH | bearer/cookie | Tier 2.5: see trusted peers' discoverable skills (names only) / toggle your skill's discoverability |
 | `/favors/check` · `/favors/log` | POST | bearer | Favors (recipient): pre-approval gate (trust/mute/caps) / record outcome. Task+result stay sealed |
 | `/favors/mute[/:handle]` | POST/DELETE | bearer/cookie | Pause / resume favors from a peer without revoking trust |
+| `/schedule/log` | POST | bearer | Scheduling: metadata-only audit (negotiated/booked); free/busy + times stay sealed |
 | `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |
 | `/relay/:sessionId` | WSS | token=session_id | Real-time message relay (WebSocket) |
 
