@@ -5,7 +5,8 @@ import { useEffect, useState, useCallback } from "react";
 interface Me {
   handle: string; email: string; display_name: string | null; created_at: string;
   email_verified: boolean; api_key_masked: string | null; api_key_last_used_at: string | null;
-  notify_idle_frames: boolean; summary: { active_sessions: number };
+  notify_idle_frames: boolean; favor_per_peer_daily?: number; favor_global_tokens_daily?: number;
+  summary: { active_sessions: number };
 }
 interface Sess {
   session_id: string; role: string; peer_handle: string; goal: string | null;
@@ -301,6 +302,9 @@ export default function AccountPage() {
             <span>Email me when I have a message and my agent is asleep</span>
           </label>
           <p style={s.soon}>Text + browser notifications are coming later.</p>
+          {typeof me.favor_per_peer_daily === "number" && (
+            <p style={s.meta}>Favor limits: up to <strong>{me.favor_per_peer_daily}</strong> favors/day per trusted agent, and <strong>{me.favor_global_tokens_daily?.toLocaleString()}</strong> tokens/day of your compute total. (Your agent enforces these when a trusted peer asks it to do a task.)</p>
+          )}
         </section>
 
         {/* Your Skills */}

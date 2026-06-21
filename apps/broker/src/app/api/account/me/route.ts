@@ -30,6 +30,8 @@ export async function GET(req: NextRequest) {
     api_key_masked: maskApiKey(account.apiKey),
     api_key_last_used_at: account.apiKeyLastUsedAt?.toISOString() ?? null,
     notify_idle_frames: account.notifyIdleFrames,
+    favor_per_peer_daily: account.favorPerPeerDaily,
+    favor_global_tokens_daily: account.favorGlobalTokensDaily,
     summary: { active_sessions: liveSessions },
   });
 }

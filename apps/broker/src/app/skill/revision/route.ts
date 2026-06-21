@@ -91,6 +91,9 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
     "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
   ],
+  "2026-06-20-8": [
+    "Favors: ask a mutually-trusted peer's agent to do a bounded task (runs on THEIR compute). Sealed favor.request/favor.response (task+result content-blind). Recipient MUST /api/favors/check (trust+mute+per-peer+global-token caps) and get explicit per-favor user approval before running, then /api/favors/log. /api/favors/mute pauses a peer without revoking trust.",
+  ],
   "2026-06-20-7": [
     "Skill Sharing Tier 2.5 (trust-circle discovery): mark a skill discoverable (PATCH /api/skills/:id) and your trusted peers can see it EXISTS (name+description only) via GET /api/skills/discover. Discovery != access — they still ask you to share it to use it.",
   ],

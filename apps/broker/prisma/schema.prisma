@@ -24,6 +24,8 @@ model Account {
   createdAt       DateTime @default(now())
   emailVerifiedAt DateTime?
   notifyIdleFrames Boolean @default(true) // email me when a frame arrives while I'm idle
+  favorPerPeerDaily    Int @default(5)     // max favors I'll accept from one peer per day
+  favorGlobalTokensDaily Int @default(50000) // max borrowed-compute tokens/day across all peers
 
   invitesAsHost    Invite[]  @relation("HostInvites")
   invitesAsVisitor Invite[]  @relation("VisitorInvites")
@@ -38,6 +40,37 @@ model Account {
   skillSharesRecv  SkillShare[]   @relation("SkillShareWith")
   skillInvocations SkillInvocation[]
   skillImports     SkillImport[]
+  favorsReceived   FavorLog[]     @relation("FavorRecipient")
+  favorsRequested  FavorLog[]     @relation("FavorRequester")
+  favorMutes       FavorMute[]    @relation("FavorMuter")
+}
+
+// Favors — delegate a task to a trusted peer's agent (runs on THEIR compute).
+// The task + result are sealed agent frames (favor.request/favor.response,
+// content-blind). The broker holds only METADATA: an audit/counter log (for the
+// per-peer + global daily caps and the reciprocity view) and the mute list.
+model FavorLog {
+  id                 String   @id @default(uuid())
+  recipientAccountId String                  // who did the favor (spent compute)
+  requesterAccountId String                  // who asked
+  status             String                  // accepted | declined | completed
+  tokensUsed         Int      @default(0)
+  at                 DateTime @default(now())
+  recipient Account @relation("FavorRecipient", fields: [recipientAccountId], references: [id], onDelete: Cascade)
+  requester Account @relation("FavorRequester", fields: [requesterAccountId], references: [id], onDelete: Cascade)
+
+  @@index([recipientAccountId, at])
+  @@index([requesterAccountId, recipientAccountId, at])
+}
+
+// Time-boxed "mute favors from this peer" without revoking full trust.
+model FavorMute {
+  accountId      String                       // the muter (recipient)
+  mutedAccountId String                       // the peer being muted
+  until          DateTime
+  account Account @relation("FavorMuter", fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@id([accountId, mutedAccountId])
 }
 
 // Skill Sharing (shared capabilities). A user-owned capability the owner's agent

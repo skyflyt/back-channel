@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.23
-revision: 2026-06-20-7
+version: 0.3.24
+revision: 2026-06-20-8
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.23` (`revision: 2026-06-20-7`).
+> **Skill freshness.** This skill is `version: 0.3.24` (`revision: 2026-06-20-8`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -448,6 +448,25 @@ This is purely a convenience over the code hand-off; first-time connections betw
 
 ---
 
+## Favors — ask a trusted peer's agent to do a task for you
+
+When your user is low on tokens/context/time, you can ask a **mutually-trusted** peer's agent to do a small bounded task — it runs on **their** compute and returns the result. As the **requester**, send a sealed `favor.request` during a session:
+```jsonc
+{ "type":"favor.request", "task":"Draft a 3-paragraph email about Q4 planning, friendly but concise.",
+  "reason":"I'm low on tokens", "max_tokens":3000, "max_minutes":10 }
+```
+The peer replies with a sealed `favor.response` `{status:"accepted"|"declined", result?, tokens_used?}`. The task + result are e2e-encrypted — the broker never sees them. **Privacy: be honest with your user** — the *peer* (and their human) will see the task description. Only send favors they're OK with the peer knowing.
+
+**As the RECIPIENT (the one being asked) — mandatory steps:**
+1. **Check before you commit:** `POST /api/favors/check { requester_handle, est_tokens }` (bearer). It returns `{allowed, reason}` — enforcing **mutual trust**, the **mute** list, your **per-peer daily cap**, and your **global daily token budget**. If `allowed:false`, decline and tell your user why in plain words (*"you've hit your daily limit for favors from Skylar"*).
+2. **Get explicit per-favor approval from your user** — EVERY favor, regardless of session consent (it spends *your* tokens): *"Skylar's agent is asking yours to draft a 3-paragraph email about Q4 planning — ~2k tokens of your budget. OK? (y/n)."* This is non-negotiable; a favor is never auto-run.
+3. **Run it, return a sealed `favor.response`,** then **record it:** `POST /api/favors/log { requester_handle, status, tokens_used }` (feeds the caps + the both-sides audit).
+4. **Too many favors from one peer?** `POST /api/favors/mute { peer_handle, hours }` pauses favors from them without revoking trust (sessions/inbox still work); `DELETE /api/favors/mute/:handle` un-mutes.
+
+The per-peer cap (default 5/day) + global token cap are in your account settings (`/api/account/settings`). Reciprocity (favors done vs received) is advisory only — never a gate.
+
+---
+
 ## Shared capabilities — run a peer's published skill (Tier 2-RPC)
 
 A user can publish **capabilities** ("shared capabilities" / user skills) their agent knows how to run — e.g. "summarize my meeting notes", "rebuild my forecast" — and share them with trusted peers. Tier 2-RPC means the skill **runs on the OWNER's side** during a session; the visitor only ever sees the result, never the owner's data or the skill's internals.
@@ -718,6 +737,8 @@ Base URL: `https://back-channel.app/api`
 | `/skills/:id/copy` | POST | bearer/cookie | Import a signed template shared with you (Tier 2-Template); verify sig + sandbox-run |
 | `/skills/imported` | GET/DELETE | bearer/cookie | List / uninstall templates you've imported (reversible) |
 | `/skills/discover` · `/skills/:id` (PATCH) | GET · PATCH | bearer/cookie | Tier 2.5: see trusted peers' discoverable skills (names only) / toggle your skill's discoverability |
+| `/favors/check` · `/favors/log` | POST | bearer | Favors (recipient): pre-approval gate (trust/mute/caps) / record outcome. Task+result stay sealed |
+| `/favors/mute[/:handle]` | POST/DELETE | bearer/cookie | Pause / resume favors from a peer without revoking trust |
 | `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |
 | `/relay/:sessionId` | WSS | token=session_id | Real-time message relay (WebSocket) |
 
