@@ -11,9 +11,9 @@ export const runtime = "nodejs";
  * API key, then burns the code. This is how an agent gets connected without the
  * user ever pasting their raw key into chat.
  *
- * Lifecycle responses: no such code -> 401 (opaque, don't confirm existence);
- * a real code that's already used or expired -> 410 (it existed, it's dead).
- * The raw code/key are NEVER logged.
+ * Uniform opaque failure: no such code, already used, OR expired all return the
+ * SAME 410 { error: "invalid_or_expired_code" } — the caller can't tell which,
+ * so a code's prior existence is never confirmed. The raw code/key are NEVER logged.
  */
 export async function POST(req: NextRequest) {
   // Per-IP brute-force guard: 20 attempts/hour.
@@ -25,15 +25,19 @@ export async function POST(req: NextRequest) {
   try { code = (await req.json())?.code; } catch { return NextResponse.json({ error: "invalid_json" }, { status: 400 }); }
   if (!code || typeof code !== "string") return NextResponse.json({ error: "code_required" }, { status: 400 });
 
+  // Uniform opaque failure for every code-validity reason (unknown / used / expired):
+  // same 410, same body — never reveal which, never confirm a code existed.
+  const gone = () => NextResponse.json({ error: "invalid_or_expired_code" }, { status: 410 });
+
   const row = await prisma.exchangeCode.findUnique({ where: { codeHash: hashToken(code.trim().toUpperCase()) }, include: { account: true } });
-  if (!row) return NextResponse.json({ error: "invalid_code" }, { status: 401 });            // opaque: no such code
-  if (row.usedAt) return NextResponse.json({ error: "code_used" }, { status: 410 });           // real but spent
-  if (row.expiresAt.getTime() < Date.now()) return NextResponse.json({ error: "code_expired" }, { status: 410 });
+  if (!row) return gone();                                  // no such code
+  if (row.usedAt) return gone();                            // already spent
+  if (row.expiresAt.getTime() < Date.now()) return gone();  // expired
 
   // Atomic single-use claim — first POST to flip usedAt wins (guards a race).
   const claim = await prisma.exchangeCode.updateMany({ where: { codeHash: row.codeHash, usedAt: null }, data: { usedAt: new Date() } });
-  if (claim.count === 0) return NextResponse.json({ error: "code_used" }, { status: 410 });
-  if (!row.account.apiKey) return NextResponse.json({ error: "no_api_key" }, { status: 409 });
+  if (claim.count === 0) return gone();
+  if (!row.account.apiKey) return gone();                   // account has no key — still opaque
 
   // Audit the consumption with the requesting IP (postmortem) — never the key.
   await prisma.accountAudit.create({ data: { accountId: row.accountId, eventType: "key.exchange_consumed", detail: { ip } } }).catch(() => {});

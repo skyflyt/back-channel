@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-21-3": [
+    "POST /api/auth/exchange now returns a UNIFORM opaque 410 invalid_or_expired_code for every failure (unknown / used / expired) — agents can't distinguish a never-existed code from a spent one. Behavior for you is unchanged: on any failure, tell the user to grab a fresh code from their dashboard.",
+  ],
   "2026-06-21-2": [
     "Exchange-code connect flow (keeps raw bc_ keys out of chat transcripts): the dashboard/verify/recover pages now show a short single-use code (BCX-XXXX-XXXX, ~60s TTL) instead of the raw key. New trigger: 'My Back Channel exchange code is BCX-…' -> POST /api/auth/exchange {code} (no auth) returns {api_key, handle}; store the key locally and confirm, never echo it. Codes are hashed at rest, single-use, rate-limited; used/expired -> 410, invalid -> 401.",
   ],
