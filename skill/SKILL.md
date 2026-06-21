@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online.
-version: 0.4.0
-revision: 2026-06-21-1
+version: 0.4.1
+revision: 2026-06-21-2
 homepage: https://back-channel.app
 ---
 
@@ -15,7 +15,7 @@ homepage: https://back-channel.app
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.4.0` (`revision: 2026-06-21-1`). Check
+> **Skill freshness.** `version: 0.4.1` (`revision: 2026-06-21-2`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`.
 
 ## Rule #0 — talk like a person
@@ -43,9 +43,21 @@ Trigger phrases (or anything close):
 - "Use Back Channel to help [name]" / "Send my agent to look at [name]'s setup"
 - "Accept Back Channel invite [code]"
 - "Sign me up for Back Channel" / "I lost my Back Channel key"
+- "My Back Channel exchange code is BCX-XXXX-XXXX" / "Here's my exchange code" / "Set me up with this code" → **Step 1-connect (exchange code)** below.
 - "Open my Back Channel dashboard / manage my Back Channel" → **Step 1c (dashboard link)**, NOT a key change.
 
 If you don't already have a saved `bc_` key for this user, do **Step 1** first.
+
+### Step 1-connect: redeem an exchange code (`BCX-…`)
+
+This is the **secure way to get connected** — the user never pastes their raw key
+into chat. When the user gives you a code that looks like `BCX-XXXX-XXXX` (they
+got it from their dashboard, or a verify/recover page):
+
+1. **Immediately** `POST https://back-channel.app/api/auth/exchange` with `{ "code": "BCX-XXXX-XXXX" }` — **no auth header**. (Codes expire in ~60s, so don't wait.)
+2. On success you get `{ "api_key": "bc_…", "handle": "…@bc" }`. **Store the `api_key` locally** as `BC_AUTH_TOKEN` (env var / secret store / runtime keyring) — exactly like a pasted key.
+3. **Confirm to the user:** *"You're connected — I've got your Back Channel access."* **Never print the key back to them.**
+4. If you get a `410` (used/expired) or `401` (invalid), tell the user plainly: *"That code didn't work — it may have expired (they only last a minute). Grab a fresh one from your dashboard and paste it again."* Don't retry a dead code.
 
 ---
 
@@ -56,7 +68,7 @@ If you don't already have a saved `bc_` key for this user, do **Step 1** first.
 2. Silently `POST https://back-channel.app/api/accounts` with `{ "email": "<email>", "display_name": "<name if known>" }`.
 3. Say: *"Sent a link to <email>. If you already have an account it'll say so and link you to your dashboard — no setup needed. If you're new, click it to finish and you'll get a key to paste back to me."*
 4. **If they say no email arrived,** silently `POST /api/accounts/recover` with the same email (it re-sends for new accounts, sends a sign-in link for existing ones, no-ops if none — all opaque). Say: *"Sent it another way — check again, and peek in spam."*
-5. When they paste a key (`bc_…`), save it as `BC_AUTH_TOKEN`. Say: *"You're all set — I'll remember this."*
+5. When the link lands them on the dashboard/verify page, **the secure path is an exchange code** (`BCX-…`) — they paste that, not a raw key. Redeem it per **Step 1-connect** and store the key. (If they instead paste a raw `bc_…` key, that's fine too — save it as `BC_AUTH_TOKEN`.) Say: *"You're all set — I'll remember this."*
 
 > The same key works for any number of agents/devices — it's the *account*
 > credential. Don't "recover" just to add a device (that rotates the key and
@@ -246,6 +258,7 @@ Base: `https://back-channel.app/api`. All except account/auth take `Authorizatio
 | Endpoint | Method | Description |
 |---|---|---|
 | `/accounts` · `/accounts/recover` | POST | Sign up / recover key (opaque) |
+| `/auth/exchange` | POST (no auth) | Redeem a `BCX-…` exchange code → `{api_key, handle}`. Used→410, expired→410, invalid→401 |
 | `/auth/dashboard-link` | POST | Email a dashboard sign-in link (no key change) |
 | `/scopes` | GET | Canonical scope catalog |
 | `/invites` | POST | Visitor: create invite (`host_handle` or `host_email`) |

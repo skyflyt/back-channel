@@ -26,6 +26,22 @@ export default function RecoverPage() {
   const [data, setData] = useState<RecoverResult | null>(null);
   const [errMsg, setErrMsg] = useState("");
   const [copied, setCopied] = useState(false);
+  const [exCode, setExCode] = useState<{ prompt: string; expiry: number } | null>(null);
+  const [exLeft, setExLeft] = useState(0);
+  const [showRaw, setShowRaw] = useState(false);
+
+  const mintExchange = () => {
+    fetch("/api/auth/exchange-code", { method: "POST", credentials: "include", headers: { "x-bc-csrf": (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") } })
+      .then((r) => r.json())
+      .then((j) => { if (j.code) setExCode({ prompt: j.paste_prompt, expiry: new Date(j.expires_at).getTime() }); })
+      .catch(() => {});
+  };
+  useEffect(() => { if (state === "ok") mintExchange(); }, [state]);
+  useEffect(() => {
+    if (!exCode) return;
+    const tick = () => { const left = Math.max(0, Math.round((exCode.expiry - Date.now()) / 1000)); setExLeft(left); if (left <= 0) setExCode(null); };
+    tick(); const iv = setInterval(tick, 1000); return () => clearInterval(iv);
+  }, [exCode]);
 
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get("token");
@@ -104,8 +120,9 @@ export default function RecoverPage() {
   };
 
   const copy = () => {
-    if (!data) return;
-    navigator.clipboard.writeText(data.bootstrap_prompt ?? data.api_key);
+    const text = exCode?.prompt ?? data?.bootstrap_prompt ?? data?.api_key;
+    if (!text) return;
+    navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -183,13 +200,26 @@ export default function RecoverPage() {
             <h1 style={styles.h1}>🔑 New key issued</h1>
             <p style={styles.lead}>
               Your handle is <strong style={{ color: "#0f172a" }}>{data.handle}</strong>. Your old
-              key is now <strong>invalid</strong>. Paste this whole block into your agent to
-              reconnect it with the new key. <strong>This is shown once — copy it now.</strong>
+              key is now <strong>invalid</strong>. Paste this one-time code into your assistant to
+              reconnect it — your new key never goes into the chat.
             </p>
-            <div style={styles.promptBox}>
-              <pre style={styles.promptText}>{data.bootstrap_prompt ?? data.api_key}</pre>
-              <button onClick={copy} style={styles.copyBtnWide}>{copied ? "✓ Copied" : "Copy setup prompt"}</button>
-            </div>
+            {exCode ? (
+              <div style={styles.promptBox}>
+                <p style={styles.codeNote}>Expires in :{String(exLeft).padStart(2, "0")}</p>
+                <pre style={styles.promptText}>{exCode.prompt}</pre>
+                <button onClick={copy} style={styles.copyBtnWide}>{copied ? "✓ Copied" : "Copy connect code"}</button>
+              </div>
+            ) : (
+              <div style={styles.promptBox}>
+                <p style={styles.promptText}>Your connect code expired.</p>
+                <button onClick={() => { setShowRaw(false); mintExchange(); }} style={styles.copyBtnWide}>Generate a new code</button>
+              </div>
+            )}
+            <p style={styles.smallLead}>
+              Or, to script your key manually,{" "}
+              <button onClick={() => setShowRaw((v) => !v)} style={styles.linkBtn}>{showRaw ? "hide it" : "reveal your raw key"}</button>.
+              {showRaw && <span><br /><code style={styles.rawKey}>{data.api_key}</code></span>}
+            </p>
             <div style={styles.dashCallout}>
               <strong>Saved your new key?</strong> Head to your dashboard to see your sessions, trusted agents, and settings — you&apos;re already signed in.
               <div style={{ marginTop: 12 }}><a href="/account" style={styles.dashBtn}>Open my dashboard →</a></div>
@@ -266,6 +296,9 @@ const styles = {
   copyBtn: { background: "#fff", color: "#0f172a", border: "none", borderRadius: 8, padding: "8px 16px", fontWeight: 600, cursor: "pointer", fontSize: 14 } as const,
   verifyBtn: { background: "#0f172a", color: "#fff", border: "none", borderRadius: 10, padding: "14px 28px", fontWeight: 600, fontSize: 16, cursor: "pointer" } as const,
   promptBox: { background: "#0f172a", borderRadius: 10, padding: 16, margin: "16px 0" } as const,
+  codeNote: { color: "#fbbf24", fontSize: 13, fontWeight: 600, margin: "0 0 8px", fontFamily: "ui-monospace, Menlo, monospace" } as const,
+  linkBtn: { background: "none", border: "none", color: "#0f766e", cursor: "pointer", fontSize: 14, textDecoration: "underline", padding: 0 } as const,
+  rawKey: { display: "inline-block", marginTop: 6, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, background: "#f1f5f9", padding: "4px 8px", borderRadius: 6, wordBreak: "break-all", color: "#0f172a" } as const,
   promptText: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13.5, lineHeight: 1.55, color: "#e2e8f0", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 } as const,
   copyBtnWide: { marginTop: 12, width: "100%", background: "#fff", color: "#0f172a", border: "none", borderRadius: 8, padding: "10px 16px", fontWeight: 600, cursor: "pointer", fontSize: 14 } as const,
 };

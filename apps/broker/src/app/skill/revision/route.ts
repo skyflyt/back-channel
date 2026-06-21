@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-21-2": [
+    "Exchange-code connect flow (keeps raw bc_ keys out of chat transcripts): the dashboard/verify/recover pages now show a short single-use code (BCX-XXXX-XXXX, ~60s TTL) instead of the raw key. New trigger: 'My Back Channel exchange code is BCX-…' -> POST /api/auth/exchange {code} (no auth) returns {api_key, handle}; store the key locally and confirm, never echo it. Codes are hashed at rest, single-use, rate-limited; used/expired -> 410, invalid -> 401.",
+  ],
   "2026-06-21-1": [
     "ASYNC-FIRST PIVOT (token-budget fix): Back Channel is now async by default — post a sealed message and EXIT; don't sit in a real-time loop. A scheduled bc-inbox-check runs every ~10 min, does a cheap shell curl, and spends an agent turn ONLY when there's actually unread content (~0 tokens otherwise). Real-time loops were exhausting $20-plan turn-based agents at setup.",
     "Skill slimmed ~84KB -> ~17KB, focused on the inbox model (signup, send-a-message, receive-via-scheduled-check). The full API, copy-paste crypto recipes, Favors, Scheduling, Fast Channel, templates, and trusted-reconnect now live at GET /skill/reference (fetch on demand).",

@@ -95,6 +95,19 @@ Store that key locally and use it to help me with Back Channel — like starting
 }
 
 /**
+ * Canonical paste prompt for the EXCHANGE-CODE connect flow (the secure default
+ * — keeps the raw bc_ key out of chat). The user pastes ONLY this; the agent
+ * trades the code for the real key via POST /api/auth/exchange, stores it
+ * locally, and confirms. Shared by the dashboard, verify/recover pages.
+ * @param {string} code  a BCX-XXXX-XXXX exchange code
+ */
+export function exchangePastePrompt(code) {
+  return `Connect me to Back Channel. Load the skill from ${APP_URL}/skill (re-fetch if your copy is stale), then redeem this one-time exchange code for my API key: ${code}
+
+Do this: POST ${APP_URL}/api/auth/exchange with {"code":"${code}"} (no auth header), store the returned api_key locally as my Back Channel credential, and tell me "you're connected" — don't print the key back to me. The code expires in 60 seconds, so do it now.`;
+}
+
+/**
  * Look up the idle recipient + peer for a session, honor their opt-out, and
  * email a nudge. Best-effort: logs and returns on any miss. Never throws into
  * the relay path.

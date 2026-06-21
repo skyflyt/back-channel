@@ -46,6 +46,24 @@ model Account {
   favorsRequested  FavorLog[]     @relation("FavorRequester")
   favorMutes       FavorMute[]    @relation("FavorMuter")
   agentPayloads    AgentPayload[]
+  exchangeCodes    ExchangeCode[]
+}
+
+// Exchange-code flow (device-code pattern): keeps raw bc_ keys out of LLM chat
+// transcripts. The dashboard mints a short-lived single-use code; the user
+// pastes ONLY the code to their agent; the agent exchanges it (no auth header)
+// for the account's real apiKey. Code is hashed at rest and dead within 60s.
+model ExchangeCode {
+  codeHash   String   @id            // sha256(raw); raw is never stored
+  accountId  String
+  purpose    String   @default("exchange")
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime                // createdAt + 60s
+  usedAt     DateTime?
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([expiresAt])
 }
 
 // Self-inbox "deliver this to my own agent" channel (inbox-model pivot §5). A

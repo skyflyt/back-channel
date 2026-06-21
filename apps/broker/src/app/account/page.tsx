@@ -39,9 +39,16 @@ export default function AccountPage() {
   const [sharedWithMe, setSharedWithMe] = useState<SharedSkill[]>([]);
   const [sentToAgent, setSentToAgent] = useState<Record<string, boolean>>({});
   const [newKey, setNewKey] = useState<string | null>(null);
-  // "Connect an agent" bootstrap prompt (two-click reveal; auto-hides after 30s).
+  // "Connect a new agent" — exchange-code flow (secure default: raw key never shown).
+  const [exCode, setExCode] = useState<string | null>(null);
+  const [exPrompt, setExPrompt] = useState<string>("");
+  const [exExpiry, setExExpiry] = useState<number>(0);     // epoch ms
+  const [exLeft, setExLeft] = useState<number>(0);          // seconds remaining
+  const [exCopied, setExCopied] = useState(false);
+  // Power-user raw-key reveal (kept behind an explainer).
   const [bootstrap, setBootstrap] = useState<string | null>(null);
   const [bootstrapCopied, setBootstrapCopied] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
   const [wakePrompts, setWakePrompts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
   // "Start a new session" form
@@ -196,12 +203,35 @@ export default function AccountPage() {
     setBusy("");
   };
 
-  // Auto-hide the revealed bootstrap prompt after 30s (it contains the full key).
+  // Auto-hide the revealed raw-key prompt after 30s (it contains the full key).
   useEffect(() => {
     if (!bootstrap) return;
     const t = setTimeout(() => { setBootstrap(null); setBootstrapCopied(false); }, 30000);
     return () => clearTimeout(t);
   }, [bootstrap]);
+
+  // Live countdown for an active exchange code; clears it when it expires.
+  useEffect(() => {
+    if (!exCode || !exExpiry) return;
+    const tick = () => {
+      const left = Math.max(0, Math.round((exExpiry - Date.now()) / 1000));
+      setExLeft(left);
+      if (left <= 0) { setExCode(null); setExPrompt(""); setExCopied(false); }
+    };
+    tick();
+    const iv = setInterval(tick, 1000);
+    return () => clearInterval(iv);
+  }, [exCode, exExpiry]);
+
+  const connectNewAgent = async () => {
+    setBusy("exchange");
+    try {
+      const r = await fetch("/api/auth/exchange-code", { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } });
+      const j = await r.json();
+      if (r.ok && j.code) { setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); }
+    } catch { /* ignore */ }
+    setBusy("");
+  };
 
   const toggleNotify = async () => {
     const next = !notify; setNotify(next); setBusy("notify");
@@ -309,22 +339,40 @@ export default function AccountPage() {
             </>
           )}
 
-          {/* Connect an agent — paste-ready bootstrap prompt (full key inside). */}
+          {/* Connect a new agent — exchange-code flow (raw key never shown). */}
           <div style={s.connectBox}>
-            <h3 style={s.h3}>Connect an agent</h3>
-            <p style={s.meta}>Paste this into any AI assistant to give it access to Back Channel with your account — a new device, a fresh chat, Claude Code, anything.</p>
-            {bootstrap ? (
+            <h3 style={s.h3}>Connect a new agent</h3>
+            <p style={s.meta}>Paste a one-time code into any AI assistant — a new device, a fresh chat, Claude Code — and it connects to your account. Your actual key never goes into the chat.</p>
+            {exCode ? (
               <div style={s.reveal}>
-                <p style={s.revealLabel}>📋 Your setup prompt — includes your full API key. Hides again in 30 seconds.</p>
-                <pre style={s.promptPre}>{bootstrap}</pre>
+                <p style={s.revealLabel}>📋 Paste this to your assistant — expires in <strong>:{String(exLeft).padStart(2, "0")}</strong></p>
+                <pre style={s.promptPre}>{exPrompt}</pre>
+                <div style={s.exMeter}><div style={{ ...s.exMeterFill, width: `${Math.min(100, (exLeft / 60) * 100)}%` }} /></div>
                 <div style={{ marginTop: 10 }}>
-                  <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(bootstrap).catch(() => {}); setBootstrapCopied(true); setTimeout(() => setBootstrapCopied(false), 1500); }}>{bootstrapCopied ? "✓ Copied" : "Copy"}</button>
-                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setBootstrap(null); setBootstrapCopied(false); }}>Hide</button>
+                  <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(exPrompt).catch(() => {}); setExCopied(true); setTimeout(() => setExCopied(false), 1500); }}>{exCopied ? "✓ Copied" : "Copy"}</button>
+                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
                 </div>
               </div>
             ) : (
-              <button style={s.btn} onClick={revealBootstrap} disabled={busy === "bootstrap"}>{busy === "bootstrap" ? "Loading…" : "Reveal & copy setup prompt"}</button>
+              <button style={s.btn} onClick={connectNewAgent} disabled={busy === "exchange"}>{busy === "exchange" ? "…" : "Connect a new agent"}</button>
             )}
+            {/* Power-user escape hatch: reveal the raw key for manual scripting. */}
+            <div style={{ marginTop: 10 }}>
+              {!showRaw ? (
+                <button style={s.smallLink2} onClick={() => setShowRaw(true)}>Why would I need my raw key?</button>
+              ) : bootstrap ? (
+                <div style={s.reveal}>
+                  <p style={s.revealLabel}>📋 Setup prompt with your full API key — hides in 30s. Prefer the code above; use this only to script the key by hand.</p>
+                  <pre style={s.promptPre}>{bootstrap}</pre>
+                  <div style={{ marginTop: 10 }}>
+                    <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(bootstrap).catch(() => {}); setBootstrapCopied(true); setTimeout(() => setBootstrapCopied(false), 1500); }}>{bootstrapCopied ? "✓ Copied" : "Copy"}</button>
+                    <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setBootstrap(null); setBootstrapCopied(false); }}>Hide</button>
+                  </div>
+                </div>
+              ) : (
+                <p style={s.meta}>The code above is the safe way to connect an agent — the key stays out of your chat. If you&apos;re scripting against the API by hand and want the raw key, <button style={s.smallLink2} onClick={revealBootstrap} disabled={busy === "bootstrap"}>{busy === "bootstrap" ? "loading…" : "reveal it"}</button> (shown briefly, then hidden).</p>
+              )}
+            </div>
           </div>
         </section>
 
@@ -648,5 +696,7 @@ const s = {
   linkBtn: { background: "none", border: "none", color: "#0f766e", cursor: "pointer", fontSize: 12, textDecoration: "underline", padding: 0, marginLeft: 6 } as const,
   promptPane: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 10, padding: "12px 14px", marginBottom: 12 } as const,
   connectBox: { marginTop: 18, paddingTop: 16, borderTop: "1px solid #e2e8f0" } as const,
+  exMeter: { height: 4, background: "#e2e8f0", borderRadius: 999, overflow: "hidden", marginTop: 10 } as const,
+  exMeterFill: { height: "100%", background: "#0f766e", transition: "width 1s linear" } as const,
   promptPre: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, lineHeight: 1.55, color: "#0f172a", background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "10px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 } as const,
 };

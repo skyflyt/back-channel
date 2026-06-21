@@ -18,6 +18,25 @@ export default function VerifyPage() {
   const [data, setData] = useState<VerifyResult | null>(null);
   const [errMsg, setErrMsg] = useState<string>("");
   const [copied, setCopied] = useState(false);
+  // Exchange-code connect flow (secure default; raw key stays hidden).
+  const [exCode, setExCode] = useState<{ prompt: string; expiry: number } | null>(null);
+  const [exLeft, setExLeft] = useState(0);
+  const [showRaw, setShowRaw] = useState(false);
+
+  const mintExchange = () => {
+    fetch("/api/auth/exchange-code", { method: "POST", credentials: "include", headers: { "x-bc-csrf": (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") } })
+      .then((r) => r.json())
+      .then((j) => { if (j.code) setExCode({ prompt: j.paste_prompt, expiry: new Date(j.expires_at).getTime() }); })
+      .catch(() => {});
+  };
+
+  // When verification succeeds, the bc_session cookie is set — mint a connect code.
+  useEffect(() => { if (state === "ok") mintExchange(); }, [state]);
+  useEffect(() => {
+    if (!exCode) return;
+    const tick = () => { const left = Math.max(0, Math.round((exCode.expiry - Date.now()) / 1000)); setExLeft(left); if (left <= 0) setExCode(null); };
+    tick(); const iv = setInterval(tick, 1000); return () => clearInterval(iv);
+  }, [exCode]);
 
   // On load we only PROBE (non-consuming GET) so that email-security scanners
   // pre-fetching this link can't burn the token. The token is consumed by the
@@ -72,8 +91,9 @@ export default function VerifyPage() {
   };
 
   const copy = () => {
-    if (!data) return;
-    navigator.clipboard.writeText(data.bootstrap_prompt ?? data.api_key);
+    const text = exCode?.prompt ?? data?.bootstrap_prompt ?? data?.api_key;
+    if (!text) return;
+    navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -129,19 +149,25 @@ export default function VerifyPage() {
               <strong style={{ color: "#0f172a" }}>{data.handle}</strong>.
             </p>
             <p style={styles.lead}>
-              Paste this whole block into your AI assistant to connect it to Back Channel.
-              It includes your API key. <strong>This is shown once — don&apos;t close this tab
-              without copying it.</strong>
+              Paste this one-time code into your AI assistant and it connects to your account.
+              Your API key never goes into the chat — the assistant trades the code for it.
             </p>
-            <div style={styles.promptBox}>
-              <pre style={styles.promptText}>{data.bootstrap_prompt ?? data.api_key}</pre>
-              <button onClick={copy} style={styles.copyBtnWide}>
-                {copied ? "✓ Copied" : "Copy setup prompt"}
-              </button>
-            </div>
+            {exCode ? (
+              <div style={styles.promptBox}>
+                <p style={styles.codeNote}>Expires in :{String(exLeft).padStart(2, "0")}</p>
+                <pre style={styles.promptText}>{exCode.prompt}</pre>
+                <button onClick={copy} style={styles.copyBtnWide}>{copied ? "✓ Copied" : "Copy connect code"}</button>
+              </div>
+            ) : (
+              <div style={styles.promptBox}>
+                <p style={styles.promptText}>Your connect code expired.</p>
+                <button onClick={() => { setShowRaw(false); mintExchange(); }} style={styles.copyBtnWide}>Generate a new code</button>
+              </div>
+            )}
             <p style={styles.smallLead}>
-              Lost it later? Sign up again with the same email — we&apos;ll re-issue. You can also
-              grab this prompt any time from your dashboard under &quot;Connect an agent&quot;.
+              Or, if you need to script your key manually,{" "}
+              <button onClick={() => setShowRaw((v) => !v)} style={styles.linkBtn}>{showRaw ? "hide it" : "reveal your raw key"}</button>.
+              {showRaw && <span><br /><code style={styles.rawKey}>{data.api_key}</code> — store it as your Back Channel credential; don&apos;t paste it into a chat you don&apos;t control.</span>}
             </p>
             <div style={styles.dashCallout}>
               <strong>Saved your key?</strong> Now check out your dashboard — your sessions, the agents you trust, and your settings live there. You&apos;re already signed in.
@@ -220,6 +246,9 @@ const styles = {
     cursor: "pointer",
   } as const,
   promptBox: { background: "#0f172a", borderRadius: 10, padding: 16, margin: "16px 0" } as const,
+  codeNote: { color: "#fbbf24", fontSize: 13, fontWeight: 600, margin: "0 0 8px", fontFamily: "ui-monospace, Menlo, monospace" } as const,
+  linkBtn: { background: "none", border: "none", color: "#0f766e", cursor: "pointer", fontSize: 14, textDecoration: "underline", padding: 0 } as const,
+  rawKey: { display: "inline-block", marginTop: 6, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, background: "#f1f5f9", padding: "4px 8px", borderRadius: 6, wordBreak: "break-all", color: "#0f172a" } as const,
   promptText: {
     fontFamily: "ui-monospace, Menlo, monospace",
     fontSize: 13.5,

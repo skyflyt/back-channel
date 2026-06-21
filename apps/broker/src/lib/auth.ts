@@ -63,6 +63,19 @@ export function magicLinkExpiry(): Date {
   return new Date(Date.now() + TOKEN_TTL_HOURS * 3600 * 1000);
 }
 
+// Exchange code (device-code flow): BCX-XXXX-XXXX, unambiguous base32. Short
+// single-use code the dashboard mints; the agent trades it for the real bc_ key
+// so the raw key never lands in a chat transcript. Crypto-random, hashed at rest.
+const EXCHANGE_CODE_TTL_MS = 60 * 1000;
+export function generateExchangeCode(): string {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  const part = (n: number) => Array.from({ length: n }, () => chars[randomBytes(1)[0] % chars.length]).join("");
+  return `BCX-${part(4)}-${part(4)}`;
+}
+export function exchangeCodeExpiry(): Date {
+  return new Date(Date.now() + EXCHANGE_CODE_TTL_MS);
+}
+
 /** Pull the bearer token from an incoming request and return the account, or null. */
 export async function getAccountFromAuth(authHeader: string | null): Promise<Account | null> {
   if (!authHeader) return null;
