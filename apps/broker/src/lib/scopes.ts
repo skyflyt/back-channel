@@ -29,6 +29,20 @@ export const BLOCKED_SCOPES = [
   "files.read",
 ] as const;
 
+// Human-readable catalog for GET /api/scopes + the skill scope table (M2).
+// Keep the strings EXACTLY as agents must send them.
+export const SCOPE_CATALOG: { scope: string; grants: string; writes: boolean }[] = [
+  { scope: "config.read", grants: "Read (sanitized) configuration", writes: false },
+  { scope: "logs.read", grants: "Read recent (sanitized) log lines", writes: false },
+  { scope: "automation.read", grants: "List automations / scheduled tasks", writes: false },
+  { scope: "memory.metadata", grants: "See that memory exists + counts — NOT contents", writes: false },
+  { scope: "config.suggest", grants: "Propose config changes (host approves each)", writes: true },
+  { scope: "automation.suggest", grants: "Propose automation edits (host approves each)", writes: true },
+  { scope: "tool.execute", grants: "Run a scoped tool (explicit trust)", writes: true },
+  { scope: "config.apply", grants: "Apply config changes directly (auto-apply — explicit trust)", writes: true },
+  { scope: "automation.apply", grants: "Apply automation edits directly (auto-apply — explicit trust)", writes: true },
+];
+
 export function validateScopes(scopes: string[]): { ok: true } | { ok: false; error: string } {
   for (const s of scopes) {
     if ((BLOCKED_SCOPES as readonly string[]).includes(s)) {

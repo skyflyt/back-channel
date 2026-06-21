@@ -91,6 +91,9 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
     "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
   ],
+  "2026-06-20-11": [
+    "Fresh-on-fresh polish: GET /api/scopes canonical scope catalog (M2); claim/handshake wait + nudge timing in Step 2 (M3 — narrate at ~5/15 min unclaimed, ~2 min no-handshake); the paste-ready invite block is agent-to-agent not human narration (P4); discover host platform via capabilities.request before proposing file paths (P5).",
+  ],
   "2026-06-20-10": [
     "Fast Channel Phase A (opt-in, leaner frames): negotiate a sealed caps.hello at session start; if both sides support it, use schema-typed field-only frames (vs verbose args) and tiny reaction codes (reaction.ok/reject/busy/ack) — cuts wire + token cost. Pinned per session, sealed (broker content-blind), falls back to text per-capability. Phase B/C (pipelining/branching/compiled plans) deliberately NOT enabled yet.",
   ],

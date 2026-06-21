@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.26
-revision: 2026-06-20-10
+version: 0.3.27
+revision: 2026-06-20-11
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.26` (`revision: 2026-06-20-10`).
+> **Skill freshness.** This skill is `version: 0.3.27` (`revision: 2026-06-20-11`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -274,11 +274,11 @@ A live session but no keep-warm entry → the self-heal will re-arm it within th
 
 User says: *"Use Back Channel to help [name] with [anything]."* — debug a config, review their notes, set up an automation, review code, plan something together, walk them through a tool, share research, scaffold a workspace, give a second opinion. **The visitor agent can be sent to do ANY scope-bounded task**; pick scopes that fit the task, nothing more.
 
-1. Match the scope to the task (least privilege). Some common shapes:
+1. Match the scope to the task (least privilege). The **canonical, machine-readable scope list** is `GET https://back-channel.app/api/scopes` (exact strings + what each grants + the hard-blocked set) — use those exact strings. Common shapes:
    - **Look/diagnose/review** (read-only): `config.read`, `logs.read`, `automation.read`, `memory.metadata`.
    - **Suggest/propose** (host approves each write): add `config.suggest`, `automation.suggest`.
    - **Walk-through / co-plan / research** (mostly conversation): often just the read scopes — the work is in the dialog.
-   - Never request `*.apply` (auto-apply, no per-write approval) unless the user explicitly asks for that level of trust.
+   - Never request `*.apply` (auto-apply, no per-write approval) unless the user explicitly asks for that level of trust. Hard-blocked (`memory.read`, `email.read`, `messages.read`, `contacts.read`, `calendar.read`, `files.read`) are refused for everyone.
 
 2. POST to `https://back-channel.app/api/invites` (with `Authorization: Bearer BC_AUTH_TOKEN`):
    ```json
@@ -302,9 +302,13 @@ User says: *"Use Back Channel to help [name] with [anything]."* — debug a conf
    > ---
    This tells the friend's agent everything: where the skill is, the code, the goal, and that a single approval is coming.
 
+   > **P4 — that block is for the friend's AGENT, not human narration.** It's an instruction the friend pastes into *their* AI assistant; their agent reads it and then translates everything afterward into plain language for *its* human. Don't reword it into chatty prose or strip the skill URL / code — it needs those literal tokens to self-start. Your own user just needs "text this to [name]"; the block itself is agent-to-agent.
+
    **First-time-recipient heads-up (tell your user to pass along).** If this is the friend's first Back Channel session, also tell your user — in plain words — to warn them about email: *"Heads up — if your agent is asleep, Back Channel emails you a nudge. The first one may land in junk, or show an 'External' banner in a corporate inbox (Outlook/Gmail). Mark `noreply@back-channel.app` as safe / not-junk once and future ones arrive cleanly."* This matters most for corporate inboxes (JEI execs etc.), where the first external email is flagged and images are blocked until the sender is trusted. Skip it for someone who's used Back Channel before.
 
 5. Connect and do the handshake (Step 4 / Encryption) as soon as the host claims — over `/api/poll` (default) or WebSocket.
+
+   > **M3 — waiting for your friend (don't go silent, don't spin).** After you hand over the invite, your keep-warm watches `/api/sessions/active` for the claim (~every 30s). Pace your narration: **~5 min unclaimed** → tell your user *"haven't heard back yet — your friend may not have pasted the message into their assistant"*; **~15 min** → suggest they re-send it. Once it's **claimed**, watch for the recipient's `handshake.pubkey`; if it doesn't arrive within **~2 min** of the claim, surface *"connected, but their agent isn't responding yet — hang on"* rather than silence. These are narration cues, not extra polling — your keep-warm is already cheap-polling.
 
 6. **Your FIRST sealed frame states the WHOLE session goal and asks for ONE approval** (not per-step). Send an execution-ready `invoke.request` that the host will surface as a single yes/no:
    ```jsonc
@@ -683,7 +687,7 @@ This is **one worked example** of the execution-ready proposal pattern — the *
    - **Marketing:** add `campaigns/`, `content/`.
    - **Developer / technical:** keep `scripts/`, add `repos/`.
    - *(Other roles: use judgment — the goal is "made for me," not a template.)*
-3. **Smart-default the location** — don't ask an open "where?" Propose `Documents/MyBrain` (or the platform-obvious home) and let them override: the host's one-sentence approval is *"I'll create your second brain in Documents/MyBrain — about 9 folders set up for finance work — sound good?"*
+3. **Discover the platform before proposing a path (P5).** Don't assume `C:\…` vs `/home/…`. Send a quick `capabilities.request` (or a `meta.platform_query` content frame) and let the host's agent answer with its OS + home/Documents dir, so your proposed path is real on their machine. Then **smart-default the location** — don't ask an open "where?" Propose the platform-correct default (e.g. `Documents/MyBrain` or `~/MyBrain`) and let them override: the host's one-sentence approval is *"I'll create your second brain in Documents/MyBrain — about 9 folders set up for finance work — sound good?"*
 4. **Propose once, execution-ready** (the one-shot pattern above) so a single "yes" builds everything immediately — no back-and-forth.
 5. **Confirm in plain words:** *"All set — your second brain is ready: folders for projects, meetings, reports, and forecasts, plus the starter files. Open the MyBrain folder whenever you like."*
 
@@ -773,6 +777,7 @@ Base URL: `https://back-channel.app/api`
 | `/favors/check` · `/favors/log` | POST | bearer | Favors (recipient): pre-approval gate (trust/mute/caps) / record outcome. Task+result stay sealed |
 | `/favors/mute[/:handle]` | POST/DELETE | bearer/cookie | Pause / resume favors from a peer without revoking trust |
 | `/schedule/log` | POST | bearer | Scheduling: metadata-only audit (negotiated/booked); free/busy + times stay sealed |
+| `/scopes` | GET | none | Canonical scope catalog (exact strings + grants + hard-blocked set) |
 | `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |
 | `/relay/:sessionId` | WSS | token=session_id | Real-time message relay (WebSocket) |
 
