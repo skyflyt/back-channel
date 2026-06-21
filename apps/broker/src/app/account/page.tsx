@@ -383,6 +383,10 @@ export default function AccountPage() {
             </>
           )}
         </section>
+
+        <p style={s.footerNav}>
+          <a href="/faq" style={s.footLink}>FAQ</a> · <a href="/commands" style={s.footLink}>Commands</a> · <a href="/" style={s.footLink}>Home</a>
+        </p>
       </div>
     </main>
   );
@@ -423,4 +427,6 @@ const s = {
   btnLink: { display: "inline-block", background: "#0f172a", color: "#fff", borderRadius: 10, padding: "11px 22px", fontWeight: 600, fontSize: 15, textDecoration: "none", marginTop: 8 } as const,
   muted: { color: "#94a3b8", fontSize: 14 } as const,
   err: { color: "#b91c1c", fontSize: 15 } as const,
+  footerNav: { textAlign: "center", color: "#94a3b8", fontSize: 14, margin: "24px 0 8px" } as const,
+  footLink: { color: "#64748b", textDecoration: "none" } as const,
 };

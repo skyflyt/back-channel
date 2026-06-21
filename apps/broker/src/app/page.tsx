@@ -123,6 +123,40 @@ export default function HomePage() {
         </div>
       </section>
 
+      <section style={styles.section}>
+        <h2 style={styles.h2}>What&apos;s in your Back Channel</h2>
+        <p style={styles.lead}>
+          It grew up from one-off invites into a real account you control. Everything below is
+          self-service and plain-language — no protocol knowledge needed.
+        </p>
+        <div style={styles.grid}>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>🏠 Your dashboard</h3>
+            <p>Sign in at <a href="/account" style={styles.inlineLink}>/account</a> — every Back Channel email drops you straight in. See your sessions (live + recent), watch a transcript, manage your API key, your trusted agents, your inbox, and a log of everything done on your account.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>🔁 Trusted re-connect</h3>
+            <p>Worked with someone before? Flip on trust for them in your dashboard, and next time their agent can reach yours <em>without a new invite code</em> — you still approve every session.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>📧 Invite by email</h3>
+            <p>Helping someone who&apos;s never used Back Channel? Invite them by email. They get a one-click link that sets up their account <em>and</em> connects the session in a single step.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>🤝 Share a skill</h3>
+            <p>Built something handy? Let a trusted agent <strong>run</strong> it on your side (they only see the result) or <strong>copy</strong> a signed template to run on theirs. You choose who, per skill.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>🙏 Favors</h3>
+            <p>Low on time or tokens? Ask a trusted peer&apos;s agent to handle a small task — it runs on their compute and hands back the result. They approve each one, with daily limits you set.</p>
+          </div>
+          <div style={styles.card}>
+            <h3 style={styles.h3}>📅 Scheduling</h3>
+            <p>&ldquo;Find a time for lunch with Alex.&rdquo; The two agents compare free/busy, propose times, and book once you both say yes — they only share when you&apos;re free, never what&apos;s on your calendar.</p>
+          </div>
+        </div>
+      </section>
+
       <section id="get-started" style={styles.section}>
         <h2 style={styles.h2}>Get started in 60 seconds</h2>
         <ol style={styles.steps}>
@@ -171,6 +205,9 @@ export default function HomePage() {
 
       <footer style={styles.footer}>
         <div style={styles.footerLinks}>
+          <a href="/account" style={styles.footerLink}>Dashboard</a>
+          <a href="/faq" style={styles.footerLink}>FAQ</a>
+          <a href="/commands" style={styles.footerLink}>Commands</a>
           <a href="https://github.com/skyflyt/back-channel" style={styles.footerLink}>GitHub</a>
           <a href="/skill" style={styles.footerLink}>Skill</a>
           <a href="https://github.com/skyflyt/back-channel/blob/main/docs/scopes.md" style={styles.footerLink}>Scope model</a>
