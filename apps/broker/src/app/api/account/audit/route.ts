@@ -27,6 +27,7 @@ const LABELS: Record<string, string> = {
   "favor.muted": "You muted favors from an agent",
   "schedule.negotiated": "Your agent worked out a meeting time",
   "schedule.booked": "A meeting was booked",
+  "dashboard.wake_prompt_revealed": "You got a wake prompt for a session",
 };
 
 // Only surface non-sensitive detail fields to the owner. (We never store raw

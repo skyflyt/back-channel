@@ -34,6 +34,7 @@ export default function AccountPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [discover, setDiscover] = useState<DiscoverSkill[]>([]);
   const [newKey, setNewKey] = useState<string | null>(null);
+  const [wakePrompts, setWakePrompts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
   const [notify, setNotify] = useState(true);
 
@@ -111,6 +112,15 @@ export default function AccountPage() {
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
     window.location.href = "/login";
+  };
+
+  const getWakePrompt = async (id: string) => {
+    setBusy(`wp:${id}`);
+    try {
+      const r = await fetch(`/api/sessions/${id}/wake-prompt`, { credentials: "include" });
+      if (r.ok) { const j = await r.json(); setWakePrompts((m) => ({ ...m, [id]: j.prompt })); }
+    } catch { /* ignore */ }
+    setBusy("");
   };
 
   const endSession = async (id: string, peer: string) => {
@@ -229,15 +239,25 @@ export default function AccountPage() {
           <h3 style={s.h3}>Active{active.length ? ` (${active.length})` : ""}</h3>
           {active.length === 0 && <p style={s.muted}>No active sessions right now.</p>}
           {active.map((x) => (
-            <div key={x.session_id} style={s.row}>
-              <span style={{ ...s.dot, background: "#10b981" }} />
-              <div style={s.rowMain}>
-                <strong>{x.peer_handle}</strong> <span style={s.roleTag}>{x.role}</span>
-                {x.goal && <div style={s.goal}>{x.goal}</div>}
-                <div style={s.rowMeta}>started {when(x.started_at)}</div>
+            <div key={x.session_id}>
+              <div style={s.row}>
+                <span style={{ ...s.dot, background: "#10b981" }} />
+                <div style={s.rowMain}>
+                  <strong>{x.peer_handle}</strong> <span style={s.roleTag}>{x.role}</span>
+                  {x.goal && <div style={s.goal}>{x.goal}</div>}
+                  <div style={s.rowMeta}>started {when(x.started_at)}</div>
+                </div>
+                <a href={`/sessions/${x.session_id}`} style={s.smallLink}>Watch</a>
+                <button style={s.smallLink2} onClick={() => getWakePrompt(x.session_id)} disabled={busy === `wp:${x.session_id}`}>{busy === `wp:${x.session_id}` ? "…" : "🤝 Wake my agent"}</button>
+                <button style={s.endBtn} onClick={() => endSession(x.session_id, x.peer_handle)} disabled={busy === x.session_id}>{busy === x.session_id ? "…" : "End"}</button>
               </div>
-              <a href={`/sessions/${x.session_id}`} style={s.smallLink}>Watch</a>
-              <button style={s.endBtn} onClick={() => endSession(x.session_id, x.peer_handle)} disabled={busy === x.session_id}>{busy === x.session_id ? "…" : "End"}</button>
+              {wakePrompts[x.session_id] && (
+                <div style={s.wakeBox}>
+                  <p style={s.wakeLabel}>📋 Paste this to your AI assistant to get it back into this session:</p>
+                  <pre style={s.wakePre}>{wakePrompts[x.session_id]}</pre>
+                  <button style={s.btn} onClick={() => navigator.clipboard?.writeText(wakePrompts[x.session_id]).catch(() => {})}>Copy</button>
+                </div>
+              )}
             </div>
           ))}
           <h3 style={{ ...s.h3, marginTop: 18 }}>Recent (30 days)</h3>
@@ -420,6 +440,10 @@ const s = {
   chipOff: { fontSize: 12, fontWeight: 600, color: "#0f766e", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 999, padding: "3px 10px", cursor: "pointer" } as const,
   dot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 } as const,
   smallLink: { fontSize: 13, color: "#0f766e", textDecoration: "none", flexShrink: 0 } as const,
+  smallLink2: { fontSize: 13, color: "#0f766e", background: "none", border: "none", cursor: "pointer", flexShrink: 0, padding: 0, fontWeight: 600 } as const,
+  wakeBox: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 10, padding: "12px 14px", margin: "4px 0 12px 19px" } as const,
+  wakeLabel: { fontSize: 13, fontWeight: 600, color: "#0f766e", margin: "0 0 8px" } as const,
+  wakePre: { background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "ui-monospace, Menlo, monospace", color: "#0f172a", margin: "0 0 8px" } as const,
   endBtn: { background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "5px 12px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0 } as const,
   settingRow: { display: "flex", alignItems: "center", gap: 10, fontSize: 15, color: "#334155" } as const,
   signOut: { background: "#fff", color: "#475569", border: "1px solid #cbd5e1", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", flexShrink: 0 } as const,
