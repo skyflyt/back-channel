@@ -109,12 +109,24 @@ export async function POST(req: NextRequest) {
     },
   });
 
+  // M1 auto-claim: if this magic link carried a claim code, claim that invite
+  // for the freshly-verified host now — verify + connect in one step.
+  let claimedSessionId: string | null = null;
+  if (link.claimCode) {
+    const inv = await prisma.invite.findUnique({ where: { code: link.claimCode }, include: { session: true } });
+    if (inv && inv.hostAccountId === updated.id && inv.status === "pending" && inv.expiresAt > new Date() && inv.session) {
+      await prisma.invite.update({ where: { id: inv.id }, data: { status: "confirmed", claimedAt: new Date(), confirmedAt: new Date() } });
+      claimedSessionId = inv.session.id;
+    }
+  }
+
   const res = NextResponse.json({
     status: "verified",
     handle: updated.handle,
     email: updated.email,
     api_key: updated.apiKey,
     account_id: updated.id,
+    ...(claimedSessionId ? { claimed_session_id: claimedSessionId } : {}),
   });
   await attachDashboardSession(res, updated.id); // land them authenticated on /account
   return res;

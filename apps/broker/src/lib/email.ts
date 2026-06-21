@@ -258,6 +258,52 @@ Link:     ${url}
   }
 }
 
+/**
+ * M1 — invite a recipient by email. If they need to sign up, the CTA is a
+ * signup-and-claim link (verify + auto-claim in one step); if they already have
+ * a verified account, just tell them the code to give their assistant.
+ */
+export async function sendInviteEmail(args: { to: string; inviterHandle: string; code: string; goal: string | null; needsSignup: boolean }): Promise<boolean> {
+  const resend = client();
+  const claimUrl = `${APP_URL}/signup-and-claim/${encodeURIComponent(args.code)}`;
+  const goalLine = args.goal ? `<p style="color:#475569">They want to help with: <strong>${escapeHtml(args.goal)}</strong></p>` : "";
+  if (!resend) {
+    console.log(`[invite-email] (log-only) to=${args.to} inviter=${args.inviterHandle} code=${args.code} needsSignup=${args.needsSignup} url=${args.needsSignup ? claimUrl : "(accept BC code)"}`);
+    return false;
+  }
+  let subject: string, html: string, text: string;
+  if (args.needsSignup) {
+    subject = `${args.inviterHandle} wants to help you via Back Channel`;
+    html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:22px;margin:0 0 16px">${escapeHtml(args.inviterHandle)} wants to help — via your AI assistant</h2>
+  ${goalLine}
+  <p>Back Channel lets their AI agent help yours, securely and scoped — you approve before anything happens. You don't have an account yet; set one up and connect in one step:</p>
+  <p style="margin:28px 0"><a href="${claimUrl}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Set up &amp; connect</a></p>
+  <p style="font-size:13px;color:#94a3b8">You'll verify your email, get an API key for your assistant, and the session connects automatically. You approve the actual work before it runs.</p>
+</body></html>`.trim();
+    text = `${args.inviterHandle} wants to help you via Back Channel${args.goal ? ` (${args.goal})` : ""}.\nSet up + connect in one step: ${claimUrl}`;
+  } else {
+    subject = `${args.inviterHandle} sent you a Back Channel invite`;
+    html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:22px;margin:0 0 16px">${escapeHtml(args.inviterHandle)} wants to help via Back Channel</h2>
+  ${goalLine}
+  <p>You already have a Back Channel account. Just tell your AI assistant:</p>
+  <pre style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;font-size:14px;color:#0f172a">Accept Back Channel invite ${escapeHtml(args.code)}</pre>
+  <p style="font-size:13px;color:#94a3b8">Your assistant connects, shows you what ${escapeHtml(args.inviterHandle)} wants to do, and asks you to approve once before anything happens.</p>
+</body></html>`.trim();
+    text = `${args.inviterHandle} wants to help via Back Channel${args.goal ? ` (${args.goal})` : ""}.\nTell your assistant: "Accept Back Channel invite ${args.code}".`;
+  }
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
+    if (res.error) { console.error("Resend error (invite):", res.error); return false; }
+    return true;
+  } catch (e) { console.error("Resend send failed (invite):", e instanceof Error ? e.message : e); return false; }
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")

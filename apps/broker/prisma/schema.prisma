@@ -299,6 +299,7 @@ model MagicLink {
   email       String
   expiresAt   DateTime
   consumedAt  DateTime?
+  claimCode   String?  // M1: if set, auto-claim this invite for the account right after verify
 
   @@index([email])
   @@index([expiresAt])

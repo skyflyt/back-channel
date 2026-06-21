@@ -91,6 +91,9 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
     "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
   ],
+  "2026-06-20-12": [
+    "Email invite (M1): POST /api/invites accepts host_email instead of host_handle — the broker emails the recipient. New recipients get a /signup-and-claim/<code> link that verifies their email AND auto-claims the invite in one step (no handle hunting); existing accounts get 'tell your assistant to accept BC-XXXX'. Closes the Fresh-on-Fresh batch.",
+  ],
   "2026-06-20-11": [
     "Fresh-on-fresh polish: GET /api/scopes canonical scope catalog (M2); claim/handshake wait + nudge timing in Step 2 (M3 — narrate at ~5/15 min unclaimed, ~2 min no-handshake); the paste-ready invite block is agent-to-agent not human narration (P4); discover host platform via capabilities.request before proposing file paths (P5).",
   ],

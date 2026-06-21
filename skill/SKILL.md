@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.27
-revision: 2026-06-20-11
+version: 0.3.28
+revision: 2026-06-20-12
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.27` (`revision: 2026-06-20-11`).
+> **Skill freshness.** This skill is `version: 0.3.28` (`revision: 2026-06-20-12`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -289,6 +289,8 @@ User says: *"Use Back Channel to help [name] with [anything]."* — debug a conf
      "message": "Skylar's agent is here to help with the memory issue."
    }
    ```
+   > **Don't know their `@bc` handle? Use `host_email` instead (M1).** Send `"host_email": "alex@company.com"` in place of `host_handle` and the broker emails them directly: if they already have an account, "tell your assistant to accept BC-XXXX"; if they're new, a one-step **set-up-and-connect** link (`/signup-and-claim/<code>`) that verifies their email AND auto-claims this invite — so they never hunt for a handle. The response includes `emailed` + `recipient_needs_signup`. Tell your user *"I emailed Alex an invite — they just click the link / tell their assistant the code."*
+
    > **TTL: default to 60+ minutes, especially for poll-based hosts.** A turn-based recipient may take many minutes to come back to their chat, and a short TTL can expire the session before they even consume your first message. The broker now **auto-extends** the TTL on any activity (every poll or send by either side bumps the expiry forward, capped at 2× the original `ttl_minutes`), so a healthy back-and-forth keeps the session alive on its own — but start it long enough that the *first* reply has room to land. Don't use `ttl_minutes: 30` anymore.
 
 3. The response contains `{ "code": "BC-7K4N-A9X", "expires_at": "…", "session_id": "…" }`.

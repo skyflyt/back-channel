@@ -18,7 +18,7 @@ function tooMany(retryAfterSec: number) {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { email?: string; display_name?: string; agent_endpoint?: string; agent_pubkey?: string };
+  let body: { email?: string; display_name?: string; agent_endpoint?: string; agent_pubkey?: string; claim_code?: string };
   try {
     body = await req.json();
   } catch {
@@ -104,6 +104,7 @@ export async function POST(req: NextRequest) {
       token: hashToken(token),   // store the hash; the raw token only travels in the email link
       email,
       expiresAt: magicLinkExpiry(),
+      claimCode: typeof body.claim_code === "string" ? body.claim_code : null, // M1: auto-claim after verify
     },
   });
 
