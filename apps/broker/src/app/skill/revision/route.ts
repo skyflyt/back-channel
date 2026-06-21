@@ -91,6 +91,9 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
     "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
   ],
+  "2026-06-20-13": [
+    "Opaqueness fix: the host_email invite response no longer returns recipient_needs_signup (it leaked whether the email was already a verified account). It now returns a uniform {delivery:'email_sent'}; the broker still sends the right email + auto-claim link. Account existence stays private to the recipient.",
+  ],
   "2026-06-20-12": [
     "Email invite (M1): POST /api/invites accepts host_email instead of host_handle — the broker emails the recipient. New recipients get a /signup-and-claim/<code> link that verifies their email AND auto-claims the invite in one step (no handle hunting); existing accounts get 'tell your assistant to accept BC-XXXX'. Closes the Fresh-on-Fresh batch.",
   ],

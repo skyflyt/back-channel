@@ -50,12 +50,31 @@ export async function POST(req: NextRequest) {
     if (!email.includes("@")) return NextResponse.json({ error: "invalid_email" }, { status: 400 });
     host = await prisma.account.findUnique({ where: { email } });
     if (!host) {
-      let handle = generateHandle(email);
-      for (let i = 0; i < 5 && (await prisma.account.findUnique({ where: { handle } })); i++) handle = `${generateHandle(email)}-${randomBytes(2).toString("hex")}`;
-      host = await prisma.account.create({ data: { email, handle } }); // pending: no apiKey, unverified
+      // Find a free handle, capped at 10 candidates; create defensively (the
+      // check→create window can race). Never fall through to an unhandled 500.
+      const base = generateHandle(email);
+      let handle = base;
+      for (let i = 0; i < 10 && (await prisma.account.findUnique({ where: { handle } })); i++) {
+        handle = `${base}-${randomBytes(2).toString("hex")}`;
+      }
+      try {
+        host = await prisma.account.create({ data: { email, handle } }); // pending: no apiKey, unverified
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("Unique constraint")) {
+          // Either a handle race or the email was created concurrently — re-read by email.
+          host = await prisma.account.findUnique({ where: { email } });
+          if (!host) {
+            console.error(`[invites] handle_collision_unresolvable email=${email} base=${base}`);
+            return NextResponse.json({ error: "handle_collision_unresolvable", detail: "Couldn't allocate an account handle — please retry." }, { status: 409 });
+          }
+        } else {
+          throw e;
+        }
+      }
     }
     emailRecipient = email;
-    recipientNeedsSignup = !host.emailVerifiedAt;
+    recipientNeedsSignup = !host.emailVerifiedAt; // used internally only — NEVER returned (opaqueness)
   } else {
     host = await prisma.account.findUnique({ where: { handle: body.host_handle } });
     if (!host) return NextResponse.json({ error: "host_not_found" }, { status: 404 });
@@ -92,16 +111,18 @@ export async function POST(req: NextRequest) {
 
   // M1: if invited by email, email the recipient. New/pending → a signup-and-
   // claim link (verify + auto-claim in one step); already verified → "ask your
-  // assistant to accept BC-XXXX".
-  let emailed = false;
+  // assistant to accept BC-XXXX". The branch + delivery are logged server-side
+  // for postmortem, but NEVER reflected in the API response (Finding 1:
+  // recipient_needs_signup leaked account existence to the inviter).
   if (emailRecipient) {
-    emailed = await sendInviteEmail({
+    const delivered = await sendInviteEmail({
       to: emailRecipient,
       inviterHandle: visitor.handle,
       code: invite.code,
       goal: body.message ?? null,
       needsSignup: recipientNeedsSignup,
     });
+    console.log(`[invites] email invite code=${invite.code} needs_signup=${recipientNeedsSignup} delivered=${delivered}`);
   }
 
   return NextResponse.json({
@@ -112,7 +133,9 @@ export async function POST(req: NextRequest) {
     relay_url: `${base}/relay/${session.id}?role=visitor&token=${session.id}`,
     host_handle: host.handle,
     scopes: invite.scopes,
-    ...(emailRecipient ? { emailed, recipient_needs_signup: recipientNeedsSignup } : {}),
+    // Opaque: uniform regardless of whether the recipient already had a verified
+    // account — never leak account-existence to the inviter.
+    ...(emailRecipient ? { delivery: "email_sent" } : {}),
   });
 }
 
