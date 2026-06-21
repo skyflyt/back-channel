@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromAuth, generateInviteCode, generateHandle } from "@/lib/auth";
+import { getAccountFromAuth, getAccountFromCookie, generateInviteCode, generateHandle, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 import { validateScopes } from "@/lib/scopes";
 import { sendInviteEmail } from "@/lib/email";
 import { rateLimit } from "@/lib/rate-limit";
@@ -11,8 +11,17 @@ export const runtime = "nodejs";
 const HOUR = 60 * 60 * 1000;
 
 export async function POST(req: NextRequest) {
-  const visitor = await getAccountFromAuth(req.headers.get("authorization"));
+  // Bearer (agent) is the primary path. The dashboard (cookie) may ALSO create
+  // an invite — but only as the VISITOR (itself), and CSRF-gated. This widens
+  // the cookie tier beyond §3 deliberately, for the dashboard "Start a session"
+  // button; a stolen view-link can at worst create rate-limited pending invites
+  // (it still can't DRIVE a session — that needs the bearer key).
+  const bearer = await getAccountFromAuth(req.headers.get("authorization"));
+  const visitor = bearer ?? (await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value));
   if (!visitor) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!bearer && !csrfValid(req.headers.get(CSRF_HEADER), req.cookies.get(CSRF_COOKIE_NAME)?.value)) {
+    return NextResponse.json({ error: "csrf" }, { status: 403 });
+  }
 
   // Each invite creates an Invite + Session row. Cap per account so a
   // compromised/abusive key can't fill the DB or spam invite codes at a host.
@@ -123,6 +132,11 @@ export async function POST(req: NextRequest) {
       needsSignup: recipientNeedsSignup,
     });
     console.log(`[invites] email invite code=${invite.code} needs_signup=${recipientNeedsSignup} delivered=${delivered}`);
+  }
+
+  // Audit dashboard-initiated sessions (cookie path) — metadata only.
+  if (!bearer) {
+    await prisma.accountAudit.create({ data: { accountId: visitor.id, eventType: "dashboard.session_started", detail: { sessionId: session.id } } }).catch(() => {});
   }
 
   return NextResponse.json({

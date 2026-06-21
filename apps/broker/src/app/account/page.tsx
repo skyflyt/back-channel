@@ -36,6 +36,15 @@ export default function AccountPage() {
   const [newKey, setNewKey] = useState<string | null>(null);
   const [wakePrompts, setWakePrompts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
+  // "Start a new session" form
+  const [ssOpen, setSsOpen] = useState(false);
+  const [ssTopic, setSsTopic] = useState("");
+  const [ssFriend, setSsFriend] = useState("");
+  const [ssScopes, setSsScopes] = useState("config.read, config.suggest");
+  const [ssTtl, setSsTtl] = useState(60);
+  const [ssCustom, setSsCustom] = useState(false);
+  const [ssErr, setSsErr] = useState("");
+  const [ssResult, setSsResult] = useState<{ your_prompt: string; friend_prompt: string; code: string } | null>(null);
   const [notify, setNotify] = useState(true);
 
   const loadSessions = useCallback(async () => {
@@ -112,6 +121,31 @@ export default function AccountPage() {
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
     window.location.href = "/login";
+  };
+
+  const startSession = async () => {
+    setSsErr("");
+    if (!ssTopic.trim()) { setSsErr("Tell us what you want help with."); return; }
+    const friend = ssFriend.trim();
+    if (!friend) { setSsErr("Enter your friend's @bc handle or their email."); return; }
+    // Route to host_handle vs host_email: "@bc" handles vs real emails.
+    const target = friend.endsWith("@bc") ? { host_handle: friend } : friend.includes("@") ? { host_email: friend } : null;
+    if (!target) { setSsErr("That doesn't look like a @bc handle or an email."); return; }
+    const scopes = ssScopes.split(",").map((s) => s.trim()).filter(Boolean);
+    setBusy("startsession");
+    try {
+      const r = await fetch("/api/invites", {
+        method: "POST", credentials: "include",
+        headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
+        body: JSON.stringify({ ...target, scopes, ttl_minutes: ssTtl, message: ssTopic.trim() }),
+      });
+      const j = await r.json();
+      if (!r.ok) { setSsErr(j.detail || j.error || "Couldn't start the session — check the handle/email and scopes."); setBusy(""); return; }
+      const p = await fetch(`/api/sessions/${j.session_id}/prompts`, { credentials: "include" });
+      if (p.ok) { const pj = await p.json(); setSsResult({ your_prompt: pj.your_prompt, friend_prompt: pj.friend_prompt, code: pj.code }); }
+      loadSessions();
+    } catch { setSsErr("Something went wrong — try again."); }
+    setBusy("");
   };
 
   const getWakePrompt = async (id: string) => {
@@ -229,6 +263,64 @@ export default function AccountPage() {
                 <button style={s.btn} onClick={rotateKey} disabled={busy === "key"}>{busy === "key" ? "Rotating…" : "Rotate key"}</button>
               </div>
               <p style={s.meta}>Last used {lastUsed}. We never show the full key here — only the last 4 characters.</p>
+            </>
+          )}
+        </section>
+
+        {/* Start a new session */}
+        <section style={s.card}>
+          <h2 style={s.h2}>Start a new session</h2>
+          {!ssOpen && !ssResult && (
+            <>
+              <p style={s.lead}>Want to help a friend? Kick off a session right here — you&apos;ll get two copy-paste prompts: one for your assistant, one to text your friend.</p>
+              <button style={s.btn} onClick={() => setSsOpen(true)}>Help a friend →</button>
+            </>
+          )}
+          {ssOpen && !ssResult && (
+            <>
+              <label style={s.fieldLabel}>What do you want help with?</label>
+              <input style={s.input} value={ssTopic} onChange={(e) => setSsTopic(e.target.value)} placeholder="e.g. fix the errors in my automations" />
+              <label style={s.fieldLabel}>Your friend&apos;s @bc handle or email</label>
+              <input style={s.input} value={ssFriend} onChange={(e) => setSsFriend(e.target.value)} placeholder="alex@bc  or  alex@company.com" />
+              <div style={s.fieldRow}>
+                <div>
+                  <label style={s.fieldLabel}>Time limit</label>
+                  <select style={s.select} value={ssTtl} onChange={(e) => setSsTtl(Number(e.target.value))}>
+                    <option value={30}>30 minutes</option><option value={60}>60 minutes</option>
+                    <option value={120}>2 hours</option><option value={360}>6 hours</option>
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={s.fieldLabel}>What they can access {!ssCustom && <button style={s.linkBtn} onClick={() => setSsCustom(true)}>customize</button>}</label>
+                  {ssCustom
+                    ? <input style={s.input} value={ssScopes} onChange={(e) => setSsScopes(e.target.value)} placeholder="config.read, config.suggest" />
+                    : <p style={s.scopeNote}>{ssScopes} <span style={s.muted}>(read + propose changes you approve)</span></p>}
+                </div>
+              </div>
+              {ssErr && <p style={s.err}>{ssErr}</p>}
+              <div style={{ marginTop: 12 }}>
+                <button style={s.btn} disabled={busy === "startsession"} onClick={startSession}>{busy === "startsession" ? "Starting…" : "Start session"}</button>
+                <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setSsOpen(false); setSsErr(""); }}>Cancel</button>
+              </div>
+            </>
+          )}
+          {ssResult && (
+            <>
+              <p style={s.lead}>Session ready (code <strong>{ssResult.code}</strong>). Two prompts — copy each to the right place:</p>
+              <div style={s.promptPane}>
+                <p style={s.wakeLabel}>1️⃣ For YOUR assistant — paste this into your own agent:</p>
+                <pre style={s.wakePre}>{ssResult.your_prompt}</pre>
+                <button style={s.btn} onClick={() => navigator.clipboard?.writeText(ssResult.your_prompt).catch(() => {})}>Copy mine</button>
+              </div>
+              <div style={s.promptPane}>
+                <p style={s.wakeLabel}>2️⃣ For your FRIEND — text this to them; they paste it to their assistant:</p>
+                <pre style={s.wakePre}>{ssResult.friend_prompt}</pre>
+                <button style={s.btn} onClick={() => navigator.clipboard?.writeText(ssResult.friend_prompt).catch(() => {})}>Copy theirs</button>
+                {typeof navigator !== "undefined" && "share" in navigator && (
+                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => navigator.share?.({ text: ssResult.friend_prompt }).catch(() => {})}>Share…</button>
+                )}
+              </div>
+              <button style={{ ...s.signOut, marginTop: 8 }} onClick={() => { setSsResult(null); setSsOpen(false); setSsTopic(""); setSsFriend(""); }}>Done</button>
             </>
           )}
         </section>
@@ -453,4 +545,11 @@ const s = {
   err: { color: "#b91c1c", fontSize: 15 } as const,
   footerNav: { textAlign: "center", color: "#94a3b8", fontSize: 14, margin: "24px 0 8px" } as const,
   footLink: { color: "#64748b", textDecoration: "none" } as const,
+  fieldLabel: { display: "block", fontSize: 13, fontWeight: 600, color: "#475569", margin: "12px 0 4px" } as const,
+  input: { width: "100%", boxSizing: "border-box", fontSize: 15, padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 9 } as const,
+  select: { fontSize: 15, padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 9, background: "#fff" } as const,
+  fieldRow: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" } as const,
+  scopeNote: { fontSize: 14, color: "#334155", margin: "2px 0 0", fontFamily: "ui-monospace, Menlo, monospace" } as const,
+  linkBtn: { background: "none", border: "none", color: "#0f766e", cursor: "pointer", fontSize: 12, textDecoration: "underline", padding: 0, marginLeft: 6 } as const,
+  promptPane: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 10, padding: "12px 14px", marginBottom: 12 } as const,
 };

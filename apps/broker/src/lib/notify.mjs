@@ -60,6 +60,24 @@ export function wakePrompt(sessionId, peerHandle) {
 }
 
 /**
+ * Canonical paste prompts for a dashboard-started session (one source of truth,
+ * shared by GET /api/sessions/:id/prompts). `your_prompt` goes to the starter's
+ * OWN agent (the visitor/helper side); `friend_prompt` is texted to the friend
+ * for THEIR agent (the host side) — same shape as Step 2's paste-ready block.
+ * @param {{ inviterHandle: string, friendLabel: string|null, sessionId: string, code: string, scopes: string[], expiresAt: Date, topic: string|null }} a
+ */
+export function sessionStartPrompts(a) {
+  const who = a.friendLabel ? a.friendLabel : "a friend";
+  const topic = a.topic ? a.topic : "something";
+  const exp = a.expiresAt.toISOString();
+  const your_prompt =
+    `I just started a Back Channel session from my dashboard to help ${who} with ${topic} (session ${a.sessionId}). Using the Back Channel skill you've loaded, this is the VISITOR side and the session already exists — connect as visitor with my stored Back Channel API key, do the ECDH handshake when the host joins, then send a sealed invoke.request whose session_goal is "${topic}". Poll /api/poll for this session and drive it per the skill; surface progress to me in plain language.`;
+  const friend_prompt =
+    `${a.inviterHandle} wants to help you with ${topic} via Back Channel. Load the skill from https://back-channel.app/skill (re-fetch if your copy is stale), then accept invite ${a.code} (expires ${exp}; scopes: ${a.scopes.join(", ")}). Using the skill, this is the HOST side — accept, complete the handshake, surface the first sealed frame's session goal to me, and ask me one plain yes/no before anything runs.`;
+  return { your_prompt, friend_prompt };
+}
+
+/**
  * Look up the idle recipient + peer for a session, honor their opt-out, and
  * email a nudge. Best-effort: logs and returns on any miss. Never throws into
  * the relay path.
