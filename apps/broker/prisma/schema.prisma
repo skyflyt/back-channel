@@ -26,6 +26,7 @@ model Account {
   notifyIdleFrames Boolean @default(true) // email me when a frame arrives while I'm idle
   favorPerPeerDaily    Int @default(5)     // max favors I'll accept from one peer per day
   favorGlobalTokensDaily Int @default(50000) // max borrowed-compute tokens/day across all peers
+  admin            Boolean @default(false) // operator: can read metadata-only analytics (never content)
 
   invitesAsHost    Invite[]  @relation("HostInvites")
   invitesAsVisitor Invite[]  @relation("VisitorInvites")
