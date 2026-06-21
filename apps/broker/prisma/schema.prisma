@@ -37,6 +37,7 @@ model Account {
   userSkills       UserSkill[]
   skillSharesRecv  SkillShare[]   @relation("SkillShareWith")
   skillInvocations SkillInvocation[]
+  skillImports     SkillImport[]
 }
 
 // Skill Sharing (shared capabilities). A user-owned capability the owner's agent
@@ -89,6 +90,20 @@ model SkillInvocation {
 
   @@index([skillId])
   @@index([sessionId])
+}
+
+// Tier 2-Template: an audit record that an account imported a (signed) template.
+// The actual copy lives on the importer's LOCAL agent — this is provenance +
+// the basis for an "uninstall" (reversible imports, skill-sharing-epic §8.2).
+model SkillImport {
+  id                  String   @id @default(uuid())
+  skillId             String                  // source skill (author's)
+  importedByAccountId String
+  importedAt          DateTime @default(now())
+  importedBy Account @relation(fields: [importedByAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([skillId, importedByAccountId])
+  @@index([importedByAccountId])
 }
 
 // Inbox (Account Dashboard Wave 3). A mutually-trusted peer's agent drops a

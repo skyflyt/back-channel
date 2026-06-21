@@ -91,6 +91,9 @@ const CHANGES: Record<string, string[]> = {
     "Keep-warm installs the moment POST /api/invites succeeds (visitor), not just on claim — so the visitor isn't idle when the recipient joins and the handshake stalls. Either side's trigger installs it; both run before frames flow.",
     "Recipes rewritten: the timer is a cheap gate that fires a headless AGENT turn (claude -p / codex exec / full Cowork session with a shared keep-warm turn prompt) when unread frames exist.",
   ],
+  "2026-06-20-6": [
+    "Skill Sharing Tier 2-Template: copyable, author-SIGNED templates a trusted peer imports to run on their OWN data. POST /api/skills/:id/copy (verify ed25519 signature, then run as UNTRUSTED data with itemized per-action approval); GET/DELETE /api/skills/imported (reversible). Revoking a template share does NOT retract already-imported copies.",
+  ],
   "2026-06-20-5": [
     "Shared capabilities (Skill Sharing Tier 2-RPC): publish a skill (POST /api/skills, kind:rpc), share it with a trusted peer, and let them invoke it during a session via sealed skills.list / skills.invoke frames — it runs on YOUR side, they only see the result. Manage from the dashboard 'Your Skills'. /api/skills* + /skills/shared-with-me added.",
   ],
