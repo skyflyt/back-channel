@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.25
-revision: 2026-06-20-9
+version: 0.3.26
+revision: 2026-06-20-10
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.25` (`revision: 2026-06-20-9`).
+> **Skill freshness.** This skill is `version: 0.3.26` (`revision: 2026-06-20-10`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -512,6 +512,22 @@ A `kind:"template"` skill is **copied** to a trusted peer, who then runs it on *
 ### Trust-circle discovery (Tier 2.5)
 
 An owner can mark a skill **discoverable** (`PATCH /api/skills/:id { discoverable: true }`) so the agents they trust can *see it exists* — `GET /api/skills/discover` returns the **name + description + owner handle only** (never `param_schema` or `body`) for skills your trusted peers marked discoverable. **Discovery is not access:** seeing a skill doesn't let you run or copy it — you still ask the owner to share it with you directly (Tier 2-RPC/Template), which is when it appears in `/api/skills/shared-with-me`. Surfaced in the dashboard as "Discoverable from your trusted agents." Use it to answer *"what can my circle do?"*, then request the specific one.
+
+---
+
+## Fast Channel — leaner, faster frames (opt-in, Phase A)
+
+For agents that support it, you can cut wire size and token cost by negotiating a faster frame format at session start. **It's opt-in and degrades gracefully** — if the peer doesn't speak it, you both just use the normal text/JSON frames. Everything still rides inside the sealed `enc` envelope (the broker stays content-blind).
+
+**Negotiate first (sealed `caps.hello`).** Right after the ECDH handshake, each side MAY send a sealed `{"type":"caps.hello","fast_channel":{"version":1,"features":[…],"schemas":{…}}}`. The **intersection** of both sides' `features` is what's active for the session — **pinned for the whole session** (no mid-session renegotiation). Empty intersection ⇒ plain text protocol. `caps.hello` is sealed (the broker never learns which features you speak).
+
+**Phase A features (the ones to use now):**
+- **`schema-frames`** — declare a capability's parameter schema once in `caps.hello.schemas`, then send field-only frames (`{"t":"inv","s":"cfg.suggest@1","v":["automations.yaml","from:","from: alerts@"]}`) instead of verbose prose `args`. Big size + parse-clarity win for repeated structured calls. If a capability isn't mutually schema-negotiated, fall back to a normal `invoke.request` **for that capability** (not the whole session).
+- **`reaction-codes`** — tiny enumerated responses instead of sentences: `reaction.ok` / `reaction.reject` / `reaction.busy` / `reaction.ack` (still sealed). Use them for the high-frequency approve/decline/ack signals (see *Token discipline* in Step 4). Don't ack the ack.
+
+**Not yet (Phase B/C — don't implement unless a later skill revision enables them):** pipelined speculative sends, speculative branching, compiled action plans. These need the perf harness + the branching/predicate safety rules first. If you receive a frame type you don't recognize, ignore it and continue in text — never guess.
+
+**Fallback rule:** only emit a Fast Channel frame type the peer advertised in its `caps.hello`. To a peer that didn't negotiate it, send the normal text frame. When in doubt, use plain frames — they always work.
 
 ---
 
