@@ -34,6 +34,7 @@ const GROUPS: { title: string; items: { say: string; does: string }[] }[] = [
     title: "Sharing & favors",
     items: [
       { say: "Share my [skill] with Alex", does: "Lets a trusted peer run (or copy) one of your agent's skills." },
+      { say: "Set up my second brain with the Back Channel template", does: "Imports the published \"second-brain-scaffold\" template (by skyflyt86@bc) and walks you through building — or repairing — a memory workspace for your agent. Ask a trusted peer who has it to share it with you." },
       { say: "Ask Alex's agent to [small task] for me", does: "Sends a favor — it runs on their compute; they approve and return the result." },
     ],
   },
