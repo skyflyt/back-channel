@@ -27,6 +27,7 @@ export async function GET(req: NextRequest) {
     skills: skills.map((s) => ({
       id: s.id, name: s.name, description: s.description, kind: s.kind, version: s.version,
       param_schema: s.paramSchema ?? null,
+      discoverable: s.discoverable,
       shared_with: s.shares.map((sh) => sh.sharedWith.handle),
       updated_at: s.updatedAt.toISOString(),
     })),

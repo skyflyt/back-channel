@@ -15,7 +15,8 @@ interface Sess {
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
-interface Skill { id: string; name: string; description: string | null; kind: string; shared_with: string[]; }
+interface Skill { id: string; name: string; description: string | null; kind: string; shared_with: string[]; discoverable: boolean; }
+interface DiscoverSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; }
 
 /** Read the non-httpOnly bc_csrf cookie to echo in the x-bc-csrf header. */
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
@@ -30,6 +31,7 @@ export default function AccountPage() {
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [showAudit, setShowAudit] = useState(false);
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [discover, setDiscover] = useState<DiscoverSkill[]>([]);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [notify, setNotify] = useState(true);
@@ -66,8 +68,16 @@ export default function AccountPage() {
     try {
       const r = await fetch("/api/skills", { credentials: "include" });
       if (r.ok) setSkills((await r.json()).skills ?? []);
+      const d = await fetch("/api/skills/discover", { credentials: "include" });
+      if (d.ok) setDiscover((await d.json()).skills ?? []);
     } catch { /* leave as-is */ }
   }, []);
+
+  const toggleDiscoverable = async (skillId: string, on: boolean) => {
+    setBusy(`disc:${skillId}`);
+    await fetch(`/api/skills/${skillId}`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ discoverable: on }) }).catch(() => {});
+    setBusy(""); loadSkills();
+  };
 
   useEffect(() => {
     (async () => {
@@ -321,12 +331,32 @@ export default function AccountPage() {
                       })}
                     </div>
                   )}
+                  <label style={{ ...s.rowMeta, display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                    <input type="checkbox" checked={sk.discoverable} disabled={busy === `disc:${sk.id}`} onChange={() => toggleDiscoverable(sk.id, !sk.discoverable)} />
+                    🌐 Let trusted agents discover this by name (they still need you to share it to use it)
+                  </label>
                 </div>
                 <button style={s.endBtn} disabled={busy === `skilldel:${sk.id}`} onClick={() => deleteSkill(sk.id, sk.name)}>Delete</button>
               </div>
             );
           })}
         </section>
+
+        {/* Discoverable in your circle */}
+        {discover.length > 0 && (
+          <section style={s.card}>
+            <h2 style={s.h2}>Discoverable from your trusted agents</h2>
+            <p style={s.soon}>Skills your trusted agents have made discoverable. To use one, ask them to share it with you.</p>
+            {discover.map((d) => (
+              <div key={d.id} style={s.row}>
+                <div style={s.rowMain}>
+                  <strong>{d.name}</strong> <span style={s.roleTag}>{d.kind}</span> <span style={s.rowMeta}>· {d.owner_handle}</span>
+                  {d.description && <div style={s.goal}>{d.description}</div>}
+                </div>
+              </div>
+            ))}
+          </section>
+        )}
 
         {/* Activity (audit log) */}
         <section style={s.card}>

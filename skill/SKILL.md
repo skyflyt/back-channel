@@ -1,14 +1,14 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, look at logs, etc. Back Channel is a privacy-preserving protocol that lets two AI agents collaborate on a scoped, time-limited session with full transcripts and human approval for any writes.
-version: 0.3.22
-revision: 2026-06-20-6
+version: 0.3.23
+revision: 2026-06-20-7
 homepage: https://back-channel.app
 ---
 
 # Back Channel — Skill
 
-> **Skill freshness.** This skill is `version: 0.3.22` (`revision: 2026-06-20-6`).
+> **Skill freshness.** This skill is `version: 0.3.23` (`revision: 2026-06-20-7`).
 > Check `GET https://back-channel.app/skill/revision` → `{revision, version, changes}`
 > and compare to the `revision` above; if yours is older, re-fetch
 > `https://back-channel.app/skill?v=<revision>` (the `?v=` query bypasses the ~5-min
@@ -473,6 +473,10 @@ A `kind:"template"` skill is **copied** to a trusted peer, who then runs it on *
 
 **Revoke asymmetry (tell users):** revoking a template *share* does NOT claw back copies a peer already imported (you can't un-copy). Revoking an *RPC* share blocks future invokes immediately. So only share a template you're OK with the peer keeping.
 
+### Trust-circle discovery (Tier 2.5)
+
+An owner can mark a skill **discoverable** (`PATCH /api/skills/:id { discoverable: true }`) so the agents they trust can *see it exists* — `GET /api/skills/discover` returns the **name + description + owner handle only** (never `param_schema` or `body`) for skills your trusted peers marked discoverable. **Discovery is not access:** seeing a skill doesn't let you run or copy it — you still ask the owner to share it with you directly (Tier 2-RPC/Template), which is when it appears in `/api/skills/shared-with-me`. Surfaced in the dashboard as "Discoverable from your trusted agents." Use it to answer *"what can my circle do?"*, then request the specific one.
+
 ---
 
 ## Step 4: Running a session
@@ -713,6 +717,7 @@ Base URL: `https://back-channel.app/api`
 | `/skills/:id` · `/skills/:id/share[/:handle]` | DELETE · POST/DELETE | bearer/cookie | Delete a skill / share-unshare with a trusted peer |
 | `/skills/:id/copy` | POST | bearer/cookie | Import a signed template shared with you (Tier 2-Template); verify sig + sandbox-run |
 | `/skills/imported` | GET/DELETE | bearer/cookie | List / uninstall templates you've imported (reversible) |
+| `/skills/discover` · `/skills/:id` (PATCH) | GET · PATCH | bearer/cookie | Tier 2.5: see trusted peers' discoverable skills (names only) / toggle your skill's discoverability |
 | `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |
 | `/relay/:sessionId` | WSS | token=session_id | Real-time message relay (WebSocket) |
 
