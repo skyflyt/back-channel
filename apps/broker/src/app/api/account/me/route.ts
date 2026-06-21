@@ -32,6 +32,7 @@ export async function GET(req: NextRequest) {
     notify_idle_frames: account.notifyIdleFrames,
     favor_per_peer_daily: account.favorPerPeerDaily,
     favor_global_tokens_daily: account.favorGlobalTokensDaily,
+    live_mode_default_minutes: account.liveModeDefaultMinutes,
     summary: { active_sessions: liveSessions },
   });
 }

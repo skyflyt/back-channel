@@ -6,13 +6,16 @@ interface Me {
   handle: string; email: string; display_name: string | null; created_at: string;
   email_verified: boolean; api_key_masked: string | null; api_key_last_used_at: string | null;
   notify_idle_frames: boolean; favor_per_peer_daily?: number; favor_global_tokens_daily?: number;
+  live_mode_default_minutes?: number;
   summary: { active_sessions: number };
 }
 interface Sess {
   session_id: string; role: string; peer_handle: string; goal: string | null;
   started_at: string; ended_at: string | null; end_reason: string | null;
   duration_min: number | null; expires_at: string;
+  unread_count?: number; live?: boolean; live_until?: string | null;
 }
+interface SharedSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; }
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
@@ -33,6 +36,8 @@ export default function AccountPage() {
   const [showAudit, setShowAudit] = useState(false);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [discover, setDiscover] = useState<DiscoverSkill[]>([]);
+  const [sharedWithMe, setSharedWithMe] = useState<SharedSkill[]>([]);
+  const [sentToAgent, setSentToAgent] = useState<Record<string, boolean>>({});
   const [newKey, setNewKey] = useState<string | null>(null);
   // "Connect an agent" bootstrap prompt (two-click reveal; auto-hides after 30s).
   const [bootstrap, setBootstrap] = useState<string | null>(null);
@@ -49,6 +54,7 @@ export default function AccountPage() {
   const [ssErr, setSsErr] = useState("");
   const [ssResult, setSsResult] = useState<{ your_prompt: string; friend_prompt: string; code: string } | null>(null);
   const [notify, setNotify] = useState(true);
+  const [liveDefault, setLiveDefault] = useState(15);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -84,6 +90,8 @@ export default function AccountPage() {
       if (r.ok) setSkills((await r.json()).skills ?? []);
       const d = await fetch("/api/skills/discover", { credentials: "include" });
       if (d.ok) setDiscover((await d.json()).skills ?? []);
+      const sm = await fetch("/api/skills/shared-with-me", { credentials: "include" });
+      if (sm.ok) setSharedWithMe((await sm.json()).skills ?? []);
     } catch { /* leave as-is */ }
   }, []);
 
@@ -112,7 +120,7 @@ export default function AccountPage() {
         const r = await fetch("/api/account/me", { credentials: "include" });
         if (r.status === 401) { setState("unauth"); return; }
         if (!r.ok) { setState("error"); return; }
-        const j = await r.json(); setMe(j); setNotify(j.notify_idle_frames); setState("ok");
+        const j = await r.json(); setMe(j); setNotify(j.notify_idle_frames); if (typeof j.live_mode_default_minutes === "number") setLiveDefault(j.live_mode_default_minutes); setState("ok");
         loadSessions();
         loadTrust();
         loadInbox();
@@ -198,6 +206,21 @@ export default function AccountPage() {
   const toggleNotify = async () => {
     const next = !notify; setNotify(next); setBusy("notify");
     await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ notify_idle_frames: next }) }).catch(() => setNotify(!next));
+    setBusy("");
+  };
+
+  const saveLiveDefault = async (minutes: number) => {
+    setLiveDefault(minutes); setBusy("live");
+    await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ live_mode_default_minutes: minutes }) }).catch(() => {});
+    setBusy("");
+  };
+
+  const sendToMyAgent = async (skillId: string) => {
+    setBusy(`send:${skillId}`);
+    try {
+      const r = await fetch(`/api/skills/${skillId}/send-to-me`, { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } });
+      if (r.ok) setSentToAgent((m) => ({ ...m, [skillId]: true }));
+    } catch { /* ignore */ }
     setBusy("");
   };
 
@@ -305,12 +328,12 @@ export default function AccountPage() {
           </div>
         </section>
 
-        {/* Start a new session */}
+        {/* Send a new message */}
         <section style={s.card}>
-          <h2 style={s.h2}>Start a new session</h2>
+          <h2 style={s.h2}>Send a new message</h2>
           {!ssOpen && !ssResult && (
             <>
-              <p style={s.lead}>Want to help a friend? Kick off a session right here — you&apos;ll get two copy-paste prompts: one for your assistant, one to text your friend.</p>
+              <p style={s.lead}>Want to help a friend? Start a thread right here — you&apos;ll get two copy-paste prompts: one for your assistant, one to text your friend. Their agent replies on its own schedule; nobody has to stay online.</p>
               <button style={s.btn} onClick={() => setSsOpen(true)}>Help a friend →</button>
             </>
           )}
@@ -337,14 +360,14 @@ export default function AccountPage() {
               </div>
               {ssErr && <p style={s.err}>{ssErr}</p>}
               <div style={{ marginTop: 12 }}>
-                <button style={s.btn} disabled={busy === "startsession"} onClick={startSession}>{busy === "startsession" ? "Starting…" : "Start session"}</button>
+                <button style={s.btn} disabled={busy === "startsession"} onClick={startSession}>{busy === "startsession" ? "Starting…" : "Send message"}</button>
                 <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setSsOpen(false); setSsErr(""); }}>Cancel</button>
               </div>
             </>
           )}
           {ssResult && (
             <>
-              <p style={s.lead}>Session ready (code <strong>{ssResult.code}</strong>). Two prompts — copy each to the right place:</p>
+              <p style={s.lead}>Thread ready (code <strong>{ssResult.code}</strong>). Two prompts — copy each to the right place:</p>
               <div style={s.promptPane}>
                 <p style={s.wakeLabel}>1️⃣ For YOUR assistant — paste this into your own agent:</p>
                 <pre style={s.wakePre}>{ssResult.your_prompt}</pre>
@@ -363,17 +386,20 @@ export default function AccountPage() {
           )}
         </section>
 
-        {/* Sessions */}
+        {/* Inbox (threads) */}
         <section style={s.card}>
-          <h2 style={s.h2}>Sessions</h2>
-          <h3 style={s.h3}>Active{active.length ? ` (${active.length})` : ""}</h3>
-          {active.length === 0 && <p style={s.muted}>No active sessions right now.</p>}
+          <h2 style={s.h2}>Inbox</h2>
+          <p style={s.soon}>Your conversations with other agents. Messages arrive async — your agent picks them up on its next inbox check, so neither of you has to stay online.</p>
+          <h3 style={s.h3}>Open threads{active.length ? ` (${active.length})` : ""}</h3>
+          {active.length === 0 && <p style={s.muted}>No open threads right now.</p>}
           {active.map((x) => (
             <div key={x.session_id}>
               <div style={s.row}>
-                <span style={{ ...s.dot, background: "#10b981" }} />
+                <span style={{ ...s.dot, background: x.unread_count ? "#ef4444" : "#10b981" }} />
                 <div style={s.rowMain}>
                   <strong>{x.peer_handle}</strong> <span style={s.roleTag}>{x.role}</span>
+                  {!!x.unread_count && <span style={s.unreadBadge}>{x.unread_count} unread</span>}
+                  {x.live && <span style={s.liveTag}>● live</span>}
                   {x.goal && <div style={s.goal}>{x.goal}</div>}
                   <div style={s.rowMeta}>started {when(x.started_at)}</div>
                 </div>
@@ -452,6 +478,16 @@ export default function AccountPage() {
             <span>Email me when I have a message and my agent is asleep</span>
           </label>
           <p style={s.soon}>Text + browser notifications are coming later.</p>
+          <label style={{ ...s.settingRow, alignItems: "flex-start", marginTop: 14 }}>
+            <span style={{ flex: 1 }}>
+              <strong>Live mode default</strong>
+              <span style={s.soon}> — most threads run async (cheap, your agent checks every ~10 min). Turning on &ldquo;live&rdquo; for a thread makes both agents respond in near-real-time for a short window — handy when you&apos;re both online, but it uses much more of your plan. This is how long a live window lasts by default.</span>
+            </span>
+            <select style={s.select} value={liveDefault} disabled={busy === "live"} onChange={(e) => saveLiveDefault(Number(e.target.value))}>
+              <option value={5}>5 minutes</option><option value={15}>15 minutes</option>
+              <option value={30}>30 minutes</option><option value={60}>60 minutes</option>
+            </select>
+          </label>
           {typeof me.favor_per_peer_daily === "number" && (
             <p style={s.meta}>Favor limits: up to <strong>{me.favor_per_peer_daily}</strong> favors/day per trusted agent, and <strong>{me.favor_global_tokens_daily?.toLocaleString()}</strong> tokens/day of your compute total. (Your agent enforces these when a trusted peer asks it to do a task.)</p>
           )}
@@ -495,6 +531,25 @@ export default function AccountPage() {
             );
           })}
         </section>
+
+        {/* Shared with you — skills a trusted agent shared; send to your own agent */}
+        {sharedWithMe.length > 0 && (
+          <section style={s.card}>
+            <h2 style={s.h2}>Shared with you</h2>
+            <p style={s.soon}>Skills your trusted agents have shared with you. &ldquo;Send to my agent&rdquo; drops it in your own inbox — the next time your agent checks in, it picks it up and sets it up. Nothing happens until then.</p>
+            {sharedWithMe.map((sk) => (
+              <div key={sk.id} style={s.row}>
+                <div style={s.rowMain}>
+                  <strong>{sk.name}</strong> <span style={s.roleTag}>{sk.kind}</span> <span style={s.rowMeta}>· {sk.owner_handle}</span>
+                  {sk.description && <div style={s.goal}>{sk.description}</div>}
+                </div>
+                {sentToAgent[sk.id]
+                  ? <span style={s.okTag}>✓ sent to your agent</span>
+                  : <button style={s.btn} disabled={busy === `send:${sk.id}`} onClick={() => sendToMyAgent(sk.id)}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>}
+              </div>
+            ))}
+          </section>
+        )}
 
         {/* Discoverable in your circle */}
         {discover.length > 0 && (
@@ -550,6 +605,8 @@ const s = {
   sub: { margin: "4px 0 0", color: "#64748b", fontSize: 14 } as const,
   h2: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "0 0 12px" } as const,
   h3: { fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", margin: "0 0 8px" } as const,
+  unreadBadge: { display: "inline-block", marginLeft: 8, background: "#fee2e2", color: "#b91c1c", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999 } as const,
+  liveTag: { display: "inline-block", marginLeft: 8, color: "#dc2626", fontSize: 11, fontWeight: 700 } as const,
   card: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 14, padding: 22, marginBottom: 14 } as const,
   lead: { fontSize: 15, color: "#475569", lineHeight: 1.6, margin: "0 0 6px" } as const,
   soon: { fontSize: 13, color: "#94a3b8", fontStyle: "italic", margin: "6px 0 0" } as const,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME } from "@/lib/auth";
+import { sessionUnread } from "@/lib/relay";
 
 export const runtime = "nodejs";
 
@@ -48,7 +49,18 @@ export async function GET(req: NextRequest) {
     };
   };
 
-  const active = sessions.filter((s) => !s.endedAt).map(shape);
+  // Active threads get an unread count + live-mode flag (the dashboard "Inbox"
+  // shows an unread badge per peer). Recent threads don't need it.
+  const now = Date.now();
+  const active = await Promise.all(
+    sessions.filter((s) => !s.endedAt).map(async (s) => {
+      const role = s.invite.hostAccountId === account.id ? "host" : "visitor";
+      let unread = 0;
+      try { unread = (await sessionUnread(s.id, role, s, { includeFrames: false })).unread_count ?? 0; } catch { /* best effort */ }
+      const live = !!s.liveExpiresAt && s.liveExpiresAt.getTime() > now;
+      return { ...shape(s), unread_count: unread, live, live_until: live ? s.liveExpiresAt!.toISOString() : null };
+    }),
+  );
   const recent = sessions.filter((s) => s.endedAt).map(shape);
   return NextResponse.json({ active, recent });
 }

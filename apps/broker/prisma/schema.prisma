@@ -26,6 +26,7 @@ model Account {
   notifyIdleFrames Boolean @default(true) // email me when a frame arrives while I'm idle
   favorPerPeerDaily    Int @default(5)     // max favors I'll accept from one peer per day
   favorGlobalTokensDaily Int @default(50000) // max borrowed-compute tokens/day across all peers
+  liveModeDefaultMinutes Int @default(15)  // default live-mode window when a thread opts into real-time (inbox-model pivot)
   admin            Boolean @default(false) // operator: can read metadata-only analytics (never content)
 
   invitesAsHost    Invite[]  @relation("HostInvites")
@@ -44,6 +45,27 @@ model Account {
   favorsReceived   FavorLog[]     @relation("FavorRecipient")
   favorsRequested  FavorLog[]     @relation("FavorRequester")
   favorMutes       FavorMute[]    @relation("FavorMuter")
+  agentPayloads    AgentPayload[]
+}
+
+// Self-inbox "deliver this to my own agent" channel (inbox-model pivot §5). A
+// generic envelope a user drops for their OWN agent to pick up on its next
+// bc-inbox-check. Phase 1 kind="skill": a reference to a skill a trusted peer
+// shared with the user (the broker already holds that share, so `ref` exposes
+// nothing new and isn't sealed). The future clipper (v1.x) will use a sealed
+// kind where the broker stores only an opaque blob. Always self-addressed, so
+// it adds no inbound-spam surface.
+model AgentPayload {
+  id          String    @id @default(uuid())
+  accountId   String                  // owner = recipient = the only addressee (self)
+  kind        String                  // "skill" (Phase 1)
+  ref         Json                    // {skillId, name, skillKind, ownerHandle}
+  note        String?
+  createdAt   DateTime  @default(now())
+  deliveredAt DateTime?               // set when the agent has pulled it
+  account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, deliveredAt])
 }
 
 // Favors — delegate a task to a trusted peer's agent (runs on THEIR compute).
@@ -275,6 +297,7 @@ model Session {
   endedAt        DateTime?
   endReason      String?
   scopesGranted  String[]
+  liveExpiresAt  DateTime?              // inbox-model pivot: when set + future, this thread is in opt-in real-time (live) mode; agents poll fast until it lapses, then revert to async inbox cadence
 
   invite     Invite     @relation(fields: [inviteId], references: [id])
   auditLog   AuditLog[]

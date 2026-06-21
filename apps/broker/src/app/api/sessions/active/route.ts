@@ -38,11 +38,14 @@ export async function GET(req: NextRequest) {
     orderBy: { startedAt: "desc" },
   });
 
+  const now = Date.now();
   const sessions = await Promise.all(
     rows.map(async (s) => {
       const role = s.invite.visitorAccountId === account.id ? "visitor" : "host";
       const peer = role === "visitor" ? s.invite.host : s.invite.visitor;
       const u = await sessionUnread(s.id, role, s, { includeFrames });
+      // Live (real-time, opt-in) until liveExpiresAt; otherwise async inbox cadence.
+      const live = !!s.liveExpiresAt && s.liveExpiresAt.getTime() > now;
       return {
         id: s.id,
         role,
@@ -52,10 +55,16 @@ export async function GET(req: NextRequest) {
         unread_count: u.unread_count,
         next_cursor: u.next_cursor,
         peer_present: u.peer_present,
+        live,
+        live_until: live ? s.liveExpiresAt!.toISOString() : null,
         ...(includeFrames ? { frames: u.frames, truncated: u.truncated } : {}),
       };
     }),
   );
 
-  return NextResponse.json({ sessions });
+  // Cheap self-inbox signal so the Tier-1 curl knows whether to spend a turn on
+  // queued agent.payload items (inbox-model pivot §5) — non-consuming count only.
+  const agentPayloadsPending = await prisma.agentPayload.count({ where: { accountId: account.id, deliveredAt: null } });
+
+  return NextResponse.json({ sessions, agent_payloads_pending: agentPayloadsPending });
 }
