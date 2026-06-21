@@ -17,7 +17,7 @@ export const runtime = "nodejs";
  */
 export async function POST(req: NextRequest) {
   // Per-IP brute-force guard: 20 attempts/hour.
-  const ip = clientIp(req);
+  const ip = clientIp(req.headers.get("x-forwarded-for"));
   const rl = rateLimit("exchange:ip", ip, 20, 60 * 60 * 1000);
   if (!rl.ok) return NextResponse.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
 
