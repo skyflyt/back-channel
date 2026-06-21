@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { generateApiKey, isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, CSRF_COOKIE_NAME, generateCsrfToken } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { bootstrapPrompt } from "@/lib/notify.mjs";
 
 export const runtime = "nodejs";
 
@@ -63,6 +64,7 @@ export async function POST(req: NextRequest) {
     email: updated.email,
     api_key: updated.apiKey,
     account_id: updated.id,
+    bootstrap_prompt: updated.apiKey ? bootstrapPrompt(updated.apiKey) : null,
     note: "Your previous API key has been invalidated. Update your agent with this new key.",
   });
   // Land the user authenticated on /account after the one-time key reveal.

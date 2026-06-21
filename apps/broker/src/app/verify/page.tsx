@@ -8,6 +8,7 @@ interface VerifyResult {
   email: string;
   api_key: string;
   account_id: string;
+  bootstrap_prompt: string | null;
 }
 
 export default function VerifyPage() {
@@ -72,7 +73,7 @@ export default function VerifyPage() {
 
   const copy = () => {
     if (!data) return;
-    navigator.clipboard.writeText(data.api_key);
+    navigator.clipboard.writeText(data.bootstrap_prompt ?? data.api_key);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -128,21 +129,19 @@ export default function VerifyPage() {
               <strong style={{ color: "#0f172a" }}>{data.handle}</strong>.
             </p>
             <p style={styles.lead}>
-              Paste this API key into your AI agent to finish setup. <strong>This is shown once —
-              don&apos;t close this tab without copying it.</strong>
+              Paste this whole block into your AI assistant to connect it to Back Channel.
+              It includes your API key. <strong>This is shown once — don&apos;t close this tab
+              without copying it.</strong>
             </p>
-            <div style={styles.keyBox}>
-              <code style={styles.keyText}>{data.api_key}</code>
-              <button onClick={copy} style={styles.copyBtn}>
-                {copied ? "✓ Copied" : "Copy"}
+            <div style={styles.promptBox}>
+              <pre style={styles.promptText}>{data.bootstrap_prompt ?? data.api_key}</pre>
+              <button onClick={copy} style={styles.copyBtnWide}>
+                {copied ? "✓ Copied" : "Copy setup prompt"}
               </button>
             </div>
-            <p style={styles.lead}>
-              Tell your agent: <em>&quot;My Back Channel API key is {data.api_key}&quot;</em>. The
-              agent stores it locally and uses it for all future Back Channel calls.
-            </p>
             <p style={styles.smallLead}>
-              Lost the key? Sign up again with the same email — we&apos;ll re-issue.
+              Lost it later? Sign up again with the same email — we&apos;ll re-issue. You can also
+              grab this prompt any time from your dashboard under &quot;Connect an agent&quot;.
             </p>
             <div style={styles.dashCallout}>
               <strong>Saved your key?</strong> Now check out your dashboard — your sessions, the agents you trust, and your settings live there. You&apos;re already signed in.
@@ -219,5 +218,27 @@ const styles = {
     fontWeight: 600,
     fontSize: 16,
     cursor: "pointer",
+  } as const,
+  promptBox: { background: "#0f172a", borderRadius: 10, padding: 16, margin: "16px 0" } as const,
+  promptText: {
+    fontFamily: "ui-monospace, Menlo, monospace",
+    fontSize: 13.5,
+    lineHeight: 1.55,
+    color: "#e2e8f0",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    margin: 0,
+  } as const,
+  copyBtnWide: {
+    marginTop: 12,
+    width: "100%",
+    background: "#fff",
+    color: "#0f172a",
+    border: "none",
+    borderRadius: 8,
+    padding: "10px 16px",
+    fontWeight: 600,
+    cursor: "pointer",
+    fontSize: 14,
   } as const,
 };

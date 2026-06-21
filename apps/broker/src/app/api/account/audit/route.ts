@@ -29,6 +29,7 @@ const LABELS: Record<string, string> = {
   "schedule.booked": "A meeting was booked",
   "dashboard.wake_prompt_revealed": "You got a wake prompt for a session",
   "dashboard.session_started": "You started a session from the dashboard",
+  "dashboard.bootstrap_prompt_revealed": "You revealed a setup prompt to connect an agent",
 };
 
 // Only surface non-sensitive detail fields to the owner. (We never store raw

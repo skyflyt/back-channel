@@ -78,6 +78,23 @@ export function sessionStartPrompts(a) {
 }
 
 /**
+ * Canonical "connect a new agent" bootstrap prompt — ONE source of truth shared
+ * by the dashboard "Connect an agent" reveal, the verify-success page, and the
+ * recover-success page. A human pastes this whole block into any AI assistant
+ * (Claude Code, Codex, ChatGPT, a new device…) and that agent becomes fully
+ * Back-Channel-capable with their account. Contains the FULL API key by design
+ * (the caller already owns it). Plain language — Rule #0.
+ * @param {string} apiKey  the account's raw bc_ API key
+ */
+export function bootstrapPrompt(apiKey) {
+  return `Load the Back Channel skill from ${APP_URL}/skill (re-fetch it if you have a cached copy).
+
+My Back Channel API key is: ${apiKey}
+
+Store that key locally and use it to help me with Back Channel — like starting a session with a friend, accepting an invite someone sent me, opening my dashboard, or rotating my key. Follow the skill exactly for any of those.`;
+}
+
+/**
  * Look up the idle recipient + peer for a session, honor their opt-out, and
  * email a nudge. Best-effort: logs and returns on any miss. Never throws into
  * the relay path.

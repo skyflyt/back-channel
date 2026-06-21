@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { generateApiKey, isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, CSRF_COOKIE_NAME, generateCsrfToken } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { bootstrapPrompt } from "@/lib/notify.mjs";
 
 /** Issue a dashboard browser session for `accountId` and attach the bc_session
  *  + bc_csrf cookies to `res` — so a freshly verified/recovered user lands on
@@ -126,6 +127,7 @@ export async function POST(req: NextRequest) {
     email: updated.email,
     api_key: updated.apiKey,
     account_id: updated.id,
+    bootstrap_prompt: updated.apiKey ? bootstrapPrompt(updated.apiKey) : null,
     ...(claimedSessionId ? { claimed_session_id: claimedSessionId } : {}),
   });
   await attachDashboardSession(res, updated.id); // land them authenticated on /account

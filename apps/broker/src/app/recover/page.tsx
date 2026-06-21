@@ -8,6 +8,7 @@ interface RecoverResult {
   email: string;
   api_key: string;
   account_id: string;
+  bootstrap_prompt: string | null;
   note?: string;
 }
 
@@ -104,7 +105,7 @@ export default function RecoverPage() {
 
   const copy = () => {
     if (!data) return;
-    navigator.clipboard.writeText(data.api_key);
+    navigator.clipboard.writeText(data.bootstrap_prompt ?? data.api_key);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -182,12 +183,12 @@ export default function RecoverPage() {
             <h1 style={styles.h1}>🔑 New key issued</h1>
             <p style={styles.lead}>
               Your handle is <strong style={{ color: "#0f172a" }}>{data.handle}</strong>. Your old
-              key is now <strong>invalid</strong>. Paste this new key into your agent. <strong>This is
-              shown once — copy it now.</strong>
+              key is now <strong>invalid</strong>. Paste this whole block into your agent to
+              reconnect it with the new key. <strong>This is shown once — copy it now.</strong>
             </p>
-            <div style={styles.keyBox}>
-              <code style={styles.keyText}>{data.api_key}</code>
-              <button onClick={copy} style={styles.copyBtn}>{copied ? "✓ Copied" : "Copy"}</button>
+            <div style={styles.promptBox}>
+              <pre style={styles.promptText}>{data.bootstrap_prompt ?? data.api_key}</pre>
+              <button onClick={copy} style={styles.copyBtnWide}>{copied ? "✓ Copied" : "Copy setup prompt"}</button>
             </div>
             <div style={styles.dashCallout}>
               <strong>Saved your new key?</strong> Head to your dashboard to see your sessions, trusted agents, and settings — you&apos;re already signed in.
@@ -264,4 +265,7 @@ const styles = {
   keyText: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 15, wordBreak: "break-all", flex: 1 } as const,
   copyBtn: { background: "#fff", color: "#0f172a", border: "none", borderRadius: 8, padding: "8px 16px", fontWeight: 600, cursor: "pointer", fontSize: 14 } as const,
   verifyBtn: { background: "#0f172a", color: "#fff", border: "none", borderRadius: 10, padding: "14px 28px", fontWeight: 600, fontSize: 16, cursor: "pointer" } as const,
+  promptBox: { background: "#0f172a", borderRadius: 10, padding: 16, margin: "16px 0" } as const,
+  promptText: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13.5, lineHeight: 1.55, color: "#e2e8f0", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 } as const,
+  copyBtnWide: { marginTop: 12, width: "100%", background: "#fff", color: "#0f172a", border: "none", borderRadius: 8, padding: "10px 16px", fontWeight: 600, cursor: "pointer", fontSize: 14 } as const,
 };

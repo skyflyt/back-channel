@@ -34,6 +34,9 @@ export default function AccountPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [discover, setDiscover] = useState<DiscoverSkill[]>([]);
   const [newKey, setNewKey] = useState<string | null>(null);
+  // "Connect an agent" bootstrap prompt (two-click reveal; auto-hides after 30s).
+  const [bootstrap, setBootstrap] = useState<string | null>(null);
+  const [bootstrapCopied, setBootstrapCopied] = useState(false);
   const [wakePrompts, setWakePrompts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
   // "Start a new session" form
@@ -175,6 +178,23 @@ export default function AccountPage() {
     setBusy("");
   };
 
+  const revealBootstrap = async () => {
+    setBusy("bootstrap");
+    try {
+      const r = await fetch("/api/account/bootstrap-prompt", { credentials: "include" });
+      const j = await r.json();
+      if (r.ok && j.prompt) setBootstrap(j.prompt);
+    } catch { /* ignore */ }
+    setBusy("");
+  };
+
+  // Auto-hide the revealed bootstrap prompt after 30s (it contains the full key).
+  useEffect(() => {
+    if (!bootstrap) return;
+    const t = setTimeout(() => { setBootstrap(null); setBootstrapCopied(false); }, 30000);
+    return () => clearTimeout(t);
+  }, [bootstrap]);
+
   const toggleNotify = async () => {
     const next = !notify; setNotify(next); setBusy("notify");
     await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ notify_idle_frames: next }) }).catch(() => setNotify(!next));
@@ -265,6 +285,24 @@ export default function AccountPage() {
               <p style={s.meta}>Last used {lastUsed}. We never show the full key here — only the last 4 characters.</p>
             </>
           )}
+
+          {/* Connect an agent — paste-ready bootstrap prompt (full key inside). */}
+          <div style={s.connectBox}>
+            <h3 style={s.h3}>Connect an agent</h3>
+            <p style={s.meta}>Paste this into any AI assistant to give it access to Back Channel with your account — a new device, a fresh chat, Claude Code, anything.</p>
+            {bootstrap ? (
+              <div style={s.reveal}>
+                <p style={s.revealLabel}>📋 Your setup prompt — includes your full API key. Hides again in 30 seconds.</p>
+                <pre style={s.promptPre}>{bootstrap}</pre>
+                <div style={{ marginTop: 10 }}>
+                  <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(bootstrap).catch(() => {}); setBootstrapCopied(true); setTimeout(() => setBootstrapCopied(false), 1500); }}>{bootstrapCopied ? "✓ Copied" : "Copy"}</button>
+                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setBootstrap(null); setBootstrapCopied(false); }}>Hide</button>
+                </div>
+              </div>
+            ) : (
+              <button style={s.btn} onClick={revealBootstrap} disabled={busy === "bootstrap"}>{busy === "bootstrap" ? "Loading…" : "Reveal & copy setup prompt"}</button>
+            )}
+          </div>
         </section>
 
         {/* Start a new session */}
@@ -552,4 +590,6 @@ const s = {
   scopeNote: { fontSize: 14, color: "#334155", margin: "2px 0 0", fontFamily: "ui-monospace, Menlo, monospace" } as const,
   linkBtn: { background: "none", border: "none", color: "#0f766e", cursor: "pointer", fontSize: 12, textDecoration: "underline", padding: 0, marginLeft: 6 } as const,
   promptPane: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 10, padding: "12px 14px", marginBottom: 12 } as const,
+  connectBox: { marginTop: 18, paddingTop: 16, borderTop: "1px solid #e2e8f0" } as const,
+  promptPre: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, lineHeight: 1.55, color: "#0f172a", background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "10px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 } as const,
 };
