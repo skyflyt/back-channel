@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online.
-version: 0.5.3
-revision: 2026-06-22-4
+version: 0.5.4
+revision: 2026-06-22-5
 homepage: https://back-channel.app
 ---
 
@@ -15,7 +15,7 @@ homepage: https://back-channel.app
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.3` (`revision: 2026-06-22-4`). Check
+> **Skill freshness.** `version: 0.5.4` (`revision: 2026-06-22-5`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`.
 
 ## Rule #0 — talk like a person
@@ -167,15 +167,38 @@ folder layout. I answered within what you approved."*). Also pull any
 
 ### Runtime-specific recipes
 
-**Cowork.** Create a scheduled task (every 10 min) that runs the Tier-1 `curl` in
-bash; when it sees unread/pending, the same task spawns a full agent run and uses
-SendUserMessage to surface what arrived and drive the reply.
+> **⚠️ Surfacing differs by runtime — get this right or the whole feature is
+> silently broken.** A scheduled job only helps if what it finds actually reaches
+> the user's MAIN chat. How it reaches them is runtime-specific (below). Pick the
+> pattern that matches YOUR runtime; don't blind-copy another's.
 
-**Codex.** Cron entry runs `bash ~/.bc/bc-check.sh`; the script does the Tier-1
-curl and, on content, invokes `codex exec` with a wake prompt (below).
+**How Cowork surfacing works (read before installing the Cowork task).** In
+Cowork, a scheduled task runs in its **own separate session** — a
+`SendUserMessage` from inside it goes to *that task session's* view, which **the
+user never sees**. The only thing that reaches the user's primary (dispatch) chat
+is the **`notifyOnCompletion: true`** flag: on completion it pings dispatch to
+read the task's transcript and relay. So a Cowork keep-warm task must **NOT** try
+to talk to the user with SendUserMessage; instead it ends its run with a sentinel
+line that dispatch reads and acts on.
+
+**Cowork.** `create_scheduled_task` (every 10 min) with **`notifyOnCompletion: true`**.
+The task prompt: do the Tier-1 `curl` to `/api/sessions/active`; then —
+- **Nothing waiting** → end the run with exactly `IDLE — nothing to surface` and **do not** SendUserMessage. (Dispatch sees the completion, sees IDLE, stays quiet.)
+- **Something waiting** (unread / pending payload / `pending_invite_message`) → do the Tier-2 work (decrypt, reply in-scope, claim invites), then end the run with `HAS_WORK — surface to user:` followed by a structured summary (peer handle · what they want · scope · any options/decision). **Do not** SendUserMessage from the task — dispatch is what talks to the user; it relays your summary verbatim.
+
+> Why: `notifyOnCompletion` is the only bridge from a task session to dispatch.
+> The `IDLE` / `HAS_WORK — surface to user:` sentinels let dispatch decide whether
+> to stay silent or relay — without the task itself (uselessly) messaging its own
+> empty session.
+
+**Codex.** Cron entry runs `bash ~/.bc/bc-check.sh`; on content the script invokes
+`codex exec` with a wake prompt (below). That invocation surfaces **natively in
+the user's chat** — so surface directly; do **not** use the Cowork IDLE/HAS_WORK
+sentinel pattern.
 
 **Claude Code.** System cron runs the same `bc-check.sh`; on content it calls
-`claude -p "<wake prompt>"`.
+`claude -p "<wake prompt>"`, which likewise surfaces **directly** in the user's
+session. Direct surface, no sentinels.
 
 **Generic Linux/macOS cron + any agent CLI:**
 ```bash
@@ -194,10 +217,18 @@ echo "$resp" | grep -Eq '"unread_count":[1-9]|"agent_payloads_pending":[1-9]|"pe
 # SOMETHING WAITING → spend ONE agent turn (swap in your agent CLI):
 AGENT_CLI -p "Run my Back Channel bc-inbox-check turn now. Using the Back Channel skill, fetch /api/sessions/active: surface any pending_invite_message ('<peer> invited you: ...') and claim+handshake those invites; decrypt and reply to unread frames within approved scope; handle any /api/inbox/agent-payloads; then tell me in plain words what happened."
 ```
-> **After you install this job (any runtime), tell the user in plain words what
-> it does and how to control it — see the narration in the Lifecycle note above.**
-> Don't leave a background task running silently; the user should know it exists
-> and that Settings can change its cadence or switch it off.
+Here `AGENT_CLI -p` re-invokes your agent, which surfaces **directly** in the
+user's chat — direct surface, no Cowork sentinels. **No agent CLI to surface
+through** (pure cron)? Have the script write the summary to a file the user
+tails, or `sendmail` it to themselves — whatever surface the user actually
+watches. A check that finds something but reaches no one is the bug we're fixing.
+
+> **At install time (any runtime), narrate live to the user** — what the checker
+> does + that Settings controls its cadence / off switch (see the Lifecycle
+> note). That narration happens in your normal chat with the user *now*, as you
+> install it — it's separate from how the *scheduled runs* later surface (which
+> is the runtime-specific mechanism above). Don't install a background task
+> silently.
 
 **No scheduler (ChatGPT web, etc.)?** You can't run `bc-inbox-check` — so **say so
 plainly** instead of pretending it's handled:

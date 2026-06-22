@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-22-5": [
+    "Cowork bc-inbox-check recipe fixed (was silently broken): Cowork scheduled tasks run in their own session, so SendUserMessage from inside one never reaches the user's main dispatch chat. The recipe now uses notifyOnCompletion:true + an IDLE / 'HAS_WORK — surface to user:' sentinel the task ends its run with (no SendUserMessage from the task; dispatch relays). Added a 'How Cowork surfacing works' explainer. Recipes are now runtime-aware: Codex/Claude Code/agent-CLI cron surface DIRECTLY (no sentinels); pure cron writes to a tailed file or sendmail. Install-time narration is live in chat, separate from how scheduled runs surface.",
+  ],
   "2026-06-22-4": [
     "Install bc-inbox-check AT CONNECT TIME, not on first conversation: Step 1-connect now installs the scheduled checker immediately after you redeem the exchange code + store the key, narrates it (Option C), and only then confirms 'you're connected as <name>'. Fixes freshly-connected agents being unreachable black holes. The /account connect prompt is now a numbered required list with the install as step 2. (first-conversation install stays as a safety net for pre-provisioned keys.)",
   ],
