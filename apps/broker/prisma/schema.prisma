@@ -47,6 +47,34 @@ model Account {
   favorMutes       FavorMute[]    @relation("FavorMuter")
   agentPayloads    AgentPayload[]
   exchangeCodes    ExchangeCode[]
+  agentTokens      AgentToken[]
+}
+
+// Per-agent API tokens (per-agent-tokens Phase 1). Each connected agent gets its
+// OWN bc_ key tied to the same account, individually revocable (GitHub-PAT style).
+// Only the hash is stored. The legacy single Account.apiKey is backfilled into a
+// row named "Original" and stays as an auth fallback for one deploy.
+enum RuntimeType {
+  cowork
+  codex
+  claude_code
+  chatgpt
+  other
+}
+
+model AgentToken {
+  id          String      @id @default(uuid())
+  accountId   String
+  keyHash     String      @unique           // sha256(bc_ key); raw never stored
+  name        String                          // user label, e.g. "Loby on home PC"
+  runtimeType RuntimeType @default(other)
+  createdAt   DateTime    @default(now())
+  lastUsedAt  DateTime?                        // touched (throttled) on each authed request
+  revokedAt   DateTime?                        // set on revoke; auth requires revokedAt IS NULL
+  account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([keyHash])
+  @@index([accountId, revokedAt])
 }
 
 // Exchange-code flow (device-code pattern): keeps raw bc_ keys out of LLM chat
@@ -54,13 +82,15 @@ model Account {
 // pastes ONLY the code to their agent; the agent exchanges it (no auth header)
 // for the account's real apiKey. Code is hashed at rest and dead within 60s.
 model ExchangeCode {
-  codeHash   String   @id            // sha256(raw); raw is never stored
-  accountId  String
-  purpose    String   @default("exchange")
-  createdAt  DateTime @default(now())
-  expiresAt  DateTime                // createdAt + 60s
-  usedAt     DateTime?
-  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  codeHash    String      @id            // sha256(raw); raw is never stored
+  accountId   String
+  purpose     String      @default("exchange")
+  agentName   String?                    // names the AgentToken minted on redemption
+  runtimeType RuntimeType  @default(other)
+  createdAt   DateTime    @default(now())
+  expiresAt   DateTime                   // createdAt + 60s
+  usedAt      DateTime?
+  account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([accountId])
   @@index([expiresAt])

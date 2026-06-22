@@ -100,11 +100,13 @@ Store that key locally and use it to help me with Back Channel — like starting
  * trades the code for the real key via POST /api/auth/exchange, stores it
  * locally, and confirms. Shared by the dashboard, verify/recover pages.
  * @param {string} code  a BCX-XXXX-XXXX exchange code
+ * @param {string} [agentName]  the label this agent will carry on the account
  */
-export function exchangePastePrompt(code) {
-  return `Connect me to Back Channel. Load the skill from ${APP_URL}/skill (re-fetch if your copy is stale), then redeem this one-time exchange code for my API key: ${code}
+export function exchangePastePrompt(code, agentName) {
+  const named = agentName ? ` You'll be registered as "${agentName}".` : "";
+  return `Connect me to Back Channel. Load the skill from ${APP_URL}/skill (re-fetch if your copy is stale), then redeem this one-time exchange code for your own API key: ${code}${named}
 
-Do this: POST ${APP_URL}/api/auth/exchange with {"code":"${code}"} (no auth header), store the returned api_key locally as my Back Channel credential, and tell me "you're connected" — don't print the key back to me. The code expires in 60 seconds, so do it now.`;
+Do this: POST ${APP_URL}/api/auth/exchange with {"code":"${code}"} (no auth header). The response has api_key, handle, and agent_name — store api_key locally as your Back Channel credential (this key is unique to YOU; don't share it with other agents/runtimes), then tell me "you're connected as <agent_name>". Don't print the key back to me. The code expires in 60 seconds, so do it now.`;
 }
 
 /**

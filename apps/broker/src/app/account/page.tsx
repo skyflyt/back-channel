@@ -16,6 +16,9 @@ interface Sess {
   unread_count?: number; live?: boolean; live_until?: string | null;
 }
 interface SharedSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; }
+interface AgentRow { id: string; name: string; runtime_type: string; created_at: string; last_used_at: string | null; revoked_at: string | null; }
+const RUNTIME_LABEL: Record<string, string> = { cowork: "Cowork", codex: "Codex", claude_code: "Claude Code", chatgpt: "ChatGPT", other: "Other" };
+const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork"], ["codex", "Codex"], ["claude_code", "Claude Code"], ["chatgpt", "ChatGPT"]] as const;
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
@@ -39,7 +42,11 @@ export default function AccountPage() {
   const [sharedWithMe, setSharedWithMe] = useState<SharedSkill[]>([]);
   const [sentToAgent, setSentToAgent] = useState<Record<string, boolean>>({});
   const [newKey, setNewKey] = useState<string | null>(null);
-  // "Connect a new agent" — exchange-code flow (secure default: raw key never shown).
+  // "Connect a new agent" — 2-step: name+runtime, then exchange code (raw key never shown).
+  const [agents, setAgents] = useState<AgentRow[]>([]);
+  const [agentFormOpen, setAgentFormOpen] = useState(false);
+  const [agentName, setAgentName] = useState("");
+  const [agentRuntime, setAgentRuntime] = useState("other");
   const [exCode, setExCode] = useState<string | null>(null);
   const [exPrompt, setExPrompt] = useState<string>("");
   const [exExpiry, setExExpiry] = useState<number>(0);     // epoch ms
@@ -102,6 +109,13 @@ export default function AccountPage() {
     } catch { /* leave as-is */ }
   }, []);
 
+  const loadAgents = useCallback(async () => {
+    try {
+      const r = await fetch("/api/account/agents", { credentials: "include" });
+      if (r.ok) setAgents((await r.json()).agents ?? []);
+    } catch { /* leave as-is */ }
+  }, []);
+
   const toggleDiscoverable = async (skillId: string, on: boolean) => {
     setBusy(`disc:${skillId}`);
     await fetch(`/api/skills/${skillId}`, { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ discoverable: on }) }).catch(() => {});
@@ -132,9 +146,10 @@ export default function AccountPage() {
         loadTrust();
         loadInbox();
         loadSkills();
+        loadAgents();
       } catch { setState("error"); }
     })();
-  }, [loadSessions, loadTrust, loadInbox, loadSkills]);
+  }, [loadSessions, loadTrust, loadInbox, loadSkills, loadAgents]);
 
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
@@ -226,11 +241,30 @@ export default function AccountPage() {
   const connectNewAgent = async () => {
     setBusy("exchange");
     try {
-      const r = await fetch("/api/auth/exchange-code", { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } });
+      const r = await fetch("/api/auth/exchange-code", {
+        method: "POST", credentials: "include",
+        headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
+        body: JSON.stringify({ agent_name: agentName.trim() || "New agent", runtime_type: agentRuntime }),
+      });
       const j = await r.json();
-      if (r.ok && j.code) { setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); }
+      if (r.ok && j.code) { setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setAgentFormOpen(false); }
     } catch { /* ignore */ }
     setBusy("");
+  };
+
+  const revokeAgent = async (id: string, name: string) => {
+    if (!confirm(`Revoke "${name}"? This agent will lose access immediately. Your other agents stay connected.`)) return;
+    setBusy(`revoke:${id}`);
+    await fetch(`/api/account/agents/${id}`, { method: "DELETE", credentials: "include", headers: { "x-bc-csrf": csrf() } }).catch(() => {});
+    setBusy(""); loadAgents();
+  };
+
+  const renameAgent = async (id: string, current: string) => {
+    const name = prompt("Rename this agent:", current);
+    if (!name || name.trim() === current) return;
+    setBusy(`rename:${id}`);
+    await fetch(`/api/account/agents/${id}/rename`, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ name: name.trim() }) }).catch(() => {});
+    setBusy(""); loadAgents();
   };
 
   const toggleNotify = async () => {
@@ -353,8 +387,21 @@ export default function AccountPage() {
                   <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
                 </div>
               </div>
+            ) : agentFormOpen ? (
+              <div>
+                <label style={s.fieldLabel}>What&apos;s this agent? (so you can tell them apart later)</label>
+                <input style={s.input} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="e.g. Loby on home PC, Codex at work, ChatGPT on phone" />
+                <label style={s.fieldLabel}>Where does it run?</label>
+                <select style={s.select} value={agentRuntime} onChange={(e) => setAgentRuntime(e.target.value)}>
+                  {RUNTIME_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+                <div style={{ marginTop: 12 }}>
+                  <button style={s.btn} disabled={busy === "exchange"} onClick={connectNewAgent}>{busy === "exchange" ? "…" : "Get connect code →"}</button>
+                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => setAgentFormOpen(false)}>Cancel</button>
+                </div>
+              </div>
             ) : (
-              <button style={s.btn} onClick={connectNewAgent} disabled={busy === "exchange"}>{busy === "exchange" ? "…" : "Connect a new agent"}</button>
+              <button style={s.btn} onClick={() => { setAgentName(""); setAgentRuntime("other"); setAgentFormOpen(true); }}>Connect a new agent</button>
             )}
             {/* Power-user escape hatch: reveal the raw key for manual scripting. */}
             <div style={{ marginTop: 10 }}>
@@ -374,6 +421,23 @@ export default function AccountPage() {
               )}
             </div>
           </div>
+        </section>
+
+        {/* Registered agents */}
+        <section style={s.card}>
+          <h2 style={s.h2}>Registered agents{agents.length ? ` (${agents.length})` : ""}</h2>
+          <p style={s.soon}>Every assistant connected to your account has its own key. Revoke any one without affecting the others. Add one with &ldquo;Connect a new agent&rdquo; above.</p>
+          {agents.length === 0 && <p style={s.muted}>No agents yet — connect one above to get started.</p>}
+          {agents.map((a) => (
+            <div key={a.id} style={s.row}>
+              <div style={s.rowMain}>
+                <strong>{a.name}</strong> <span style={s.roleTag}>{RUNTIME_LABEL[a.runtime_type] ?? a.runtime_type}</span>
+                <div style={s.rowMeta}>added {when(a.created_at)} · {a.last_used_at ? `last active ${when(a.last_used_at)}` : "never used yet"}</div>
+              </div>
+              <button style={s.smallLink2} disabled={busy === `rename:${a.id}`} onClick={() => renameAgent(a.id, a.name)}>Rename</button>
+              <button style={s.endBtn} disabled={busy === `revoke:${a.id}`} onClick={() => revokeAgent(a.id, a.name)}>{busy === `revoke:${a.id}` ? "…" : "Revoke"}</button>
+            </div>
+          ))}
         </section>
 
         {/* Send a new message */}

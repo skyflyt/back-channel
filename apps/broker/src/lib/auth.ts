@@ -76,23 +76,47 @@ export function exchangeCodeExpiry(): Date {
   return new Date(Date.now() + EXCHANGE_CODE_TTL_MS);
 }
 
-/** Pull the bearer token from an incoming request and return the account, or null. */
-export async function getAccountFromAuth(authHeader: string | null): Promise<Account | null> {
+/**
+ * Resolve a bearer key to its account AND the agent token it came from.
+ * Per-agent-tokens: a bc_ key is first looked up as a live AgentToken (revoked
+ * tokens 401). Falls back to the legacy single Account.apiKey so existing keys
+ * keep working across the migration window (the column is dropped in Phase 1.1).
+ * Touches lastUsedAt (throttled ~1/min) so the dashboard shows per-agent "last
+ * active" without a write per request.
+ */
+export async function getAuthContext(authHeader: string | null): Promise<{ account: Account; agentTokenId: string | null } | null> {
   if (!authHeader) return null;
   const m = authHeader.match(/^Bearer\s+(\S+)$/);
   if (!m) return null;
   const key = m[1];
   if (!key.startsWith(KEY_PREFIX)) return null;
+
+  // 1. Per-agent token (the canonical path). Revoked tokens do not authenticate.
+  const tok = await prisma.agentToken.findUnique({ where: { keyHash: hashToken(key) }, include: { account: true } });
+  if (tok && !tok.revokedAt) {
+    const last = tok.lastUsedAt?.getTime() ?? 0;
+    if (Date.now() - last > 60_000) {
+      void prisma.agentToken.update({ where: { id: tok.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
+    }
+    return { account: tok.account, agentTokenId: tok.id };
+  }
+  if (tok && tok.revokedAt) return null; // explicitly revoked → no fallback
+
+  // 2. Legacy fallback: the pre-migration single Account.apiKey.
   const account = await prisma.account.findUnique({ where: { apiKey: key } });
-  // Touch apiKeyLastUsedAt (throttled to ~once/min) so the dashboard can show
-  // "last used" without a write on every authed call.
   if (account) {
     const last = account.apiKeyLastUsedAt?.getTime() ?? 0;
     if (Date.now() - last > 60_000) {
       void prisma.account.update({ where: { id: account.id }, data: { apiKeyLastUsedAt: new Date() } }).catch(() => {});
     }
+    return { account, agentTokenId: null };
   }
-  return account;
+  return null;
+}
+
+/** Pull the bearer token from an incoming request and return the account, or null. */
+export async function getAccountFromAuth(authHeader: string | null): Promise<Account | null> {
+  return (await getAuthContext(authHeader))?.account ?? null;
 }
 
 // ── Account Dashboard: view-tokens + browser session cookies ────────────────

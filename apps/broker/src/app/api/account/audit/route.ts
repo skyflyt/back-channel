@@ -30,11 +30,14 @@ const LABELS: Record<string, string> = {
   "dashboard.wake_prompt_revealed": "You got a wake prompt for a session",
   "dashboard.session_started": "You started a session from the dashboard",
   "dashboard.bootstrap_prompt_revealed": "You revealed a setup prompt to connect an agent",
+  "key.exchange_initiated": "You created a code to connect a new agent",
+  "key.exchange_consumed": "A new agent connected to your account",
+  "agent_token.revoked": "You revoked an agent's access",
 };
 
 // Only surface non-sensitive detail fields to the owner. (We never store raw
 // tokens in `detail`, but allow-listing keeps it safe as new events are added.)
-const SAFE_DETAIL = new Set(["peer", "to", "scopes", "sessionId", "request"]);
+const SAFE_DETAIL = new Set(["peer", "to", "scopes", "sessionId", "request", "agent_name", "name", "agent_token_id"]);
 function maskDetail(detail: unknown): Record<string, unknown> {
   if (!detail || typeof detail !== "object") return {};
   const out: Record<string, unknown> = {};

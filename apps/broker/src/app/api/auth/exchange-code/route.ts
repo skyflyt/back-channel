@@ -22,10 +22,17 @@ export async function POST(req: NextRequest) {
   const rl = rateLimit("exchange:mint", account.id, 5, 60 * 60 * 1000);
   if (!rl.ok) return NextResponse.json({ error: "rate_limited", message: "Too many codes generated — try again shortly." }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
 
+  // Per-agent-tokens: name + runtime label the AgentToken minted on redemption.
+  let body: { agent_name?: string; runtime_type?: string } = {};
+  try { body = await req.json(); } catch { /* empty body allowed */ }
+  const RUNTIMES = ["cowork", "codex", "claude_code", "chatgpt", "other"];
+  const agentName = (body.agent_name ?? "").trim().slice(0, 80) || "New agent";
+  const runtimeType = RUNTIMES.includes(body.runtime_type ?? "") ? (body.runtime_type as "cowork" | "codex" | "claude_code" | "chatgpt" | "other") : "other";
+
   const code = generateExchangeCode();
   const expiresAt = exchangeCodeExpiry();
-  await prisma.exchangeCode.create({ data: { codeHash: hashToken(code), accountId: account.id, purpose: "exchange", expiresAt } });
-  await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "key.exchange_initiated", detail: {} } }).catch(() => {});
+  await prisma.exchangeCode.create({ data: { codeHash: hashToken(code), accountId: account.id, purpose: "exchange", agentName, runtimeType, expiresAt } });
+  await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "key.exchange_initiated", detail: { agent_name: agentName } } }).catch(() => {});
 
-  return NextResponse.json({ code, expires_at: expiresAt.toISOString(), expires_in_seconds: 60, paste_prompt: exchangePastePrompt(code) });
+  return NextResponse.json({ code, expires_at: expiresAt.toISOString(), expires_in_seconds: 60, agent_name: agentName, paste_prompt: exchangePastePrompt(code, agentName) });
 }

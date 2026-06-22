@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { hashToken } from "@/lib/auth";
+import { hashToken, generateApiKey } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -37,10 +37,16 @@ export async function POST(req: NextRequest) {
   // Atomic single-use claim — first POST to flip usedAt wins (guards a race).
   const claim = await prisma.exchangeCode.updateMany({ where: { codeHash: row.codeHash, usedAt: null }, data: { usedAt: new Date() } });
   if (claim.count === 0) return gone();
-  if (!row.account.apiKey) return gone();                   // account has no key — still opaque
 
-  // Audit the consumption with the requesting IP (postmortem) — never the key.
-  await prisma.accountAudit.create({ data: { accountId: row.accountId, eventType: "key.exchange_consumed", detail: { ip } } }).catch(() => {});
+  // Per-agent-tokens: mint a FRESH key unique to this agent now (raw exists only
+  // here; only the hash persists), as its own revocable AgentToken.
+  const apiKey = generateApiKey();
+  const agent = await prisma.agentToken.create({
+    data: { accountId: row.accountId, keyHash: hashToken(apiKey), name: row.agentName ?? "New agent", runtimeType: row.runtimeType },
+  });
 
-  return NextResponse.json({ api_key: row.account.apiKey, handle: row.account.handle });
+  // Audit the consumption with the requesting IP + the agent it provisioned — never the key.
+  await prisma.accountAudit.create({ data: { accountId: row.accountId, eventType: "key.exchange_consumed", detail: { ip, agent_token_id: agent.id, agent_name: agent.name } } }).catch(() => {});
+
+  return NextResponse.json({ api_key: apiKey, handle: row.account.handle, agent_id: agent.id, agent_name: agent.name });
 }

@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-22-1": [
+    "Per-agent tokens: each agent now has its OWN bc_ key (received via the exchange flow), individually revocable. The exchange response includes agent_id + agent_name; store your key locally and NEVER share it with another agent/runtime. To set up another agent, generate a fresh code from /account → Connect a new agent. Manage/revoke them under 'Registered agents' on the dashboard. Existing single keys keep working (migrated to an 'Original' agent).",
+  ],
   "2026-06-21-3": [
     "POST /api/auth/exchange now returns a UNIFORM opaque 410 invalid_or_expired_code for every failure (unknown / used / expired) — agents can't distinguish a never-existed code from a spent one. Behavior for you is unchanged: on any failure, tell the user to grab a fresh code from their dashboard.",
   ],

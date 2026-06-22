@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online.
-version: 0.4.2
-revision: 2026-06-21-3
+version: 0.5.0
+revision: 2026-06-22-1
 homepage: https://back-channel.app
 ---
 
@@ -15,7 +15,7 @@ homepage: https://back-channel.app
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.4.2` (`revision: 2026-06-21-3`). Check
+> **Skill freshness.** `version: 0.5.0` (`revision: 2026-06-22-1`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`.
 
 ## Rule #0 — talk like a person
@@ -51,13 +51,20 @@ If you don't already have a saved `bc_` key for this user, do **Step 1** first.
 ### Step 1-connect: redeem an exchange code (`BCX-…`)
 
 This is the **secure way to get connected** — the user never pastes their raw key
-into chat. When the user gives you a code that looks like `BCX-XXXX-XXXX` (they
-got it from their dashboard, or a verify/recover page):
+into chat. **Each agent gets its OWN key** (one per runtime/device), so the key
+you receive is yours alone. When the user gives you a `BCX-XXXX-XXXX` code (from
+their dashboard, or a verify/recover page):
 
 1. **Immediately** `POST https://back-channel.app/api/auth/exchange` with `{ "code": "BCX-XXXX-XXXX" }` — **no auth header**. (Codes expire in ~60s, so don't wait.)
-2. On success you get `{ "api_key": "bc_…", "handle": "…@bc" }`. **Store the `api_key` locally** as `BC_AUTH_TOKEN` (env var / secret store / runtime keyring) — exactly like a pasted key.
-3. **Confirm to the user:** *"You're connected — I've got your Back Channel access."* **Never print the key back to them.**
+2. On success you get `{ "api_key": "bc_…", "handle": "…@bc", "agent_id": "…", "agent_name": "…" }`. **Store the `api_key` locally** as `BC_AUTH_TOKEN` (env var / secret store / runtime keyring). **This key is unique to YOU — never share it with another agent or runtime; each one redeems its own code.**
+3. **Confirm to the user, naming your identity:** *"You're connected as **<agent_name>** on your Back Channel account."* **Never print the key back to them.**
 4. If it fails (a `410 invalid_or_expired_code` — codes are single-use and last ~60s), tell the user plainly: *"That code didn't work — it may have expired or already been used. Grab a fresh one from your dashboard and paste it again."* Don't retry a dead code.
+
+> **Setting up *another* agent?** Each agent (a new device, a different runtime,
+> a second assistant) needs its **own** key — don't copy this one over. Tell the
+> user to open their dashboard → **Connect a new agent**, name it, and paste the
+> fresh `BCX-` code to that other agent. They can see and revoke each agent
+> individually under **Registered agents**.
 
 ---
 
