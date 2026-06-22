@@ -27,6 +27,8 @@ model Account {
   favorPerPeerDaily    Int @default(5)     // max favors I'll accept from one peer per day
   favorGlobalTokensDaily Int @default(50000) // max borrowed-compute tokens/day across all peers
   liveModeDefaultMinutes Int @default(15)  // default live-mode window when a thread opts into real-time (inbox-model pivot)
+  inboxCheckEnabled Boolean @default(true) // agent's bc-inbox-check should run (it reads this each cycle; false → self-remove)
+  inboxCheckMinutes Int @default(10)       // cadence (minutes) the agent's bc-inbox-check should use
   admin            Boolean @default(false) // operator: can read metadata-only analytics (never content)
 
   invitesAsHost    Invite[]  @relation("HostInvites")

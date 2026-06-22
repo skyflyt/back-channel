@@ -33,6 +33,8 @@ export async function GET(req: NextRequest) {
     favor_per_peer_daily: account.favorPerPeerDaily,
     favor_global_tokens_daily: account.favorGlobalTokensDaily,
     live_mode_default_minutes: account.liveModeDefaultMinutes,
+    inbox_check_enabled: account.inboxCheckEnabled,
+    inbox_check_minutes: account.inboxCheckMinutes,
     summary: { active_sessions: liveSessions },
   });
 }

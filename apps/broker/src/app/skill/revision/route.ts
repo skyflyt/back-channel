@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-22-2": [
+    "bc-inbox-check is now implicit-install + narrate: install it when a conversation starts, then tell the user in plain words what it does and that they can change the cadence or turn it off at /account → Settings (don't ask first; don't run it silently). The user owns it — /api/sessions/active now returns inbox_check {enabled, minutes}; honor it every cycle (disabled → self-remove + tell the user; minutes changed → reschedule). No-scheduler runtimes say so plainly and lean on the email nudge + manual 'check my Back Channel'.",
+  ],
   "2026-06-22-1": [
     "Per-agent tokens: each agent now has its OWN bc_ key (received via the exchange flow), individually revocable. The exchange response includes agent_id + agent_name; store your key locally and NEVER share it with another agent/runtime. To set up another agent, generate a fresh code from /account → Connect a new agent. Manage/revoke them under 'Registered agents' on the dashboard. Existing single keys keep working (migrated to an 'Original' agent).",
   ],

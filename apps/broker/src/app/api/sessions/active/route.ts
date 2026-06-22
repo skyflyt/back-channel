@@ -24,6 +24,11 @@ export async function GET(req: NextRequest) {
   const account = await getAccountFromAuth(req.headers.get("authorization"));
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
+  // The agent's bc-inbox-check reads its own marching orders here each cycle:
+  // if disabled, it self-removes; if minutes changed, it reschedules. This is
+  // what makes the dashboard "turn it off / change cadence" controls real.
+  const inboxCheck = { enabled: account.inboxCheckEnabled, minutes: account.inboxCheckMinutes };
+
   const includeFrames = new URL(req.url).searchParams.get("frames") !== "0";
 
   const rows = await prisma.session.findMany({
@@ -66,5 +71,5 @@ export async function GET(req: NextRequest) {
   // queued agent.payload items (inbox-model pivot §5) — non-consuming count only.
   const agentPayloadsPending = await prisma.agentPayload.count({ where: { accountId: account.id, deliveredAt: null } });
 
-  return NextResponse.json({ sessions, agent_payloads_pending: agentPayloadsPending });
+  return NextResponse.json({ sessions, agent_payloads_pending: agentPayloadsPending, inbox_check: inboxCheck });
 }

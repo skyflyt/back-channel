@@ -69,6 +69,8 @@ export default function AccountPage() {
   const [ssResult, setSsResult] = useState<{ your_prompt: string; friend_prompt: string; code: string } | null>(null);
   const [notify, setNotify] = useState(true);
   const [liveDefault, setLiveDefault] = useState(15);
+  const [inboxEnabled, setInboxEnabled] = useState(true);
+  const [inboxMinutes, setInboxMinutes] = useState(10);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -141,7 +143,7 @@ export default function AccountPage() {
         const r = await fetch("/api/account/me", { credentials: "include" });
         if (r.status === 401) { setState("unauth"); return; }
         if (!r.ok) { setState("error"); return; }
-        const j = await r.json(); setMe(j); setNotify(j.notify_idle_frames); if (typeof j.live_mode_default_minutes === "number") setLiveDefault(j.live_mode_default_minutes); setState("ok");
+        const j = await r.json(); setMe(j); setNotify(j.notify_idle_frames); if (typeof j.live_mode_default_minutes === "number") setLiveDefault(j.live_mode_default_minutes); if (typeof j.inbox_check_enabled === "boolean") setInboxEnabled(j.inbox_check_enabled); if (typeof j.inbox_check_minutes === "number") setInboxMinutes(j.inbox_check_minutes); setState("ok");
         loadSessions();
         loadTrust();
         loadInbox();
@@ -276,6 +278,18 @@ export default function AccountPage() {
   const saveLiveDefault = async (minutes: number) => {
     setLiveDefault(minutes); setBusy("live");
     await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ live_mode_default_minutes: minutes }) }).catch(() => {});
+    setBusy("");
+  };
+
+  const toggleInboxCheck = async () => {
+    const next = !inboxEnabled; setInboxEnabled(next); setBusy("inboxchk");
+    await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ inbox_check_enabled: next }) }).catch(() => setInboxEnabled(!next));
+    setBusy("");
+  };
+
+  const saveInboxMinutes = async (minutes: number) => {
+    setInboxMinutes(minutes); setBusy("inboxmin");
+    await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ inbox_check_minutes: minutes }) }).catch(() => {});
     setBusy("");
   };
 
@@ -590,6 +604,20 @@ export default function AccountPage() {
             <span>Email me when I have a message and my agent is asleep</span>
           </label>
           <p style={s.soon}>Text + browser notifications are coming later.</p>
+          <label style={{ ...s.settingRow, marginTop: 14 }}>
+            <input type="checkbox" checked={inboxEnabled} onChange={toggleInboxCheck} disabled={busy === "inboxchk"} />
+            <span>Let my agent auto-check for new Back Channel messages</span>
+          </label>
+          <label style={{ ...s.settingRow, alignItems: "flex-start" }}>
+            <span style={{ flex: 1 }}>
+              <strong>How often it checks</strong>
+              <span style={s.soon}> — your agent looks for new messages on this schedule (a cheap check that only does real work when something arrived). Less often = lower usage. Takes effect next time your agent checks in.</span>
+            </span>
+            <select style={s.select} value={inboxMinutes} disabled={busy === "inboxmin" || !inboxEnabled} onChange={(e) => saveInboxMinutes(Number(e.target.value))}>
+              <option value={5}>Every 5 min</option><option value={10}>Every 10 min</option>
+              <option value={30}>Every 30 min</option><option value={60}>Every hour</option>
+            </select>
+          </label>
           <label style={{ ...s.settingRow, alignItems: "flex-start", marginTop: 14 }}>
             <span style={{ flex: 1 }}>
               <strong>Live mode default</strong>
