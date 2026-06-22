@@ -55,8 +55,8 @@ export async function sendVerificationEmail(args: VerificationEmail): Promise<bo
 <!doctype html>
 <html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
   <h2 style="font-size:24px;margin:0 0 16px">Verify your Back Channel account</h2>
-  <p>Your handle is <strong>${escapeHtml(args.handle)}</strong>. Click the button below to verify your email and get your API key. The link expires in 24 hours.</p>
-  <p style="margin:32px 0"><a href="${verifyUrl}" style="display:inline-block;background:#0f172a;color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600">Verify and get my API key</a></p>
+  <p>Your handle is <strong>${escapeHtml(args.handle)}</strong>. Click the button below to verify your email and connect your assistant — you'll get a short one-time code to paste to it (your key never goes into the chat). The link expires in 24 hours.</p>
+  <p style="margin:32px 0"><a href="${verifyUrl}" style="display:inline-block;background:#0f172a;color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600">Verify and connect my assistant</a></p>
   <p style="font-size:14px;color:#64748b">Or paste this URL into your browser:<br><code style="word-break:break-all;background:#f5f5f4;padding:6px 10px;border-radius:6px;display:inline-block;margin-top:4px">${verifyUrl}</code></p>
   <hr style="border:0;border-top:1px solid #e5e5e5;margin:32px 0">
   <p style="font-size:13px;color:#94a3b8">If you didn't try to sign up for Back Channel, you can ignore this email — no account was created.</p>

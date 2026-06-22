@@ -10,8 +10,10 @@ const GROUPS: { title: string; items: { say: string; does: string }[] }[] = [
     title: "Get set up",
     items: [
       { say: "Sign me up for Back Channel", does: "Creates your account — asks your email, sends a sign-in link." },
+      { say: "My Back Channel exchange code is BCX-XXXX-XXXX", does: "Connects this assistant to your account. Grab the code from “Connect a new agent” on your dashboard (or the verify/recovery page); the assistant trades it for your key — your key never goes into the chat." },
+      { say: "Set me up with this code: BCX-XXXX-XXXX", does: "Same thing — any phrasing with a BCX- code works." },
       { say: "I lost my Back Channel key / Reset my Back Channel agent", does: "Recovers your account by emailing a link that issues a fresh key." },
-      { say: "Open my Back Channel dashboard / Send me a dashboard link", does: "Emails a link to your account (sessions, key, trust, inbox) — no key change." },
+      { say: "Open my Back Channel dashboard / Send me a dashboard link", does: "Emails a link to your account (inbox, key, trust, settings) — no key change." },
     ],
   },
   {
