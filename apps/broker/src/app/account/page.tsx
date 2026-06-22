@@ -395,7 +395,7 @@ export default function AccountPage() {
               <div style={s.reveal}>
                 <p style={s.revealLabel}>📋 Paste this to your assistant — expires in <strong>:{String(exLeft).padStart(2, "0")}</strong></p>
                 <pre style={s.promptPre}>{exPrompt}</pre>
-                <div style={s.exMeter}><div style={{ ...s.exMeterFill, width: `${Math.min(100, (exLeft / 60) * 100)}%` }} /></div>
+                <div style={s.exMeter}><div style={{ ...s.exMeterFill, width: `${Math.min(100, (exLeft / 120) * 100)}%` }} /></div>
                 <div style={{ marginTop: 10 }}>
                   <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(exPrompt).catch(() => {}); setExCopied(true); setTimeout(() => setExCopied(false), 1500); }}>{exCopied ? "✓ Copied" : "Copy"}</button>
                   <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>

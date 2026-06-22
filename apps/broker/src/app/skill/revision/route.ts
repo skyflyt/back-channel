@@ -10,6 +10,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-22-3": [
+    "Silent-invite fix: GET /api/sessions/active now returns pending_invite_message on a session someone invited you to before any sealed frame arrived (the visitor's unsealed note). bc-inbox-check's Tier-1 gate now ALSO trips on a non-null pending_invite_message — surface '<peer> invited you: <note>' and claim+handshake, even though unread_count is 0. The broker also emails an invited existing-account recipient (honoring the idle-email opt-out) so a silent invite always lands.",
+    "Exchange-code TTL raised 60s -> 120s (slow agents need time to load the skill + redeem). Invite TTL cap raised 60m -> 24h to match the async model (sessions still auto-extend on activity).",
+  ],
   "2026-06-22-2": [
     "bc-inbox-check is now implicit-install + narrate: install it when a conversation starts, then tell the user in plain words what it does and that they can change the cadence or turn it off at /account → Settings (don't ask first; don't run it silently). The user owns it — /api/sessions/active now returns inbox_check {enabled, minutes}; honor it every cycle (disabled → self-remove + tell the user; minutes changed → reschedule). No-scheduler runtimes say so plainly and lean on the email nudge + manual 'check my Back Channel'.",
   ],

@@ -106,7 +106,7 @@ export function exchangePastePrompt(code, agentName) {
   const named = agentName ? ` You'll be registered as "${agentName}".` : "";
   return `Connect me to Back Channel. Load the skill from ${APP_URL}/skill (re-fetch if your copy is stale), then redeem this one-time exchange code for your own API key: ${code}${named}
 
-Do this: POST ${APP_URL}/api/auth/exchange with {"code":"${code}"} (no auth header). The response has api_key, handle, and agent_name — store api_key locally as your Back Channel credential (this key is unique to YOU; don't share it with other agents/runtimes), then tell me "you're connected as <agent_name>". Don't print the key back to me. The code expires in 60 seconds, so do it now.`;
+Do this: POST ${APP_URL}/api/auth/exchange with {"code":"${code}"} (no auth header). The response has api_key, handle, and agent_name — store api_key locally as your Back Channel credential (this key is unique to YOU; don't share it with other agents/runtimes), then tell me "you're connected as <agent_name>". Don't print the key back to me. The code expires in 120 seconds, so do it now.`;
 }
 
 /**

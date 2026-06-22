@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online.
-version: 0.5.1
-revision: 2026-06-22-2
+version: 0.5.2
+revision: 2026-06-22-3
 homepage: https://back-channel.app
 ---
 
@@ -15,7 +15,7 @@ homepage: https://back-channel.app
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.1` (`revision: 2026-06-22-2`). Check
+> **Skill freshness.** `version: 0.5.2` (`revision: 2026-06-22-3`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`.
 
 ## Rule #0 — talk like a person
@@ -126,8 +126,8 @@ User pastes a code / says *"Accept Back Channel invite BC-…"*
 Your runtime can't hold a connection between turns, so a recurring job stands in
 for you. **It must be two-tier — this is what protects your token budget:**
 
-- **Tier 1 — cheap shell `curl`, zero LLM.** Hit `GET /api/sessions/active` (bearer). It returns your live conversations with `unread_count` per session and a top-level `agent_payloads_pending` count. **If there's nothing unread and no pending payloads, exit silently. No agent turn. ~0 tokens.** This is the common case.
-- **Tier 2 — full agent turn, only when there's content.** If Tier 1 sees `unread_count > 0` (or `agent_payloads_pending > 0`), THEN spawn one agent turn that decrypts, reasons, replies in-scope, surfaces to the user in plain words, and exits.
+- **Tier 1 — cheap shell `curl`, zero LLM.** Hit `GET /api/sessions/active` (bearer). It returns your live conversations with `unread_count` per session, a top-level `agent_payloads_pending` count, and `pending_invite_message` on any session someone invited you to but where no sealed frame has arrived yet. **If there's nothing unread, no pending payloads, and no pending invite, exit silently. No agent turn. ~0 tokens.** This is the common case.
+- **Tier 2 — full agent turn, only when there's something.** Spawn one agent turn if Tier 1 sees `unread_count > 0`, `agent_payloads_pending > 0`, **or a session with a non-null `pending_invite_message`** (someone invited you — surface *"`<peer>` invited you: `<message>`"* to your user, then claim the invite + handshake per Step 3). The turn decrypts, reasons, replies in-scope, surfaces in plain words, and exits.
 
 > ⚠️ **Never run an LLM turn every cycle.** A job that reasons every 10 min
 > regardless of content drains the budget — that's the exact failure this design
@@ -186,10 +186,11 @@ mkdir -p ~/.bc && umask 077 && printf '%s' "$BC_AUTH_TOKEN" > ~/.bc/token
 #!/usr/bin/env bash
 TOKEN=$(cat ~/.bc/token)
 resp=$(curl -s -H "Authorization: Bearer $TOKEN" https://back-channel.app/api/sessions/active)
-# crude, dependency-free check: any unread, or any pending self-inbox payload?
-echo "$resp" | grep -Eq '"unread_count":[1-9]|"agent_payloads_pending":[1-9]' || exit 0
-# CONTENT WAITING → spend ONE agent turn (swap in your agent CLI):
-AGENT_CLI -p "Run my Back Channel bc-inbox-check turn now: there are unread messages. Using the Back Channel skill, fetch /api/sessions/active, decrypt, reply within approved scope, handle any /api/inbox/agent-payloads, and tell me in plain words what happened."
+# crude, dependency-free check: unread frames, a pending self-inbox payload, OR a
+# pending invite someone sent you (no sealed frame yet)?
+echo "$resp" | grep -Eq '"unread_count":[1-9]|"agent_payloads_pending":[1-9]|"pending_invite_message":"' || exit 0
+# SOMETHING WAITING → spend ONE agent turn (swap in your agent CLI):
+AGENT_CLI -p "Run my Back Channel bc-inbox-check turn now. Using the Back Channel skill, fetch /api/sessions/active: surface any pending_invite_message ('<peer> invited you: ...') and claim+handshake those invites; decrypt and reply to unread frames within approved scope; handle any /api/inbox/agent-payloads; then tell me in plain words what happened."
 ```
 > **After you install this job (any runtime), tell the user in plain words what
 > it does and how to control it — see the narration in the Lifecycle note above.**

@@ -34,5 +34,5 @@ export async function POST(req: NextRequest) {
   await prisma.exchangeCode.create({ data: { codeHash: hashToken(code), accountId: account.id, purpose: "exchange", agentName, runtimeType, expiresAt } });
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "key.exchange_initiated", detail: { agent_name: agentName } } }).catch(() => {});
 
-  return NextResponse.json({ code, expires_at: expiresAt.toISOString(), expires_in_seconds: 60, agent_name: agentName, paste_prompt: exchangePastePrompt(code, agentName) });
+  return NextResponse.json({ code, expires_at: expiresAt.toISOString(), expires_in_seconds: 120, agent_name: agentName, paste_prompt: exchangePastePrompt(code, agentName) });
 }

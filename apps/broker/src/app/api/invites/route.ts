@@ -89,7 +89,10 @@ export async function POST(req: NextRequest) {
     if (!host) return NextResponse.json({ error: "host_not_found" }, { status: 404 });
   }
 
-  const ttl = Math.min(Math.max(body.ttl_minutes ?? 30, 5), 60);
+  // Async-first: the skill asks agents for long TTLs (a recipient may reply hours
+  // later). Cap at 24h (was 60m, which silently expired async invites). Sessions
+  // still auto-extend on activity; this is just the initial window.
+  const ttl = Math.min(Math.max(body.ttl_minutes ?? 60, 5), 1440);
   const code = generateInviteCode();
   const expiresAt = new Date(Date.now() + ttl * 60 * 1000);
 
@@ -132,6 +135,20 @@ export async function POST(req: NextRequest) {
       needsSignup: recipientNeedsSignup,
     });
     console.log(`[invites] email invite code=${invite.code} needs_signup=${recipientNeedsSignup} delivered=${delivered}`);
+  } else if (host.emailVerifiedAt && host.notifyIdleFrames !== false && host.email) {
+    // Gap B: invited by HANDLE (an existing account). Don't rely on the recipient
+    // happening to run bc-inbox-check — email them the bare fact + code + note, so
+    // a silent invite always reaches them. Same "ask your assistant to accept
+    // BC-XXXX" email as a verified email-invite; honors the idle-email opt-out.
+    // Single-fire per invite (creation happens once), so no extra de-dup needed.
+    const delivered = await sendInviteEmail({
+      to: host.email,
+      inviterHandle: visitor.handle,
+      code: invite.code,
+      goal: body.message ?? null,
+      needsSignup: false,
+    });
+    console.log(`[invites] handle invite notified host code=${invite.code} delivered=${delivered}`);
   }
 
   // Audit dashboard-initiated sessions (cookie path) — metadata only.

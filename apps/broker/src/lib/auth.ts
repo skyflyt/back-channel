@@ -66,7 +66,7 @@ export function magicLinkExpiry(): Date {
 // Exchange code (device-code flow): BCX-XXXX-XXXX, unambiguous base32. Short
 // single-use code the dashboard mints; the agent trades it for the real bc_ key
 // so the raw key never lands in a chat transcript. Crypto-random, hashed at rest.
-const EXCHANGE_CODE_TTL_MS = 60 * 1000;
+const EXCHANGE_CODE_TTL_MS = 120 * 1000;
 export function generateExchangeCode(): string {
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
   const part = (n: number) => Array.from({ length: n }, () => chars[randomBytes(1)[0] % chars.length]).join("");

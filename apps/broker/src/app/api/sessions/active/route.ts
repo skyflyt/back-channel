@@ -62,6 +62,11 @@ export async function GET(req: NextRequest) {
         peer_present: u.peer_present,
         live,
         live_until: live ? s.liveExpiresAt!.toISOString() : null,
+        // Gap A: the visitor's unsealed invite note. Surfaced to the HOST while no
+        // sealed frame has landed yet (visitor created the invite then exited
+        // without a handshake) so bc-inbox-check can still tell the user "X invited
+        // you: <note>" instead of silently seeing an empty session.
+        pending_invite_message: role === "host" && !u.last_frame_at && s.invite.message ? s.invite.message : null,
         ...(includeFrames ? { frames: u.frames, truncated: u.truncated } : {}),
       };
     }),
