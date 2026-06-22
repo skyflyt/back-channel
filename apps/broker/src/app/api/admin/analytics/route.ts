@@ -12,6 +12,47 @@ const H24 = DAY, D7 = 7 * DAY, D30 = 30 * DAY;
 let CACHE: { at: number; payload: unknown } | null = null;
 const CACHE_TTL_MS = 60_000;
 
+// Email delivery (last 7d) from Resend's API. Resend has no aggregate-stats
+// endpoint, so we page GET /emails and tally `last_event`. Cached 5 min on its
+// own so we don't hammer Resend even if the analytics cache is bypassed.
+const PLACEHOLDER_KEY = "PLACEHOLDER_REPLACE_WITH_RESEND_API_KEY";
+let RESEND_CACHE: { at: number; val: unknown } | null = null;
+async function resendDelivery7d(): Promise<unknown> {
+  if (RESEND_CACHE && Date.now() - RESEND_CACHE.at < 5 * 60_000) return RESEND_CACHE.val;
+  const key = process.env.RESEND_API_KEY;
+  if (!key || key === PLACEHOLDER_KEY) return { available: false, reason: "no_api_key" };
+  const cutoff = Date.now() - 7 * DAY;
+  const t = { total_7d: 0, delivered: 0, bounced: 0, complained: 0, other: 0 };
+  try {
+    let after: string | undefined;
+    for (let page = 0; page < 6; page++) {
+      const url = new URL("https://api.resend.com/emails");
+      url.searchParams.set("limit", "100");
+      if (after) url.searchParams.set("after", after);
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+      if (!r.ok) return { available: false, reason: `http_${r.status}` };
+      const j = await r.json();
+      const data: { id: string; created_at: string; last_event: string }[] = j.data ?? [];
+      if (data.length === 0) break;
+      for (const e of data) {
+        if (new Date(e.created_at).getTime() < cutoff) continue;
+        t.total_7d++;
+        if (e.last_event === "delivered") t.delivered++;
+        else if (e.last_event === "bounced" || e.last_event === "bounce") t.bounced++;
+        else if (e.last_event === "complained") t.complained++;
+        else t.other++;
+      }
+      after = data[data.length - 1]?.id;
+      if (!j.has_more || !after) break;
+    }
+    const val = { available: true, window: "7d", source: "resend", ...t };
+    RESEND_CACHE = { at: Date.now(), val };
+    return val;
+  } catch {
+    return { available: false, reason: "fetch_error" };
+  }
+}
+
 /**
  * GET /api/admin/analytics — operator dashboard. Admin only; 403 (opaque) to
  * everyone else. METADATA ONLY by construction — counts/aggregates over accounts,
@@ -132,6 +173,8 @@ export async function GET(req: NextRequest) {
   const recentSignupRows = recentSignups.map((a) => ({ at: a.createdAt.toISOString(), handle: a.handle, email: a.email, verified: !!a.emailVerifiedAt }));
   const recentSessionRows = recentSessions.map((s) => ({ started_at: s.startedAt.toISOString(), scopes: s.scopesGranted, status: s.endedAt ? "ended" : "active" }));
 
+  const emailDelivery = await resendDelivery7d();
+
   const payload = {
     generated_at: new Date().toISOString(),
     cached: false,
@@ -172,7 +215,7 @@ export async function GET(req: NextRequest) {
       accounts_with_agent: accountsWithAgent,
       pending_signups_24h: accounts.filter((a) => !a.emailVerifiedAt && inWin(a.createdAt, H24)).length,
       rate_limit_hits_24h: rlHits.reduce((sum, m) => sum + m.count, 0), // today + yesterday UTC buckets (~24h)
-      email_delivery: { source: "resend", note: "Sent/bounced/spam-complained live in the Resend dashboard (delivery events need provider webhooks we don't mirror). View there for email health." },
+      email_delivery: emailDelivery, // pulled from Resend's /emails list, tallied over 7d
     },
     recent: { signups: recentSignupRows, sessions: recentSessionRows },
     privacy_note: "Metadata only. Message content is end-to-end encrypted and unreadable here; emails and peer-pair handles are never exposed; recent-activity handles are redacted.",

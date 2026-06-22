@@ -26,7 +26,7 @@ type Analytics = {
   health: {
     inbox_check_adoption_pct: number; accounts_with_active_agent_24h: number; accounts_with_agent: number;
     pending_signups_24h: number; rate_limit_hits_24h: number;
-    email_delivery: { source: string; note: string } | null;
+    email_delivery: { available: boolean; reason?: string; window?: string; total_7d?: number; delivered?: number; bounced?: number; complained?: number; other?: number } | null;
   };
   recent: { signups: { at: string; handle: string; email: string; verified: boolean }[]; sessions: { started_at: string; scopes: string[]; status: string }[] };
   privacy_note: string;
@@ -141,8 +141,12 @@ export default function AdminPage() {
         <Metric k="inbox-check adoption" v={`${he.inbox_check_adoption_pct}% (${he.accounts_with_active_agent_24h}/${he.accounts_with_agent} accounts active in 24h)`} />
         <Metric k="rate-limit hits (~24h)" v={he.rate_limit_hits_24h} />
         <Metric k="pending (unverified) signups 24h" v={he.pending_signups_24h} />
-        <Metric k="email delivery" v={"see Resend dashboard"} />
-        {he.email_delivery?.note && <p style={s.fine}>{he.email_delivery.note}</p>}
+        <Metric k="email delivery (7d, via Resend)" v={
+          he.email_delivery?.available
+            ? `${he.email_delivery.total_7d} sent · ${he.email_delivery.delivered} delivered · ${he.email_delivery.bounced} bounced · ${he.email_delivery.complained} spam-complaints`
+            : `unavailable (${he.email_delivery?.reason ?? "n/a"})`
+        } />
+        {he.email_delivery && !he.email_delivery.available && <p style={s.fine}>Email stats pull live from Resend&apos;s API; &ldquo;{he.email_delivery.reason}&rdquo; means the key is missing or the call failed.</p>}
       </section>
 
       <section style={s.card}>
