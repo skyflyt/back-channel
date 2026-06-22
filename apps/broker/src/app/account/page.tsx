@@ -390,7 +390,7 @@ export default function AccountPage() {
             ) : agentFormOpen ? (
               <div>
                 <label style={s.fieldLabel}>What&apos;s this agent? (so you can tell them apart later)</label>
-                <input style={s.input} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="e.g. Loby on home PC, Codex at work, ChatGPT on phone" />
+                <input style={s.input} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="e.g. my laptop, Codex at work, ChatGPT on phone" />
                 <label style={s.fieldLabel}>Where does it run?</label>
                 <select style={s.select} value={agentRuntime} onChange={(e) => setAgentRuntime(e.target.value)}>
                   {RUNTIME_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}

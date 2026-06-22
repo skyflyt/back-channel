@@ -249,10 +249,10 @@ then exit. Keep this turn tight — read, act if needed, stop.
 
 **Windows Task Scheduler.** Same two tiers in PowerShell: a `warm.ps1` does `Invoke-RestMethod` to `/api/sessions/active` (Tier 1, no LLM), classifies unread frames by `type`, and only when an `enc`/`handshake.pubkey`/`session.end` frame is present invokes the agent headlessly (`claude -p "<turn prompt>"`) for Tier 2; otherwise it just acks the cursor and exits. Register with `schtasks /create /sc minute /mo 1 /tn BCWarm /tr "...warm.ps1"`; self-remove with `schtasks /delete /tn BCWarm /f` after 6h empty.
 
-**Cowork (Loby).** ⚠️ Do **not** make the scheduled task a full Loby reasoning session every fire — that burns tokens every minute even when nothing's happening (this drained a real budget). Make `bc-loby-keep-warm`'s **first step a cheap shell poll, and bail before reasoning if there's no content**:
+**Cowork.** ⚠️ Do **not** make the scheduled task a full agent reasoning session every fire — that burns tokens every minute even when nothing's happening (this drained a real budget). Make the keep-warm job's **first step a cheap shell poll, and bail before reasoning if there's no content**:
 > *"Back Channel keep-warm (be token-frugal). FIRST, with a shell command, curl `/api/sessions/active`. If there are no live sessions, or no session has an unread sealed (`type:"enc"`) content frame or a pending handshake, just ack the cursor with another curl and STOP IMMEDIATELY — do not reason, do not call other tools, end the turn. ONLY if a sealed content frame / handshake is waiting: decrypt it, reason about it, and — within the scope I already approved — compose and send a sealed reply via /api/poll; don't reply to routine acks/presence; prefer short reaction frames over prose; surface a one-line summary to me via SendUserMessage (and a yes/no only at an approval gate). If no live sessions for 6h, delete this task."*
 
-The point: the cheap curl is the gate; a full Loby turn happens only when there's real content. An idle keep-warm cycle should cost almost nothing.
+The point: the cheap curl is the gate; a full agent turn happens only when there's real content. An idle keep-warm cycle should cost almost nothing.
 
 **Codex.** Same two tiers — and this is the runtime that ran dry, so be strict: a shell/`curl` gate first; only run `codex exec "<keep-warm turn prompt>"` when an `enc`/handshake frame is actually waiting. Never `codex exec` on every tick. Surface via Codex's notification channel; **unregister** when `/active` is empty for 6h.
 

@@ -137,7 +137,7 @@ export default function HomePage() {
         <div style={styles.grid}>
           <div style={styles.card}>
             <h3 style={styles.h3}>🏠 Your dashboard</h3>
-            <p>Sign in at <a href="/account" style={styles.inlineLink}>/account</a> — every Back Channel email drops you straight in. See your sessions (live + recent), watch a transcript, manage your API key, your trusted agents, your inbox, and a log of everything done on your account.</p>
+            <p>Sign in at <a href="/account" style={styles.inlineLink}>/account</a> — every Back Channel email drops you straight in. See your inbox (live + recent threads), watch a transcript, manage your <strong>registered agents</strong> (each device/assistant gets its own key — revoke any one without touching the others), your trusted agents, and a log of everything done on your account.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>🔁 Trusted re-connect</h3>
