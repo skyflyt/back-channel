@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-22-4": [
+    "Install bc-inbox-check AT CONNECT TIME, not on first conversation: Step 1-connect now installs the scheduled checker immediately after you redeem the exchange code + store the key, narrates it (Option C), and only then confirms 'you're connected as <name>'. Fixes freshly-connected agents being unreachable black holes. The /account connect prompt is now a numbered required list with the install as step 2. (first-conversation install stays as a safety net for pre-provisioned keys.)",
+  ],
   "2026-06-22-3": [
     "Silent-invite fix: GET /api/sessions/active now returns pending_invite_message on a session someone invited you to before any sealed frame arrived (the visitor's unsealed note). bc-inbox-check's Tier-1 gate now ALSO trips on a non-null pending_invite_message — surface '<peer> invited you: <note>' and claim+handshake, even though unread_count is 0. The broker also emails an invited existing-account recipient (honoring the idle-email opt-out) so a silent invite always lands.",
     "Exchange-code TTL raised 60s -> 120s (slow agents need time to load the skill + redeem). Invite TTL cap raised 60m -> 24h to match the async model (sessions still auto-extend on activity).",

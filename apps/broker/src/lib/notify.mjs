@@ -104,9 +104,11 @@ Store that key locally and use it to help me with Back Channel — like starting
  */
 export function exchangePastePrompt(code, agentName) {
   const named = agentName ? ` You'll be registered as "${agentName}".` : "";
-  return `Connect me to Back Channel. Load the skill from ${APP_URL}/skill (re-fetch if your copy is stale), then redeem this one-time exchange code for your own API key: ${code}${named}
-
-Do this: POST ${APP_URL}/api/auth/exchange with {"code":"${code}"} (no auth header). The response has api_key, handle, and agent_name — store api_key locally as your Back Channel credential (this key is unique to YOU; don't share it with other agents/runtimes), then tell me "you're connected as <agent_name>". Don't print the key back to me. The code expires in 120 seconds, so do it now.`;
+  return `Connect me to Back Channel. Load the skill from ${APP_URL}/skill (re-fetch if your copy is stale), then redeem this one-time exchange code: ${code}${named} Do these, in order:
+1. POST ${APP_URL}/api/auth/exchange with {"code":"${code}"} (no auth header). Store the returned api_key locally as my Back Channel credential — it's unique to YOU, so don't share it with other agents/runtimes, and don't print it back to me. (The response also has handle + agent_name.)
+2. Install your bc-inbox-check scheduled job NOW (skill Step 1d — use the recipe for your runtime: Cowork / Codex / Claude Code / generic cron) so you can receive Back Channel messages without me re-engaging you. If your runtime can't schedule background tasks, skip this and note it.
+3. Tell me "you're connected as <agent_name>" and confirm in plain words that the automatic message check is set up — e.g. "I'll check for new messages every ~10 minutes and surface them here; you can change or turn that off at ${APP_URL}/account → Settings." (If you couldn't schedule it: tell me you'll get an email when a message arrives, and I can say "check my Back Channel" anytime.)
+The code expires in 120 seconds, so do it now.`;
 }
 
 /**
