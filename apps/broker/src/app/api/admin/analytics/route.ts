@@ -19,7 +19,10 @@ const PLACEHOLDER_KEY = "PLACEHOLDER_REPLACE_WITH_RESEND_API_KEY";
 let RESEND_CACHE: { at: number; val: unknown } | null = null;
 async function resendDelivery7d(): Promise<unknown> {
   if (RESEND_CACHE && Date.now() - RESEND_CACHE.at < 5 * 60_000) return RESEND_CACHE.val;
-  const key = process.env.RESEND_API_KEY;
+  // Prefer a dedicated READ/full-access key so we don't have to widen the
+  // sending key (which lives in the hot email path). The send key is often
+  // "sending access" only and 401s on GET /emails.
+  const key = process.env.RESEND_READ_API_KEY || process.env.RESEND_API_KEY;
   if (!key || key === PLACEHOLDER_KEY) return { available: false, reason: "no_api_key" };
   const cutoff = Date.now() - 7 * DAY;
   const t = { total_7d: 0, delivered: 0, bounced: 0, complained: 0, other: 0 };
@@ -30,6 +33,7 @@ async function resendDelivery7d(): Promise<unknown> {
       url.searchParams.set("limit", "100");
       if (after) url.searchParams.set("after", after);
       const r = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+      if (r.status === 401 || r.status === 403) return { available: false, reason: "key_lacks_read_access — set RESEND_READ_API_KEY to a full/read-access Resend key (the send key is sending-scoped)" };
       if (!r.ok) return { available: false, reason: `http_${r.status}` };
       const j = await r.json();
       const data: { id: string; created_at: string; last_event: string }[] = j.data ?? [];
