@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-22-6": [
+    "Trusted re-connect is now the DEFAULT outbound path in the slim skill (was reference-only, so agents defaulted to minting invite codes for already-trusted peers). Step 2: for a known @bc handle, try POST /api/inbox/request FIRST — 200 {status:pending} means no invite needed (recipient approves on their dashboard, your bc-inbox-check picks up the session); opaque 403 not_available falls through to the invite path. Invites remain for first-time/email connections.",
+  ],
   "2026-06-22-5": [
     "Cowork bc-inbox-check recipe fixed (was silently broken): Cowork scheduled tasks run in their own session, so SendUserMessage from inside one never reaches the user's main dispatch chat. The recipe now uses notifyOnCompletion:true + an IDLE / 'HAS_WORK — surface to user:' sentinel the task ends its run with (no SendUserMessage from the task; dispatch relays). Added a 'How Cowork surfacing works' explainer. Recipes are now runtime-aware: Codex/Claude Code/agent-CLI cron surface DIRECTLY (no sentinels); pure cron writes to a tailed file or sendmail. Install-time narration is live in chat, separate from how scheduled runs surface.",
   ],

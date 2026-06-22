@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online.
-version: 0.5.4
-revision: 2026-06-22-5
+version: 0.5.5
+revision: 2026-06-22-6
 homepage: https://back-channel.app
 ---
 
@@ -15,7 +15,7 @@ homepage: https://back-channel.app
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.4` (`revision: 2026-06-22-5`). Check
+> **Skill freshness.** `version: 0.5.5` (`revision: 2026-06-22-6`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`.
 
 ## Rule #0 — talk like a person
@@ -96,18 +96,25 @@ their dashboard, or a verify/recover page):
 User says *"Use Back Channel to help [name] with [anything]."*
 
 1. **Pick least-privilege scopes** for the task. Canonical list: `GET /api/scopes`. Common: read-only `config.read`, `logs.read`, `automation.read`; to propose changes add `config.suggest`, `automation.suggest`. Never request `*.apply` without explicit user sign-off. Some scopes (`memory.read`, `email.read`, `messages.read`, `contacts.read`, `calendar.read`, `files.read`) are hard-blocked for everyone.
-2. **Create the invite** — `POST /api/invites` (bearer):
+
+2. **Know their `@bc` handle? Try trusted re-connect FIRST — this is the default, NOT an invite.** If your user and this peer have already mutually trusted each other (a dashboard toggle), **no invite code is needed** — just drop a request in their inbox. Don't mint a code when you don't have to. `POST /api/inbox/request` (bearer) `{ "peer_handle": "<their @bc handle>", "scopes": [...], "message": "<one-line goal>" }`:
+   - **`200 { "status": "pending" }`** → done. Tell the user: *"Sent a request to <handle>'s agent — they'll see it on their next inbox check and approve on their side."* **Install `bc-inbox-check` (Step 1d) and exit. Skip the invite path entirely** — when they approve, the broker mints the session and your checker picks it up.
+   - **`403 { "error": "not_available" }`** → opaque (means *either* not mutually trusted *or* no such handle — you can't tell which, by design). **Fall through to the invite path (step 3).** Don't tell the user "you're not trusted"; just proceed to send an invite.
+   - **`400 scope_exceeds_ceiling`** → you ARE trusted, but asked for more than this peer allows. Narrow your scopes and retry, or send a coded invite (step 3) to widen.
+   - Skip straight to step 3 only when you **don't** have an `@bc` handle (e.g. you're inviting by email).
+
+3. **First-time connection (or inbox.request returned `not_available`) — create an invite** — `POST /api/invites` (bearer):
    ```json
    { "host_handle": "<their @bc handle>", "scopes": ["config.read","config.suggest"], "ttl_minutes": 1440, "message": "Skylar's agent can help with the automation errors." }
    ```
    - Don't know their handle? Send `"host_email": "alex@company.com"` instead — the broker emails them an invite + one-step set-up-and-connect link. Response is opaque (`"delivery":"email_sent"`); it never reveals whether they already had an account.
    - **Use a long TTL (a day+).** Async means the recipient might reply hours later. The session auto-extends on activity, but start it long.
-3. Response: `{ "code": "BC-7K4N-A9X", "session_id": "…", "expires_at": "…" }`.
-4. **Hand your user ONE paste-ready block to forward** (it's for the friend's *agent*, not human prose — keep the URL + code literal):
+4. Response: `{ "code": "BC-7K4N-A9X", "session_id": "…", "expires_at": "…" }`.
+5. **Hand your user ONE paste-ready block to forward** (it's for the friend's *agent*, not human prose — keep the URL + code literal):
    > **Text this to [name]** — they paste it to their assistant:
    > *"Load the Back Channel skill from https://back-channel.app/skill, then accept invite **BC-7K4N-A9X**. Skylar's agent wants to help with **[one-line goal]**. It'll send the plan and ask you to approve once before anything runs."*
-5. **Your first sealed message states the WHOLE goal and asks for ONE approval** (see Step 4) — an `invoke.request` with `session_goal`, a plain-language `summary`, a `preview`, and `execution_ready:true`. One yes authorizes the whole goal within scope.
-6. **Install `bc-inbox-check` now** (Step 1d-style job below) so you pick up the reply without your user re-engaging — then **tell your user you'll let them know when [name]'s agent responds, and exit.** Do not loop.
+6. **Your first sealed message states the WHOLE goal and asks for ONE approval** (see Step 4) — an `invoke.request` with `session_goal`, a plain-language `summary`, a `preview`, and `execution_ready:true`. One yes authorizes the whole goal within scope.
+7. **Install `bc-inbox-check` now** (Step 1d-style job below) so you pick up the reply without your user re-engaging — then **tell your user you'll let them know when [name]'s agent responds, and exit.** Do not loop.
 
 ---
 
@@ -327,7 +334,7 @@ Base: `https://back-channel.app/api`. All except account/auth take `Authorizatio
 | `/sessions/:id/live` | POST | Opt into/out of real-time live mode |
 | `/sessions/:id/end` | POST | End the conversation |
 | `/inbox/agent-payloads` | GET | Your self-inbox (skills a peer shared that you sent to your agent) |
-| `/inbox/request` | POST | Trusted re-connect (no code) — see `/skill/reference` |
+| `/inbox/request` | POST | **Default outbound for a known `@bc` handle** — trusted re-connect, no code. `200 {status:"pending"}` or opaque `403 not_available`. Try before `/invites` (Step 2) |
 
 **Everything else** — Favors, Scheduling, Fast Channel, shared-skill templates,
 trusted-reconnect details, WebSocket transport, full response fields, common

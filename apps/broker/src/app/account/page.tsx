@@ -564,11 +564,14 @@ export default function AccountPage() {
           {trust.map((t) => (
             <div key={t.handle} style={s.row}>
               <div style={s.rowMain}>
-                <strong>{t.handle}</strong>
+                <strong style={s.peerHandle}>{t.handle}</strong>
                 {t.trusted && (t.mutual
                   ? <span style={s.okTag}>mutual</span>
                   : <span style={s.pendTag}>waiting for them</span>)}
                 <div style={s.rowMeta}>last worked together {when(t.last_session_at)}</div>
+                {t.trusted && t.mutual && (
+                  <div style={s.peerHint}>Tell your assistant: <span style={s.peerHintCode}>&ldquo;use Back Channel to reach {t.handle}&rdquo;</span> — no invite code needed, it just lands in their inbox.</div>
+                )}
               </div>
               <button
                 style={t.trusted ? s.endBtn : s.btn}
@@ -762,6 +765,9 @@ const s = {
   goal: { fontSize: 13, color: "#475569", marginTop: 2 } as const,
   roleTag: { fontSize: 11, fontWeight: 700, color: "#6b21a8", background: "#faf5ff", padding: "1px 7px", borderRadius: 6, textTransform: "uppercase" } as const,
   okTag: { fontSize: 11, fontWeight: 700, color: "#0f766e", background: "#f0fdfa", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
+  peerHandle: { fontFamily: "ui-monospace, Menlo, monospace", color: "#0f172a" } as const,
+  peerHint: { fontSize: 12.5, color: "#475569", marginTop: 6, lineHeight: 1.5 } as const,
+  peerHintCode: { fontFamily: "ui-monospace, Menlo, monospace", background: "#f1f5f9", padding: "1px 6px", borderRadius: 5, color: "#0f172a" } as const,
   pendTag: { fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fffbeb", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
   chipOn: { fontSize: 12, fontWeight: 600, color: "#fff", background: "#0f766e", border: "none", borderRadius: 999, padding: "3px 10px", cursor: "pointer" } as const,
   chipOff: { fontSize: 12, fontWeight: 600, color: "#0f766e", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 999, padding: "3px 10px", cursor: "pointer" } as const,
