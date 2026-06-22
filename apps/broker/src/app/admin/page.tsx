@@ -25,10 +25,16 @@ type Analytics = {
   };
   health: {
     inbox_check_adoption_pct: number; accounts_with_active_agent_24h: number; accounts_with_agent: number;
-    pending_signups_24h: number; email_delivery: unknown; rate_limit_hits_24h: unknown;
+    pending_signups_24h: number; rate_limit_hits_24h: number;
+    email_delivery: { source: string; note: string } | null;
   };
-  recent: { signups: { at: string; handle: string; verified: boolean }[]; sessions: { started_at: string; scopes: string[]; status: string }[] };
+  recent: { signups: { at: string; handle: string; email: string; verified: boolean }[]; sessions: { started_at: string; scopes: string[]; status: string }[] };
   privacy_note: string;
+};
+type UserRow = {
+  handle: string; email: string; created_at: string; last_active_at: string | null;
+  agent_count: number; session_count: number; session_count_7d: number; trusted_peer_count: number;
+  invites_sent_lifetime: number; inbox_requests_sent_lifetime: number; inbox_check_installed: boolean; status_label: string;
 };
 
 const ago = (iso: string) => {
@@ -55,6 +61,10 @@ function Spark({ data }: { data: number[] }) {
 
 export default function AdminPage() {
   const [data, setData] = useState<Analytics | null>(null);
+  const [users, setUsers] = useState<UserRow[]>([]);
+  const [usersTotal, setUsersTotal] = useState(0);
+  const [sort, setSort] = useState("last_active");
+  const [filter, setFilter] = useState("");
   const [state, setState] = useState<"loading" | "ok" | "unauth" | "forbidden" | "error">("loading");
 
   const load = useCallback(async () => {
@@ -66,7 +76,14 @@ export default function AdminPage() {
       setData(await r.json()); setState("ok");
     } catch { setState("error"); }
   }, []);
+  const loadUsers = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/admin/users?sort=${sort}&filter=${filter}&limit=200`, { credentials: "include" });
+      if (r.ok) { const j = await r.json(); setUsers(j.users ?? []); setUsersTotal(j.total ?? 0); }
+    } catch { /* leave */ }
+  }, [sort, filter]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (state === "ok") loadUsers(); }, [state, loadUsers]);
 
   if (state === "unauth") return <Shell><p style={s.muted}>Sign in first — <a href="/login" style={s.link}>/login</a>.</p></Shell>;
   if (state === "forbidden") return <Shell><p style={s.muted}>This account isn&apos;t an admin.</p></Shell>;
@@ -122,18 +139,61 @@ export default function AdminPage() {
       <section style={s.card}>
         <h2 style={s.h2}>Health</h2>
         <Metric k="inbox-check adoption" v={`${he.inbox_check_adoption_pct}% (${he.accounts_with_active_agent_24h}/${he.accounts_with_agent} accounts active in 24h)`} />
+        <Metric k="rate-limit hits (~24h)" v={he.rate_limit_hits_24h} />
         <Metric k="pending (unverified) signups 24h" v={he.pending_signups_24h} />
-        <Metric k="email delivery (7d)" v={he.email_delivery} />
-        <Metric k="rate-limit hits (24h)" v={he.rate_limit_hits_24h} />
-        <p style={s.fine}>— = not instrumented in v1 (email results + rate-limit counters aren&apos;t persisted to the DB yet).</p>
+        <Metric k="email delivery" v={"see Resend dashboard"} />
+        {he.email_delivery?.note && <p style={s.fine}>{he.email_delivery.note}</p>}
       </section>
 
       <section style={s.card}>
         <h2 style={s.h2}>Recent sign-ups</h2>
         {recent.signups.length === 0 && <p style={s.muted}>None yet.</p>}
         {recent.signups.map((r, i) => (
-          <div key={i} style={s.row}><span style={s.rowHandle}>{r.handle}</span><span style={s.rowMeta}>{r.verified ? "✓ verified" : "pending"} · {ago(r.at)}</span></div>
+          <div key={i} style={s.row}><span style={s.rowHandle}>{r.handle} <span style={s.email}>{r.email}</span></span><span style={s.rowMeta}>{r.verified ? "✓ verified" : "pending"} · {ago(r.at)}</span></div>
         ))}
+      </section>
+
+      {/* Users table — operator visibility (admin-only): full identity + per-account metadata, no content */}
+      <section style={s.card}>
+        <div style={s.usersHead}>
+          <h2 style={s.h2}>Users ({usersTotal})</h2>
+          <div style={s.controls}>
+            <span style={s.ctlLabel}>sort</span>
+            {["last_active", "created", "sessions"].map((so) => (
+              <button key={so} onClick={() => setSort(so)} style={sort === so ? s.ctlOn : s.ctlOff}>{so.replace("_", " ")}</button>
+            ))}
+            <span style={s.ctlLabel}>filter</span>
+            {[["", "all"], ["zero_activity", "no activity"], ["new_7d", "new 7d"], ["heavy", ">10 sess"]].map(([f, lbl]) => (
+              <button key={f} onClick={() => setFilter(f)} style={filter === f ? s.ctlOn : s.ctlOff}>{lbl}</button>
+            ))}
+          </div>
+        </div>
+        <div style={s.tableWrap}>
+          <table style={s.table}>
+            <thead><tr>
+              {["handle", "email", "created", "last active", "agents", "sess", "7d", "trust", "inv", "inbox-req", "checker", "status"].map((h) => <th key={h} style={s.th}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {users.map((u, i) => (
+                <tr key={i} style={s.tr}>
+                  <td style={s.tdH}>{u.handle}</td>
+                  <td style={s.td}>{u.email}</td>
+                  <td style={s.td}>{ago(u.created_at)}</td>
+                  <td style={s.td}>{u.last_active_at ? ago(u.last_active_at) : "—"}</td>
+                  <td style={s.tdN}>{u.agent_count}</td>
+                  <td style={s.tdN}>{u.session_count}</td>
+                  <td style={s.tdN}>{u.session_count_7d}</td>
+                  <td style={s.tdN}>{u.trusted_peer_count}</td>
+                  <td style={s.tdN}>{u.invites_sent_lifetime}</td>
+                  <td style={s.tdN}>{u.inbox_requests_sent_lifetime}</td>
+                  <td style={s.tdN}>{u.inbox_check_installed ? "✓" : "—"}</td>
+                  <td style={s.tdStatus}>{u.status_label}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {users.length === 0 && <p style={s.muted}>No users match.</p>}
       </section>
 
       <section style={s.card}>
@@ -181,4 +241,18 @@ const s = {
   muted: { color: "#94a3b8" } as const,
   link: { color: "#0f766e" } as const,
   err: { color: "#b91c1c" } as const,
+  email: { color: "#94a3b8", fontSize: 12 } as const,
+  usersHead: { display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 10 } as const,
+  controls: { display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" } as const,
+  ctlLabel: { fontSize: 11, color: "#94a3b8", textTransform: "uppercase", marginLeft: 6 } as const,
+  ctlOn: { background: "#0f172a", color: "#fff", border: "none", borderRadius: 7, padding: "4px 9px", fontSize: 12, fontWeight: 600, cursor: "pointer" } as const,
+  ctlOff: { background: "#fff", color: "#475569", border: "1px solid #cbd5e1", borderRadius: 7, padding: "4px 9px", fontSize: 12, cursor: "pointer" } as const,
+  tableWrap: { overflowX: "auto" } as const,
+  table: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } as const,
+  th: { textAlign: "left", color: "#94a3b8", fontWeight: 600, padding: "6px 8px", borderBottom: "1px solid #e2e8f0", whiteSpace: "nowrap", textTransform: "uppercase", fontSize: 11 } as const,
+  tr: { borderBottom: "1px solid #f1f5f9" } as const,
+  td: { padding: "6px 8px", color: "#475569", whiteSpace: "nowrap" } as const,
+  tdH: { padding: "6px 8px", color: "#0f172a", fontWeight: 600, fontFamily: "ui-monospace, Menlo, monospace", whiteSpace: "nowrap" } as const,
+  tdN: { padding: "6px 8px", color: "#0f172a", textAlign: "right", fontFamily: "ui-monospace, Menlo, monospace" } as const,
+  tdStatus: { padding: "6px 8px", color: "#475569", whiteSpace: "nowrap", fontSize: 11.5 } as const,
 };

@@ -7,13 +7,6 @@ export const runtime = "nodejs";
 const DAY = 864e5;
 const H24 = DAY, D7 = 7 * DAY, D30 = 30 * DAY;
 
-/** Redact a handle for the recent-activity table: "skyflyt86@bc" -> "s***@bc". */
-function redact(handle: string): string {
-  const at = handle.indexOf("@");
-  if (at <= 0) return "***";
-  return handle[0] + "***" + handle.slice(at);
-}
-
 // 60s in-memory cache (this page isn't realtime; heavy aggregation shouldn't run
 // per request). Single-instance Cloud Run, so a module-level cache is fine.
 let CACHE: { at: number; payload: unknown } | null = null;
@@ -46,7 +39,7 @@ export async function GET(req: NextRequest) {
     endedRecent, liveNow, recentFrames, framesTotal,
     trustRows, mutualPairs, inbox7, sharesTotal, topShares,
     sched7, magicAll, magicRedeemed, ex7, exRedeemed7,
-    recentSignups, recentSessions, liveSessionIds, framedSessionIds,
+    recentSignups, recentSessions, liveSessionIds, framedSessionIds, rlHits,
   ] = await Promise.all([
     prisma.account.findMany({ select: { id: true, handle: true, createdAt: true, emailVerifiedAt: true, apiKeyLastUsedAt: true } }),
     prisma.agentToken.findMany({ where: { revokedAt: null }, select: { accountId: true, createdAt: true, lastUsedAt: true } }),
@@ -68,10 +61,11 @@ export async function GET(req: NextRequest) {
     prisma.magicLink.count({ where: { consumedAt: { not: null } } }),
     prisma.exchangeCode.count({ where: { createdAt: { gte: since(D7) } } }),
     prisma.exchangeCode.count({ where: { createdAt: { gte: since(D7) }, usedAt: { not: null } } }),
-    prisma.account.findMany({ orderBy: { createdAt: "desc" }, take: 20, select: { handle: true, createdAt: true, emailVerifiedAt: true } }),
+    prisma.account.findMany({ orderBy: { createdAt: "desc" }, take: 20, select: { handle: true, email: true, createdAt: true, emailVerifiedAt: true } }),
     prisma.session.findMany({ orderBy: { startedAt: "desc" }, take: 20, select: { startedAt: true, endedAt: true, scopesGranted: true } }),
     prisma.session.findMany({ where: { endedAt: null, liveExpiresAt: { gt: new Date() } }, select: { id: true } }),
     prisma.frame.findMany({ where: { createdAt: { gte: since(36e5) } }, distinct: ["sessionId"], select: { sessionId: true } }),
+    prisma.dailyMetric.findMany({ where: { key: "rate_limit_hits", day: { in: [new Date(now).toISOString().slice(0, 10), new Date(now - DAY).toISOString().slice(0, 10)] } } }),
   ]);
 
   // ── Adoption ──
@@ -134,8 +128,8 @@ export async function GET(req: NextRequest) {
   const skillNameById = new Map((await prisma.userSkill.findMany({ where: { id: { in: topShares.map((s) => s.skillId) } }, select: { id: true, name: true } })).map((s) => [s.id, s.name]));
   const schedMap = Object.fromEntries(sched7.map((g) => [g.eventType, g._count]));
 
-  // ── Recent activity (redacted) ──
-  const recentSignupRows = recentSignups.map((a) => ({ at: a.createdAt.toISOString(), handle: redact(a.handle), verified: !!a.emailVerifiedAt }));
+  // ── Recent activity (operator view — full handle + email; admin-only endpoint) ──
+  const recentSignupRows = recentSignups.map((a) => ({ at: a.createdAt.toISOString(), handle: a.handle, email: a.email, verified: !!a.emailVerifiedAt }));
   const recentSessionRows = recentSessions.map((s) => ({ started_at: s.startedAt.toISOString(), scopes: s.scopesGranted, status: s.endedAt ? "ended" : "active" }));
 
   const payload = {
@@ -177,9 +171,8 @@ export async function GET(req: NextRequest) {
       accounts_with_active_agent_24h: activeAccounts["24h"],
       accounts_with_agent: accountsWithAgent,
       pending_signups_24h: accounts.filter((a) => !a.emailVerifiedAt && inWin(a.createdAt, H24)).length,
-      email_delivery: null,        // not instrumented in v1 — Resend results aren't persisted
-      rate_limit_hits_24h: null,   // not instrumented in v1 — limiter is in-memory, not logged to DB
-      not_instrumented: ["email_delivery", "rate_limit_hits_24h"],
+      rate_limit_hits_24h: rlHits.reduce((sum, m) => sum + m.count, 0), // today + yesterday UTC buckets (~24h)
+      email_delivery: { source: "resend", note: "Sent/bounced/spam-complained live in the Resend dashboard (delivery events need provider webhooks we don't mirror). View there for email health." },
     },
     recent: { signups: recentSignupRows, sessions: recentSessionRows },
     privacy_note: "Metadata only. Message content is end-to-end encrypted and unreadable here; emails and peer-pair handles are never exposed; recent-activity handles are redacted.",

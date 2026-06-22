@@ -17,6 +17,21 @@
 /** @type {Map<string, Window>} */
 const windows = new Map();
 
+// Fire-and-forget persistent counter of rate-limit hits per UTC day, so the
+// admin dashboard can show "rate-limit hits (24h)" as an abuse signal. Lazy
+// prisma import (avoids a hard dep when this module is used in non-DB contexts);
+// never throws into the limiter path.
+function bumpRateLimitHit() {
+  import("./db.mjs").then(({ prisma }) => {
+    const day = new Date().toISOString().slice(0, 10);
+    return prisma.dailyMetric.upsert({
+      where: { day_key: { day, key: "rate_limit_hits" } },
+      update: { count: { increment: 1 } },
+      create: { day, key: "rate_limit_hits", count: 1 },
+    });
+  }).catch(() => {});
+}
+
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 let lastSweep = Date.now();
 
@@ -55,6 +70,7 @@ export function rateLimit(bucket, key, limit, windowMs) {
   w.count++;
 
   if (w.count > limit) {
+    bumpRateLimitHit();
     return {
       ok: false,
       remaining: 0,

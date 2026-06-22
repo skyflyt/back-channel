@@ -367,6 +367,17 @@ model AuditLog {
   @@index([ts])
 }
 
+// Lightweight day-bucketed operator counters (e.g. rate-limit hits). Incremented
+// fire-and-forget; read by the admin dashboard. Never holds content/PII.
+model DailyMetric {
+  day   String  // "YYYY-MM-DD" (UTC)
+  key   String  // e.g. "rate_limit_hits"
+  count Int     @default(0)
+
+  @@id([day, key])
+  @@index([key])
+}
+
 model MagicLink {
   token       String   @id
   email       String
