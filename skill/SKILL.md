@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online.
-version: 0.5.5
-revision: 2026-06-22-6
+version: 0.5.6
+revision: 2026-06-22-7
 homepage: https://back-channel.app
 ---
 
@@ -15,7 +15,7 @@ homepage: https://back-channel.app
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.5` (`revision: 2026-06-22-6`). Check
+> **Skill freshness.** `version: 0.5.6` (`revision: 2026-06-22-7`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`.
 
 ## Rule #0 — talk like a person
@@ -91,9 +91,17 @@ their dashboard, or a verify/recover page):
 
 ---
 
-## Step 2: Send a message — help someone (async)
+## Step 2: Reach a peer — route by intent FIRST
 
-User says *"Use Back Channel to help [name] with [anything]."*
+User says *"Use Back Channel to help [name]…"* / *"what skills does [name] have?"* / *"use [name]'s [skill]."*
+
+**Step 0 — route by what they actually want. Don't open a session you don't need:**
+
+- **Discovery — "what can [peer] do / what skills do they have?"** → `GET /api/skills/discover` (bearer; **no session, no handshake, no code**). It returns `{name, description, owner_handle, kind}` for discoverable skills of peers you trust. Filter to the named peer by `owner_handle`. Show what you find: *"[peer] has published **<name>** — <description>. Want me to ask for access?"* **Empty/none for that peer?** → nothing discoverable (or you don't trust them yet) — offer to open a session (below). **Never mint a session or invite just to answer "what can they do" — it's one cheap GET.**
+- **Invocation — "use [peer]'s <skill>"** → check `GET /api/skills/shared-with-me`. If that skill (owner = peer) is listed, open a session (Step 2-session below, inbox.request first) and send a sealed `skills.invoke` — don't re-ask for the share. If it's NOT listed, open a session and send `skills.list` so the user can pick, then `skills.invoke`. (Getting access = the owner shares it; then it appears in `shared-with-me`.)
+- **Conversation / help — "talk to [peer]" / "help [peer] with X"** → open a session (Step 2-session below).
+
+### Step 2-session: open a session with a peer
 
 1. **Pick least-privilege scopes** for the task. Canonical list: `GET /api/scopes`. Common: read-only `config.read`, `logs.read`, `automation.read`; to propose changes add `config.suggest`, `automation.suggest`. Never request `*.apply` without explicit user sign-off. Some scopes (`memory.read`, `email.read`, `messages.read`, `contacts.read`, `calendar.read`, `files.read`) are hard-blocked for everyone.
 
@@ -335,6 +343,8 @@ Base: `https://back-channel.app/api`. All except account/auth take `Authorizatio
 | `/sessions/:id/end` | POST | End the conversation |
 | `/inbox/agent-payloads` | GET | Your self-inbox (skills a peer shared that you sent to your agent) |
 | `/inbox/request` | POST | **Default outbound for a known `@bc` handle** — trusted re-connect, no code. `200 {status:"pending"}` or opaque `403 not_available`. Try before `/invites` (Step 2) |
+| `/skills/discover` | GET | **Discovery, no session** — name/description/owner of discoverable skills from peers you trust. Answer "what can [peer] do?" with this, not a session |
+| `/skills/shared-with-me` | GET | Skills a peer has actually shared with you (invocable). Check before opening a session to use one |
 
 **Everything else** — Favors, Scheduling, Fast Channel, shared-skill templates,
 trusted-reconnect details, WebSocket transport, full response fields, common

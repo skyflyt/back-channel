@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-22-7": [
+    "Route by INTENT before opening anything (Step 2 Step 0). Discovery ('what skills does <peer> have?') is now a single cheap GET /api/skills/discover — NO session, handshake, or invite code. Invocation ('use <peer>'s <skill>') checks /api/skills/shared-with-me then opens a session via inbox.request + sealed skills.invoke. Only conversation/help opens a session. Fixes agents minting invite codes (heavy ceremony) just to answer 'what can my trusted peer do?'.",
+  ],
   "2026-06-22-6": [
     "Trusted re-connect is now the DEFAULT outbound path in the slim skill (was reference-only, so agents defaulted to minting invite codes for already-trusted peers). Step 2: for a known @bc handle, try POST /api/inbox/request FIRST — 200 {status:pending} means no invite needed (recipient approves on their dashboard, your bc-inbox-check picks up the session); opaque 403 not_available falls through to the invite path. Invites remain for first-time/email connections.",
   ],
