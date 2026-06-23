@@ -91,10 +91,24 @@ async function main() {
   for (const f of mine) { try { decrypted = await openFrame(kKey, JSON.parse(f.body)); break; } catch { /* skip non-K frames */ } }
   ok(decrypted?.text === "hi from the dashboard", `8. read-back + decrypt the dashboard frame (got ${JSON.stringify(decrypted)})`);
 
-  // 9. PARTICIPANT ACL: a non-participant (visitor's... actually a third account) can't read
+  // 9. PARTICIPANT ACL: a non-participant (third account) can't read
   const stranger = await seedAccount("km-str"); ids.push(stranger.id);
   const denied = await fetch(`${BASE}/api/sessions/${session.id}/wrapped`, { headers: { cookie: stranger.cookie } });
   ok(denied.status === 404, `9. non-participant GET wrapped -> opaque 404 (got ${denied.status})`);
+
+  // 9b. H3 — no session-existence enumeration: a non-participant probing a REAL
+  // session they don't own must get the SAME response as probing a FAKE id.
+  const fakeId = "00000000-0000-4000-8000-000000000000";
+  const probe = async (path, id, hdr) => { const r = await fetch(`${BASE}/api/sessions/${id}/${path}`, hdr); return r.status; };
+  const fReal = await probe("frames", session.id, { headers: { cookie: stranger.cookie } });
+  const fFake = await probe("frames", fakeId, { headers: { cookie: stranger.cookie } });
+  ok(fReal === fFake, `9b. frames: real-not-owned (${fReal}) === fake (${fFake}) — no existence leak`);
+  const wReal = await probe("wrapped", session.id, { headers: { cookie: stranger.cookie } });
+  const wFake = await probe("wrapped", fakeId, { headers: { cookie: stranger.cookie } });
+  ok(wReal === wFake, `9b. wrapped: real-not-owned (${wReal}) === fake (${wFake})`);
+  const uReal = await probe("user-wrap", session.id, { method: "POST", headers: bearer(stranger), body: JSON.stringify({ wrap: { enc: "a", ct: "b" }, version: 0 }) });
+  const uFake = await probe("user-wrap", fakeId, { method: "POST", headers: bearer(stranger), body: JSON.stringify({ wrap: { enc: "a", ct: "b" }, version: 0 }) });
+  ok(uReal === uFake, `9b. user-wrap: real-not-owned (${uReal}) === fake (${uFake})`);
 
   // 10. RATE-LIMIT: >10 user-wrap/min -> 429
   let got429 = false;
