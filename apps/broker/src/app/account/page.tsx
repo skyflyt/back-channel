@@ -31,6 +31,30 @@ function agentHealth(lastUsedAt: string | null): AgentHealth {
   if (mins < 1440) return { key: "sleeping", label: "Sleeping", color: "#f97316" };
   return { key: "stale", label: "Stale", color: "#ef4444" };
 }
+
+type NavKey = "account" | "agents" | "friends" | "skills" | "messages" | "settings";
+const NAV: { key: NavKey; label: string; icon: string }[] = [
+  { key: "account", label: "Account", icon: "🔑" },
+  { key: "agents", label: "Agents", icon: "🤖" },
+  { key: "friends", label: "Friends", icon: "👥" },
+  { key: "skills", label: "Skills", icon: "🧩" },
+  { key: "messages", label: "Messages", icon: "💬" },
+  { key: "settings", label: "Settings", icon: "⚙️" },
+];
+// Deep-link anchors used by in-app scroll targets map onto a nav section.
+const ANCHOR_NAV: Record<string, NavKey> = { "connect-agent": "account", "friends-section": "friends", "skills-section": "skills", compose: "messages" };
+// Inline styles can't express media queries, so the responsive layout rides on
+// these class names + one injected stylesheet (sidebar -> horizontal bar on mobile).
+const RESPONSIVE_CSS = `
+.bc-shell { display: flex; gap: 22px; align-items: flex-start; }
+.bc-sidebar { position: sticky; top: 86px; flex: 0 0 210px; }
+.bc-main { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 860px) {
+  .bc-shell { flex-direction: column; gap: 14px; }
+  .bc-sidebar { position: static; flex: none; width: 100%; display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+  .bc-sidebar .bc-navitem { flex: 0 0 auto; }
+  .bc-topbar { padding-left: 16px !important; padding-right: 16px !important; }
+}`;
 const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork"], ["codex", "Codex"], ["claude_code", "Claude Code"], ["chatgpt", "ChatGPT"]] as const;
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
@@ -61,6 +85,7 @@ export default function AccountPage() {
   const [agentName, setAgentName] = useState("");
   const [agentRuntime, setAgentRuntime] = useState("other");
   const [agentCheck, setAgentCheck] = useState<Record<string, string>>({}); // per-agent "Check status" verdict
+  const [nav, setNav] = useState<NavKey>("account");
   const [exCode, setExCode] = useState<string | null>(null);
   const [exPrompt, setExPrompt] = useState<string>("");
   const [exExpiry, setExExpiry] = useState<number>(0);     // epoch ms
@@ -294,7 +319,8 @@ export default function AccountPage() {
       const j = await r.json();
       if (r.ok && j.code) {
         setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setAgentFormOpen(false);
-        document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        setNav("account");
+        setTimeout(() => document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
       }
     } catch { /* ignore */ }
     setBusy("");
@@ -378,8 +404,8 @@ export default function AccountPage() {
   // discover/shared cards' "Ask their agent" / "Ask to share" actions. Honest:
   // it just opens a real message thread to that friend (no hidden RPC).
   const askFriend = (handle: string, topic: string) => {
-    setSsResult(null); setSsErr(""); setSsTopic(topic); setSsFriend(handle); setSsOpen(true);
-    document.querySelector("#compose")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setSsResult(null); setSsErr(""); setSsTopic(topic); setSsFriend(handle); setSsOpen(true); setNav("messages");
+    setTimeout(() => document.querySelector("#compose")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   };
 
   const acceptInbox = async (id: string, who: string) => {
@@ -436,13 +462,30 @@ export default function AccountPage() {
   const lastUsed = me.api_key_last_used_at ? new Date(me.api_key_last_used_at).toLocaleString() : "never";
   const when = (iso: string) => new Date(iso).toLocaleString();
 
+  const initial = (me.display_name || me.handle || "?").trim().charAt(0).toUpperCase();
+  const navTitle = NAV.find((n) => n.key === nav)?.label ?? "Account";
   return (
-    <main style={s.page}>
-      <div style={s.wrap}>
-        <div style={s.headRow}>
-          <div><h1 style={s.h1}>{me.display_name || me.handle}</h1><p style={s.sub}>{me.handle} · {me.email}</p></div>
+    <div style={s.page}>
+      <style>{RESPONSIVE_CSS}</style>
+      <header style={s.topbar} className="bc-topbar">
+        <a href="/" style={s.brand}>◇ Back Channel</a>
+        <div style={s.topRight}>
+          <span style={s.avatar}>{initial}</span>
+          <div style={s.topWho}><div style={s.topHandle}>{me.display_name || me.handle}</div><div style={s.topEmail}>{me.handle}</div></div>
           <button onClick={signOut} style={s.signOut}>Sign out</button>
         </div>
+      </header>
+      <div style={s.wrap}>
+        <div className="bc-shell">
+          <nav className="bc-sidebar" style={s.sidebar}>
+            {NAV.map((n) => (
+              <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => setNav(n.key)}>
+                <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
+              </button>
+            ))}
+          </nav>
+          <main className="bc-main">
+            <h1 style={s.pageTitle}>{navTitle}</h1>
 
         {(() => {
           // First-user onboarding checklist — shows until all three are done.
@@ -457,12 +500,13 @@ export default function AccountPage() {
             <section style={s.onboard}>
               <h2 style={s.onboardH}>👋 Get started — {[hasAgent, hasFriend, hasSkill].filter(Boolean).length}/3</h2>
               <Step done={hasAgent} label="Connect an agent" />
-              <Step done={hasFriend} label="Add a friend" action={<button style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); document.querySelector("#friends-section")?.scrollIntoView({ behavior: "smooth" }); }}>Invite a friend</button>} />
-              <Step done={hasSkill} label="Try a skill from your circle, or publish your first" action={<button style={s.onboardBtn} onClick={() => document.querySelector("#skills-section")?.scrollIntoView({ behavior: "smooth" })}>See skills</button>} />
+              <Step done={hasFriend} label="Add a friend" action={<button style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>Invite a friend</button>} />
+              <Step done={hasSkill} label="Try a skill from your circle, or publish your first" action={<button style={s.onboardBtn} onClick={() => setNav("skills")}>See skills</button>} />
             </section>
           );
         })()}
 
+        {nav === "account" && (<>
         {/* Your API key */}
         <section style={s.card}>
           <h2 style={s.h2}>Your API key</h2>
@@ -536,6 +580,9 @@ export default function AccountPage() {
           </div>
         </section>
 
+        </>)}
+
+        {nav === "agents" && (<>
         {/* Registered agents */}
         <section style={s.card}>
           <h2 style={s.h2}>Registered agents{agents.length ? ` (${agents.length})` : ""}</h2>
@@ -568,6 +615,9 @@ export default function AccountPage() {
           })}
         </section>
 
+        </>)}
+
+        {nav === "messages" && (<>
         {/* Send a new message */}
         <section style={s.card} id="compose">
           <h2 style={s.h2}>Send a new message</h2>
@@ -670,6 +720,9 @@ export default function AccountPage() {
           ))}
         </section>
 
+        </>)}
+
+        {nav === "friends" && (<>
         {/* Friends */}
         <section style={s.card} id="friends-section">
           <h2 style={s.h2} title="Same as 'trusted peers' — friends are agents you've mutually trusted">Friends</h2>
@@ -733,6 +786,9 @@ export default function AccountPage() {
           ))}
         </section>
 
+        </>)}
+
+        {nav === "settings" && (<>
         {/* Settings */}
         <section style={s.card}>
           <h2 style={s.h2}>Settings</h2>
@@ -770,6 +826,9 @@ export default function AccountPage() {
           )}
         </section>
 
+        </>)}
+
+        {nav === "skills" && (<>
         {/* Your Skills */}
         <section style={s.card} id="skills-section">
           <h2 style={s.h2}>Your Skills</h2>
@@ -861,6 +920,9 @@ export default function AccountPage() {
           </section>
         )}
 
+        </>)}
+
+        {nav === "account" && (<>
         {/* Activity (audit log) */}
         <section style={s.card}>
           <h2 style={s.h2}>Account activity</h2>
@@ -883,25 +945,43 @@ export default function AccountPage() {
           )}
         </section>
 
-        <p style={s.footerNav}>
-          <a href="/faq" style={s.footLink}>FAQ</a> · <a href="/commands" style={s.footLink}>Commands</a> · <a href="/" style={s.footLink}>Home</a>
-        </p>
+        </>)}
+
+            <p style={s.footerNav}>
+              <a href="/faq" style={s.footLink}>FAQ</a> · <a href="/commands" style={s.footLink}>Commands</a> · <a href="/" style={s.footLink}>Home</a>
+            </p>
+          </main>
+        </div>
       </div>
-    </main>
+    </div>
   );
 }
 
 const s = {
-  page: { minHeight: "100vh", background: "#fafaf9", fontFamily: "system-ui, -apple-system, sans-serif", padding: "32px 16px" } as const,
-  wrap: { maxWidth: 680, margin: "0 auto" } as const,
+  page: { minHeight: "100vh", background: "#f6f8fb", fontFamily: "system-ui, -apple-system, sans-serif" } as const,
+  wrap: { maxWidth: 1080, margin: "0 auto", padding: "22px 20px 48px" } as const,
   headRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 20 } as const,
   h1: { fontSize: 26, fontWeight: 700, color: "#0f172a", margin: 0 } as const,
   sub: { margin: "4px 0 0", color: "#64748b", fontSize: 14 } as const,
+  // top bar
+  topbar: { position: "sticky", top: 0, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 28px", background: "rgba(255,255,255,0.85)", backdropFilter: "blur(8px)", borderBottom: "1px solid #e6ebf1" } as const,
+  brand: { fontSize: 16, fontWeight: 800, color: "#0f766e", textDecoration: "none", letterSpacing: "-0.01em" } as const,
+  topRight: { display: "flex", alignItems: "center", gap: 12 } as const,
+  avatar: { width: 34, height: 34, borderRadius: "50%", background: "linear-gradient(135deg,#0f766e,#0d9488)", color: "#fff", fontWeight: 700, fontSize: 15, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } as const,
+  topWho: { lineHeight: 1.2 } as const,
+  topHandle: { fontSize: 13.5, fontWeight: 700, color: "#0f172a" } as const,
+  topEmail: { fontSize: 12, color: "#94a3b8" } as const,
+  // sidebar
+  sidebar: { display: "flex", flexDirection: "column", gap: 2 } as const,
+  navItem: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid transparent", background: "none", color: "#475569", fontWeight: 600, fontSize: 14, cursor: "pointer", textAlign: "left", width: "100%", whiteSpace: "nowrap" } as const,
+  navItemActive: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid #cdeee8", background: "#e9f7f4", color: "#0f766e", fontWeight: 700, fontSize: 14, cursor: "pointer", textAlign: "left", width: "100%", whiteSpace: "nowrap" } as const,
+  navIcon: { fontSize: 15, width: 18, textAlign: "center" } as const,
+  pageTitle: { fontSize: 24, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.02em", margin: "0 0 16px" } as const,
   h2: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "0 0 12px" } as const,
   h3: { fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", margin: "0 0 8px" } as const,
   unreadBadge: { display: "inline-block", marginLeft: 8, background: "#fee2e2", color: "#b91c1c", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999 } as const,
   liveTag: { display: "inline-block", marginLeft: 8, color: "#dc2626", fontSize: 11, fontWeight: 700 } as const,
-  card: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 14, padding: 22, marginBottom: 14 } as const,
+  card: { background: "#fff", border: "1px solid #e8edf3", borderRadius: 16, padding: 24, marginBottom: 16, boxShadow: "0 1px 2px rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.03)" } as const,
   lead: { fontSize: 15, color: "#475569", lineHeight: 1.6, margin: "0 0 6px" } as const,
   soon: { fontSize: 13, color: "#94a3b8", fontStyle: "italic", margin: "6px 0 0" } as const,
   keyRow: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } as const,
@@ -931,7 +1011,7 @@ const s = {
   endBtn: { background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "5px 12px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0 } as const,
   settingRow: { display: "flex", alignItems: "center", gap: 10, fontSize: 15, color: "#334155" } as const,
   signOut: { background: "#fff", color: "#475569", border: "1px solid #cbd5e1", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", flexShrink: 0 } as const,
-  btn: { background: "#0f172a", color: "#fff", border: "none", borderRadius: 9, padding: "8px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer" } as const,
+  btn: { background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer", boxShadow: "0 1px 2px rgba(15,118,110,0.25)" } as const,
   btnLink: { display: "inline-block", background: "#0f172a", color: "#fff", borderRadius: 10, padding: "11px 22px", fontWeight: 600, fontSize: 15, textDecoration: "none", marginTop: 8 } as const,
   muted: { color: "#94a3b8", fontSize: 14 } as const,
   err: { color: "#b91c1c", fontSize: 15 } as const,
