@@ -319,7 +319,8 @@ function escapeHtml(s: string): string {
  */
 export async function sendFriendInviteEmail(args: { to: string; inviterHandle: string; note: string | null; url: string }): Promise<boolean> {
   const resend = client();
-  if (!resend) { console.log(`[friend-invite] (log-only) to=${args.to} from=${args.inviterHandle} url=${args.url}`); return false; }
+  // Never log the invite URL — it carries the single-use token. Log metadata only.
+  if (!resend) { console.log(`[friend-invite] (log-only) to=${args.to} from=${args.inviterHandle} url=(redacted: carries token)`); return false; }
   const subject = `${args.inviterHandle} wants to be friends on Back Channel`;
   const noteBlock = args.note ? `<p style="background:#f1f5f9;border-radius:10px;padding:12px 16px;color:#334155">&ldquo;${escapeHtml(args.note)}&rdquo;</p>` : "";
   const html = `

@@ -13,9 +13,9 @@ async function seed(h) { const key = rk(); const a = await prisma.account.create
 async function ck(key) { const vt = await fetch(`${BASE}/api/account/view-token-self`, { method:"POST", headers:{ authorization:`Bearer ${key}`, "content-type":"application/json" }, body:"{}" }).then(r=>r.json()); return cookies(await fetch(`${BASE}/api/auth/view-token-consume`, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ token: vt.view_token }) })); }
 
 async function main() {
-  const inviter = await seed("fr-inv"), invitee = await seed("fr-vee");
-  const ids = [inviter.id, invitee.id];
-  const ic = await ck(inviter.key), vc = await ck(invitee.key);
+  const inviter = await seed("fr-inv"), invitee = await seed("fr-vee"), attacker = await seed("fr-atk");
+  const ids = [inviter.id, invitee.id, attacker.id];
+  const ic = await ck(inviter.key), vc = await ck(invitee.key), xc = await ck(attacker.key);
 
   // 1. invite endpoint works (200, row created)
   const r = await fetch(`${BASE}/api/friends/invite`, { method:"POST", headers:{ cookie:`bc_session=${ic.bc_session}; bc_csrf=${ic.bc_csrf}`, "x-bc-csrf": ic.bc_csrf, "content-type":"application/json" }, body: JSON.stringify({ email: `someone-${tag}@example.com`, note:"hi" }) });
@@ -40,9 +40,22 @@ async function main() {
   const acc = await prisma.friendInvite.findFirst({ where: { tokenHash: hash(raw) } });
   ok(acc?.status === "accepted", "invite marked accepted");
 
-  // 4. idempotent re-accept
+  // 4. single-use: re-accepting a consumed token -> opaque 410
   const ar2 = await fetch(`${BASE}/api/friends/accept`, { method:"POST", headers:{ cookie:`bc_session=${vc.bc_session}; bc_csrf=${vc.bc_csrf}`, "x-bc-csrf": vc.bc_csrf, "content-type":"application/json" }, body: JSON.stringify({ token: raw }) });
-  ok(ar2.status === 200, `re-accept idempotent -> 200 (got ${ar2.status})`);
+  ok(ar2.status === 410, `single-use: re-accept consumed token -> 410 (got ${ar2.status})`);
+
+  // 4b. SECURITY: a leaked invite link can't be redeemed by a different account.
+  // Seed a fresh pending invite addressed to invitee, then have the ATTACKER
+  // (a different logged-in account) try to accept it.
+  const leaked = "fi_" + randomBytes(16).toString("base64url");
+  await prisma.friendInvite.create({ data: { inviterAccountId: inviter.id, inviteeEmail: invitee.email, tokenHash: hash(leaked), expiresAt: new Date(Date.now()+6e8) } });
+  const atk = await fetch(`${BASE}/api/friends/accept`, { method:"POST", headers:{ cookie:`bc_session=${xc.bc_session}; bc_csrf=${xc.bc_csrf}`, "x-bc-csrf": xc.bc_csrf, "content-type":"application/json" }, body: JSON.stringify({ token: leaked }) });
+  ok(atk.status === 410, `leaked link: wrong-account accept -> opaque 410 (got ${atk.status})`);
+  const xt1 = await prisma.trustedPeer.findUnique({ where: { accountId_trustedAccountId: { accountId: inviter.id, trustedAccountId: attacker.id } } });
+  const xt2 = await prisma.trustedPeer.findUnique({ where: { accountId_trustedAccountId: { accountId: attacker.id, trustedAccountId: inviter.id } } });
+  ok(!xt1 && !xt2, "leaked link: NO trust granted to the wrong account (either direction)");
+  const stillPending = await prisma.friendInvite.findFirst({ where: { tokenHash: hash(leaked) } });
+  ok(stillPending?.status === "pending", "leaked link: invite still pending (not consumed by attacker)");
 
   // 5. self-befriend guarded
   const rawSelf = "fi_" + randomBytes(16).toString("base64url");

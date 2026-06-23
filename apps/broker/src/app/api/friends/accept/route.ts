@@ -20,7 +20,16 @@ export async function POST(req: NextRequest) {
   if (!token) return NextResponse.json({ error: "token_required" }, { status: 400 });
 
   const inv = await prisma.friendInvite.findUnique({ where: { tokenHash: hashToken(token) }, include: { inviter: true } });
-  if (!inv || inv.expiresAt < new Date()) return NextResponse.json({ error: "invalid_or_expired" }, { status: 410 });
+  // Opaque 410 for every "you can't use this token" reason — unknown, expired,
+  // already consumed, OR addressed to a different email. A leaked invite link
+  // (forwarded/screenshotted) must NOT let just any logged-in account claim the
+  // trust grant: the caller's verified account email must match the invitee the
+  // inviter addressed. Same body for all so a caller can't probe which check failed.
+  const gone = () => NextResponse.json({ error: "invalid_or_expired" }, { status: 410 });
+  if (!inv || inv.expiresAt < new Date()) return gone();
+  if (inv.status !== "pending") return gone();                       // single-use: already accepted/consumed
+  const emailMatch = !!me.email && me.email.trim().toLowerCase() === inv.inviteeEmail.trim().toLowerCase();
+  if (!emailMatch) return gone();                                    // token addressed to someone else — leaked link
   if (inv.inviterAccountId === me.id) return NextResponse.json({ error: "cannot_befriend_self" }, { status: 400 });
 
   // Mutual trust: upsert both directed TrustedPeer rows (idempotent).
