@@ -15,12 +15,17 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@hpke/chacha20poly1305": "^1.8.0",
+    "@hpke/core": "^1.9.0",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
     "@prisma/client": "^5.22.0",
+    "@scure/bip39": "^1.6.0",
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "ws": "^8.18.0",
-    "resend": "^4.0.0"
+    "resend": "^4.0.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
