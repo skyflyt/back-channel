@@ -31,6 +31,17 @@ model Account {
   inboxCheckMinutes Int @default(10)       // cadence (minutes) the agent's bc-inbox-check should use
   admin            Boolean @default(false) // operator: can read metadata-only analytics (never content)
 
+  // --- user-side decryption / key mirror (docs/user-side-decryption.md v2.1) ---
+  // All nullable; presence of mirrorPub is the ONLY new broker-visible signal (I3):
+  // it means "this account enrolled browser access." Never holds KEK/priv/plaintext.
+  mirrorPub        String?   // X25519 public key (base64); agents wrap session keys to this
+  mirrorPubVersion Int       @default(0)   // bumped on rotation (B4); agents tag user_wrap with it
+  prfSalt          String?   // 32B WebAuthn PRF salt (base64, public input)
+  recoveryWrap     String?   // mirror_priv sealed under HKDF(RK); never returned except in recovery flow
+  recoveryCodeHash String?   // Argon2id(mnemonic) — UI typo check only, NOT a security control (S3)
+  mirrorRotatedAt  DateTime?
+  mirrorKeyWraps   MirrorKeyWrap[]
+
   invitesAsHost    Invite[]  @relation("HostInvites")
   invitesAsVisitor Invite[]  @relation("VisitorInvites")
   viewTokens       ViewToken[]
@@ -369,9 +380,31 @@ model Session {
   endReason      String?
   scopesGranted  String[]
   liveExpiresAt  DateTime?              // inbox-model pivot: when set + future, this thread is in opt-in real-time (live) mode; agents poll fast until it lapses, then revert to async inbox cadence
+  // Key mirror (v2.1 §6): map { [accountId]: { v, enc, decoy? } } — session content key K
+  // sealed (HPKE) to each participant's mirrorPub. ALWAYS populated (real or decoy)
+  // when a participant has mirrorPub, so presence never leaks per-session state (S1).
+  userWrap       Json?
 
   invite     Invite     @relation(fields: [inviteId], references: [id])
   auditLog   AuditLog[]
+}
+
+// One row per unlock method/device (v2.1 §4.4/§6). The KEK never leaves the browser;
+// we only store mirror_priv sealed under it. Multiple wraps = multi-device / passphrase
+// backup without invalidating the others (S8).
+model MirrorKeyWrap {
+  id                String   @id @default(uuid())
+  accountId         String
+  method            String   // "prf" | "passphrase"
+  label             String?  // "MacBook (Touch ID)", "passphrase", …
+  credentialId      String?  // WebAuthn credential id (public) for prf
+  kdfParams         Json?    // passphrase: { algo:"argon2id", m, t, p, salt } (NO kek_check — B2)
+  wrappedMirrorPriv String   // AEAD(KEK, mirror_priv, aad="mirror-priv-v1|accountId")
+  createdAt         DateTime @default(now())
+  lastUsedAt        DateTime?
+  account           Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
 }
 
 model AuditLog {
