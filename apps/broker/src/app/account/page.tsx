@@ -320,6 +320,14 @@ export default function AccountPage() {
     setBusy("");
   };
 
+  // Prefill the "Send a new message" composer and jump to it — used by the
+  // discover/shared cards' "Ask their agent" / "Ask to share" actions. Honest:
+  // it just opens a real message thread to that friend (no hidden RPC).
+  const askFriend = (handle: string, topic: string) => {
+    setSsResult(null); setSsErr(""); setSsTopic(topic); setSsFriend(handle); setSsOpen(true);
+    document.querySelector("#compose")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   const acceptInbox = async (id: string, who: string) => {
     if (!confirm(`Approve ${who}'s request to collaborate? A session will open and your agent will run it (you still approve the work once inside).`)) return;
     setBusy(`inbox:${id}`);
@@ -381,6 +389,25 @@ export default function AccountPage() {
           <div><h1 style={s.h1}>{me.display_name || me.handle}</h1><p style={s.sub}>{me.handle} · {me.email}</p></div>
           <button onClick={signOut} style={s.signOut}>Sign out</button>
         </div>
+
+        {(() => {
+          // First-user onboarding checklist — shows until all three are done.
+          const hasAgent = agents.length > 0;
+          const hasFriend = trust.some((t) => t.trusted) || fiSent;
+          const hasSkill = skills.length > 0 || Object.keys(sentToAgent).length > 0;
+          if (hasAgent && hasFriend && hasSkill) return null;
+          const Step = ({ done, label, action }: { done: boolean; label: string; action?: React.ReactNode }) => (
+            <div style={s.checkRow}><span style={{ ...s.checkBox, ...(done ? s.checkDone : {}) }}>{done ? "✓" : ""}</span><span style={done ? s.checkLblDone : s.checkLbl}>{label}</span>{!done && action}</div>
+          );
+          return (
+            <section style={s.onboard}>
+              <h2 style={s.onboardH}>👋 Get started — {[hasAgent, hasFriend, hasSkill].filter(Boolean).length}/3</h2>
+              <Step done={hasAgent} label="Connect an agent" />
+              <Step done={hasFriend} label="Add a friend" action={<button style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); document.querySelector("#friends-section")?.scrollIntoView({ behavior: "smooth" }); }}>Invite a friend</button>} />
+              <Step done={hasSkill} label="Try a skill from your circle, or publish your first" action={<button style={s.onboardBtn} onClick={() => document.querySelector("#skills-section")?.scrollIntoView({ behavior: "smooth" })}>See skills</button>} />
+            </section>
+          );
+        })()}
 
         {/* Your API key */}
         <section style={s.card}>
@@ -473,7 +500,7 @@ export default function AccountPage() {
         </section>
 
         {/* Send a new message */}
-        <section style={s.card}>
+        <section style={s.card} id="compose">
           <h2 style={s.h2}>Send a new message</h2>
           {!ssOpen && !ssResult && (
             <>
@@ -575,7 +602,7 @@ export default function AccountPage() {
         </section>
 
         {/* Friends */}
-        <section style={s.card}>
+        <section style={s.card} id="friends-section">
           <h2 style={s.h2} title="Same as 'trusted peers' — friends are agents you've mutually trusted">Friends</h2>
           <p style={s.soon}>People you&apos;ve worked with before. Add someone as a friend to let their agent reach yours again without a new invite code — you still approve each session. (Same as &ldquo;trusted peers&rdquo;.)</p>
           {/* Invite a friend (Phase 3) */}
@@ -675,7 +702,7 @@ export default function AccountPage() {
         </section>
 
         {/* Your Skills */}
-        <section style={s.card}>
+        <section style={s.card} id="skills-section">
           <h2 style={s.h2}>Your Skills</h2>
           <p style={s.soon}>Capabilities your agent has published. Share one with a friend and they can run it during a session (it runs on your side — they only see the result).</p>
           {skills.length === 0 && <p style={s.muted}>No skills published yet. Your agent publishes these; they show up here to share.</p>}
@@ -713,36 +740,53 @@ export default function AccountPage() {
           })}
         </section>
 
-        {/* Shared with you — skills a friend shared; send to your own agent */}
+        {/* Shared with you — skills a friend shared; install (template) or invoke (RPC) */}
         {sharedWithMe.length > 0 && (
           <section style={s.card}>
-            <h2 style={s.h2}>Shared with you</h2>
-            <p style={s.soon}>Skills your friends have shared with you. &ldquo;Send to my agent&rdquo; drops it in your own inbox — the next time your agent checks in, it picks it up and sets it up. Nothing happens until then.</p>
-            {sharedWithMe.map((sk) => (
-              <div key={sk.id} style={s.row}>
-                <div style={s.rowMain}>
-                  <strong>{sk.name}</strong> <span style={s.roleTag}>{sk.kind}</span> <span style={s.rowMeta}>· {sk.owner_handle}</span>
-                  {sk.description && <div style={s.goal}>{sk.description}</div>}
+            <h2 style={s.h2}>🎁 Shared with you</h2>
+            <p style={s.soon}>Skills your friends shared directly with you. A <strong>template</strong> installs into your own agent (&ldquo;Send to my agent&rdquo; drops it in your inbox; nothing happens until your agent next checks in). An <strong>RPC</strong> skill runs on <em>their</em> side — &ldquo;Ask their agent&rdquo; starts a message to use it.</p>
+            {sharedWithMe.map((sk) => {
+              const isTemplate = sk.kind === "template";
+              return (
+                <div key={sk.id} style={s.skillCard}>
+                  <span style={s.skillIcon}>{isTemplate ? "🧩" : "⚡"}</span>
+                  <div style={s.rowMain}>
+                    <div style={s.skillName}>{sk.name}</div>
+                    {sk.description && <div style={s.skillDesc}>{sk.description}</div>}
+                    <div style={s.skillBy}>Shared by <strong>{sk.owner_handle.replace(/@bc$/, "")}&rsquo;s agent</strong> <span style={s.rowMeta}>({sk.owner_handle})</span></div>
+                  </div>
+                  {isTemplate
+                    ? (sentToAgent[sk.id]
+                        ? <span style={s.okTag}>✓ sent to your agent</span>
+                        : <button style={s.skillBtn} disabled={busy === `send:${sk.id}`} onClick={() => sendToMyAgent(sk.id)}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>)
+                    : <button style={s.skillBtn} onClick={() => askFriend(sk.owner_handle, `use your “${sk.name}” skill: `)}>Ask their agent</button>}
                 </div>
-                {sentToAgent[sk.id]
-                  ? <span style={s.okTag}>✓ sent to your agent</span>
-                  : <button style={s.btn} disabled={busy === `send:${sk.id}`} onClick={() => sendToMyAgent(sk.id)}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>}
-              </div>
-            ))}
+              );
+            })}
           </section>
         )}
 
-        {/* Discoverable in your circle */}
+        {/* Discoverable in your circle — grouped & personified per friend */}
         {discover.length > 0 && (
           <section style={s.card}>
-            <h2 style={s.h2}>Discoverable from your friends</h2>
-            <p style={s.soon}>Skills your friends have made discoverable. To use one, ask them to share it with you.</p>
-            {discover.map((d) => (
-              <div key={d.id} style={s.row}>
-                <div style={s.rowMain}>
-                  <strong>{d.name}</strong> <span style={s.roleTag}>{d.kind}</span> <span style={s.rowMeta}>· {d.owner_handle}</span>
-                  {d.description && <div style={s.goal}>{d.description}</div>}
-                </div>
+            <h2 style={s.h2}>✨ Skills in your circle</h2>
+            <p style={s.soon}>What your friends&rsquo; agents can do. Ask a friend to share a skill and it shows up under &ldquo;Shared with you&rdquo; above.</p>
+            {Object.entries(discover.reduce<Record<string, DiscoverSkill[]>>((acc, d) => { (acc[d.owner_handle] ??= []).push(d); return acc; }, {})).map(([owner, items]) => (
+              <div key={owner} style={{ marginTop: 14 }}>
+                <p style={s.circleHead}><strong>{owner.replace(/@bc$/, "")}&rsquo;s agent</strong> has {items.length} skill{items.length === 1 ? "" : "s"} you can use</p>
+                {items.map((d) => {
+                  const isTemplate = d.kind === "template";
+                  return (
+                    <div key={d.id} style={s.skillCard}>
+                      <span style={s.skillIcon}>{isTemplate ? "🧩" : "⚡"}</span>
+                      <div style={s.rowMain}>
+                        <div style={s.skillName}>{d.name}</div>
+                        {d.description && <div style={s.skillDesc}>{d.description}</div>}
+                      </div>
+                      <button style={s.skillBtnGhost} onClick={() => askFriend(d.owner_handle, isTemplate ? `share your “${d.name}” skill with me` : `use your “${d.name}” skill: `)}>{isTemplate ? "Ask to share" : "Ask their agent"}</button>
+                    </div>
+                  );
+                })}
               </div>
             ))}
           </section>
@@ -835,4 +879,20 @@ const s = {
   exMeter: { height: 4, background: "#e2e8f0", borderRadius: 999, overflow: "hidden", marginTop: 10 } as const,
   exMeterFill: { height: "100%", background: "#0f766e", transition: "width 1s linear" } as const,
   promptPre: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, lineHeight: 1.55, color: "#0f172a", background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "10px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 } as const,
+  onboard: { background: "linear-gradient(135deg,#ecfeff,#f0fdfa)", border: "1px solid #99f6e4", borderRadius: 14, padding: 20, marginBottom: 14 } as const,
+  onboardH: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "0 0 14px" } as const,
+  checkRow: { display: "flex", alignItems: "center", gap: 10, padding: "6px 0" } as const,
+  checkBox: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "2px solid #cbd5e1", background: "#fff", color: "#fff", fontSize: 13, fontWeight: 800, flexShrink: 0 } as const,
+  checkDone: { background: "#0f766e", borderColor: "#0f766e" } as const,
+  checkLbl: { fontSize: 14, color: "#0f172a", fontWeight: 600 } as const,
+  checkLblDone: { fontSize: 14, color: "#64748b", textDecoration: "line-through" } as const,
+  onboardBtn: { marginLeft: "auto", background: "#0f766e", color: "#fff", border: "none", borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" } as const,
+  skillCard: { display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 0", borderTop: "1px solid #f1f5f9" } as const,
+  skillIcon: { fontSize: 22, lineHeight: "26px", flexShrink: 0 } as const,
+  skillName: { fontSize: 15, fontWeight: 700, color: "#0f172a" } as const,
+  skillDesc: { fontSize: 13.5, color: "#334155", margin: "3px 0 0", lineHeight: 1.5 } as const,
+  skillBy: { fontSize: 12.5, color: "#64748b", marginTop: 6 } as const,
+  circleHead: { fontSize: 14, color: "#0f172a", margin: "0 0 2px" } as const,
+  skillBtn: { alignSelf: "center", background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
+  skillBtnGhost: { alignSelf: "center", background: "#fff", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
 };

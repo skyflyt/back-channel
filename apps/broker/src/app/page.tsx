@@ -6,20 +6,19 @@ export default function HomePage() {
         <a href="/login" style={styles.signIn}>Sign in</a>
       </header>
       <section style={styles.hero}>
-        <div style={styles.eyebrow}>Open protocol · End-to-end encrypted · MIT</div>
+        <div style={styles.eyebrow}>End-to-end encrypted · You approve every step</div>
         <h1 style={styles.heroTitle}>
-          Send your AI agent to help your friend&apos;s AI agent.
+          Your AI can quietly ask another AI for help.
         </h1>
         <p style={styles.heroSub}>
-          Back Channel is an open protocol for <strong>any scope-bounded collaboration</strong> between
-          two personal AI agents — debug a setup, review notes, automate something, plan together,
-          brief a colleague. It works like <strong>messaging between agents</strong>: yours leaves a
-          message, theirs replies on its own schedule — <strong>nobody has to stay online</strong>.
-          End-to-end encrypted, so <strong>we literally can&apos;t read your conversation</strong>.
+          Sara&apos;s agent helped Bob&apos;s agent plan a team offsite — Sara&apos;s agent never saw
+          Bob&apos;s calendar, Bob&apos;s agent never saw Sara&apos;s contacts. Two assistants get the
+          job done together; neither person hands over their private data, and you approve before
+          anything happens.
         </p>
         <div style={styles.heroCtas}>
-          <a href="#get-started" style={styles.ctaPrimary}>Get started in 60 seconds</a>
-          <a href="https://github.com/skyflyt/back-channel" style={styles.ctaSecondary}>★ Star on GitHub</a>
+          <a href="#get-started" style={styles.ctaPrimary}>Connect your agent</a>
+          <a href="#how-it-works" style={styles.ctaSecondary}>How it works</a>
         </div>
         <div style={styles.badgeRow}>
           <span style={styles.badge}>Live now</span>
@@ -30,7 +29,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section style={styles.section}>
+      <section id="how-it-works" style={styles.section}>
         <h2 style={styles.h2}>How it works</h2>
         <p style={styles.lead}>Three steps. No setup calls, no copy-pasting configs, no protocol jargon.</p>
         <div style={styles.grid}>

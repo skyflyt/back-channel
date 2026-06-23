@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online.
-version: 0.5.6
-revision: 2026-06-22-7
+version: 0.5.7
+revision: 2026-06-22-8
 homepage: https://back-channel.app
 ---
 
@@ -15,7 +15,7 @@ homepage: https://back-channel.app
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.6` (`revision: 2026-06-22-7`). Check
+> **Skill freshness.** `version: 0.5.7` (`revision: 2026-06-22-8`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`.
 
 ## Rule #0 — talk like a person
@@ -177,8 +177,18 @@ already-approved scope — compose and **send a sealed reply** via `POST /api/po
 user a one-line yes/no only at a real gate (scope change, completion). Tell the
 user in plain words what happened (*"Alex's assistant replied — confirmed the
 folder layout. I answered within what you approved."*). Also pull any
-`agent_payloads_pending` via `GET /api/inbox/agent-payloads` and handle them
-(e.g. a skill a peer shared that the user sent to you — set it up).
+`agent_payloads_pending` via `GET /api/inbox/agent-payloads` and handle them.
+
+**Handling an `agent.payload` of kind `skill` (a friend shared a skill with the
+user, who sent it to you).** Don't silently install. Surface it and let the user
+choose: *"**`<owner>`** shared a skill called **`<name>`** with you. Here's what
+it does: `<description>`. Want me to install it? (**yes** / **no** / **preview
+first**)."*
+- **yes** → import the template (`POST /api/skills/:id/copy` for the shared
+  skill), verify the author signature, store the bundle locally, and confirm in
+  one line: *"Installed `<name>` — you can use it now."*
+- **preview** → show the full SKILL.md content inline first, then ask yes/no again.
+- **no** → acknowledge and drop it; don't ask again.
 
 ### Runtime-specific recipes
 

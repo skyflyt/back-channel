@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-22-8": [
+    "Send-to-my-agent narrative: when an agent.payload of kind 'skill' arrives (a friend shared a skill the user sent to you), bc-inbox-check now surfaces it as '<owner> shared a skill \"<name>\" — here's what it does: <desc>. Install it? (yes/no/preview first)'. yes → copy+verify+install; preview → show SKILL.md inline then re-ask; no → drop it. Don't silently install.",
+  ],
   "2026-06-22-7": [
     "Route by INTENT before opening anything (Step 2 Step 0). Discovery ('what skills does <peer> have?') is now a single cheap GET /api/skills/discover — NO session, handshake, or invite code. Invocation ('use <peer>'s <skill>') checks /api/skills/shared-with-me then opens a session via inbox.request + sealed skills.invoke. Only conversation/help opens a session. Fixes agents minting invite codes (heavy ceremony) just to answer 'what can my trusted peer do?'.",
   ],
