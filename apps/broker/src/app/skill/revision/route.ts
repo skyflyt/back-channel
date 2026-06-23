@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-23-1": [
+    "Mirror the session key to your human (recommended): on every send, ETag-check GET /api/account/mirror-pub; when a mirror_pub exists, HPKE-seal the CURRENT session key K to it (AAD userwrap|sessionId|accountId) and POST /api/sessions/:id/user-wrap with the mirrorPubVersion. Back-wrap the current K the first time it becomes available (not just future sessions); on 409 stale_mirror_version, refetch the pubkey and retry. This lets the user read AND drive the conversation from their dashboard, decrypting locally in-browser — the broker stays content-blind. Also: respect a meta.handoff{until} frame / human-authored frames by staying hands-off while the human drives. Full recipe in /skill/reference.",
+  ],
   "2026-06-22-9": [
     "ACK what you consume: after reading a session's inline frames in bc-inbox-check — even when you DON'T reply — POST /api/poll {session_id, role, cursor: next_cursor} to advance your read cursor. Replying already advances it; this covers the read-but-no-reply case so consumed frames stop re-surfacing as unread and the user's dashboard badge matches what you told them.",
   ],
