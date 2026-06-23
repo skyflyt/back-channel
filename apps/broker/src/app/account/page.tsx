@@ -101,6 +101,8 @@ export default function AccountPage() {
   const [discover, setDiscover] = useState<DiscoverSkill[]>([]);
   const [sharedWithMe, setSharedWithMe] = useState<SharedSkill[]>([]);
   const [sentToAgent, setSentToAgent] = useState<Record<string, boolean>>({});
+  const [installPrompt, setInstallPrompt] = useState<Record<string, string>>({}); // paste-now prompt per shared skill (P2.6)
+  const [installCopiedId, setInstallCopiedId] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<string | null>(null);
   // "Connect a new agent" — 2-step: name+runtime, then exchange code (raw key never shown).
   const [agents, setAgents] = useState<AgentRow[]>([]);
@@ -414,11 +416,17 @@ export default function AccountPage() {
     setBusy("");
   };
 
-  const sendToMyAgent = async (skillId: string) => {
-    setBusy(`send:${skillId}`);
+  const sendToMyAgent = async (sk: SharedSkill) => {
+    setBusy(`send:${sk.id}`);
     try {
-      const r = await fetch(`/api/skills/${skillId}/send-to-me`, { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } });
-      if (r.ok) setSentToAgent((m) => ({ ...m, [skillId]: true }));
+      const r = await fetch(`/api/skills/${sk.id}/send-to-me`, { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } });
+      if (r.ok) {
+        setSentToAgent((m) => ({ ...m, [sk.id]: true }));
+        // P2.6: also offer a paste-now prompt for impatient users. Idempotent install
+        // (skip if already set up) — same pattern the skill's agent.payload handler uses.
+        const owner = sk.owner_handle.replace(/@bc$/, "");
+        setInstallPrompt((m) => ({ ...m, [sk.id]: `Using your Back Channel skill: install the skill "${sk.name}" that ${owner} shared with me. It's already queued to my Back Channel inbox, but set it up now instead of waiting — call POST https://back-channel.app/api/skills/${sk.id}/copy, verify the template signature, install it locally, then tell me in plain words what it does. If you've already installed "${sk.name}" at this version, just skip it (no duplicate).` }));
+      }
     } catch { /* ignore */ }
     setBusy("");
   };
@@ -957,18 +965,30 @@ export default function AccountPage() {
             {sharedWithMe.map((sk) => {
               const isTemplate = sk.kind === "template";
               return (
-                <div key={sk.id} style={s.skillCard}>
-                  <span style={s.skillIcon}>{isTemplate ? "🧩" : "⚡"}</span>
-                  <div style={s.rowMain}>
-                    <div style={s.skillName}>{sk.name}</div>
-                    {sk.description && <div style={s.skillDesc}>{sk.description}</div>}
-                    <div style={s.skillBy}>Shared by <strong>{sk.owner_handle.replace(/@bc$/, "")}&rsquo;s agent</strong> <span style={s.rowMeta}>({sk.owner_handle})</span></div>
+                <div key={sk.id}>
+                  <div style={s.skillCard}>
+                    <span style={s.skillIcon}>{isTemplate ? "🧩" : "⚡"}</span>
+                    <div style={s.rowMain}>
+                      <div style={s.skillName}>{sk.name}</div>
+                      {sk.description && <div style={s.skillDesc}>{sk.description}</div>}
+                      <div style={s.skillBy}>Shared by <strong>{sk.owner_handle.replace(/@bc$/, "")}&rsquo;s agent</strong> <span style={s.rowMeta}>({sk.owner_handle})</span></div>
+                    </div>
+                    {isTemplate
+                      ? (sentToAgent[sk.id]
+                          ? <span style={s.okTag}>✓ sent to your agent</span>
+                          : <button style={s.skillBtn} disabled={busy === `send:${sk.id}`} onClick={() => sendToMyAgent(sk)}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>)
+                      : <button style={s.skillBtn} onClick={() => askFriend(sk.owner_handle, `use your “${sk.name}” skill: `)}>Ask their agent</button>}
                   </div>
-                  {isTemplate
-                    ? (sentToAgent[sk.id]
-                        ? <span style={s.okTag}>✓ sent to your agent</span>
-                        : <button style={s.skillBtn} disabled={busy === `send:${sk.id}`} onClick={() => sendToMyAgent(sk.id)}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>)
-                    : <button style={s.skillBtn} onClick={() => askFriend(sk.owner_handle, `use your “${sk.name}” skill: `)}>Ask their agent</button>}
+                  {installPrompt[sk.id] && (
+                    <div style={{ ...s.reveal, marginTop: 8 }}>
+                      <p style={s.revealLabel}>✅ Queued — your agent picks this up on its next check (~10 min). Don&apos;t want to wait? Paste this into your agent to install it now:</p>
+                      <pre style={s.promptPre}>{installPrompt[sk.id]}</pre>
+                      <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(installPrompt[sk.id]).catch(() => {}); setInstallCopiedId(sk.id); setTimeout(() => setInstallCopiedId(null), 1500); }}>{installCopiedId === sk.id ? "✓ Copied" : "Copy prompt"}</button>
+                        <button style={s.signOut} onClick={() => setInstallPrompt((m) => { const n = { ...m }; delete n[sk.id]; return n; })}>Done</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
