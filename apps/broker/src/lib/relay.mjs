@@ -97,7 +97,7 @@ const TTL_PERSIST_THRESHOLD_MS = 60 * 1000;
 // Current skill revision — surfaced to agents on connect / in poll responses so
 // a stale copy is noticed immediately. Keep in sync with skill/SKILL.md's
 // `revision:` frontmatter (GET /skill/revision reads the file authoritatively).
-const CURRENT_SKILL_REVISION = "2026-06-22-8"; // keep in sync with skill/SKILL.md frontmatter
+const CURRENT_SKILL_REVISION = "2026-06-22-9"; // keep in sync with skill/SKILL.md frontmatter
 
 // Frames whose `type` the broker routes on — allowed in plaintext. Everything
 // else is "content" and should be a sealed `{type:"enc",...}` envelope.
@@ -113,6 +113,15 @@ const PLAINTEXT_CONTROL_TYPES = new Set([
 let plaintextContentFrameCount = 0;
 function frameType(text) {
   try { return JSON.parse(text)?.type; } catch { return undefined; }
+}
+
+// A "content" frame is anything that isn't a broker/handshake control frame — i.e.
+// the sealed messages a human would think of as conversation. Used for the
+// human-facing unread count so protocol noise never shows as "unread". Mirrors
+// the broker's existing type-only inspection (it reads `type`, never the body).
+function isContentFrame(text) {
+  const t = frameType(text);
+  return !PLAINTEXT_CONTROL_TYPES.has(t);
 }
 
 // Idle-recipient notifications: if a CONTENT frame is buffered for a role that
@@ -671,7 +680,7 @@ export async function sessionState(sessionId, role, session) {
  * @param {Role} role
  * @param {{ scopesGranted: string[], invite: { expiresAt: Date } }} session
  * @param {{ includeFrames?: boolean, max?: number }} [opts]
- * @returns {Promise<{ unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, frames?: string[], truncated?: boolean }>}
+ * @returns {Promise<{ unread_count: number, content_unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, frames?: string[], truncated?: boolean }>}
  */
 export async function sessionUnread(sessionId, role, session, opts = {}) {
   const slot = await getOrCreateSlot(sessionId, session);
@@ -679,9 +688,15 @@ export async function sessionUnread(sessionId, role, session, opts = {}) {
   const unread = slot.log[role].filter((f) => f.seq > cur);
   const last = slot.log[role][slot.log[role].length - 1];
   const max = opts.max ?? 50;
-  /** @type {{ unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, frames?: string[], truncated?: boolean }} */
+  // `unread_count` counts EVERY unread frame (the agent still needs handshake/
+  // control frames to set up ECDH). `content_unread_count` excludes plaintext
+  // control frames (handshake.pubkey, ping, peer.joined, …) so the human-facing
+  // /account badge doesn't show protocol noise as "unread messages".
+  const contentUnread = unread.filter((f) => isContentFrame(f.data)).length;
+  /** @type {{ unread_count: number, content_unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, frames?: string[], truncated?: boolean }} */
   const out = {
     unread_count: unread.length,
+    content_unread_count: contentUnread,
     last_frame_at: last ? new Date(last.ts).toISOString() : null,
     next_cursor: unread.length ? unread[Math.min(unread.length, max) - 1].seq : cur,
     peer_present: peerPresent(slot, role),

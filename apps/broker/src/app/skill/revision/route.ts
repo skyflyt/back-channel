@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Short human-readable highlights per revision. Bump alongside SKILL.md's
 // `revision:` so agents can show users what changed when they re-fetch.
 const CHANGES: Record<string, string[]> = {
+  "2026-06-22-9": [
+    "ACK what you consume: after reading a session's inline frames in bc-inbox-check — even when you DON'T reply — POST /api/poll {session_id, role, cursor: next_cursor} to advance your read cursor. Replying already advances it; this covers the read-but-no-reply case so consumed frames stop re-surfacing as unread and the user's dashboard badge matches what you told them.",
+  ],
   "2026-06-22-8": [
     "Send-to-my-agent narrative: when an agent.payload of kind 'skill' arrives (a friend shared a skill the user sent to you), bc-inbox-check now surfaces it as '<owner> shared a skill \"<name>\" — here's what it does: <desc>. Install it? (yes/no/preview first)'. yes → copy+verify+install; preview → show SKILL.md inline then re-ask; no → drop it. Don't silently install.",
   ],
