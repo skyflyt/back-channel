@@ -32,6 +32,9 @@ const LABELS: Record<string, string> = {
   "dashboard.bootstrap_prompt_revealed": "You revealed a setup prompt to connect an agent",
   "key.exchange_initiated": "You created a code to connect a new agent",
   "key.exchange_consumed": "A new agent connected to your account",
+  "friend.invited": "You invited a friend",
+  "friend.accepted": "You became friends with someone who invited you",
+  "friend.added": "Someone you invited accepted — you're now friends",
   "agent_token.revoked": "You revoked an agent's access",
 };
 

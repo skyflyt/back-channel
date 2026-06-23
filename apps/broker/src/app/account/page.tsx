@@ -71,6 +71,12 @@ export default function AccountPage() {
   const [liveDefault, setLiveDefault] = useState(15);
   const [inboxEnabled, setInboxEnabled] = useState(true);
   const [inboxMinutes, setInboxMinutes] = useState(10);
+  // Invite a friend (Phase 3)
+  const [fiOpen, setFiOpen] = useState(false);
+  const [fiEmail, setFiEmail] = useState("");
+  const [fiNote, setFiNote] = useState("");
+  const [fiSent, setFiSent] = useState(false);
+  const [fiErr, setFiErr] = useState("");
 
   const loadSessions = useCallback(async () => {
     try {
@@ -278,6 +284,18 @@ export default function AccountPage() {
   const saveLiveDefault = async (minutes: number) => {
     setLiveDefault(minutes); setBusy("live");
     await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ live_mode_default_minutes: minutes }) }).catch(() => {});
+    setBusy("");
+  };
+
+  const inviteFriend = async () => {
+    setFiErr("");
+    if (!fiEmail.includes("@")) { setFiErr("Enter your friend's email."); return; }
+    setBusy("friendinvite");
+    try {
+      const r = await fetch("/api/friends/invite", { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ email: fiEmail.trim(), note: fiNote.trim() || undefined }) });
+      if (r.ok) { setFiSent(true); setFiOpen(false); setFiEmail(""); setFiNote(""); }
+      else setFiErr("Couldn't send — check the email and try again.");
+    } catch { setFiErr("Something went wrong — try again."); }
     setBusy("");
   };
 
@@ -560,7 +578,27 @@ export default function AccountPage() {
         <section style={s.card}>
           <h2 style={s.h2} title="Same as 'trusted peers' — friends are agents you've mutually trusted">Friends</h2>
           <p style={s.soon}>People you&apos;ve worked with before. Add someone as a friend to let their agent reach yours again without a new invite code — you still approve each session. (Same as &ldquo;trusted peers&rdquo;.)</p>
-          {trust.length === 0 && <p style={s.muted}>No friends yet — people show up here after your first session together.</p>}
+          {/* Invite a friend (Phase 3) */}
+          <div style={{ marginBottom: 14 }}>
+            {fiSent ? (
+              <div style={s.reveal}><p style={s.revealLabel}>✅ Invitation sent!</p><p style={s.meta}>We emailed them a link to set up Back Channel and connect with you. When they accept, you&apos;ll become friends automatically.</p><button style={s.smallLink2} onClick={() => setFiSent(false)}>Invite another</button></div>
+            ) : !fiOpen ? (
+              <button style={s.btn} onClick={() => { setFiErr(""); setFiOpen(true); }}>＋ Invite a friend</button>
+            ) : (
+              <div>
+                <label style={s.fieldLabel}>Your friend&apos;s email</label>
+                <input style={s.input} type="email" value={fiEmail} onChange={(e) => setFiEmail(e.target.value)} placeholder="friend@email.com" />
+                <label style={s.fieldLabel}>A note (optional)</label>
+                <input style={s.input} value={fiNote} onChange={(e) => setFiNote(e.target.value)} placeholder="Let&apos;s connect our agents on Back Channel" />
+                {fiErr && <p style={s.err}>{fiErr}</p>}
+                <div style={{ marginTop: 10 }}>
+                  <button style={s.btn} disabled={busy === "friendinvite"} onClick={inviteFriend}>{busy === "friendinvite" ? "Sending…" : "Send invite"}</button>
+                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setFiOpen(false); setFiErr(""); }}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+          {trust.length === 0 && <p style={s.muted}>No friends yet — invite one above, or they show up here after your first session together.</p>}
           {trust.map((t) => (
             <div key={t.handle} style={s.row}>
               <div style={s.rowMain}>

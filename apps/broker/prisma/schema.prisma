@@ -50,6 +50,27 @@ model Account {
   agentPayloads    AgentPayload[]
   exchangeCodes    ExchangeCode[]
   agentTokens      AgentToken[]
+  friendInvites    FriendInvite[]
+}
+
+// Invite-a-friend (Phase 3). An existing user invites someone by email; the
+// invitee gets a magic link to a befriend page. When they sign up + accept, the
+// broker auto-creates MUTUAL trust (both TrustedPeer rows) — the invite IS the
+// trust grant. Token hashed at rest.
+model FriendInvite {
+  id               String   @id @default(uuid())
+  inviterAccountId String
+  inviteeEmail     String                  // lowercased
+  tokenHash        String   @unique         // sha256(raw); raw only in the email link
+  note             String?
+  status           String   @default("pending") // pending | accepted
+  createdAt        DateTime @default(now())
+  expiresAt        DateTime                 // createdAt + 14d
+  acceptedAt       DateTime?
+  inviter          Account  @relation(fields: [inviterAccountId], references: [id], onDelete: Cascade)
+
+  @@index([inviterAccountId])
+  @@index([inviteeEmail])
 }
 
 // Per-agent API tokens (per-agent-tokens Phase 1). Each connected agent gets its

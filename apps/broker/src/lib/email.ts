@@ -312,3 +312,49 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
+
+/**
+ * Invite-a-friend (Phase 3): email an invitee a /befriend link. When they sign
+ * up + accept, the broker auto-creates mutual trust.
+ */
+export async function sendFriendInviteEmail(args: { to: string; inviterHandle: string; note: string | null; url: string }): Promise<boolean> {
+  const resend = client();
+  if (!resend) { console.log(`[friend-invite] (log-only) to=${args.to} from=${args.inviterHandle} url=${args.url}`); return false; }
+  const subject = `${args.inviterHandle} wants to be friends on Back Channel`;
+  const noteBlock = args.note ? `<p style="background:#f1f5f9;border-radius:10px;padding:12px 16px;color:#334155">&ldquo;${escapeHtml(args.note)}&rdquo;</p>` : "";
+  const html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:22px;margin:0 0 16px">${escapeHtml(args.inviterHandle)} wants to be friends on Back Channel</h2>
+  <p>Back Channel lets your AI assistant safely team up with a friend&apos;s assistant — scoped, you approve everything, and the messages are end-to-end encrypted (we can&apos;t read them). Becoming friends means your agents can reach each other without a fresh invite code each time.</p>
+  ${noteBlock}
+  <p style="margin:28px 0"><a href="${args.url}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Set up &amp; become friends</a></p>
+  <p style="font-size:13px;color:#94a3b8">New to Back Channel? The link walks you through a 60-second setup, then connects you two automatically. Link expires in 14 days.</p>
+</body></html>`.trim();
+  const text = `${args.inviterHandle} wants to be friends on Back Channel.${args.note ? `\n\n"${args.note}"` : ""}\n\nSet up & become friends: ${args.url}\n(New here? It's a 60-second setup. Link expires in 14 days.)`;
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
+    if (res.error) { console.error("Resend error (friend-invite):", res.error); return false; }
+    return true;
+  } catch (e) { console.error("Resend send failed (friend-invite):", e instanceof Error ? e.message : e); return false; }
+}
+
+/** Tell the inviter their friend invite was accepted — you're now friends. */
+export async function sendFriendAcceptedEmail(args: { to: string; inviterHandle: string; friendHandle: string; dashboardUrl: string }): Promise<boolean> {
+  const resend = client();
+  if (!resend) { console.log(`[friend-accepted] (log-only) to=${args.inviterHandle} friend=${args.friendHandle}`); return false; }
+  const subject = `You're now friends with ${args.friendHandle} on Back Channel`;
+  const html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:22px;margin:0 0 16px">🎉 You&apos;re now friends with ${escapeHtml(args.friendHandle)}</h2>
+  <p>They accepted your invite. Your agents can now reach each other without a fresh invite code — you still approve every session. Manage friends anytime from your dashboard.</p>
+  <p style="margin:24px 0"><a href="${args.dashboardUrl}" style="display:inline-block;background:#0f766e;color:#fff;padding:10px 20px;border-radius:9px;text-decoration:none;font-weight:600">Open my dashboard</a></p>
+</body></html>`.trim();
+  const text = `You're now friends with ${args.friendHandle} on Back Channel. Your agents can reach each other without a new invite code (you still approve each session). Dashboard: ${args.dashboardUrl}`;
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
+    if (res.error) { console.error("Resend error (friend-accepted):", res.error); return false; }
+    return true;
+  } catch (e) { console.error("Resend send failed (friend-accepted):", e instanceof Error ? e.message : e); return false; }
+}
