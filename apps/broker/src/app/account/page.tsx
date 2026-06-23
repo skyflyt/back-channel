@@ -18,6 +18,19 @@ interface Sess {
 interface SharedSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; }
 interface AgentRow { id: string; name: string; runtime_type: string; created_at: string; last_used_at: string | null; revoked_at: string | null; }
 const RUNTIME_LABEL: Record<string, string> = { cowork: "Cowork", codex: "Codex", claude_code: "Claude Code", chatgpt: "ChatGPT", other: "Other" };
+
+// Derive a health badge from when BC last heard from an agent. This reflects ONLY
+// what BC knows (last time this agent's bc_ token hit our API) — it can't see a
+// runtime's own host-auth (Codex/ChatGPT login) dying. See FAQ + checkAgent copy.
+type AgentHealth = { key: "active" | "idle" | "sleeping" | "stale" | "new"; label: string; color: string };
+function agentHealth(lastUsedAt: string | null): AgentHealth {
+  if (!lastUsedAt) return { key: "new", label: "Never used", color: "#94a3b8" };
+  const mins = (Date.now() - new Date(lastUsedAt).getTime()) / 60000;
+  if (mins < 15) return { key: "active", label: "Active", color: "#10b981" };
+  if (mins < 120) return { key: "idle", label: "Idle", color: "#eab308" };
+  if (mins < 1440) return { key: "sleeping", label: "Sleeping", color: "#f97316" };
+  return { key: "stale", label: "Stale", color: "#ef4444" };
+}
 const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork"], ["codex", "Codex"], ["claude_code", "Claude Code"], ["chatgpt", "ChatGPT"]] as const;
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
@@ -47,6 +60,7 @@ export default function AccountPage() {
   const [agentFormOpen, setAgentFormOpen] = useState(false);
   const [agentName, setAgentName] = useState("");
   const [agentRuntime, setAgentRuntime] = useState("other");
+  const [agentCheck, setAgentCheck] = useState<Record<string, string>>({}); // per-agent "Check status" verdict
   const [exCode, setExCode] = useState<string | null>(null);
   const [exPrompt, setExPrompt] = useState<string>("");
   const [exExpiry, setExExpiry] = useState<number>(0);     // epoch ms
@@ -267,6 +281,46 @@ export default function AccountPage() {
     setBusy(""); loadAgents();
   };
 
+  // Mint a fresh exchange code carrying this agent's name+runtime, so the user can
+  // re-paste it to their agent and re-bind a new BC token (e.g. after host-auth died).
+  const reconnectAgent = async (a: AgentRow) => {
+    setBusy(`reconnect:${a.id}`);
+    try {
+      const r = await fetch("/api/auth/exchange-code", {
+        method: "POST", credentials: "include",
+        headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
+        body: JSON.stringify({ agent_name: a.name, runtime_type: a.runtime_type }),
+      });
+      const j = await r.json();
+      if (r.ok && j.code) {
+        setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setAgentFormOpen(false);
+        document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    } catch { /* ignore */ }
+    setBusy("");
+  };
+
+  // "Check status": re-read this agent's last-poll freshness and render an honest
+  // verdict. BC only knows when the agent last hit our API — not whether the
+  // runtime's own login is alive — so the copy points the user at the real fix.
+  const checkAgent = async (a: AgentRow) => {
+    setBusy(`check:${a.id}`);
+    try {
+      const r = await fetch("/api/account/agents", { credentials: "include" });
+      const j = await r.json().catch(() => ({}));
+      const fresh: AgentRow | undefined = (j.agents ?? []).find((x: AgentRow) => x.id === a.id);
+      const h = agentHealth(fresh?.last_used_at ?? null);
+      let msg: string;
+      if (h.key === "active") msg = `✓ Heard from this agent ${when(fresh!.last_used_at!)} — looks healthy.`;
+      else if (h.key === "new") msg = "This agent has never checked in. Paste its exchange code to finish connecting.";
+      else if (h.key === "stale") msg = `⚠ No contact in over a day (last ${when(fresh!.last_used_at!)}). If you expect it to be running, its runtime (Codex/ChatGPT/etc.) likely lost its OWN login — fix that first. If Back Channel itself is stuck, use Reconnect agent.`;
+      else msg = `Last heard from ${when(fresh!.last_used_at!)}. It may just be between checks (agents poll every ~10 min). If you expect it live and it stays quiet, check your agent's runtime login.`;
+      setAgentCheck((m) => ({ ...m, [a.id]: msg }));
+      if (j.agents) setAgents(j.agents);
+    } catch { setAgentCheck((m) => ({ ...m, [a.id]: "Couldn't check just now — try again." })); }
+    setBusy("");
+  };
+
   const renameAgent = async (id: string, current: string) => {
     const name = prompt("Rename this agent:", current);
     if (!name || name.trim() === current) return;
@@ -433,7 +487,7 @@ export default function AccountPage() {
           )}
 
           {/* Connect a new agent — exchange-code flow (raw key never shown). */}
-          <div style={s.connectBox}>
+          <div style={s.connectBox} id="connect-agent">
             <h3 style={s.h3}>Connect a new agent</h3>
             <p style={s.meta}>Paste a one-time code into any AI assistant — a new device, a fresh chat, Claude Code — and it connects to your account. Your actual key never goes into the chat.</p>
             {exCode ? (
@@ -487,16 +541,31 @@ export default function AccountPage() {
           <h2 style={s.h2}>Registered agents{agents.length ? ` (${agents.length})` : ""}</h2>
           <p style={s.soon}>Every assistant connected to your account has its own key. Revoke any one without affecting the others. Add one with &ldquo;Connect a new agent&rdquo; above.</p>
           {agents.length === 0 && <p style={s.muted}>No agents yet — connect one above to get started.</p>}
-          {agents.map((a) => (
-            <div key={a.id} style={s.row}>
-              <div style={s.rowMain}>
-                <strong>{a.name}</strong> <span style={s.roleTag}>{RUNTIME_LABEL[a.runtime_type] ?? a.runtime_type}</span>
-                <div style={s.rowMeta}>added {when(a.created_at)} · {a.last_used_at ? `last active ${when(a.last_used_at)}` : "never used yet"}</div>
+          {agents.map((a) => {
+            const h = agentHealth(a.last_used_at);
+            const cold = h.key === "stale" || h.key === "sleeping";
+            return (
+              <div key={a.id} style={{ ...s.row, alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div style={s.rowMain}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                    <span title={h.label} style={{ width: 9, height: 9, borderRadius: "50%", background: h.color, flexShrink: 0, boxShadow: h.key === "active" ? `0 0 0 3px ${h.color}33` : "none" }} />
+                    <strong>{a.name}</strong>
+                    <span style={{ ...s.statusPill, color: h.color, borderColor: `${h.color}55`, background: `${h.color}14` }}>{h.label}</span>
+                    <span style={s.roleTag}>{RUNTIME_LABEL[a.runtime_type] ?? a.runtime_type}</span>
+                  </span>
+                  <div style={s.rowMeta}>added {when(a.created_at)} · {a.last_used_at ? `last heard from ${when(a.last_used_at)}` : "never used yet"}</div>
+                  {cold && <div style={s.staleNote}>This agent hasn&apos;t been heard from in a while. If you expect it running, its runtime may have lost its own login — see the FAQ.</div>}
+                  {agentCheck[a.id] && <div style={s.checkVerdict}>{agentCheck[a.id]}</div>}
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <button style={s.smallLink2} disabled={busy === `check:${a.id}`} onClick={() => checkAgent(a)}>{busy === `check:${a.id}` ? "checking…" : "Check status"}</button>
+                  {cold && <button style={s.smallLink2} disabled={busy === `reconnect:${a.id}`} onClick={() => reconnectAgent(a)}>{busy === `reconnect:${a.id}` ? "…" : "Reconnect agent"}</button>}
+                  <button style={s.smallLink2} disabled={busy === `rename:${a.id}`} onClick={() => renameAgent(a.id, a.name)}>Rename</button>
+                  <button style={s.endBtn} disabled={busy === `revoke:${a.id}`} onClick={() => revokeAgent(a.id, a.name)}>{busy === `revoke:${a.id}` ? "…" : "Revoke"}</button>
+                </div>
               </div>
-              <button style={s.smallLink2} disabled={busy === `rename:${a.id}`} onClick={() => renameAgent(a.id, a.name)}>Rename</button>
-              <button style={s.endBtn} disabled={busy === `revoke:${a.id}`} onClick={() => revokeAgent(a.id, a.name)}>{busy === `revoke:${a.id}` ? "…" : "Revoke"}</button>
-            </div>
-          ))}
+            );
+          })}
         </section>
 
         {/* Send a new message */}
@@ -895,4 +964,7 @@ const s = {
   circleHead: { fontSize: 14, color: "#0f172a", margin: "0 0 2px" } as const,
   skillBtn: { alignSelf: "center", background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
   skillBtnGhost: { alignSelf: "center", background: "#fff", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
+  statusPill: { fontSize: 11, fontWeight: 700, letterSpacing: 0.2, padding: "1px 8px", borderRadius: 999, border: "1px solid", textTransform: "uppercase" } as const,
+  staleNote: { fontSize: 12.5, color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "6px 10px", marginTop: 8, maxWidth: 560 } as const,
+  checkVerdict: { fontSize: 12.5, color: "#334155", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "6px 10px", marginTop: 8, maxWidth: 560, lineHeight: 1.5 } as const,
 };
