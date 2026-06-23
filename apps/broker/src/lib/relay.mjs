@@ -714,6 +714,40 @@ export async function sessionUnread(sessionId, role, session, opts = {}) {
   return out;
 }
 
+// Per-author monotonic frame counter (B5, docs/user-side-decryption.md §10). The
+// counter lives in the plaintext IV bytes (AEAD-bound by GCM), so we check
+// monotonicity WITHOUT decrypting. In-memory: replay defense within a process, and
+// the reseed source a browser uses if it lost its local counter store.
+const authorCounters = globalThis.__bcAuthorCounters ?? (globalThis.__bcAuthorCounters = new Map());
+const ctrKey = (sessionId, accountId) => `${sessionId}:${accountId}`;
+
+/** Highest counter accepted for (session, author) — the browser reseeds above this
+ *  if its IndexedDB store was cleared (§10). 0n if none. */
+export function authorCounterHighWater(sessionId, accountId) {
+  return authorCounters.get(ctrKey(sessionId, accountId)) ?? 0n;
+}
+
+/** Accept a per-author counter iff strictly greater than the high-water (advancing
+ *  it). Returns false on replay/rollback (duplicate or stale counter). */
+export function recordAuthorCounter(sessionId, accountId, counter) {
+  const key = ctrKey(sessionId, accountId);
+  const hw = authorCounters.get(key) ?? 0n;
+  const c = BigInt(counter);
+  if (c <= hw) return false;
+  authorCounters.set(key, c);
+  return true;
+}
+
+/** Relay a human/browser-composed sealed frame to the peer, exactly like an agent
+ *  send (same buffer, live-push, audit). The caller is responsible for the
+ *  participant check and the counter check (recordAuthorCounter) first.
+ *  @returns {Promise<number>} the assigned sequence number. */
+export async function relayUserFrame({ sessionId, role, session, frameText }) {
+  const slot = await getOrCreateSlot(sessionId, session);
+  if (slot.ended) throw new Error("session_ended");
+  return ingestFrame(slot, sessionId, role, frameText);
+}
+
 /** Build a broker control frame (plaintext JSON, distinct from peer data frames). */
 function controlFrame(obj) {
   return JSON.stringify({ ...obj, ts: Date.now() });
