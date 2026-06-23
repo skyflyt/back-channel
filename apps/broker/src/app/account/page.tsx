@@ -14,6 +14,7 @@ interface Sess {
   started_at: string; ended_at: string | null; end_reason: string | null;
   duration_min: number | null; expires_at: string;
   unread_count?: number; live?: boolean; live_until?: string | null;
+  peer_present?: boolean; peer_ever_connected?: boolean; last_frame_at?: string | null;
 }
 interface SharedSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; }
 interface AgentRow { id: string; name: string; runtime_type: string; created_at: string; last_used_at: string | null; revoked_at: string | null; }
@@ -30,6 +31,22 @@ function agentHealth(lastUsedAt: string | null): AgentHealth {
   if (mins < 120) return { key: "idle", label: "Idle", color: "#eab308" };
   if (mins < 1440) return { key: "sleeping", label: "Sleeping", color: "#f97316" };
   return { key: "stale", label: "Stale", color: "#ef4444" };
+}
+
+// "Whose turn is it" on an open thread, derived from existing session metadata.
+type TurnState = { key: "yours" | "theirs" | "connecting"; label: string; color: string; bg: string; border: string; next: string };
+function threadTurn(x: { unread_count?: number; peer_handle: string; peer_ever_connected?: boolean; peer_present?: boolean }): TurnState {
+  const peer = (x.peer_handle || "they").replace(/@bc$/, "");
+  if ((x.unread_count ?? 0) > 0) {
+    return { key: "yours", label: "Your turn", color: "#1d4ed8", bg: "#eff6ff", border: "#bfdbfe",
+      next: "They replied — tap to respond now, or your agent will pick it up on its next check (~10 min)." };
+  }
+  if (x.peer_ever_connected === false) {
+    return { key: "connecting", label: `Waiting for ${peer}'s agent`, color: "#b45309", bg: "#fffbeb", border: "#fde68a",
+      next: `${peer}'s agent hasn't come online yet — they'll get an email nudge to wake it.` };
+  }
+  return { key: "theirs", label: `Waiting on ${peer}`, color: "#64748b", bg: "#f8fafc", border: "#e2e8f0",
+    next: x.peer_present ? `${peer}'s agent is online — a reply should come through shortly.` : `Their agent will surface your message on its next inbox check (~10 min).` };
 }
 
 type NavKey = "account" | "agents" | "friends" | "skills" | "messages" | "settings";
@@ -533,6 +550,28 @@ export default function AccountPage() {
           );
         })()}
 
+        {/* Pending approvals — always visible across sections so a phone user can
+            clear them in seconds without opening their agent. Sourced from inbox
+            (collaborate) requests today; built to take more approval types later. */}
+        {inbox.length > 0 && (
+          <section style={s.approvals}>
+            <h2 style={s.approvalsH}>✅ Pending approvals ({inbox.length})</h2>
+            {inbox.map((r) => (
+              <div key={r.id} style={s.approvalRow}>
+                <div style={s.rowMain}>
+                  <div style={s.approvalText}><strong>{r.requester_handle.replace(/@bc$/, "")}</strong> wants to collaborate with your agent{r.message ? <> — &ldquo;{r.message}&rdquo;</> : null}</div>
+                  <div style={s.rowMeta}>they&apos;d be able to: {r.scopes.join(", ")} · {when(r.created_at)}</div>
+                </div>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <button style={s.btn} disabled={busy === `inbox:${r.id}`} onClick={() => acceptInbox(r.id, r.requester_handle)}>{busy === `inbox:${r.id}` ? "…" : "Approve"}</button>
+                  <button style={s.endBtn} disabled={busy === `inbox:${r.id}`} onClick={() => rejectInbox(r.id)}>Decline</button>
+                </div>
+              </div>
+            ))}
+            <p style={s.approvalsNote}>Approving opens a session — your agent still approves the actual work once inside. You can do this here or from your agent; either works.</p>
+          </section>
+        )}
+
         {nav === "account" && (<>
         {/* Your API key */}
         <section style={s.card}>
@@ -720,19 +759,27 @@ export default function AccountPage() {
               <p style={s.emptyText}>No open threads right now. Start one above to get two copy-paste prompts — one for your assistant, one to text your friend.</p>
             </div>
           )}
-          {active.map((x) => (
+          {active.map((x) => {
+            const turn = threadTurn(x);
+            return (
             <div key={x.session_id}>
-              <div style={s.row}>
-                <span style={{ ...s.dot, background: x.unread_count ? "#ef4444" : "#10b981" }} />
+              <div style={{ ...s.row, alignItems: "flex-start" }}>
+                <span style={{ ...s.dot, background: turn.color, marginTop: 5 }} />
                 <div style={s.rowMain}>
-                  <strong>{x.peer_handle}</strong> <span style={s.roleTag}>{x.role}</span>
-                  {!!x.unread_count && <span style={s.unreadBadge}>{x.unread_count} unread</span>}
-                  {x.live && <span style={s.liveTag}>● live</span>}
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <strong>{x.peer_handle}</strong> <span style={s.roleTag}>{x.role}</span>
+                    <span style={{ ...s.turnBadge, color: turn.color, background: turn.bg, borderColor: turn.border }}>{turn.label}</span>
+                    {!!x.unread_count && <span style={s.unreadBadge}>{x.unread_count} unread</span>}
+                    {x.live && <span style={s.liveTag}>● live</span>}
+                  </span>
                   {x.goal && <div style={s.goal}>{x.goal}</div>}
+                  <div style={s.turnNext}>{turn.next}</div>
                   <div style={s.rowMeta}>started {when(x.started_at)}</div>
                 </div>
+                {turn.key === "yours"
+                  ? <button style={s.btn} onClick={() => getWakePrompt(x.session_id)} disabled={busy === `wp:${x.session_id}`}>{busy === `wp:${x.session_id}` ? "…" : "Respond"}</button>
+                  : <button style={s.smallLink2} onClick={() => getWakePrompt(x.session_id)} disabled={busy === `wp:${x.session_id}`}>{busy === `wp:${x.session_id}` ? "…" : turn.key === "theirs" ? "🤝 Nudge" : "🤝 Wake my agent"}</button>}
                 <a href={`/sessions/${x.session_id}`} style={s.smallLink}>Watch</a>
-                <button style={s.smallLink2} onClick={() => getWakePrompt(x.session_id)} disabled={busy === `wp:${x.session_id}`}>{busy === `wp:${x.session_id}` ? "…" : "🤝 Wake my agent"}</button>
                 <button style={s.endBtn} onClick={() => endSession(x.session_id, x.peer_handle)} disabled={busy === x.session_id}>{busy === x.session_id ? "…" : "End"}</button>
               </div>
               {wakePrompts[x.session_id] && (
@@ -743,7 +790,8 @@ export default function AccountPage() {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
           <h3 style={{ ...s.h3, marginTop: 18 }}>Recent (30 days)</h3>
           {recent.length === 0 && <p style={s.muted}>Nothing in the last 30 days.</p>}
           {recent.map((x) => (
@@ -812,23 +860,7 @@ export default function AccountPage() {
             </div>
           ))}
         </section>
-        {/* Message requests */}
-        <section style={s.card}>
-          <h2 style={s.h2}>Message requests{inbox.length ? ` (${inbox.length})` : ""}</h2>
-          <p style={s.soon}>Requests from friends to collaborate again. Approving opens a session — you still approve the actual work once inside.</p>
-          {inbox.length === 0 && <p style={s.muted}>No pending requests.</p>}
-          {inbox.map((r) => (
-            <div key={r.id} style={s.row}>
-              <div style={s.rowMain}>
-                <strong>{r.requester_handle}</strong> wants to collaborate
-                {r.message && <div style={s.goal}>&ldquo;{r.message}&rdquo;</div>}
-                <div style={s.rowMeta}>scopes: {r.scopes.join(", ")} · {when(r.created_at)}</div>
-              </div>
-              <button style={s.btn} disabled={busy === `inbox:${r.id}`} onClick={() => acceptInbox(r.id, r.requester_handle)}>{busy === `inbox:${r.id}` ? "…" : "Approve & open"}</button>
-              <button style={s.endBtn} disabled={busy === `inbox:${r.id}`} onClick={() => rejectInbox(r.id)}>Decline</button>
-            </div>
-          ))}
-        </section>
+        <p style={s.soon}>Requests from friends to collaborate appear at the top of this page under <strong>Pending approvals</strong>.</p>
 
         </>)}
 
@@ -1094,6 +1126,13 @@ const s = {
   skillBtn: { alignSelf: "center", background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
   skillBtnGhost: { alignSelf: "center", background: "#fff", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
   statusPill: { fontSize: 11, fontWeight: 700, letterSpacing: 0.2, padding: "1px 8px", borderRadius: 999, border: "1px solid", textTransform: "uppercase" } as const,
+  turnBadge: { fontSize: 11.5, fontWeight: 700, padding: "2px 9px", borderRadius: 999, border: "1px solid" } as const,
+  turnNext: { fontSize: 12.5, color: "#64748b", margin: "5px 0 0", lineHeight: 1.45 } as const,
+  approvals: { background: "#fff", border: "1px solid #fcd34d", borderLeft: "4px solid #f59e0b", borderRadius: 14, padding: "18px 22px", marginBottom: 16, boxShadow: "0 1px 3px rgba(180,83,9,0.06)" } as const,
+  approvalsH: { fontSize: 16, fontWeight: 800, color: "#92400e", margin: "0 0 12px" } as const,
+  approvalRow: { display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 0", borderTop: "1px solid #fef3c7" } as const,
+  approvalText: { fontSize: 14, color: "#0f172a", lineHeight: 1.45 } as const,
+  approvalsNote: { fontSize: 12, color: "#a16207", margin: "10px 0 0" } as const,
   empty: { textAlign: "center", padding: "26px 16px", color: "#64748b" } as const,
   emptyIcon: { fontSize: 30, display: "block", marginBottom: 8, opacity: 0.85 } as const,
   emptyText: { fontSize: 14, color: "#64748b", margin: "0 0 14px", lineHeight: 1.5 } as const,

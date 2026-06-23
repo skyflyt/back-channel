@@ -55,12 +55,17 @@ export async function GET(req: NextRequest) {
   const active = await Promise.all(
     sessions.filter((s) => !s.endedAt).map(async (s) => {
       const role = s.invite.hostAccountId === account.id ? "host" : "visitor";
-      let unread = 0;
+      let unread = 0, peerPresent = false, peerEverConnected = false, lastFrameAt: string | null = null;
       // Human-facing badge: count only sealed conversation frames, not the
-      // handshake/control noise the agent uses under the hood.
-      try { unread = (await sessionUnread(s.id, role, s, { includeFrames: false })).content_unread_count ?? 0; } catch { /* best effort */ }
+      // handshake/control noise the agent uses under the hood. Also pull peer
+      // presence/connection state to drive the "whose turn is it" badge.
+      try {
+        const u = await sessionUnread(s.id, role, s, { includeFrames: false });
+        unread = u.content_unread_count ?? 0;
+        peerPresent = u.peer_present; peerEverConnected = u.peer_ever_connected; lastFrameAt = u.last_frame_at;
+      } catch { /* best effort */ }
       const live = !!s.liveExpiresAt && s.liveExpiresAt.getTime() > now;
-      return { ...shape(s), unread_count: unread, live, live_until: live ? s.liveExpiresAt!.toISOString() : null };
+      return { ...shape(s), unread_count: unread, peer_present: peerPresent, peer_ever_connected: peerEverConnected, last_frame_at: lastFrameAt, live, live_until: live ? s.liveExpiresAt!.toISOString() : null };
     }),
   );
   const recent = sessions.filter((s) => s.endedAt).map(shape);

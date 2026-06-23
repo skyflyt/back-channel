@@ -680,7 +680,7 @@ export async function sessionState(sessionId, role, session) {
  * @param {Role} role
  * @param {{ scopesGranted: string[], invite: { expiresAt: Date } }} session
  * @param {{ includeFrames?: boolean, max?: number }} [opts]
- * @returns {Promise<{ unread_count: number, content_unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, frames?: string[], truncated?: boolean }>}
+ * @returns {Promise<{ unread_count: number, content_unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, peer_ever_connected: boolean, frames?: string[], truncated?: boolean }>}
  */
 export async function sessionUnread(sessionId, role, session, opts = {}) {
   const slot = await getOrCreateSlot(sessionId, session);
@@ -688,18 +688,20 @@ export async function sessionUnread(sessionId, role, session, opts = {}) {
   const unread = slot.log[role].filter((f) => f.seq > cur);
   const last = slot.log[role][slot.log[role].length - 1];
   const max = opts.max ?? 50;
+  const peerRole = role === "visitor" ? "host" : "visitor";
   // `unread_count` counts EVERY unread frame (the agent still needs handshake/
   // control frames to set up ECDH). `content_unread_count` excludes plaintext
   // control frames (handshake.pubkey, ping, peer.joined, …) so the human-facing
   // /account badge doesn't show protocol noise as "unread messages".
   const contentUnread = unread.filter((f) => isContentFrame(f.data)).length;
-  /** @type {{ unread_count: number, content_unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, frames?: string[], truncated?: boolean }} */
+  /** @type {{ unread_count: number, content_unread_count: number, last_frame_at: string|null, next_cursor: number, peer_present: boolean, peer_ever_connected: boolean, frames?: string[], truncated?: boolean }} */
   const out = {
     unread_count: unread.length,
     content_unread_count: contentUnread,
     last_frame_at: last ? new Date(last.ts).toISOString() : null,
     next_cursor: unread.length ? unread[Math.min(unread.length, max) - 1].seq : cur,
     peer_present: peerPresent(slot, role),
+    peer_ever_connected: !!slot.everConnected[peerRole],  // peer has handshaked at least once
   };
   if (opts.includeFrames) {
     out.frames = unread.slice(0, max).map((f) => f.data);
