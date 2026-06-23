@@ -47,12 +47,13 @@ const ANCHOR_NAV: Record<string, NavKey> = { "connect-agent": "account", "friend
 // these class names + one injected stylesheet (sidebar -> horizontal bar on mobile).
 const RESPONSIVE_CSS = `
 .bc-shell { display: flex; gap: 22px; align-items: flex-start; }
-.bc-sidebar { position: sticky; top: 86px; flex: 0 0 210px; }
+.bc-sidebar { position: sticky; top: 86px; flex: 0 0 210px; display: flex; flex-direction: column; gap: 2px; }
+.bc-sidebar .bc-navitem { width: 100%; }
 .bc-main { flex: 1 1 auto; min-width: 0; }
 @media (max-width: 860px) {
   .bc-shell { flex-direction: column; gap: 14px; }
-  .bc-sidebar { position: static; flex: none; width: 100%; display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
-  .bc-sidebar .bc-navitem { flex: 0 0 auto; }
+  .bc-sidebar { position: static; flex: none; width: 100%; flex-direction: row; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+  .bc-sidebar .bc-navitem { flex: 0 0 auto; width: auto; }
   .bc-topbar { padding-left: 16px !important; padding-right: 16px !important; }
 }
 @keyframes bcShimmer { 0% { background-position: -360px 0; } 100% { background-position: 360px 0; } }
@@ -1020,9 +1021,9 @@ const s = {
   topHandle: { fontSize: 13.5, fontWeight: 700, color: "#0f172a" } as const,
   topEmail: { fontSize: 12, color: "#94a3b8" } as const,
   // sidebar
-  sidebar: { display: "flex", flexDirection: "column", gap: 2 } as const,
-  navItem: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid transparent", background: "none", color: "#475569", fontWeight: 600, fontSize: 14, cursor: "pointer", textAlign: "left", width: "100%", whiteSpace: "nowrap" } as const,
-  navItemActive: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid #cdeee8", background: "#e9f7f4", color: "#0f766e", fontWeight: 700, fontSize: 14, cursor: "pointer", textAlign: "left", width: "100%", whiteSpace: "nowrap" } as const,
+  sidebar: {} as const,
+  navItem: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid transparent", background: "none", color: "#475569", fontWeight: 600, fontSize: 14, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" } as const,
+  navItemActive: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid #cdeee8", background: "#e9f7f4", color: "#0f766e", fontWeight: 700, fontSize: 14, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" } as const,
   navIcon: { fontSize: 15, width: 18, textAlign: "center" } as const,
   pageTitle: { fontSize: 24, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.02em", margin: "0 0 16px" } as const,
   h2: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "0 0 12px" } as const,
