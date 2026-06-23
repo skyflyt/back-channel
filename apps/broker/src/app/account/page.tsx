@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { KeyMirrorConversation } from "./keymirror-panel";
 
 interface Me {
-  handle: string; email: string; display_name: string | null; created_at: string;
+  id: string; handle: string; email: string; display_name: string | null; created_at: string;
   email_verified: boolean; api_key_masked: string | null; api_key_last_used_at: string | null;
   notify_idle_frames: boolean; favor_per_peer_daily?: number; favor_global_tokens_daily?: number;
-  live_mode_default_minutes?: number;
+  live_mode_default_minutes?: number; key_mirror_enrolled?: boolean;
   summary: { active_sessions: number };
 }
 interface Sess {
@@ -111,6 +112,7 @@ export default function AccountPage() {
   const [agentRuntime, setAgentRuntime] = useState("other");
   const [agentCheck, setAgentCheck] = useState<Record<string, string>>({}); // per-agent "Check status" verdict
   const [nav, setNav] = useState<NavKey>("account");
+  const [kmOpen, setKmOpen] = useState<string | null>(null); // sessionId being read in-browser (key mirror)
   const [exCode, setExCode] = useState<string | null>(null);
   const [exPrompt, setExPrompt] = useState<string>("");
   const [exExpiry, setExExpiry] = useState<number>(0);     // epoch ms
@@ -787,6 +789,7 @@ export default function AccountPage() {
                 {turn.key === "yours"
                   ? <button style={s.btn} onClick={() => getWakePrompt(x.session_id)} disabled={busy === `wp:${x.session_id}`}>{busy === `wp:${x.session_id}` ? "…" : "Respond"}</button>
                   : <button style={s.smallLink2} onClick={() => getWakePrompt(x.session_id)} disabled={busy === `wp:${x.session_id}`}>{busy === `wp:${x.session_id}` ? "…" : turn.key === "theirs" ? "🤝 Nudge" : "🤝 Wake my agent"}</button>}
+                <button style={s.smallLink2} onClick={() => setKmOpen(kmOpen === x.session_id ? null : x.session_id)}>{kmOpen === x.session_id ? "Close reader" : "📖 Read here"}</button>
                 <a href={`/sessions/${x.session_id}`} style={s.smallLink}>Watch</a>
                 <button style={s.endBtn} onClick={() => endSession(x.session_id, x.peer_handle)} disabled={busy === x.session_id}>{busy === x.session_id ? "…" : "End"}</button>
               </div>
@@ -796,6 +799,17 @@ export default function AccountPage() {
                   <pre style={s.wakePre}>{wakePrompts[x.session_id]}</pre>
                   <button style={s.btn} onClick={() => navigator.clipboard?.writeText(wakePrompts[x.session_id]).catch(() => {})}>Copy</button>
                 </div>
+              )}
+              {kmOpen === x.session_id && me && (
+                <KeyMirrorConversation
+                  sessionId={x.session_id}
+                  accountId={me.id}
+                  peerHandle={x.peer_handle}
+                  csrf={csrf()}
+                  enrolled={!!me.key_mirror_enrolled}
+                  displayName={me.display_name || me.handle}
+                  onEnrolled={() => setMe((prev) => (prev ? { ...prev, key_mirror_enrolled: true } : prev))}
+                />
               )}
             </div>
             );

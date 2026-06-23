@@ -22,9 +22,12 @@ export async function GET(req: NextRequest) {
   });
 
   return NextResponse.json({
+    id: account.id,                         // needed client-side for the key-mirror AAD (must match the agent's)
     handle: account.handle,
     email: account.email,
     display_name: account.displayName,
+    key_mirror_enrolled: !!account.mirrorPub,
+    mirror_pub_version: account.mirrorPubVersion ?? 0,
     created_at: account.createdAt.toISOString(),
     email_verified: !!account.emailVerifiedAt,
     api_key_masked: maskApiKey(account.apiKey),
