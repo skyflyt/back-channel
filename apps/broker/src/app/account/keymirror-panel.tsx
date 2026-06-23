@@ -13,6 +13,9 @@ function mapErr(e: unknown): string {
   const m = e instanceof Error ? e.message : String(e);
   if (m.includes("prf_unsupported")) return "This device can't unlock conversations here (no passkey PRF). Use a device with Face ID / Touch ID / Windows Hello, or recover with your 24-word phrase.";
   if (m === "not_enrolled") return "not_enrolled";
+  if (m === "webauthn_cancelled") return "Looks like that didn't work — want to try again?";
+  if (m === "webauthn_timeout") return "That timed out — tap to try again.";
+  if (m === "webauthn_already_registered") return "This device already has a passkey for Back Channel — try Unlock instead.";
   if (m.includes("cancelled")) return "Cancelled — tap again when you're ready.";
   if (m === "no_wrap" || m === "locked") return "This conversation isn't available to read here yet (your agent hasn't shared its key for it).";
   return "Couldn't unlock on this device. If you switched devices, recover with your 24-word phrase.";

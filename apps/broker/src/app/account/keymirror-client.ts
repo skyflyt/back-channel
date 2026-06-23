@@ -23,9 +23,27 @@ const bytesToB64url = (b: Uint8Array) => b64(b).replace(/\+/g, "-").replace(/\//
 
 type PrfExtResults = { prf?: { results?: { first?: ArrayBuffer } } };
 
+/** Hard timeout around a WebAuthn call so the UI never hangs if the platform dialog
+ *  is dismissed/ignored and the promise doesn't settle (H1). Normalizes the common
+ *  rejection names so the UI can show a friendly "try again". */
+async function webauthn<T>(p: Promise<T>, ms = 30_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      p.catch((e: unknown) => {
+        const name = e instanceof DOMException ? e.name : "";
+        if (name === "NotAllowedError") throw new Error("webauthn_cancelled");
+        if (name === "InvalidStateError") throw new Error("webauthn_already_registered");
+        throw e instanceof Error ? e : new Error("webauthn_failed");
+      }),
+      new Promise<T>((_, rej) => { timer = setTimeout(() => rej(new Error("webauthn_timeout")), ms); }),
+    ]);
+  } finally { clearTimeout(timer!); }
+}
+
 /** Run a WebAuthn assertion with the PRF extension and return the 32-byte PRF output. */
 async function prfAssertion(prfSaltBytes: Uint8Array, allowCredentialId?: string): Promise<Uint8Array> {
-  const cred = (await navigator.credentials.get({
+  const cred = (await webauthn(navigator.credentials.get({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       rpId: RP_ID,
@@ -34,7 +52,7 @@ async function prfAssertion(prfSaltBytes: Uint8Array, allowCredentialId?: string
       extensions: { prf: { eval: { first: prfSaltBytes } } } as AuthenticationExtensionsClientInputs,
       timeout: 60_000,
     },
-  })) as PublicKeyCredential | null;
+  }))) as PublicKeyCredential | null;
   if (!cred) throw new Error("assertion_cancelled");
   const ext = cred.getClientExtensionResults() as PrfExtResults;
   const first = ext.prf?.results?.first;
@@ -58,7 +76,7 @@ export interface EnrollResult { mnemonic: string }
 export async function enroll(accountId: string, displayName: string, csrf: string): Promise<EnrollResult> {
   // 1. Create a discoverable passkey with the PRF extension enabled.
   const userId = crypto.getRandomValues(new Uint8Array(16));
-  const created = (await navigator.credentials.create({
+  const created = (await webauthn(navigator.credentials.create({
     publicKey: {
       rp: { name: "Back Channel", id: RP_ID },
       user: { id: userId, name: displayName || "Back Channel", displayName: displayName || "Back Channel" },
@@ -68,7 +86,7 @@ export async function enroll(accountId: string, displayName: string, csrf: strin
       extensions: { prf: {} } as AuthenticationExtensionsClientInputs,
       timeout: 60_000,
     },
-  })) as PublicKeyCredential | null;
+  }))) as PublicKeyCredential | null;
   if (!created) throw new Error("create_cancelled");
   const credentialId = bytesToB64url(new Uint8Array(created.rawId));
 
