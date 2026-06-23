@@ -39,21 +39,32 @@ export async function GET(req: NextRequest) {
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const eligible = await eligiblePeers(account.id);
-  const peerIds = eligible.map((p) => p.accountId);
+  // Friends added via the invite-a-friend flow (Phase 3) have NO prior session,
+  // so the session-derived list alone would hide them. Union in every peer I
+  // explicitly trust or who trusts me, sessioned or not — otherwise a freshly
+  // invited friend never shows up (and the onboarding checklist never ticks).
   const [iTrust, trustsMe] = await Promise.all([
-    prisma.trustedPeer.findMany({ where: { accountId: account.id, trustedAccountId: { in: peerIds } } }),
-    prisma.trustedPeer.findMany({ where: { trustedAccountId: account.id, accountId: { in: peerIds } } }),
+    prisma.trustedPeer.findMany({ where: { accountId: account.id }, include: { trustedAccount: true } }),
+    prisma.trustedPeer.findMany({ where: { trustedAccountId: account.id }, include: { account: true } }),
   ]);
   const mine = new Map(iTrust.map((t) => [t.trustedAccountId, t]));
   const theirs = new Set(trustsMe.map((t) => t.accountId));
 
-  const peers = eligible.map((p) => ({
+  // Union peer set: session-eligible ∪ peers-I-trust ∪ peers-who-trust-me.
+  const merged = new Map<string, { handle: string; last_session_at: string | null }>();
+  for (const p of eligible) merged.set(p.accountId, { handle: p.handle, last_session_at: p.last_session_at });
+  for (const t of iTrust) if (!merged.has(t.trustedAccountId)) merged.set(t.trustedAccountId, { handle: t.trustedAccount.handle, last_session_at: null });
+  for (const t of trustsMe) if (!merged.has(t.accountId)) merged.set(t.accountId, { handle: t.account.handle, last_session_at: null });
+
+  const peers = [...merged.entries()].map(([id, p]) => ({
     handle: p.handle,
     last_session_at: p.last_session_at,
-    trusted: mine.has(p.accountId),                         // I have it enabled
-    mutual: mine.has(p.accountId) && theirs.has(p.accountId), // both sides on
-    established_at: mine.get(p.accountId)?.establishedAt?.toISOString() ?? null,
+    trusted: mine.has(id),                       // I have it enabled
+    mutual: mine.has(id) && theirs.has(id),      // both sides on
+    established_at: mine.get(id)?.establishedAt?.toISOString() ?? null,
   }));
+  // Most-recent session first; friends without a session (invite-only) after, by handle.
+  peers.sort((a, b) => (b.last_session_at ?? "").localeCompare(a.last_session_at ?? "") || a.handle.localeCompare(b.handle));
   return NextResponse.json({ peers });
 }
 

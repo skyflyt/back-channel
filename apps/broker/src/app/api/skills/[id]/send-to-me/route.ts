@@ -33,6 +33,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       ref: {
         skillId: share.skill.id,
         name: share.skill.name,
+        description: share.skill.description,  // so the agent can narrate "here's what it does" without a 2nd call (P7)
         skillKind: share.skill.kind,
         ownerHandle: share.skill.account.handle,
       },
