@@ -688,7 +688,6 @@ export async function sessionUnread(sessionId, role, session, opts = {}) {
   const unread = slot.log[role].filter((f) => f.seq > cur);
   const last = slot.log[role][slot.log[role].length - 1];
   const max = opts.max ?? 50;
-  const peerRole = role === "visitor" ? "host" : "visitor";
   // `unread_count` counts EVERY unread frame (the agent still needs handshake/
   // control frames to set up ECDH). `content_unread_count` excludes plaintext
   // control frames (handshake.pubkey, ping, peer.joined, …) so the human-facing
@@ -701,7 +700,12 @@ export async function sessionUnread(sessionId, role, session, opts = {}) {
     last_frame_at: last ? new Date(last.ts).toISOString() : null,
     next_cursor: unread.length ? unread[Math.min(unread.length, max) - 1].seq : cur,
     peer_present: peerPresent(slot, role),
-    peer_ever_connected: !!slot.everConnected[peerRole],  // peer has handshaked at least once
+    // "Has the peer ever engaged this session?" — derived from whether they've sent
+    // ANY frame (handshake counts). Frames addressed TO me (slot.log[role]) are the
+    // ones the peer sent, so a non-empty log = peer connected at least once. This is
+    // rebuilt from the DB, so it stays correct across broker restarts/deploys —
+    // unlike the in-memory everConnected flag, which resets each process.
+    peer_ever_connected: slot.log[role].length > 0,
   };
   if (opts.includeFrames) {
     out.frames = unread.slice(0, max).map((f) => f.data);
