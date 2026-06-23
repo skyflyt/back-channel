@@ -54,7 +54,12 @@ const RESPONSIVE_CSS = `
   .bc-sidebar { position: static; flex: none; width: 100%; display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
   .bc-sidebar .bc-navitem { flex: 0 0 auto; }
   .bc-topbar { padding-left: 16px !important; padding-right: 16px !important; }
-}`;
+}
+@keyframes bcShimmer { 0% { background-position: -360px 0; } 100% { background-position: 360px 0; } }
+.bc-skel { background: linear-gradient(90deg,#eef2f7 25%,#e2e8f0 37%,#eef2f7 63%); background-size: 720px 100%; animation: bcShimmer 1.3s ease-in-out infinite; border-radius: 7px; }
+.bc-navitem:hover { background: #f1f5f9; }
+.bc-primary:hover { filter: brightness(1.06); }
+.bc-ghost:hover { background: #f8fafc; }`;
 const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork"], ["codex", "Codex"], ["claude_code", "Claude Code"], ["chatgpt", "ChatGPT"]] as const;
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
@@ -451,7 +456,28 @@ export default function AccountPage() {
     setBusy(""); loadTrust();
   };
 
-  if (state === "loading") return <main style={s.page}><div style={s.wrap}><p style={s.muted}>Loading your account…</p></div></main>;
+  if (state === "loading") return (
+    <div style={s.page}>
+      <style>{RESPONSIVE_CSS}</style>
+      <div style={s.topbar} className="bc-topbar"><span style={s.brand}>◇ Back Channel</span></div>
+      <div style={s.wrap}>
+        <div className="bc-shell">
+          <nav className="bc-sidebar" style={s.sidebar}>{[0,1,2,3,4,5].map((i) => <div key={i} className="bc-skel" style={{ height: 38, marginBottom: 2 }} />)}</nav>
+          <main className="bc-main">
+            <div className="bc-skel" style={{ width: 180, height: 28, marginBottom: 18 }} />
+            {[0,1].map((i) => (
+              <div key={i} style={s.card}>
+                <div className="bc-skel" style={{ width: 150, height: 18, marginBottom: 16 }} />
+                <div className="bc-skel" style={{ width: "100%", height: 12, marginBottom: 9 }} />
+                <div className="bc-skel" style={{ width: "82%", height: 12, marginBottom: 9 }} />
+                <div className="bc-skel" style={{ width: "60%", height: 12 }} />
+              </div>
+            ))}
+          </main>
+        </div>
+      </div>
+    </div>
+  );
   if (state === "unauth") return (
     <main style={s.page}><div style={s.wrap}><h1 style={s.h1}>Your account</h1>
       <div style={s.card}><p style={s.lead}>You&apos;re signed out, or your sign-in link expired.</p><a href="/login" style={s.btnLink}>Sign in</a></div>
@@ -587,7 +613,13 @@ export default function AccountPage() {
         <section style={s.card}>
           <h2 style={s.h2}>Registered agents{agents.length ? ` (${agents.length})` : ""}</h2>
           <p style={s.soon}>Every assistant connected to your account has its own key. Revoke any one without affecting the others. Add one with &ldquo;Connect a new agent&rdquo; above.</p>
-          {agents.length === 0 && <p style={s.muted}>No agents yet — connect one above to get started.</p>}
+          {agents.length === 0 && (
+            <div style={s.empty}>
+              <span style={s.emptyIcon}>🤖</span>
+              <p style={s.emptyText}>No agents connected yet. Connect an AI assistant and it gets its own key — revoke any one without touching the others.</p>
+              <button className="bc-primary" style={s.btn} onClick={() => { setNav("account"); setTimeout(() => { setAgentName(""); setAgentRuntime("other"); setAgentFormOpen(true); document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth" }); }, 50); }}>Connect an agent</button>
+            </div>
+          )}
           {agents.map((a) => {
             const h = agentHealth(a.last_used_at);
             const cold = h.key === "stale" || h.key === "sleeping";
@@ -681,7 +713,12 @@ export default function AccountPage() {
           <h2 style={s.h2}>Messages</h2>
           <p style={s.soon}>Your conversations with friends&apos; agents. Messages arrive async — your agent picks them up on its next check, so neither of you has to stay online.</p>
           <h3 style={s.h3}>Open threads{active.length ? ` (${active.length})` : ""}</h3>
-          {active.length === 0 && <p style={s.muted}>No open threads right now.</p>}
+          {active.length === 0 && (
+            <div style={s.empty}>
+              <span style={s.emptyIcon}>💬</span>
+              <p style={s.emptyText}>No open threads right now. Start one above to get two copy-paste prompts — one for your assistant, one to text your friend.</p>
+            </div>
+          )}
           {active.map((x) => (
             <div key={x.session_id}>
               <div style={s.row}>
@@ -747,7 +784,13 @@ export default function AccountPage() {
               </div>
             )}
           </div>
-          {trust.length === 0 && <p style={s.muted}>No friends yet — invite one above, or they show up here after your first session together.</p>}
+          {trust.length === 0 && !fiOpen && !fiSent && (
+            <div style={s.empty}>
+              <span style={s.emptyIcon}>👋</span>
+              <p style={s.emptyText}>No friends yet. Invite someone by email — when they accept, your agents can reach each other without invite codes (you still approve every session).</p>
+              <button className="bc-primary" style={s.btn} onClick={() => { setFiErr(""); setFiOpen(true); }}>Invite a friend</button>
+            </div>
+          )}
           {trust.map((t) => (
             <div key={t.handle} style={s.row}>
               <div style={s.rowMain}>
@@ -833,7 +876,12 @@ export default function AccountPage() {
         <section style={s.card} id="skills-section">
           <h2 style={s.h2}>Your Skills</h2>
           <p style={s.soon}>Capabilities your agent has published. Share one with a friend and they can run it during a session (it runs on your side — they only see the result).</p>
-          {skills.length === 0 && <p style={s.muted}>No skills published yet. Your agent publishes these; they show up here to share.</p>}
+          {skills.length === 0 && (
+            <div style={s.empty}>
+              <span style={s.emptyIcon}>🧩</span>
+              <p style={s.emptyText}>No skills published yet. Your agent publishes these — then you can share one with a friend (it runs on your side; they only see the result) or make it discoverable to your circle.</p>
+            </div>
+          )}
           {skills.map((sk) => {
             const trustedHandles = trust.filter((t) => t.trusted).map((t) => t.handle);
             return (
@@ -1045,6 +1093,10 @@ const s = {
   skillBtn: { alignSelf: "center", background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
   skillBtnGhost: { alignSelf: "center", background: "#fff", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
   statusPill: { fontSize: 11, fontWeight: 700, letterSpacing: 0.2, padding: "1px 8px", borderRadius: 999, border: "1px solid", textTransform: "uppercase" } as const,
+  empty: { textAlign: "center", padding: "26px 16px", color: "#64748b" } as const,
+  emptyIcon: { fontSize: 30, display: "block", marginBottom: 8, opacity: 0.85 } as const,
+  emptyText: { fontSize: 14, color: "#64748b", margin: "0 0 14px", lineHeight: 1.5 } as const,
+  btnGhost: { background: "#fff", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer" } as const,
   staleNote: { fontSize: 12.5, color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "6px 10px", marginTop: 8, maxWidth: 560 } as const,
   checkVerdict: { fontSize: 12.5, color: "#334155", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "6px 10px", marginTop: 8, maxWidth: 560, lineHeight: 1.5 } as const,
 };
