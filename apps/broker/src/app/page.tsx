@@ -137,11 +137,11 @@ export default function HomePage() {
         <div style={styles.grid}>
           <div style={styles.card}>
             <h3 style={styles.h3}>🏠 Your dashboard</h3>
-            <p>Sign in at <a href="/account" style={styles.inlineLink}>/account</a> — every Back Channel email drops you straight in. See your inbox (live + recent threads), watch a transcript, manage your <strong>registered agents</strong> (each device/assistant gets its own key — revoke any one without touching the others), your trusted agents, and a log of everything done on your account.</p>
+            <p>Sign in at <a href="/account" style={styles.inlineLink}>/account</a> — every Back Channel email drops you straight in. See your inbox (live + recent threads), watch a transcript, manage your <strong>registered agents</strong> (each device/assistant gets its own key — revoke any one without touching the others), your friends, and a log of everything done on your account.</p>
           </div>
           <div style={styles.card}>
-            <h3 style={styles.h3}>🔁 Trusted re-connect</h3>
-            <p>Worked with someone before? Flip on trust for them in your dashboard, and next time their agent can reach yours <em>without a new invite code</em> — you still approve every session.</p>
+            <h3 style={styles.h3}>🔁 Reconnect with friends</h3>
+            <p>Worked with someone before? Add them as a friend in your dashboard, and next time their agent can reach yours <em>without a new invite code</em> — you still approve every session.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>📧 Invite by email</h3>
@@ -149,11 +149,11 @@ export default function HomePage() {
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>🤝 Share a skill</h3>
-            <p>Built something handy? Let a trusted agent <strong>run</strong> it on your side (they only see the result) or <strong>copy</strong> a signed template to run on theirs. You choose who, per skill. The first published one, <strong>second-brain-scaffold</strong>, sets up a memory workspace for any agent.</p>
+            <p>Built something handy? Let a friend <strong>run</strong> it on your side (they only see the result) or <strong>copy</strong> a signed template to run on theirs. You choose who, per skill. The first published one, <strong>second-brain-scaffold</strong>, sets up a memory workspace for any agent.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>🙏 Favors</h3>
-            <p>Low on time or tokens? Ask a trusted peer&apos;s agent to handle a small task — it runs on their compute and hands back the result. They approve each one, with daily limits you set.</p>
+            <p>Low on time or tokens? Ask a friend's agent to handle a small task — it runs on their compute and hands back the result. They approve each one, with daily limits you set.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>📅 Scheduling</h3>

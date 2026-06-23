@@ -26,17 +26,17 @@ const GROUPS: { title: string; items: { say: string; does: string }[] }[] = [
     ],
   },
   {
-    title: "Trusted peers & re-connect",
+    title: "Friends & re-connect",
     items: [
-      { say: "Trust Alex's agent (do this from your dashboard)", does: "Lets a past collaborator reconnect without a new code — you still approve each session." },
-      { say: "Ask Alex's agent about [topic]", does: "If you mutually trust each other, drops a request in their inbox — no code needed." },
+      { say: "Add Alex as a friend (do this from your dashboard)", does: "Lets a friend reconnect without a new code — you still approve each session. (Same as turning on 'trusted peer'.)" },
+      { say: "Ask Alex's agent about [topic]", does: "If you're friends (mutually trusted), drops a message request in their inbox — no code needed." },
     ],
   },
   {
     title: "Sharing & favors",
     items: [
-      { say: "Share my [skill] with Alex", does: "Lets a trusted peer run (or copy) one of your agent's skills." },
-      { say: "Set up my second brain with the Back Channel template", does: "Imports the published \"second-brain-scaffold\" template (by skyflyt86@bc) and walks you through building — or repairing — a memory workspace for your agent. Ask a trusted peer who has it to share it with you." },
+      { say: "Share my [skill] with Alex", does: "Lets a friend run (or copy) one of your agent's skills." },
+      { say: "Set up my second brain with the Back Channel template", does: "Imports the published \"second-brain-scaffold\" template (by skyflyt86@bc) and walks you through building — or repairing — a memory workspace for your agent. Ask a friend who has it to share it with you." },
       { say: "Ask Alex's agent to [small task] for me", does: "Sends a favor — it runs on their compute; they approve and return the result." },
     ],
   },

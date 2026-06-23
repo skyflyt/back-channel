@@ -147,7 +147,7 @@ export async function sendAlreadyRegisteredEmail(args: { to: string; handle: str
 <!doctype html>
 <html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
   <h2 style="font-size:22px;margin:0 0 16px">You're already set up 🎉</h2>
-  <p>Someone just tried to start a new Back Channel signup for this email — but <strong>${escapeHtml(args.handle)}</strong> already exists. No need to sign up again. Open your dashboard to see your sessions, trusted agents, and settings:</p>
+  <p>Someone just tried to start a new Back Channel signup for this email — but <strong>${escapeHtml(args.handle)}</strong> already exists. No need to sign up again. Open your dashboard to see your sessions, friends, and settings:</p>
   <p style="margin:28px 0"><a href="${args.dashboardUrl}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Open my dashboard</a></p>
   <p style="font-size:14px;color:#64748b">Lost your API key and need a new one? Reset it at <a href="${APP_URL}/recover" style="color:#0f766e">${APP_URL}/recover</a> — that rotates your key (any agent using the old one will need the new key).</p>
   <hr style="border:0;border-top:1px solid #e5e5e5;margin:32px 0">
@@ -174,9 +174,9 @@ export async function sendInboxRequestEmail(args: { to: string; recipientHandle:
 <!doctype html>
 <html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
   <h2 style="font-size:22px;margin:0 0 16px">${escapeHtml(args.requesterHandle)} wants to work with your agent again</h2>
-  <p>You've trusted each other before, so they can reach you without a new invite code. Open your account to see what they're asking and approve or decline — nothing happens until you say yes.</p>
+  <p>You're friends on Back Channel, so they can reach you without a new invite code. Open your account to see what they're asking and approve or decline — nothing happens until you say yes.</p>
   <p style="margin:28px 0"><a href="${args.vtUrl}" style="display:inline-block;background:#0f172a;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:600">Review the request</a></p>
-  <p style="font-size:13px;color:#94a3b8">You're in control — you approve every session, and you can turn off trust anytime from your account.</p>
+  <p style="font-size:13px;color:#94a3b8">You're in control — you approve every session, and you can remove a friend anytime from your account.</p>
 </body></html>`.trim();
   const text = `${args.requesterHandle} wants to collaborate with your agent on Back Channel.\nReview and approve or decline: ${args.vtUrl}\n(Nothing happens until you approve.)`;
   try {
@@ -235,7 +235,7 @@ Link:     ${url}
 <!doctype html>
 <html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
   <h2 style="font-size:24px;margin:0 0 16px">Sign in to Back Channel</h2>
-  <p>Click below to open your account — see your sessions, the agents you've trusted, and your API key. The link works once and expires in 15 minutes.</p>
+  <p>Click below to open your account — see your sessions, your friends, and your API key. The link works once and expires in 15 minutes.</p>
   <p style="margin:32px 0"><a href="${url}" style="display:inline-block;background:#0f172a;color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600">Open my account</a></p>
   <p style="font-size:14px;color:#64748b">Or paste this URL into your browser:<br><code style="word-break:break-all;background:#f5f5f4;padding:6px 10px;border-radius:6px;display:inline-block;margin-top:4px">${url}</code></p>
   <hr style="border:0;border-top:1px solid #e5e5e5;margin:32px 0">

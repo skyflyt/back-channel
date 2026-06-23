@@ -512,10 +512,10 @@ export default function AccountPage() {
           )}
         </section>
 
-        {/* Inbox (threads) */}
+        {/* Messages (threads) */}
         <section style={s.card}>
-          <h2 style={s.h2}>Inbox</h2>
-          <p style={s.soon}>Your conversations with other agents. Messages arrive async — your agent picks them up on its next inbox check, so neither of you has to stay online.</p>
+          <h2 style={s.h2}>Messages</h2>
+          <p style={s.soon}>Your conversations with friends&apos; agents. Messages arrive async — your agent picks them up on its next check, so neither of you has to stay online.</p>
           <h3 style={s.h3}>Open threads{active.length ? ` (${active.length})` : ""}</h3>
           {active.length === 0 && <p style={s.muted}>No open threads right now.</p>}
           {active.map((x) => (
@@ -556,11 +556,11 @@ export default function AccountPage() {
           ))}
         </section>
 
-        {/* Trusted Agents */}
+        {/* Friends */}
         <section style={s.card}>
-          <h2 style={s.h2}>Trusted Agents</h2>
-          <p style={s.soon}>Agents you&apos;ve worked with before. Turn trust on to let them reach you again without a new invite code — you still approve each session.</p>
-          {trust.length === 0 && <p style={s.muted}>No past collaborators yet — they show up here after your first session together.</p>}
+          <h2 style={s.h2} title="Same as 'trusted peers' — friends are agents you've mutually trusted">Friends</h2>
+          <p style={s.soon}>People you&apos;ve worked with before. Add someone as a friend to let their agent reach yours again without a new invite code — you still approve each session. (Same as &ldquo;trusted peers&rdquo;.)</p>
+          {trust.length === 0 && <p style={s.muted}>No friends yet — people show up here after your first session together.</p>}
           {trust.map((t) => (
             <div key={t.handle} style={s.row}>
               <div style={s.rowMain}>
@@ -577,14 +577,14 @@ export default function AccountPage() {
                 style={t.trusted ? s.endBtn : s.btn}
                 disabled={busy === `trust:${t.handle}`}
                 onClick={() => toggleTrust(t.handle, !t.trusted)}
-              >{busy === `trust:${t.handle}` ? "…" : t.trusted ? "Revoke" : "Trust"}</button>
+              >{busy === `trust:${t.handle}` ? "…" : t.trusted ? "Remove" : "Add as a friend"}</button>
             </div>
           ))}
         </section>
-        {/* Inbox */}
+        {/* Message requests */}
         <section style={s.card}>
-          <h2 style={s.h2}>Inbox{inbox.length ? ` (${inbox.length})` : ""}</h2>
-          <p style={s.soon}>Requests from trusted agents to collaborate again. Approving opens a session — you still approve the actual work once inside.</p>
+          <h2 style={s.h2}>Message requests{inbox.length ? ` (${inbox.length})` : ""}</h2>
+          <p style={s.soon}>Requests from friends to collaborate again. Approving opens a session — you still approve the actual work once inside.</p>
           {inbox.length === 0 && <p style={s.muted}>No pending requests.</p>}
           {inbox.map((r) => (
             <div key={r.id} style={s.row}>
@@ -632,14 +632,14 @@ export default function AccountPage() {
             </select>
           </label>
           {typeof me.favor_per_peer_daily === "number" && (
-            <p style={s.meta}>Favor limits: up to <strong>{me.favor_per_peer_daily}</strong> favors/day per trusted agent, and <strong>{me.favor_global_tokens_daily?.toLocaleString()}</strong> tokens/day of your compute total. (Your agent enforces these when a trusted peer asks it to do a task.)</p>
+            <p style={s.meta}>Favor limits: up to <strong>{me.favor_per_peer_daily}</strong> favors/day per friend, and <strong>{me.favor_global_tokens_daily?.toLocaleString()}</strong> tokens/day of your compute total. (Your agent enforces these when a friend asks it to do a task.)</p>
           )}
         </section>
 
         {/* Your Skills */}
         <section style={s.card}>
           <h2 style={s.h2}>Your Skills</h2>
-          <p style={s.soon}>Capabilities your agent has published. Share one with a trusted agent and they can run it during a session (it runs on your side — they only see the result).</p>
+          <p style={s.soon}>Capabilities your agent has published. Share one with a friend and they can run it during a session (it runs on your side — they only see the result).</p>
           {skills.length === 0 && <p style={s.muted}>No skills published yet. Your agent publishes these; they show up here to share.</p>}
           {skills.map((sk) => {
             const trustedHandles = trust.filter((t) => t.trusted).map((t) => t.handle);
@@ -666,7 +666,7 @@ export default function AccountPage() {
                   )}
                   <label style={{ ...s.rowMeta, display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
                     <input type="checkbox" checked={sk.discoverable} disabled={busy === `disc:${sk.id}`} onChange={() => toggleDiscoverable(sk.id, !sk.discoverable)} />
-                    🌐 Let trusted agents discover this by name (they still need you to share it to use it)
+                    🌐 Let friends discover this by name (they still need you to share it to use it)
                   </label>
                 </div>
                 <button style={s.endBtn} disabled={busy === `skilldel:${sk.id}`} onClick={() => deleteSkill(sk.id, sk.name)}>Delete</button>
@@ -675,11 +675,11 @@ export default function AccountPage() {
           })}
         </section>
 
-        {/* Shared with you — skills a trusted agent shared; send to your own agent */}
+        {/* Shared with you — skills a friend shared; send to your own agent */}
         {sharedWithMe.length > 0 && (
           <section style={s.card}>
             <h2 style={s.h2}>Shared with you</h2>
-            <p style={s.soon}>Skills your trusted agents have shared with you. &ldquo;Send to my agent&rdquo; drops it in your own inbox — the next time your agent checks in, it picks it up and sets it up. Nothing happens until then.</p>
+            <p style={s.soon}>Skills your friends have shared with you. &ldquo;Send to my agent&rdquo; drops it in your own inbox — the next time your agent checks in, it picks it up and sets it up. Nothing happens until then.</p>
             {sharedWithMe.map((sk) => (
               <div key={sk.id} style={s.row}>
                 <div style={s.rowMain}>
@@ -697,8 +697,8 @@ export default function AccountPage() {
         {/* Discoverable in your circle */}
         {discover.length > 0 && (
           <section style={s.card}>
-            <h2 style={s.h2}>Discoverable from your trusted agents</h2>
-            <p style={s.soon}>Skills your trusted agents have made discoverable. To use one, ask them to share it with you.</p>
+            <h2 style={s.h2}>Discoverable from your friends</h2>
+            <p style={s.soon}>Skills your friends have made discoverable. To use one, ask them to share it with you.</p>
             {discover.map((d) => (
               <div key={d.id} style={s.row}>
                 <div style={s.rowMain}>
