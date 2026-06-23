@@ -6,7 +6,7 @@
  * dangerouslySetInnerHTML, no raw HTML; XSS hardening, S7). Backed by the live,
  * prod-verified key-mirror endpoints.
  */
-import { useState, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import * as km from "./keymirror-client";
 
 function mapErr(e: unknown): string {
@@ -120,6 +120,72 @@ export function KeyMirrorConversation(props: {
         <button style={s.btnPrimary} disabled={busy || !draft.trim()} onClick={send}>{busy ? "…" : "Send"}</button>
       </div>
       <p style={s.foot}>Decrypted locally in your browser · ⌘/Ctrl+Enter to send · your agent stays hands-off while you&apos;re here</p>
+      {err && <p style={s.err}>{err}</p>}
+    </div>
+  );
+}
+
+/**
+ * BrowserAccessSettings — global entry point in /account Settings (QA H2). Lets a
+ * user enroll proactively (without an open thread), and see their enrolled devices.
+ * Adding more devices / disabling / regenerating recovery need step-up and are a
+ * documented follow-up; synced passkeys (iCloud/Google) cover the common multi-device
+ * case without an explicit add.
+ */
+export function BrowserAccessSettings(props: { accountId: string; csrf: string; enrolled: boolean; displayName: string; onEnrolled?: () => void }) {
+  const [enrolled, setEnrolled] = useState(props.enrolled);
+  const [devices, setDevices] = useState<{ id: string; label: string | null; method: string }[]>([]);
+  const [mnemonic, setMnemonic] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!enrolled) return;
+    fetch("/api/account/key-mirror", { credentials: "include" })
+      .then((r) => r.json())
+      .then((j) => { if (j?.enrolled) setDevices((j.wraps ?? []).map((w: { id: string; label: string | null; method: string }) => ({ id: w.id, label: w.label, method: w.method }))); })
+      .catch(() => {});
+  }, [enrolled]);
+
+  const doEnroll = async () => {
+    setBusy(true); setErr("");
+    try { const { mnemonic } = await km.enroll(props.accountId, props.displayName, props.csrf); setMnemonic(mnemonic); setEnrolled(true); props.onEnrolled?.(); }
+    catch (e) { setErr(mapErr(e)); }
+    setBusy(false);
+  };
+
+  if (mnemonic) {
+    return (
+      <div style={s.box}>
+        <p style={s.h}>🔑 Save your recovery phrase</p>
+        <p style={s.muted}>These 24 words are the <strong>only</strong> way to read your past conversations from a brand-new device if you lose this one. We never store them and can&apos;t recover them. Write them down somewhere safe — and never share them (anyone with this phrase can read your conversations).</p>
+        <pre style={s.mnemonic}>{mnemonic}</pre>
+        <div style={s.row}>
+          <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(mnemonic).catch(() => {}); }}>Copy</button>
+          <button style={s.btnPrimary} onClick={() => setMnemonic(null)}>I&apos;ve saved it</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={s.box}>
+      <p style={s.h}>Browser access {enrolled ? "· on" : "· off"}</p>
+      {enrolled ? (
+        <>
+          <p style={s.muted}>You can read &amp; reply to your conversations from this site (decrypted locally in your browser). Open any conversation in <strong>Messages → Read here</strong>.</p>
+          <p style={{ ...s.muted, margin: "0 0 6px" }}><strong>Your devices ({devices.length})</strong></p>
+          {devices.map((d) => (
+            <div key={d.id} style={{ fontSize: 13, color: "#334155", padding: "3px 0" }}>🔑 {d.label || "Device"} <span style={{ color: "#94a3b8" }}>· {d.method}</span></div>
+          ))}
+          <p style={{ ...s.foot, marginTop: 10 }}>Using another device? If your passkeys sync (iCloud Keychain / Google), it just works — open this page there and unlock. Otherwise use your recovery phrase on that device. (Removing a device &amp; turning this off are coming soon.)</p>
+        </>
+      ) : (
+        <>
+          <p style={s.muted}>Turn this on to read both sides of your conversations — and reply directly — from this page. Everything is decrypted <strong>locally in your browser</strong>; our servers never see the contents. You&apos;ll unlock with your device passkey (Face ID / Touch ID / Windows Hello), and get a 24-word recovery phrase to save.</p>
+          <button style={s.btnPrimary} disabled={busy} onClick={doEnroll}>{busy ? "Setting up…" : "Enable browser access"}</button>
+        </>
+      )}
       {err && <p style={s.err}>{err}</p>}
     </div>
   );

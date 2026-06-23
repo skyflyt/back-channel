@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { KeyMirrorConversation } from "./keymirror-panel";
+import { KeyMirrorConversation, BrowserAccessSettings } from "./keymirror-panel";
 
 interface Me {
   id: string; handle: string; email: string; display_name: string | null; created_at: string;
@@ -922,6 +922,19 @@ export default function AccountPage() {
           {typeof me.favor_per_peer_daily === "number" && (
             <p style={s.meta}>Favor limits: up to <strong>{me.favor_per_peer_daily}</strong> favors/day per friend, and <strong>{me.favor_global_tokens_daily?.toLocaleString()}</strong> tokens/day of your compute total. (Your agent enforces these when a friend asks it to do a task.)</p>
           )}
+        </section>
+
+        {/* Browser access (key mirror) — global enroll/devices entry point (QA H2) */}
+        <section style={s.card}>
+          <h2 style={s.h2}>Browser access</h2>
+          <p style={s.soon}>Read &amp; reply to your conversations from this site — decrypted locally in your browser, never on our servers.</p>
+          <BrowserAccessSettings
+            accountId={me.id}
+            csrf={csrf()}
+            enrolled={!!me.key_mirror_enrolled}
+            displayName={me.display_name || me.handle}
+            onEnrolled={() => setMe((prev) => (prev ? { ...prev, key_mirror_enrolled: true } : prev))}
+          />
         </section>
 
         </>)}
