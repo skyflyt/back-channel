@@ -189,23 +189,34 @@ enum SkillKind {
   template
 }
 
+// Polymorphic "Artifact" (skill | scheduled_task | prompt) — kept the model name
+// UserSkill (and table) so existing rows, relations, and 10 call sites stay live;
+// the artifact platform is delivered by the additive columns below (spec §1).
 model UserSkill {
   id          String    @id @default(uuid())
   accountId   String
+  type        String    @default("skill")  // "skill" | "scheduled_task" | "prompt" (text, matches migration §1.2)
   name        String
   description String?
   kind        SkillKind @default(rpc)
-  body        String                  // rpc: local-exec definition; template: shareable instructions
+  body        String                  // type-specific payload (skill SKILL.md / cron+prompt / prompt text)
   paramSchema Json?
-  signature   String?                 // required for templates (author signature)
+  signature   String?                 // ed25519 sig over canonical content (templates + new types)
   discoverable Boolean  @default(true)  // Tier 2.5: NAME+description visible to my trusted peers (discovery != access). On by default so a fresh user's circle has real skills (PMF item 8); toggle off per-skill.
   version     Int       @default(1)
+  revision    String?                 // optional YYYY-MM-DD-N (v0.1)
+  manifest    Json?                   // type-specific structured fields (spec §1.3); broker may inspect, never executes
+  publicToken String?   @unique       // set when public stranger-share is enabled (spec §3)
+  publicExpiresAt DateTime?           // TTL for public share
+  publicRevokedAt DateTime?           // revocation latch
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   shares      SkillShare[]
 
   @@index([accountId])
+  @@index([type, accountId])
+  @@index([publicToken])
 }
 
 model SkillShare {
