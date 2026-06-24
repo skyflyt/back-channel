@@ -55,7 +55,7 @@ const NAV: { key: NavKey; label: string; icon: string }[] = [
   { key: "account", label: "Account", icon: "🔑" },
   { key: "agents", label: "Agents", icon: "🤖" },
   { key: "friends", label: "Friends", icon: "👥" },
-  { key: "skills", label: "Skills", icon: "🧩" },
+  { key: "skills", label: "Library", icon: "📚" },
   { key: "messages", label: "Messages", icon: "💬" },
   { key: "settings", label: "Settings", icon: "⚙️" },
 ];
@@ -83,7 +83,7 @@ const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork"], ["
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
-interface Skill { id: string; name: string; description: string | null; kind: string; shared_with: string[]; discoverable: boolean; }
+interface Skill { id: string; name: string; description: string | null; kind: string; shared_with: string[]; discoverable: boolean; type?: string; manifest?: Record<string, unknown> | null; signed?: boolean; public_token?: string | null; public_expires_at?: string | null; }
 interface DiscoverSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; }
 
 /** Read the non-httpOnly bc_csrf cookie to echo in the x-bc-csrf header. */
@@ -105,6 +105,8 @@ export default function AccountPage() {
   const [sentToAgent, setSentToAgent] = useState<Record<string, boolean>>({});
   const [installPrompt, setInstallPrompt] = useState<Record<string, string>>({}); // paste-now prompt per shared skill (P2.6)
   const [installCopiedId, setInstallCopiedId] = useState<string | null>(null);
+  const [pubTtl, setPubTtl] = useState<Record<string, string>>({}); // per-row public-share TTL selection
+  const [pubCopiedId, setPubCopiedId] = useState<string | null>(null); // "Copied ✓" flash on the public link
   const [newKey, setNewKey] = useState<string | null>(null);
   // "Connect a new agent" — 2-step: name+runtime, then exchange code (raw key never shown).
   const [agents, setAgents] = useState<AgentRow[]>([]);
@@ -475,6 +477,22 @@ export default function AccountPage() {
     if (!confirm(`Delete the skill "${name}"? Anyone you shared it with will lose access (template copies they already imported stay with them).`)) return;
     setBusy(`skilldel:${skillId}`);
     await fetch(`/api/skills/${skillId}`, { method: "DELETE", credentials: "include", headers: { "x-bc-csrf": csrf() } }).catch(() => {});
+    setBusy(""); loadSkills();
+  };
+
+  // Public share (spec §3): mint / revoke a one-paste stranger link.
+  const publicShare = async (id: string, ttl: string) => {
+    setBusy(`pub:${id}`);
+    try {
+      const r = await fetch(`/api/artifacts/${id}/public-share`, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ ttl }) });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.message || `Couldn't create a public link (${e.error || r.status}).`); }
+    } catch { /* ignore */ }
+    setBusy(""); loadSkills();
+  };
+  const publicRevoke = async (id: string) => {
+    if (!confirm("Revoke this public link? Anyone holding it loses access immediately. You can generate a new one later.")) return;
+    setBusy(`pub:${id}`);
+    await fetch(`/api/artifacts/${id}/public-share/revoke`, { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } }).catch(() => {});
     setBusy(""); loadSkills();
   };
 
@@ -968,22 +986,32 @@ export default function AccountPage() {
         </>)}
 
         {nav === "skills" && (<>
-        {/* Your Skills */}
+        {/* Your Library — polymorphic artifacts: skills, scheduled tasks, prompts */}
         <section style={s.card} id="skills-section">
-          <h2 style={s.h2}>Your Skills</h2>
-          <p style={s.soon}>Capabilities your agent has published. Share one with a friend and they can run it during a session (it runs on your side — they only see the result).</p>
+          <h2 style={s.h2}>📚 Your Library</h2>
+          <p style={s.soon}>The useful things your agent has — skills, scheduled tasks, and prompts. Share one privately with a friend, make it discoverable to your circle, or generate a public link anyone can paste into their own agent.</p>
           {skills.length === 0 && (
             <div style={s.empty}>
-              <span style={s.emptyIcon}>🧩</span>
-              <p style={s.emptyText}>No skills published yet. Your agent publishes these — then you can share one with a friend (it runs on your side; they only see the result) or make it discoverable to your circle.</p>
+              <span style={s.emptyIcon}>📚</span>
+              <p style={s.emptyText}>Nothing in your library yet. Your agent publishes skills, scheduled tasks, and prompts here — then you can share them with a friend, your circle, or anyone via a public link.</p>
             </div>
           )}
           {skills.map((sk) => {
             const trustedHandles = trust.filter((t) => t.trusted).map((t) => t.handle);
+            const type = sk.type || "skill";
+            const badge = type === "scheduled_task" ? { icon: "⏰", label: "Scheduled Task" } : type === "prompt" ? { icon: "💬", label: "Prompt" } : { icon: "📜", label: "Skill" };
+            // public-share eligibility mirrors the server gates (spec §3) so the UI explains the block.
+            const isRpc = type === "skill" && sk.kind === "rpc";
+            const schedOptIn = type !== "scheduled_task" || sk.manifest?.public_share_allowed === true;
+            const isSigned = sk.signed !== false; // older rows may omit the flag; don't over-block
+            const canPublic = !isRpc && schedOptIn && isSigned;
+            const blockReason = isRpc ? "RPC skills run live during a session — they can't be shared by public link." : !schedOptIn ? "This scheduled task isn't opted in to public sharing. Your agent must publish it with public_share_allowed before you can make a public link." : !isSigned ? "This needs your agent's signature before it can be shared publicly (your agent signs what it publishes)." : "";
+            const link = sk.public_token ? `https://back-channel.app/a/${sk.public_token}` : null;
             return (
               <div key={sk.id} style={{ ...s.row, alignItems: "flex-start" }}>
                 <div style={s.rowMain}>
-                  <strong>{sk.name}</strong> <span style={s.roleTag}>{sk.kind}</span>
+                  <strong>{sk.name}</strong> <span style={s.roleTag}>{badge.icon} {badge.label}</span>
+                  {type === "skill" && <span style={{ ...s.rowMeta, marginLeft: 6 }}>{sk.kind}</span>}
                   {sk.description && <div style={s.goal}>{sk.description}</div>}
                   <div style={s.rowMeta}>
                     {sk.shared_with.length ? <>shared with: {sk.shared_with.join(", ")}</> : "private"}
@@ -1005,6 +1033,33 @@ export default function AccountPage() {
                     <input type="checkbox" checked={sk.discoverable} disabled={busy === `disc:${sk.id}`} onChange={() => toggleDiscoverable(sk.id, !sk.discoverable)} />
                     🌐 Let friends discover this by name (they still need you to share it to use it)
                   </label>
+
+                  {/* Inline public-share panel */}
+                  <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8, background: "rgba(67,81,232,0.06)", border: "1px solid rgba(67,81,232,0.18)" }}>
+                    {link ? (
+                      <div>
+                        <div style={{ ...s.rowMeta, marginBottom: 6 }}>🔗 Public link active{sk.public_expires_at ? ` · expires ${new Date(sk.public_expires_at).toLocaleDateString()}` : " · never expires"}</div>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                          <code style={{ flex: "1 1 240px", fontSize: 12, wordBreak: "break-all", background: "rgba(0,0,0,0.05)", padding: "4px 8px", borderRadius: 6 }}>{link}</code>
+                          <button style={s.chipOn} onClick={() => { navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setTimeout(() => setPubCopiedId(null), 1500); }}>{pubCopiedId === sk.id ? "Copied ✓" : "Copy paste-prompt"}</button>
+                          <button style={s.chipOff} disabled={busy === `pub:${sk.id}`} onClick={() => publicRevoke(sk.id)}>Revoke</button>
+                        </div>
+                      </div>
+                    ) : canPublic ? (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                        <span style={s.rowMeta}>🌍 Public link:</span>
+                        <select value={pubTtl[sk.id] ?? "7d"} onChange={(e) => setPubTtl((m) => ({ ...m, [sk.id]: e.target.value }))} style={{ fontSize: 13, padding: "4px 6px", borderRadius: 6 }}>
+                          <option value="24h">expires in 24h</option>
+                          <option value="7d">expires in 7 days</option>
+                          <option value="30d">expires in 30 days</option>
+                          <option value="never">never expires</option>
+                        </select>
+                        <button style={s.chipOn} disabled={busy === `pub:${sk.id}`} onClick={() => publicShare(sk.id, pubTtl[sk.id] ?? "7d")}>Generate public link</button>
+                      </div>
+                    ) : (
+                      <div style={s.rowMeta}>🔒 {blockReason}</div>
+                    )}
+                  </div>
                 </div>
                 <button style={s.endBtn} disabled={busy === `skilldel:${sk.id}`} onClick={() => deleteSkill(sk.id, sk.name)}>Delete</button>
               </div>

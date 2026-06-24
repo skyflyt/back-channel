@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
       id: s.id, name: s.name, description: s.description, kind: s.kind, version: s.version,
       type: s.type || "skill",
       manifest: s.manifest ?? null,
+      signed: !!s.signature, // public-share requires a signature (spec §3); UI gates on this
       param_schema: s.paramSchema ?? null,
       discoverable: s.discoverable,
       shared_with: s.shares.map((sh) => sh.sharedWith.handle),
