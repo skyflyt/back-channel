@@ -834,7 +834,7 @@ export default function AccountPage() {
             <div key={x.session_id} style={s.row}>
               <span style={{ ...s.dot, background: "#cbd5e1" }} />
               <div style={s.rowMain}>
-                <strong>{x.peer_handle}</strong> <span style={s.roleTag}>{x.role}</span>
+                <strong>🧑 {x.peer_handle.replace(/@bc$/, "")}</strong> <span style={s.agentVia}>🤖 via your agents</span>
                 {x.goal && <div style={s.goal}>{x.goal}</div>}
                 <div style={s.rowMeta}>{x.ended_at ? when(x.ended_at) : ""} · {x.duration_min ?? "?"} min · {x.end_reason ?? "ended"}</div>
               </div>
@@ -879,7 +879,7 @@ export default function AccountPage() {
           {trust.map((t) => (
             <div key={t.handle} style={s.row}>
               <div style={s.rowMain}>
-                <strong style={s.peerHandle}>{t.handle}</strong>
+                <strong style={s.peerHandle}>🧑 {t.handle.replace(/@bc$/, "")}</strong> <span style={s.agentVia}>🤖 their agent</span>
                 {t.trusted && (t.mutual
                   ? <span style={s.okTag}>mutual</span>
                   : <span style={s.pendTag}>waiting for them</span>)}

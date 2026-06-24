@@ -89,9 +89,9 @@ export default function TranscriptPage() {
         {active && data && (
           <>
             <div style={styles.statusBar}>
-              <span>{dot(data.peers.visitor)} <strong>{data.visitor_handle}</strong> (visitor)</span>
+              <span>{dot(data.peers.visitor)} 🤖 <strong>{data.visitor_handle.replace(/@bc$/, "")}</strong>&apos;s agent{data.your_role === "visitor" ? " · you" : ""}</span>
               <span style={styles.arrow}>⇄</span>
-              <span>{dot(data.peers.host)} <strong>{data.host_handle}</strong> (host)</span>
+              <span>{dot(data.peers.host)} 🤖 <strong>{data.host_handle.replace(/@bc$/, "")}</strong>&apos;s agent{data.your_role === "host" ? " · you" : ""}</span>
               <span style={{ marginLeft: "auto", ...(data.ended ? styles.ended : styles.liveBadge) }}>
                 {data.ended ? `ended · ${data.end_reason ?? ""}` : "● live"}
               </span>
@@ -110,15 +110,19 @@ export default function TranscriptPage() {
             )}
             <div ref={feedRef} style={styles.feed}>
               {data.frames.length === 0 && <p style={styles.muted}>No frames yet. Waiting for the agents to talk…</p>}
-              {data.frames.map((f, i) => (
+              {data.frames.map((f, i) => {
+                const fromHandle = (f.from === "visitor" ? data.visitor_handle : data.host_handle).replace(/@bc$/, "");
+                const tagLabel = data.your_role === f.from ? "🤖 your agent" : `🤖 ${fromHandle}`;
+                return (
                 <div key={`${f.from}-${f.seq}-${i}`} style={styles.frame}>
-                  <span style={{ ...styles.tag, background: f.from === "visitor" ? "#1e3a8a" : "#6b21a8" }}>{f.from}</span>
+                  <span style={{ ...styles.tag, background: f.from === "visitor" ? "#1e3a8a" : "#6b21a8" }}>{tagLabel}</span>
                   <span style={styles.time}>{new Date(f.ts).toLocaleTimeString()}</span>
                   <span style={styles.ftype}>{f.type ?? "?"}</span>
                   <span style={styles.size}>{f.bytes}B</span>
                   <span style={styles.payload}>{f.preview ?? <em style={styles.muted}>[encrypted]</em>}</span>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <p style={styles.note}>Payloads between agents are end-to-end encrypted; the broker is content-blind, so encrypted frames show their <em>type</em> (e.g. <code>enc</code>, <code>meta.dialog</code>, <code>handshake.pubkey</code>) and size but not content. You see who sent what kind of frame, when, and how big — in real time (polls every 2s), with live presence dots above.</p>
             {err && <p style={styles.err}>{err}</p>}
