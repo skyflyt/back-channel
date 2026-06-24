@@ -472,6 +472,17 @@ and it's the user's own data.
    handshake), **not only future keys**. So a user who enrolls mid-conversation can read
    that conversation. (Frames sealed under the same `K` before they enrolled are covered,
    since `K` is per-session.)
+
+   **Back-wrap on every CHECK-IN, for EVERY participant — not just on send (critical).**
+   `GET /api/sessions/active` returns `mirror_wraps_needed: [{account_id, mirror_pub,
+   version}]` per session: the participants (you AND your peer) who enabled browser
+   access but don't yet have `K` wrapped to their current mirror. On each
+   `bc-inbox-check`, for every session where **you hold `K`**, do the seal+post (step 3)
+   for **each** entry — including your **peer**, sealing `K` to *their* `mirror_pub` and
+   posting `for_account_id: <their account_id>`. This is what lets a friend who enrolled a
+   passkey *after* the thread started read it within a poll cycle, instead of waiting for
+   your next send. Sealing `K` (which you already hold) to a participant's *public* mirror
+   key leaks nothing. If `mirror_wraps_needed` is empty, do nothing.
 3. **Seal and post:**
    - `enc_wrap = HPKE_seal(recipient=mirror_pub, plaintext=K_raw_32B, aad="userwrap|<sessionId>|<yourAccountId>")`
      using **DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20-Poly1305** (RFC 9180).

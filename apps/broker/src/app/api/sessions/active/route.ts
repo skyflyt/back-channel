@@ -51,6 +51,16 @@ export async function GET(req: NextRequest) {
       const u = await sessionUnread(s.id, role, s, { includeFrames });
       // Live (real-time, opt-in) until liveExpiresAt; otherwise async inbox cadence.
       const live = !!s.liveExpiresAt && s.liveExpiresAt.getTime() > now;
+      // S5 back-wrap fix: participants who enrolled browser access but whose session
+      // key K hasn't been wrapped to their CURRENT mirror yet. A polling agent that
+      // holds K seals K to each mirror_pub and POSTs /user-wrap{for_account_id}, so a
+      // user who enrolled after the thread started can read within a poll cycle —
+      // not only after the next send. Derived live from current mirror + wrap state.
+      const uw = (s.userWrap && typeof s.userWrap === "object" && !Array.isArray(s.userWrap))
+        ? (s.userWrap as Record<string, { v?: number }>) : {};
+      const mirrorWrapsNeeded = [s.invite.host, s.invite.visitor]
+        .filter((p) => p && p.mirrorPub && uw[p.id]?.v !== (p.mirrorPubVersion ?? 0))
+        .map((p) => ({ account_id: p.id, mirror_pub: p.mirrorPub, version: p.mirrorPubVersion ?? 0 }));
       return {
         id: s.id,
         role,
@@ -67,6 +77,7 @@ export async function GET(req: NextRequest) {
         // without a handshake) so bc-inbox-check can still tell the user "X invited
         // you: <note>" instead of silently seeing an empty session.
         pending_invite_message: role === "host" && !u.last_frame_at && s.invite.message ? s.invite.message : null,
+        mirror_wraps_needed: mirrorWrapsNeeded,
         ...(includeFrames ? { frames: u.frames, truncated: u.truncated } : {}),
       };
     }),

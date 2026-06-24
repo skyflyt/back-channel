@@ -7,7 +7,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomBytes, createHash } from "node:crypto";
 import {
   generateMirrorKeypair, deriveKekFromSecret, wrapMirrorPriv, unwrapMirrorPriv,
-  hpkeOpenK, importK, sealFrame, openFrame, ORIGIN_HUMAN, b64, unb64,
+  hpkeWrapK, hpkeOpenK, importK, sealFrame, openFrame, ORIGIN_HUMAN, b64, unb64,
 } from "./src/lib/crypto/keymirror.mjs";
 
 const prisma = new PrismaClient();
@@ -117,6 +117,31 @@ async function main() {
     if (r.status === 429) { got429 = true; break; }
   }
   ok(got429, "10. user-wrap rate-limit fires (429 within 12 rapid posts)");
+
+  // 11. S5 PEER BACK-WRAP: visitor enrolls AFTER the thread; host (holding K) back-wraps
+  // K to the visitor's mirror so the visitor can read within a poll cycle.
+  const vkp = await generateMirrorKeypair();
+  const vKek = await deriveKekFromSecret(randomBytes(32));
+  const vWrapped = await wrapMirrorPriv(vKek, vkp.mirrorPrivRaw, visitor.id);
+  await fetch(`${BASE}/api/account/key-mirror`, { method: "POST", headers: ch(visitor), body: JSON.stringify({ mirror_pub: vkp.mirrorPub, prf_salt: b64(randomBytes(32)), wrap: { method: "prf", credential_id: b64(randomBytes(16)), wrapped_mirror_priv: vWrapped } }) });
+  // host's bc-inbox-check sees the visitor in mirror_wraps_needed:
+  const act = await fetch(`${BASE}/api/sessions/active`, { headers: bearer(host) }).then(r => r.json());
+  const sess = (act.sessions || []).find(x => x.id === session.id);
+  const needsV = (sess?.mirror_wraps_needed || []).some(w => w.account_id === visitor.id);
+  ok(needsV, `11. mirror_wraps_needed lists the newly-enrolled visitor (got ${JSON.stringify(sess?.mirror_wraps_needed)})`);
+  // host back-wraps K to the visitor's mirror (for_account_id)
+  const vwrap = await hpkeWrapK(vkp.mirrorPub, K, session.id, visitor.id);
+  const bw = await fetch(`${BASE}/api/sessions/${session.id}/user-wrap`, { method: "POST", headers: bearer(host), body: JSON.stringify({ wrap: vwrap, version: 0, for_account_id: visitor.id }) });
+  ok(bw.status === 200, `11. host back-wraps for visitor -> 200 (got ${bw.status})`);
+  // visitor reads: GET wrapped -> unwrap with their KEK -> open K
+  const vWr = await fetch(`${BASE}/api/sessions/${session.id}/wrapped`, { headers: { cookie: visitor.cookie } }).then(r => r.json());
+  const vPriv = await unwrapMirrorPriv(vKek, vWrapped, visitor.id);
+  const vK = await hpkeOpenK(vPriv, vWr.wrap, session.id, visitor.id);
+  ok(b64(vK) === b64(K), "11. visitor recovers the exact K via the peer back-wrap");
+  // and the hint clears for the visitor now
+  const act2 = await fetch(`${BASE}/api/sessions/active`, { headers: bearer(host) }).then(r => r.json());
+  const sess2 = (act2.sessions || []).find(x => x.id === session.id);
+  ok(!(sess2?.mirror_wraps_needed || []).some(w => w.account_id === visitor.id), "11. hint clears for the visitor after back-wrap");
 
   // cleanup
   await prisma.frame.deleteMany({ where: { sessionId: session.id } });

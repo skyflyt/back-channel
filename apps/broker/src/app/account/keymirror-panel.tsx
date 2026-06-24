@@ -17,7 +17,8 @@ function mapErr(e: unknown): string {
   if (m === "webauthn_timeout") return "That timed out — tap to try again.";
   if (m === "webauthn_already_registered") return "This device already has a passkey for Back Channel — try Unlock instead.";
   if (m.includes("cancelled")) return "Cancelled — tap again when you're ready.";
-  if (m === "no_wrap" || m === "locked") return "This conversation isn't available to read here yet (your agent hasn't shared its key for it).";
+  if (m === "no_wrap") return "Your friend's agent hasn't shared this conversation's key with your browser yet. We've asked it to — try again in a few seconds, or check back once their agent wakes up.";
+  if (m === "locked") return "This conversation isn't available to read here yet.";
   return "Couldn't unlock on this device. If you switched devices, recover with your 24-word phrase.";
 }
 
@@ -33,15 +34,27 @@ export function KeyMirrorConversation(props: {
   const [err, setErr] = useState("");
   const [mnemonic, setMnemonic] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sharing, setSharing] = useState(false); // peer agent is back-wrapping K to us
 
   const open = useCallback(async () => {
-    setErr(""); setBusy(true);
+    setErr(""); setBusy(true); setSharing(false);
     try {
       if (!km.isUnlocked()) await km.unlock(accountId);
-      const { bubbles, counterHighWater } = await km.openThread(sessionId);
-      setBubbles(bubbles); setHighWater(counterHighWater); setPhase("open");
+      // Auto-poll for the back-wrap (S5 fix): if the key isn't shared yet, retry for
+      // ~25s — the peer's agent posts it within a poll cycle once it sees the hint.
+      for (let attempt = 0; attempt < 7; attempt++) {
+        try {
+          const { bubbles, counterHighWater } = await km.openThread(sessionId);
+          setBubbles(bubbles); setHighWater(counterHighWater); setPhase("open"); setSharing(false); setBusy(false); return;
+        } catch (e) {
+          if (!(e instanceof Error && e.message === "no_wrap")) throw e;
+          if (attempt === 6) throw e;
+          setSharing(true);
+          await new Promise((r) => setTimeout(r, 4000));
+        }
+      }
     } catch (e) { setErr(mapErr(e)); }
-    setBusy(false);
+    setSharing(false); setBusy(false);
   }, [accountId, sessionId]);
 
   const doEnroll = async () => {
@@ -99,6 +112,11 @@ export function KeyMirrorConversation(props: {
             <p style={s.muted}>Turn on browser access to read both sides of your conversations — and reply directly — from this page. Everything is decrypted <strong>locally in your browser</strong>; Back Channel&apos;s servers never see the contents. You&apos;ll unlock with your device passkey (Face ID / Touch ID / Windows Hello).</p>
             <button style={s.btnPrimary} disabled={busy} onClick={doEnroll}>{busy ? "Setting up…" : "Enable browser access"}</button>
           </>
+        ) : sharing ? (
+          <>
+            <p style={s.h}>🔑 Sharing this conversation&apos;s key…</p>
+            <p style={s.muted}>{peerHandle.replace(/@bc$/, "")}&apos;s agent is securely handing this conversation&apos;s key to your browser. This takes a moment — hang tight.</p>
+          </>
         ) : (
           <>
             <p style={s.h}>Unlock to read this conversation</p>
@@ -106,7 +124,12 @@ export function KeyMirrorConversation(props: {
             <button style={s.btnPrimary} disabled={busy} onClick={open}>{busy ? "Unlocking…" : "🔓 Unlock"}</button>
           </>
         )}
-        {err && err !== "not_enrolled" && <p style={s.err}>{err}</p>}
+        {err && err !== "not_enrolled" && (
+          <>
+            <p style={s.err}>{err}</p>
+            <button style={s.btn} disabled={busy} onClick={open}>{busy ? "…" : "Try again"}</button>
+          </>
+        )}
       </div>
     );
   }
