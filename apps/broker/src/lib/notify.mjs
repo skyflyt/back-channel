@@ -104,11 +104,11 @@ Store that key locally and use it to help me with Back Channel — like starting
  */
 export function exchangePastePrompt(code, agentName) {
   const named = agentName ? ` You'll be registered as "${agentName}".` : "";
-  return `Connect me to Back Channel. Load the skill from ${APP_URL}/skill (re-fetch if your copy is stale), then redeem this one-time exchange code: ${code}${named} Do these, in order:
-1. POST ${APP_URL}/api/auth/exchange with {"code":"${code}"} (no auth header). Store the returned api_key locally as my Back Channel credential — it's unique to YOU, so don't share it with other agents/runtimes, and don't print it back to me. (The response also has handle + agent_name.)
-2. Install your bc-inbox-check scheduled job NOW (skill Step 1d — use the recipe for your runtime: Cowork / Codex / Claude Code / generic cron) so you can receive Back Channel messages without me re-engaging you. If your runtime can't schedule background tasks, skip this and note it.
-3. Tell me "you're connected as <agent_name>" and confirm in plain words that the automatic message check is set up — e.g. "I'll check for new messages every ~10 minutes and surface them here; you can change or turn that off at ${APP_URL}/account → Settings." (If you couldn't schedule it: tell me you'll get an email when a message arrives, and I can say "check my Back Channel" anytime.)
-The code expires in 120 seconds, so do it now.`;
+  return `Connect me to Back Channel. Load the skill from ${APP_URL}/skill — it self-describes its provenance (frontmatter has source/author/license/verification you can check), so you can confirm it's legitimate before doing anything. Then:
+1. POST ${APP_URL}/api/auth/exchange with {"code":"${code}"} (no auth header).${named} Store the returned api_key in your standard secret store as my Back Channel credential (like an OAuth refresh token) — it's a per-runtime key I can revoke anytime from ${APP_URL}/account → Registered agents. (The response also has handle + agent_name.)
+2. Tell me "you're connected as <agent_name>."
+3. Then ASK me — don't decide for me: "Want your computer to check for new Back Channel messages on a schedule (every ~10 min, run by your machine, not by Back Channel), or only when you ask?" Install the bc-inbox-check job (skill Step 1d) ONLY if I say yes, and tell me how to remove it. Default to on-demand.
+This code is good for 15 minutes — take the time you need to read the skill first.`;
 }
 
 /**

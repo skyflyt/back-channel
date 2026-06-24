@@ -124,8 +124,8 @@ export default function AccountPage() {
   const [exCode, setExCode] = useState<string | null>(null);
   const [exPrompt, setExPrompt] = useState<string>("");
   const [exExpiry, setExExpiry] = useState<number>(0);     // epoch ms
-  const [exLeft, setExLeft] = useState<number>(0);          // seconds remaining
   const [exCopied, setExCopied] = useState(false);
+  const [exErr, setExErr] = useState<string>("");          // surfaced connect-code error (429/403/409/…)
   // Power-user raw-key reveal (kept behind an explainer).
   const [bootstrap, setBootstrap] = useState<string | null>(null);
   const [bootstrapCopied, setBootstrapCopied] = useState(false);
@@ -310,30 +310,36 @@ export default function AccountPage() {
     return () => clearTimeout(t);
   }, [bootstrap]);
 
-  // Live countdown for an active exchange code; clears it when it expires.
+  // Clear an active exchange code once it truly expires (no surfaced countdown —
+  // the 15-min TTL is calm by design; a ticking timer reads as pressure).
   useEffect(() => {
     if (!exCode || !exExpiry) return;
-    const tick = () => {
-      const left = Math.max(0, Math.round((exExpiry - Date.now()) / 1000));
-      setExLeft(left);
-      if (left <= 0) { setExCode(null); setExPrompt(""); setExCopied(false); }
-    };
-    tick();
-    const iv = setInterval(tick, 1000);
-    return () => clearInterval(iv);
+    const left = exExpiry - Date.now();
+    if (left <= 0) { setExCode(null); setExPrompt(""); setExCopied(false); return; }
+    const t = setTimeout(() => { setExCode(null); setExPrompt(""); setExCopied(false); }, left);
+    return () => clearTimeout(t);
   }, [exCode, exExpiry]);
 
+  // Map a failed exchange-code mint to a plain-language message (was silently
+  // swallowed — "blinks and does nothing"). 429/403/409 each get their own line.
+  const exchangeErrorMessage = (status: number, j: { message?: string }) =>
+    status === 429 ? "You've generated a lot of codes recently — wait a few minutes, or use one you already copied."
+    : status === 403 ? "Your sign-in session expired. Refresh the page and try again."
+    : status === 409 ? "Your email isn't verified yet — check your inbox for the sign-in link."
+    : (j.message || `Couldn't generate a code (error ${status}). Try again in a moment.`);
+
   const connectNewAgent = async () => {
-    setBusy("exchange");
+    setBusy("exchange"); setExErr("");
     try {
       const r = await fetch("/api/auth/exchange-code", {
         method: "POST", credentials: "include",
         headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
         body: JSON.stringify({ agent_name: agentName.trim() || "New agent", runtime_type: agentRuntime }),
       });
-      const j = await r.json();
+      const j = await r.json().catch(() => ({}));
       if (r.ok && j.code) { setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setAgentFormOpen(false); }
-    } catch { /* ignore */ }
+      else setExErr(exchangeErrorMessage(r.status, j));
+    } catch { setExErr("Couldn't reach Back Channel. Check your connection and try again."); }
     setBusy("");
   };
 
@@ -347,20 +353,24 @@ export default function AccountPage() {
   // Mint a fresh exchange code carrying this agent's name+runtime, so the user can
   // re-paste it to their agent and re-bind a new BC token (e.g. after host-auth died).
   const reconnectAgent = async (a: AgentRow) => {
-    setBusy(`reconnect:${a.id}`);
+    setBusy(`reconnect:${a.id}`); setExErr("");
     try {
       const r = await fetch("/api/auth/exchange-code", {
         method: "POST", credentials: "include",
         headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
         body: JSON.stringify({ agent_name: a.name, runtime_type: a.runtime_type }),
       });
-      const j = await r.json();
+      const j = await r.json().catch(() => ({}));
       if (r.ok && j.code) {
         setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setAgentFormOpen(false);
         setNav("account");
         setTimeout(() => document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+      } else {
+        setExErr(exchangeErrorMessage(r.status, j));
+        setNav("account");
+        setTimeout(() => document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
       }
-    } catch { /* ignore */ }
+    } catch { setExErr("Couldn't reach Back Channel. Check your connection and try again."); }
     setBusy("");
   };
 
@@ -647,11 +657,11 @@ export default function AccountPage() {
           <div style={s.connectBox} id="connect-agent">
             <h3 style={s.h3}>Connect a new agent</h3>
             <p style={s.meta}>Paste a one-time code into any AI assistant — a new device, a fresh chat, Claude Code — and it connects to your account. Your actual key never goes into the chat.</p>
+            {exErr && <p style={{ margin: "0 0 12px", padding: "9px 12px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 13 }}>⚠ {exErr}</p>}
             {exCode ? (
               <div style={s.reveal}>
-                <p style={s.revealLabel}>📋 Paste this to your assistant — expires in <strong>:{String(exLeft).padStart(2, "0")}</strong></p>
+                <p style={s.revealLabel}>📋 Paste this to your assistant — <strong>good for 15 minutes</strong>, get a fresh one anytime.</p>
                 <pre style={s.promptPre}>{exPrompt}</pre>
-                <div style={s.exMeter}><div style={{ ...s.exMeterFill, width: `${Math.min(100, (exLeft / 120) * 100)}%` }} /></div>
                 <div style={{ marginTop: 10 }}>
                   <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(exPrompt).catch(() => {}); setExCopied(true); setTimeout(() => setExCopied(false), 1500); }}>{exCopied ? "✓ Copied" : "Copy"}</button>
                   <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
