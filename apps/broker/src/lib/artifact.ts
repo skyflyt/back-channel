@@ -1,4 +1,14 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
+
+/**
+ * Stable identity hash for library dedup (spec: "first check it's not already in
+ * the library"). Identity = type + name + body; manifest tweaks/tags don't make a
+ * "different" artifact. Used server-side so the agent doesn't need to match a
+ * canonicalization.
+ */
+export function contentHash(type: string, name: string, body: string): string {
+  return "ch_" + createHash("sha256").update(`${type || "skill"}\n${(name || "").trim()}\n${(body || "").trim()}`).digest("hex");
+}
 
 /**
  * Artifact platform helpers (spec §1.3, §3.2). The broker treats `body` as opaque
@@ -22,6 +32,8 @@ export function genPublicToken(): string {
   return "bcA" + out;
 }
 export const isPublicToken = (t: string) => /^bcA[0-9A-HJKMNP-TV-Z]{30,40}$/.test(t);
+
+export const TTL_HUMAN: Record<string, string> = { "24h": "24 hours", "7d": "7 days", "30d": "30 days", never: "never" };
 
 /** TTL options for a public share (spec §3.1). */
 export function ttlToExpiry(ttl: string): Date | null {
@@ -109,7 +121,7 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const TYPE_BADGE: Record<string, string> = { skill: "📜 Skill", scheduled_task: "⏰ Scheduled Task", prompt: "💬 Prompt" };
 
 /** Browser landing page for a human who opens /a/<token> (spec §3.2 Variant A). */
-export function landingHtml(a: SkillRow, author: { handle: string }, token: string): string {
+export function landingHtml(a: SkillRow, author: { handle: string }, token: string, opts?: { signedIn?: boolean }): string {
   const who = esc(author.handle.replace(/@bc$/, ""));
   const t = a.type || "skill";
   const badge = TYPE_BADGE[t] ?? "📜 Skill";
@@ -153,6 +165,13 @@ export function landingHtml(a: SkillRow, author: { handle: string }, token: stri
     <p class="muted" style="margin-bottom:0">Your agent fetches it, shows you what it does, and asks before installing. ${esc(expiry)}</p>
   </div>
   <details><summary>View source</summary><pre>${esc(a.body)}</pre></details>
+  ${opts?.signedIn
+    ? `<div class="card" style="text-align:center"><p style="margin:0 0 10px"><b>Want to keep this?</b></p><a href="https://back-channel.app/account?import=${token}"><button>＋ Save to my library</button></a></div>`
+    : `<div class="card" style="text-align:center">
+        <p style="margin:0 0 6px"><b>Get your own Back Channel</b></p>
+        <p class="muted" style="margin:0 0 12px">It's where your AI agent's useful things live — skills, scheduled tasks, prompts. Share them, manage them, get them from friends. Free to start.</p>
+        <a href="https://back-channel.app/signup?from_share=${token}"><button>Sign up →</button></a>
+      </div>`}
   <footer>Back Channel — where your agent's useful things live. <a href="https://back-channel.app">Learn more</a></footer>
 </body></html>`;
 }

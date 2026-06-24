@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online.
-version: 0.5.11
-revision: 2026-06-25-1
+version: 0.5.12
+revision: 2026-06-25-2
 homepage: https://back-channel.app
 ---
 
@@ -15,7 +15,7 @@ homepage: https://back-channel.app
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.11` (`revision: 2026-06-25-1`). Check
+> **Skill freshness.** `version: 0.5.12` (`revision: 2026-06-25-2`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`.
 
 ## Rule #0 — talk like a person
@@ -46,6 +46,7 @@ Trigger phrases (or anything close):
 - "My Back Channel exchange code is BCX-XXXX-XXXX" / "Here's my exchange code" / "Set me up with this code" → **Step 1-connect (exchange code)** below.
 - "Open my Back Channel dashboard / manage my Back Channel" → **Step 1c (dashboard link)**, NOT a key change.
 - **"Add this to my agent: https://back-channel.app/a/bcA…"** (or any bare `back-channel.app/a/<token>` link) → **Step A (install a shared artifact)** below. This works with NO Back Channel account — anyone can paste a public share link.
+- **"Share this prompt/skill/task with [name]"** / "send this to someone" / "make a share link for this" → **Step B (share something)** below.
 
 If you don't already have a saved `bc_` key for this user, do **Step 1** first.
 
@@ -76,6 +77,39 @@ needed to receive one.** Do this:
      scheduler. The user can remove it anytime.
 4. If the user wants their own library/sharing, point them at `claim_account_url`
    (optional — receiving never requires it).
+
+### Step B: share something from your library
+
+When the user wants to hand a prompt, skill, or scheduled task to someone ("share
+this with Sarah", "send this to a friend", "make a link for this"), do the whole
+dance in **one call** and read back two paste-options. You must have a saved `bc_`
+key (Step 1) — if you don't, tell the user to connect you first (open
+back-channel.app/account → generate a code → give it to you).
+
+1. **Sign it** (the broker holds no private key — you do). Canonical message is
+   `sha256(name | version | param_schema | body)` with `version` = `1` for a new
+   artifact; ed25519-sign it with your account key and format
+   `signature = "<base64 pubkey>.<base64 sig>"` (same scheme as template skills —
+   see `/skill/reference`). For a brand-new prompt there's no param_schema, so the
+   message is `sha256(name | 1 |  | body)`.
+2. **Share in one shot:** `POST https://back-channel.app/api/artifacts/share` (bearer auth) with:
+   ```json
+   { "type": "prompt|skill|scheduled_task", "name": "...", "description": "...",
+     "body": "<the prompt text / SKILL.md / task instruction>",
+     "manifest": { ... type-specific ... }, "signature": "<pubkey>.<sig>", "ttl": "7d" }
+   ```
+   The server **first checks it isn't already in the user's library** (dedup by
+   content); if it is, it reuses the existing share link (or mints one); if not, it
+   creates it. For a `scheduled_task`, set `manifest.public_share_allowed: true` (a
+   public link installs a recurring job on a stranger's agent, so it's opt-in) —
+   otherwise you'll get `scheduled_task_opt_in_required`; offer to share it with a
+   trusted friend instead.
+3. **Read back to the user** (Rule #0) using the response's `summary` — it already
+   names what happened and whether it was new. Then give them BOTH options from the
+   response: the `share.url` (just send the link) and the `paste_prompt_for_recipient`
+   (paste into any agent). Make clear the recipient needs **no** account to receive it.
+4. **Edge cases:** `not_connected` → guide the user to connect you (above).
+   `signature_required` → you skipped step 1; sign and retry.
 
 ### Step 1-connect: redeem an exchange code (`BCX-…`)
 

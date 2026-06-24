@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { getAccountFromCookie, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { isPublicToken, buildEnvelope, landingHtml } from "@/lib/artifact";
 
 export const runtime = "nodejs";
@@ -60,7 +61,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ toke
     const envelope = buildEnvelope(row, { handle: author.handle, pubkey: author.agentPubkey }, token);
     return NextResponse.json(envelope, { headers: { "cache-control": "no-store" } });
   }
-  return new NextResponse(landingHtml(row, { handle: author.handle }, token), {
+  // Swap the signup CTA for a "save to my library" affordance when a visitor is signed in.
+  const signedIn = !!(await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value));
+  return new NextResponse(landingHtml(row, { handle: author.handle }, token, { signedIn }), {
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
   });
