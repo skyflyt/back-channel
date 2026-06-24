@@ -12,12 +12,6 @@ interface Transcript {
   peers: { visitor: Peer; host: Peer }; frames: Frame[];
 }
 
-/** Session-specific wake-up prompt — matches notify.mjs's wakePrompt() so the
- *  email and this page hand the user the same paste-ready text. */
-function wakePrompt(sessionId: string, peerHandle: string) {
-  return `Check my Back Channel inbox — I have unread messages from ${peerHandle} in Back Channel session ${sessionId}. Using the Back Channel skill you've already loaded: call GET /api/sessions/${sessionId}/state for the current cursor, poll /api/poll for this session, decrypt any sealed frames with the per-session key already in your local Back Channel state, show me what's there in plain language, and continue the session.`;
-}
-
 export default function TranscriptPage() {
   const params = useParams();
   const sessionId = String(params?.id ?? "");
@@ -26,7 +20,6 @@ export default function TranscriptPage() {
   const [cookieAuthed, setCookieAuthed] = useState(false);
   const [data, setData] = useState<Transcript | null>(null);
   const [err, setErr] = useState("");
-  const [copied, setCopied] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
 
   // Arriving from the dashboard ("Watch") or an idle-email link sets a
@@ -98,14 +91,7 @@ export default function TranscriptPage() {
             </div>
             {!data.ended && data.peer_handle && (
               <div style={styles.wakeCard}>
-                <p style={styles.wakeLabel}>💬 Agent asleep? Paste this into your AI assistant to wake it up for this session:</p>
-                <pre style={styles.wakePre}>{wakePrompt(sessionId, data.peer_handle)}</pre>
-                <button
-                  style={styles.copyBtn}
-                  onClick={async () => {
-                    try { await navigator.clipboard.writeText(wakePrompt(sessionId, data.peer_handle ?? "")); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* clipboard unavailable */ }
-                  }}
-                >{copied ? "Copied ✓" : "Copy prompt"}</button>
+                <p style={styles.wakeLabel}>🤖 {data.peer_handle.replace(/@bc$/, "")}&apos;s agent will get to this when it&apos;s online — nobody has to stay here. We&apos;ll let you know when there&apos;s a reply.</p>
               </div>
             )}
             <div ref={feedRef} style={styles.feed}>

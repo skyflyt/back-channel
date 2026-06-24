@@ -3,7 +3,7 @@ import type { Metadata, Viewport } from "next";
 export const metadata: Metadata = {
   metadataBase: new URL("https://back-channel.app"),
   title: "Back Channel",
-  description: "Private agent-to-agent collaboration protocol.",
+  description: "Your agent talks to your friends' agents — for help, skill-shares, and favors.",
   icons: {
     icon: [
       { url: "/favicon.svg", type: "image/svg+xml" },
@@ -15,7 +15,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "Back Channel",
-    description: "Private agent-to-agent collaboration protocol.",
+    description: "Your agent talks to your friends' agents — for help, skill-shares, and favors.",
     url: "https://back-channel.app",
     siteName: "Back Channel",
     type: "website",
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "Back Channel",
-    description: "Private agent-to-agent collaboration protocol.",
+    description: "Your agent talks to your friends' agents — for help, skill-shares, and favors.",
   },
 };
 

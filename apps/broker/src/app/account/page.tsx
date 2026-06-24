@@ -98,6 +98,7 @@ export default function AccountPage() {
   const [inbox, setInbox] = useState<InboxReq[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [showAudit, setShowAudit] = useState(false);
+  const [showDevKey, setShowDevKey] = useState(false); // collapse the raw API key (R5 #2 — not the lead)
   const [skills, setSkills] = useState<Skill[]>([]);
   const [discover, setDiscover] = useState<DiscoverSkill[]>([]);
   const [sharedWithMe, setSharedWithMe] = useState<SharedSkill[]>([]);
@@ -586,7 +587,15 @@ export default function AccountPage() {
         )}
 
         {nav === "account" && (<>
-        {/* Your API key */}
+        {/* Friendly lead — what a normal user wants first, not the API key (R5 #2). */}
+        <section style={s.card}>
+          <h2 style={s.h2}>👋 You&apos;re connected</h2>
+          <p style={s.soon}>{agents.length > 0
+            ? <>{agents.length} agent{agents.length === 1 ? "" : "s"} connected to <strong>{me.handle}</strong>. Manage them in <strong>Agents</strong>, see who you&apos;re connected with in <strong>Friends</strong>, and start a conversation in <strong>Messages</strong>.</>
+            : <>Your account <strong>{me.handle}</strong> is ready. Connect your agent below, then head to <strong>Messages</strong> to reach a friend.</>}</p>
+        </section>
+
+        {/* API key — developer detail, tucked under a disclosure (R5 #2) */}
         <section style={s.card}>
           <h2 style={s.h2}>Your API key</h2>
           {newKey ? (
@@ -599,13 +608,15 @@ export default function AccountPage() {
               </div>
               <p style={s.meta}>Give this to your agent (replace the old key). The previous key no longer works.</p>
             </div>
+          ) : !showDevKey ? (
+            <p style={s.meta}>Advanced — most people never need this. <button style={s.smallLink2} onClick={() => setShowDevKey(true)}>Show developer key</button></p>
           ) : (
             <>
               <div style={s.keyRow}>
                 <code style={s.key}>{me.api_key_masked ?? "—"}</code>
                 <button style={s.btn} onClick={rotateKey} disabled={busy === "key"}>{busy === "key" ? "Rotating…" : "Rotate key"}</button>
               </div>
-              <p style={s.meta}>Last used {lastUsed}. We never show the full key here — only the last 4 characters.</p>
+              <p style={s.meta}>Last used {lastUsed}. We never show the full key here — only the last 4 characters. <button style={s.smallLink2} onClick={() => setShowDevKey(false)}>Hide</button></p>
             </>
           )}
 
@@ -885,7 +896,10 @@ export default function AccountPage() {
                   : <span style={s.pendTag}>waiting for them</span>)}
                 <div style={s.rowMeta}>last worked together {when(t.last_session_at)}</div>
                 {t.trusted && t.mutual && (
-                  <div style={s.peerHint}>Tell your assistant: <span style={s.peerHintCode}>&ldquo;use Back Channel to reach {t.handle}&rdquo;</span> — no invite code needed, it just lands in their inbox.</div>
+                  <div style={{ marginTop: 6 }}>
+                    <button style={s.btn} onClick={() => askFriend(t.handle, "")}>Message {t.handle.replace(/@bc$/, "")} →</button>
+                    <span style={{ ...s.rowMeta, marginLeft: 8 }}>no invite code needed</span>
+                  </div>
                 )}
               </div>
               <button
