@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromAuth, getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { ARTIFACT_TYPES } from "@/lib/artifact";
 
 export const runtime = "nodejs";
 
@@ -26,9 +27,14 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     skills: skills.map((s) => ({
       id: s.id, name: s.name, description: s.description, kind: s.kind, version: s.version,
+      type: s.type || "skill",
+      manifest: s.manifest ?? null,
       param_schema: s.paramSchema ?? null,
       discoverable: s.discoverable,
       shared_with: s.shares.map((sh) => sh.sharedWith.handle),
+      // public-share state for the Library panel (token kept owner-only via this authed GET)
+      public_token: s.publicToken && !s.publicRevokedAt && (!s.publicExpiresAt || s.publicExpiresAt > new Date()) ? s.publicToken : null,
+      public_expires_at: s.publicExpiresAt?.toISOString() ?? null,
       updated_at: s.updatedAt.toISOString(),
     })),
   });
@@ -46,19 +52,34 @@ export async function POST(req: NextRequest) {
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!bearer && !csrfValid(req.headers.get(CSRF_HEADER), req.cookies.get(CSRF_COOKIE_NAME)?.value)) return NextResponse.json({ error: "csrf" }, { status: 403 });
 
-  let body: { name?: string; description?: string; kind?: string; body?: string; param_schema?: unknown; signature?: string };
+  let body: { name?: string; description?: string; kind?: string; type?: string; body?: string; param_schema?: unknown; signature?: string; manifest?: unknown; revision?: string };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid_json" }, { status: 400 }); }
   if (!body.name || !body.body) return NextResponse.json({ error: "name_and_body_required" }, { status: 400 });
-  const kind = body.kind === "template" ? "template" : "rpc";
-  if (kind === "template" && !body.signature) return NextResponse.json({ error: "template_requires_signature" }, { status: 400 });
+
+  // Polymorphic artifact type (spec §1.3). "skill" keeps the legacy rpc/template
+  // semantics; "prompt"/"scheduled_task" are content artifacts (never RPC), so we
+  // store them as kind:"template" and treat manifest as their typed payload.
+  const type = ARTIFACT_TYPES.includes(body.type as never) ? body.type! : "skill";
+  const kind = type === "skill" ? (body.kind === "template" ? "template" : "rpc") : "template";
+  if (type === "skill" && kind === "template" && !body.signature) return NextResponse.json({ error: "template_requires_signature" }, { status: 400 });
+
+  const manifest = body.manifest && typeof body.manifest === "object" ? (body.manifest as object) : undefined;
+  // Type-specific manifest sanity (broker inspects, never executes).
+  if (type === "scheduled_task") {
+    const m = (manifest ?? {}) as Record<string, unknown>;
+    if (typeof m.cron !== "string" || typeof m.prompt !== "string") {
+      return NextResponse.json({ error: "scheduled_task_manifest_invalid", message: "scheduled_task manifest needs string `cron` and `prompt`." }, { status: 400 });
+    }
+  }
 
   const skill = await prisma.userSkill.create({
     data: {
       accountId: account.id, name: body.name, description: body.description ?? null,
-      kind, body: body.body, signature: body.signature ?? null,
+      type, kind, body: body.body, signature: body.signature ?? null,
+      manifest, revision: body.revision ?? null,
       paramSchema: body.param_schema === undefined ? undefined : (body.param_schema as object),
     },
   });
-  await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "skill.published", detail: { skill: skill.id, name: skill.name, kind } } }).catch(() => {});
-  return NextResponse.json({ ok: true, id: skill.id, name: skill.name, kind: skill.kind });
+  await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "skill.published", detail: { skill: skill.id, name: skill.name, kind, type } } }).catch(() => {});
+  return NextResponse.json({ ok: true, id: skill.id, name: skill.name, kind: skill.kind, type });
 }
