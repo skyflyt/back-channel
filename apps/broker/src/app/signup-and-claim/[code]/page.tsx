@@ -6,6 +6,9 @@ import { useParams } from "next/navigation";
 export default function SignupAndClaimPage() {
   const params = useParams();
   const code = String(params?.code ?? "");
+  // Don't echo arbitrary path input back as a "valid invite" — invite codes are
+  // short alphanumeric+dash tokens. Anything else → friendly error (PMF item 7).
+  const codeValid = /^[A-Za-z0-9._-]{6,64}$/.test(code);
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -26,6 +29,17 @@ export default function SignupAndClaimPage() {
     } catch { setErr("Something went wrong — try again."); }
     setBusy(false);
   };
+
+  if (!codeValid) {
+    return (
+      <main style={s.page}>
+        <div style={s.wrap}>
+          <h1 style={s.h1}>This invite link didn&apos;t work</h1>
+          <p style={s.sub}>The link looks incomplete or mistyped. Ask whoever invited you to send it again — or you can just <a href="/signup" style={{ color: "#0f766e", fontWeight: 600 }}>sign up here</a> and connect with them after.</p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main style={s.page}>

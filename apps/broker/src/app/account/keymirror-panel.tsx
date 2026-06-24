@@ -104,15 +104,23 @@ export function KeyMirrorConversation(props: {
     <div style={s.box}>
       <div style={s.transcript}>
         {bubbles.length === 0 && <p style={s.muted}>No messages in this conversation yet.</p>}
-        {bubbles.map((b, i) => (
+        {bubbles.map((b, i) => {
+          // Make the agent quartet visible (PMF item 4): who actually "spoke" —
+          // you, your agent, your friend, or their agent.
+          const fromHuman = (b.raw as { origin?: string } | null)?.origin === "human";
+          const peer = peerHandle.replace(/@bc$/, "");
+          const who = b.side === "me" ? (fromHuman ? "You" : "Your agent") : (fromHuman ? peer : `${peer}'s agent`);
+          const avatar = b.side === "me" ? (fromHuman ? "🧑" : "🤖") : (fromHuman ? "🧑" : "🤖");
+          return (
           <div key={i} style={{ display: "flex", justifyContent: b.side === "me" ? "flex-end" : "flex-start" }}>
             <div style={b.side === "me" ? s.bubbleMe : s.bubblePeer}>
-              <div style={s.bubbleWho}>{b.side === "me" ? "You" : peerHandle.replace(/@bc$/, "")}</div>
+              <div style={s.bubbleWho}>{avatar} {who}</div>
               {/* PLAIN TEXT — React escapes; never raw HTML (S7) */}
               <div style={s.bubbleText}>{b.text}</div>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
       <div style={s.composer}>
         <textarea style={s.textarea} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={`Message ${peerHandle.replace(/@bc$/, "")}'s agent…`} rows={2}

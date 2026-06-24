@@ -196,7 +196,7 @@ model UserSkill {
   body        String                  // rpc: local-exec definition; template: shareable instructions
   paramSchema Json?
   signature   String?                 // required for templates (author signature)
-  discoverable Boolean  @default(false) // Tier 2.5: NAME+description visible to my trusted peers (discovery != access)
+  discoverable Boolean  @default(true)  // Tier 2.5: NAME+description visible to my trusted peers (discovery != access). On by default so a fresh user's circle has real skills (PMF item 8); toggle off per-skill.
   version     Int       @default(1)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt

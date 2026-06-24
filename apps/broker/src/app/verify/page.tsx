@@ -129,13 +129,14 @@ export default function VerifyPage() {
 
         {state === "error" && (
           <>
-            <h1 style={styles.h1}>❌ Verification failed</h1>
+            <h1 style={styles.h1}>That link didn&apos;t work</h1>
             <p style={styles.lead}>
-              <code style={styles.code}>{errMsg}</code>
+              It may have already been used, or expired (links last 24 hours). No worries —
+              you can get a fresh one.
             </p>
             <p style={styles.lead}>
-              Possible causes: token already used, expired (24h limit), or never existed. You can
-              ask your agent to sign you up again to get a new link.
+              <a href="/signup" style={styles.link}>Get a new link →</a>{"  ·  "}
+              <a href="/login" style={styles.link}>Already set up? Sign in</a>
             </p>
             <p><a href="/" style={styles.link}>← Back to home</a></p>
           </>

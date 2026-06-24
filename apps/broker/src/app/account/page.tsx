@@ -791,7 +791,7 @@ export default function AccountPage() {
                 <span style={{ ...s.dot, background: turn.color, marginTop: 5 }} />
                 <div style={s.rowMain}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <strong>{x.peer_handle}</strong> <span style={s.roleTag}>{x.role}</span>
+                    <strong>🧑 {x.peer_handle.replace(/@bc$/, "")}</strong> <span style={s.agentVia}>🤖 via your agents</span>
                     <span style={{ ...s.turnBadge, color: turn.color, background: turn.bg, borderColor: turn.border }}>{turn.label}</span>
                     {!!x.unread_count && <span style={s.unreadBadge}>{x.unread_count} unread</span>}
                     {x.live && <span style={s.liveTag}>● live</span>}
@@ -1137,6 +1137,7 @@ const s = {
   rowMeta: { fontSize: 12, color: "#94a3b8", marginTop: 2 } as const,
   goal: { fontSize: 13, color: "#475569", marginTop: 2 } as const,
   roleTag: { fontSize: 11, fontWeight: 700, color: "#6b21a8", background: "#faf5ff", padding: "1px 7px", borderRadius: 6, textTransform: "uppercase" } as const,
+  agentVia: { fontSize: 11.5, fontWeight: 600, color: "#0f766e", background: "#ecfeff", border: "1px solid #cffafe", padding: "1px 8px", borderRadius: 999 } as const,
   okTag: { fontSize: 11, fontWeight: 700, color: "#0f766e", background: "#f0fdfa", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
   peerHandle: { fontFamily: "ui-monospace, Menlo, monospace", color: "#0f172a" } as const,
   peerHint: { fontSize: 12.5, color: "#475569", marginTop: 6, lineHeight: 1.5 } as const,
