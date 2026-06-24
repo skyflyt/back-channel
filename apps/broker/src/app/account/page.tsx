@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { KeyMirrorConversation, BrowserAccessSettings } from "./keymirror-panel";
+import { ArtifactEditor, ArtifactInspector, type EditorArtifact } from "./library-editor";
 
 interface Me {
   id: string; handle: string; email: string; display_name: string | null; created_at: string;
@@ -83,7 +84,7 @@ const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork"], ["
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
-interface Skill { id: string; name: string; description: string | null; kind: string; shared_with: string[]; discoverable: boolean; type?: string; manifest?: Record<string, unknown> | null; signed?: boolean; public_token?: string | null; public_expires_at?: string | null; }
+interface Skill { id: string; name: string; description: string | null; kind: string; shared_with: string[]; discoverable: boolean; type?: string; manifest?: Record<string, unknown> | null; body?: string; version?: number; signed?: boolean; public_token?: string | null; public_expires_at?: string | null; }
 interface DiscoverSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; }
 
 /** Read the non-httpOnly bc_csrf cookie to echo in the x-bc-csrf header. */
@@ -107,6 +108,10 @@ export default function AccountPage() {
   const [installCopiedId, setInstallCopiedId] = useState<string | null>(null);
   const [pubTtl, setPubTtl] = useState<Record<string, string>>({}); // per-row public-share TTL selection
   const [pubCopiedId, setPubCopiedId] = useState<string | null>(null); // "Copied ✓" flash on the public link
+  // Library CRUD: editor (create/edit), read-only inspector, and a save flash.
+  const [editor, setEditor] = useState<{ mode: "create" | "edit"; initial?: EditorArtifact } | null>(null);
+  const [inspect, setInspect] = useState<EditorArtifact | null>(null);
+  const [libFlash, setLibFlash] = useState<string>("");
   const [newKey, setNewKey] = useState<string | null>(null);
   // "Connect a new agent" — 2-step: name+runtime, then exchange code (raw key never shown).
   const [agents, setAgents] = useState<AgentRow[]>([]);
@@ -988,8 +993,12 @@ export default function AccountPage() {
         {nav === "skills" && (<>
         {/* Your Library — polymorphic artifacts: skills, scheduled tasks, prompts */}
         <section style={s.card} id="skills-section">
-          <h2 style={s.h2}>📚 Your Library</h2>
-          <p style={s.soon}>The useful things your agent has — skills, scheduled tasks, and prompts. Share one privately with a friend, make it discoverable to your circle, or generate a public link anyone can paste into their own agent.</p>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <h2 style={{ ...s.h2, margin: 0 }}>📚 Your Library</h2>
+            <button style={{ ...s.chipOn, padding: "8px 14px", fontWeight: 700 }} onClick={() => setEditor({ mode: "create" })}>＋ New artifact</button>
+          </div>
+          <p style={s.soon}>The useful things your agent has — skills, scheduled tasks, and prompts. Add one here, or let your agent publish them. Share privately with a friend, make it discoverable to your circle, or generate a public link anyone can paste into their own agent.</p>
+          {libFlash && <div style={{ margin: "4px 0 12px", padding: "9px 12px", borderRadius: 8, background: "rgba(58,138,58,0.12)", color: "#2e7d32", fontSize: 14 }}>✅ {libFlash}</div>}
           {skills.length === 0 && (
             <div style={s.empty}>
               <span style={s.emptyIcon}>📚</span>
@@ -1061,7 +1070,11 @@ export default function AccountPage() {
                     )}
                   </div>
                 </div>
-                <button style={s.endBtn} disabled={busy === `skilldel:${sk.id}`} onClick={() => deleteSkill(sk.id, sk.name)}>Delete</button>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <button style={s.chipOff} onClick={() => setInspect({ id: sk.id, name: sk.name, description: sk.description, kind: sk.kind, type: sk.type, manifest: sk.manifest, body: sk.body })}>View</button>
+                  <button style={s.chipOff} onClick={() => setEditor({ mode: "edit", initial: { id: sk.id, name: sk.name, description: sk.description, kind: sk.kind, type: sk.type, manifest: sk.manifest, body: sk.body } })}>Edit</button>
+                  <button style={s.endBtn} disabled={busy === `skilldel:${sk.id}`} onClick={() => deleteSkill(sk.id, sk.name)}>Delete</button>
+                </div>
               </div>
             );
           })}
@@ -1164,6 +1177,16 @@ export default function AccountPage() {
           </main>
         </div>
       </div>
+
+      {editor && (
+        <ArtifactEditor
+          mode={editor.mode}
+          initial={editor.initial}
+          onClose={() => setEditor(null)}
+          onSaved={(msg) => { setEditor(null); setLibFlash(msg); loadSkills(); setTimeout(() => setLibFlash(""), 6000); }}
+        />
+      )}
+      {inspect && <ArtifactInspector artifact={inspect} onClose={() => setInspect(null)} />}
     </div>
   );
 }
