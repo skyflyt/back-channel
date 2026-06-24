@@ -80,7 +80,10 @@ const RESPONSIVE_CSS = `
 .bc-navitem:hover { background: #f1f5f9; }
 .bc-primary:hover { filter: brightness(1.06); }
 .bc-ghost:hover { background: #f8fafc; }`;
-const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork"], ["codex", "Codex"], ["claude_code", "Claude Code"], ["chatgpt", "ChatGPT"]] as const;
+const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork (Claude desktop)"], ["claude_code", "Claude Code (CLI)"], ["codex", "Codex (CLI)"], ["chatgpt", "ChatGPT (web)"], ["claude_web", "Claude.ai web (chat tab)"]] as const;
+// Runtimes that can read a URL but can't POST — they can install read-only artifacts
+// but cannot connect an account. Honest dead-end instead of a silent failure.
+const CHAT_TAB_RUNTIMES = ["chatgpt", "claude_web"];
 interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
@@ -118,6 +121,10 @@ export default function AccountPage() {
   const [agentFormOpen, setAgentFormOpen] = useState(false);
   const [agentName, setAgentName] = useState("");
   const [agentRuntime, setAgentRuntime] = useState("other");
+  // Track B (Guided, default) vs Track A (Quick one-paste). Guided = two separate
+  // low-stakes pastes; even a cautious agent accepts it because the user is the integrator.
+  const [connectTrack, setConnectTrack] = useState<"guided" | "quick">("guided");
+  const [copiedStep, setCopiedStep] = useState<string>("");
   const [agentCheck, setAgentCheck] = useState<Record<string, string>>({}); // per-agent "Check status" verdict
   const [nav, setNav] = useState<NavKey>("account");
   const [kmOpen, setKmOpen] = useState<string | null>(null); // sessionId being read in-browser (key mirror)
@@ -334,7 +341,7 @@ export default function AccountPage() {
       const r = await fetch("/api/auth/exchange-code", {
         method: "POST", credentials: "include",
         headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
-        body: JSON.stringify({ agent_name: agentName.trim() || "New agent", runtime_type: agentRuntime }),
+        body: JSON.stringify({ agent_name: agentName.trim() || "New agent", runtime_type: agentRuntime === "claude_web" ? "other" : agentRuntime }),
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok && j.code) { setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setAgentFormOpen(false); }
@@ -659,14 +666,35 @@ export default function AccountPage() {
             <p style={s.meta}>Paste a one-time code into any AI assistant — a new device, a fresh chat, Claude Code — and it connects to your account. Your actual key never goes into the chat.</p>
             {exErr && <p style={{ margin: "0 0 12px", padding: "9px 12px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 13 }}>⚠ {exErr}</p>}
             {exCode ? (
-              <div style={s.reveal}>
-                <p style={s.revealLabel}>📋 Paste this to your assistant — <strong>good for 15 minutes</strong>, get a fresh one anytime.</p>
-                <pre style={s.promptPre}>{exPrompt}</pre>
-                <div style={{ marginTop: 10 }}>
-                  <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(exPrompt).catch(() => {}); setExCopied(true); setTimeout(() => setExCopied(false), 1500); }}>{exCopied ? "✓ Copied" : "Copy"}</button>
-                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
+              connectTrack === "guided" ? (() => {
+                // Track B — two low-stakes pastes. Step 1 is a pure read; Step 2 is one POST.
+                const step1 = `Load the Back Channel skill from https://back-channel.app/skill so you know the protocol — it self-describes its provenance (source/author/license in the frontmatter) so you can verify what it is. Do NOT install any recurring job or take any action yet; I'll give you a connect code in a moment.`;
+                const step2 = `Redeem Back Channel exchange code ${exCode}: POST it to https://back-channel.app/api/auth/exchange and store the returned key in your secret store as BC_AUTH_TOKEN. Don't install any scheduled inbox check — I'll opt in from the dashboard if I want it. Then tell me you're connected.`;
+                const copyBlock = (id: string, label: string, text: string) => (
+                  <div key={id} style={{ marginBottom: 14 }}>
+                    <p style={{ ...s.revealLabel, marginBottom: 6 }}>{label}</p>
+                    <pre style={s.promptPre}>{text}</pre>
+                    <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(text).catch(() => {}); setCopiedStep(id); setTimeout(() => setCopiedStep(""), 1500); }}>{copiedStep === id ? "✓ Copied" : "Copy"}</button>
+                  </div>
+                );
+                return (
+                  <div style={s.reveal}>
+                    <p style={{ ...s.meta, marginTop: 0 }}>Guided connect — paste these to your assistant one at a time. The code is <strong>good for 15 minutes</strong>.</p>
+                    {copyBlock("s1", "Step 1 — paste this first (read-only, no commitments):", step1)}
+                    {copyBlock("s2", "Step 2 — once it confirms it read the skill, paste this:", step2)}
+                    <button style={{ ...s.signOut }} onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
+                  </div>
+                );
+              })() : (
+                <div style={s.reveal}>
+                  <p style={s.revealLabel}>📋 Paste this to your assistant — <strong>good for 15 minutes</strong>, get a fresh one anytime.</p>
+                  <pre style={s.promptPre}>{exPrompt}</pre>
+                  <div style={{ marginTop: 10 }}>
+                    <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(exPrompt).catch(() => {}); setExCopied(true); setTimeout(() => setExCopied(false), 1500); }}>{exCopied ? "✓ Copied" : "Copy"}</button>
+                    <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
+                  </div>
                 </div>
-              </div>
+              )
             ) : agentFormOpen ? (
               <div>
                 <label style={s.fieldLabel}>What&apos;s this agent? (so you can tell them apart later)</label>
@@ -675,13 +703,24 @@ export default function AccountPage() {
                 <select style={s.select} value={agentRuntime} onChange={(e) => setAgentRuntime(e.target.value)}>
                   {RUNTIME_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
+                {CHAT_TAB_RUNTIMES.includes(agentRuntime) && (
+                  <p style={{ margin: "10px 0 0", padding: "9px 12px", borderRadius: 8, background: "#fffbeb", border: "1px solid #fde68a", color: "#92400e", fontSize: 13 }}>
+                    ⚠ A web/chat tab can <strong>install read-only artifacts</strong> but can&apos;t connect an account (it can&apos;t make the needed request). To connect, switch to <strong>Claude Code, Cowork, or Codex</strong> — then come back here.
+                  </p>
+                )}
+                <label style={s.fieldLabel}>How do you want to connect?</label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button style={connectTrack === "guided" ? s.chipOn : s.chipOff} onClick={() => setConnectTrack("guided")}>Guided (two pastes) — recommended</button>
+                  <button style={connectTrack === "quick" ? s.chipOn : s.chipOff} onClick={() => setConnectTrack("quick")}>Quick (one paste)</button>
+                </div>
+                <p style={{ ...s.meta, marginTop: 6 }}>{connectTrack === "guided" ? "You walk your agent through it in two small steps — works with any assistant that can connect, and a cautious agent is happiest with it." : "Your agent does the whole setup from one paste. Best on local runtimes (Cowork, Codex, Claude Code)."}</p>
                 <div style={{ marginTop: 12 }}>
                   <button style={s.btn} disabled={busy === "exchange"} onClick={connectNewAgent}>{busy === "exchange" ? "…" : "Get connect code →"}</button>
                   <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => setAgentFormOpen(false)}>Cancel</button>
                 </div>
               </div>
             ) : (
-              <button style={s.btn} onClick={() => { setAgentName(""); setAgentRuntime("other"); setAgentFormOpen(true); }}>Connect a new agent</button>
+              <button style={s.btn} onClick={() => { setAgentName(""); setAgentRuntime("other"); setConnectTrack("guided"); setAgentFormOpen(true); }}>Connect a new agent</button>
             )}
             {/* Power-user escape hatch: reveal the raw key for manual scripting. */}
             <div style={{ marginTop: 10 }}>
