@@ -30,6 +30,8 @@ model Account {
   inboxCheckEnabled Boolean @default(true) // agent's bc-inbox-check should run (it reads this each cycle; false → self-remove)
   inboxCheckMinutes Int @default(10)       // cadence (minutes) the agent's bc-inbox-check should use
   admin            Boolean @default(false) // operator: can read metadata-only analytics (never content)
+  reserved         Boolean @default(false) // pre-launch handle hold: occupies the @unique handle (signup 409s) but isn't a real account; transfer = clear this + set the real email
+  reservedBy       String?                 // account id that holds the reservation (Skylar) — ownership/transfer marker
 
   // --- user-side decryption / key mirror (docs/user-side-decryption.md v2.1) ---
   // All nullable; presence of mirrorPub is the ONLY new broker-visible signal (I3):
