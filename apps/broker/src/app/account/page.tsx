@@ -133,6 +133,8 @@ export default function AccountPage() {
   const [ssCustom, setSsCustom] = useState(false);
   const [ssErr, setSsErr] = useState("");
   const [ssResult, setSsResult] = useState<{ your_prompt: string; friend_prompt: string; code: string } | null>(null);
+  const [ssSentTo, setSsSentTo] = useState("");          // friend handle/email the message just went to
+  const [ssShowPrompts, setSsShowPrompts] = useState(false); // "speed this up" disclosure
   const [notify, setNotify] = useState(true);
   const [liveDefault, setLiveDefault] = useState(15);
   const [inboxEnabled, setInboxEnabled] = useState(true);
@@ -250,6 +252,7 @@ export default function AccountPage() {
       if (!r.ok) { setSsErr(j.detail || j.error || "Couldn't start the session — check the handle/email and scopes."); setBusy(""); return; }
       const p = await fetch(`/api/sessions/${j.session_id}/prompts`, { credentials: "include" });
       if (p.ok) { const pj = await p.json(); setSsResult({ your_prompt: pj.your_prompt, friend_prompt: pj.friend_prompt, code: pj.code }); }
+      setSsSentTo(friend); setSsShowPrompts(false);
       loadSessions();
     } catch { setSsErr("Something went wrong — try again."); }
     setBusy("");
@@ -705,8 +708,8 @@ export default function AccountPage() {
           <h2 style={s.h2}>Send a new message</h2>
           {!ssOpen && !ssResult && (
             <>
-              <p style={s.lead}>Want to help a friend? Start a thread right here — you&apos;ll get two copy-paste prompts: one for your assistant, one to text your friend. Their agent replies on its own schedule; nobody has to stay online.</p>
-              <button style={s.btn} onClick={() => setSsOpen(true)}>Help a friend →</button>
+              <p style={s.lead}>Message a friend through your agents — like texting them, but your agent does the legwork with theirs. They don&apos;t have to be online; their agent picks it up and replies on its own.</p>
+              <button style={s.btn} onClick={() => setSsOpen(true)}>Message a friend →</button>
             </>
           )}
           {ssOpen && !ssResult && (
@@ -739,21 +742,32 @@ export default function AccountPage() {
           )}
           {ssResult && (
             <>
-              <p style={s.lead}>Thread ready (code <strong>{ssResult.code}</strong>). Two prompts — copy each to the right place:</p>
-              <div style={s.promptPane}>
-                <p style={s.wakeLabel}>1️⃣ For YOUR assistant — paste this into your own agent:</p>
-                <pre style={s.wakePre}>{ssResult.your_prompt}</pre>
-                <button style={s.btn} onClick={() => navigator.clipboard?.writeText(ssResult.your_prompt).catch(() => {})}>Copy mine</button>
+              <div style={s.reveal}>
+                <p style={s.revealLabel}>✅ Sent to {ssSentTo} — it&apos;s on its way.</p>
+                <p style={s.meta}>Your agent is reaching {ssSentTo}&apos;s agent now. The conversation is under <strong>Messages</strong> below — open <strong>📖 Read here</strong> on it to follow along and reply in your browser. Their agent picks it up on its next check (~10 min); nobody has to stay online.</p>
               </div>
-              <div style={s.promptPane}>
-                <p style={s.wakeLabel}>2️⃣ For your FRIEND — text this to them; they paste it to their assistant:</p>
-                <pre style={s.wakePre}>{ssResult.friend_prompt}</pre>
-                <button style={s.btn} onClick={() => navigator.clipboard?.writeText(ssResult.friend_prompt).catch(() => {})}>Copy theirs</button>
-                {typeof navigator !== "undefined" && "share" in navigator && (
-                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => navigator.share?.({ text: ssResult.friend_prompt }).catch(() => {})}>Share…</button>
-                )}
+              {/* Secondary: the paste-prompts just make it happen faster, tucked away. */}
+              <button style={{ ...s.linkBtn, marginTop: 10 }} onClick={() => setSsShowPrompts((v) => !v)}>{ssShowPrompts ? "Hide" : "⚡ In a hurry? Paste it to your agent now"}</button>
+              {ssShowPrompts && (
+                <>
+                  <div style={s.promptPane}>
+                    <p style={s.wakeLabel}>For YOUR assistant — paste this to start it immediately:</p>
+                    <pre style={s.wakePre}>{ssResult.your_prompt}</pre>
+                    <button style={s.btn} onClick={() => navigator.clipboard?.writeText(ssResult.your_prompt).catch(() => {})}>Copy mine</button>
+                  </div>
+                  <div style={s.promptPane}>
+                    <p style={s.wakeLabel}>For your FRIEND — text this so their agent jumps in now:</p>
+                    <pre style={s.wakePre}>{ssResult.friend_prompt}</pre>
+                    <button style={s.btn} onClick={() => navigator.clipboard?.writeText(ssResult.friend_prompt).catch(() => {})}>Copy theirs</button>
+                    {typeof navigator !== "undefined" && "share" in navigator && (
+                      <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => navigator.share?.({ text: ssResult.friend_prompt }).catch(() => {})}>Share…</button>
+                    )}
+                  </div>
+                </>
+              )}
+              <div style={{ marginTop: 12 }}>
+                <button style={s.btn} onClick={() => { setSsResult(null); setSsOpen(false); setSsTopic(""); setSsFriend(""); setSsShowPrompts(false); }}>Done</button>
               </div>
-              <button style={{ ...s.signOut, marginTop: 8 }} onClick={() => { setSsResult(null); setSsOpen(false); setSsTopic(""); setSsFriend(""); }}>Done</button>
             </>
           )}
         </section>

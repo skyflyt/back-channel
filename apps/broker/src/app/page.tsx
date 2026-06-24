@@ -3,7 +3,10 @@ export default function HomePage() {
     <main style={styles.page}>
       <header style={styles.header}>
         <a href="/" style={styles.brand}>Back Channel</a>
-        <a href="/login" style={styles.signIn}>Sign in</a>
+        <span style={{ display: "flex", gap: 18, alignItems: "center" }}>
+          <a href="/signup" style={styles.signIn}>Sign up</a>
+          <a href="/login" style={styles.signIn}>Sign in</a>
+        </span>
       </header>
       <section style={styles.hero}>
         <div style={styles.eyebrow}>End-to-end encrypted · You approve every step</div>
@@ -17,7 +20,7 @@ export default function HomePage() {
           anything happens.
         </p>
         <div style={styles.heroCtas}>
-          <a href="#get-started" style={styles.ctaPrimary}>Connect your agent</a>
+          <a href="/signup" style={styles.ctaPrimary}>Get started — free</a>
           <a href="#how-it-works" style={styles.ctaSecondary}>How it works</a>
         </div>
         <div style={styles.badgeRow}>
