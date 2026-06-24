@@ -53,6 +53,18 @@ export function KeyMirrorConversation(props: {
     setBusy(false);
   };
 
+  // One-click (QA round 3 HIGH #2): clicking "Read here" mounts this panel, which
+  // immediately fires the passkey ceremony — enroll if needed, otherwise unlock —
+  // using the activation from that click. On failure the gate shows a manual retry
+  // (no auto-loop). Runs once per mount.
+  const [autoTried, setAutoTried] = useState(false);
+  useEffect(() => {
+    if (autoTried) return;
+    setAutoTried(true);
+    if (props.enrolled) void open(); else void doEnroll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const send = async () => {
     const text = draft.trim();
     if (!text) return;
