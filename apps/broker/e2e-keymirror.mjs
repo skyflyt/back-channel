@@ -110,14 +110,6 @@ async function main() {
   const uFake = await probe("user-wrap", fakeId, { method: "POST", headers: bearer(stranger), body: JSON.stringify({ wrap: { enc: "a", ct: "b" }, version: 0 }) });
   ok(uReal === uFake, `9b. user-wrap: real-not-owned (${uReal}) === fake (${uFake})`);
 
-  // 10. RATE-LIMIT: >10 user-wrap/min -> 429
-  let got429 = false;
-  for (let i = 0; i < 12; i++) {
-    const r = await fetch(`${BASE}/api/sessions/${session.id}/user-wrap`, { method: "POST", headers: bearer(host), body: JSON.stringify({ wrap, version: 0 }) });
-    if (r.status === 429) { got429 = true; break; }
-  }
-  ok(got429, "10. user-wrap rate-limit fires (429 within 12 rapid posts)");
-
   // 11. S5 PEER BACK-WRAP: visitor enrolls AFTER the thread; host (holding K) back-wraps
   // K to the visitor's mirror so the visitor can read within a poll cycle.
   const vkp = await generateMirrorKeypair();
@@ -142,6 +134,14 @@ async function main() {
   const act2 = await fetch(`${BASE}/api/sessions/active`, { headers: bearer(host) }).then(r => r.json());
   const sess2 = (act2.sessions || []).find(x => x.id === session.id);
   ok(!(sess2?.mirror_wraps_needed || []).some(w => w.account_id === visitor.id), "11. hint clears for the visitor after back-wrap");
+
+  // 12. RATE-LIMIT (last — it intentionally exhausts the host:session bucket): >10/min -> 429
+  let got429 = false;
+  for (let i = 0; i < 12; i++) {
+    const r = await fetch(`${BASE}/api/sessions/${session.id}/user-wrap`, { method: "POST", headers: bearer(host), body: JSON.stringify({ wrap, version: 0 }) });
+    if (r.status === 429) { got429 = true; break; }
+  }
+  ok(got429, "12. user-wrap rate-limit fires (429 within 12 rapid posts)");
 
   // cleanup
   await prisma.frame.deleteMany({ where: { sessionId: session.id } });
