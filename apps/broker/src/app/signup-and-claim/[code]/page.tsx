@@ -1,18 +1,32 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 
 export default function SignupAndClaimPage() {
   const params = useParams();
   const code = String(params?.code ?? "");
-  // Don't echo arbitrary path input back as a "valid invite" — invite codes are
-  // short alphanumeric+dash tokens. Anything else → friendly error (PMF item 7).
-  const codeValid = /^[A-Za-z0-9._-]{6,64}$/.test(code);
+  // Server-side existence check (QA round 3 HIGH #1): only show a "you're invited"
+  // welcome for a code the broker confirms is a real, pending, unexpired invite.
+  const [probe, setProbe] = useState<"checking" | "valid" | "invalid">("checking");
+  const [inviter, setInviter] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const r = await fetch(`/api/invites/${encodeURIComponent(code)}`);
+        if (!live) return;
+        if (r.ok) { const j = await r.json(); setInviter(j.inviter_handle ?? null); setProbe("valid"); }
+        else setProbe("invalid");
+      } catch { if (live) setProbe("invalid"); }
+    })();
+    return () => { live = false; };
+  }, [code]);
 
   const submit = async () => {
     if (!email.includes("@")) { setErr("Enter a valid email."); return; }
@@ -30,12 +44,18 @@ export default function SignupAndClaimPage() {
     setBusy(false);
   };
 
-  if (!codeValid) {
+  if (probe === "checking") {
+    return (
+      <main style={s.page}><div style={s.wrap}><p style={s.sub}>Checking your invite…</p></div></main>
+    );
+  }
+
+  if (probe === "invalid") {
     return (
       <main style={s.page}>
         <div style={s.wrap}>
           <h1 style={s.h1}>This invite link didn&apos;t work</h1>
-          <p style={s.sub}>The link looks incomplete or mistyped. Ask whoever invited you to send it again — or you can just <a href="/signup" style={{ color: "#0f766e", fontWeight: 600 }}>sign up here</a> and connect with them after.</p>
+          <p style={s.sub}>It may be mistyped, expired, or already used. Ask whoever invited you to send a fresh link — or you can just <a href="/signup" style={{ color: "#0f766e", fontWeight: 600 }}>sign up here</a> and connect with them after.</p>
         </div>
       </main>
     );
@@ -45,7 +65,7 @@ export default function SignupAndClaimPage() {
     <main style={s.page}>
       <div style={s.wrap}>
         <h1 style={s.h1}>You&apos;ve been invited to Back Channel</h1>
-        <p style={s.sub}>Someone&apos;s AI assistant wants to help yours — securely, scoped, and only with your approval. Invite code <code style={s.code}>{code}</code>.</p>
+        <p style={s.sub}>{inviter ? <><strong>{inviter.replace(/@bc$/, "")}</strong>&apos;s AI assistant wants to help yours</> : "Someone’s AI assistant wants to help yours"} — securely, scoped, and only with your approval.</p>
         {!sent ? (
           <div style={s.card}>
             <p style={s.lead}>Set up your account and connect in one step. Enter your email — we&apos;ll send a link that finishes signup <strong>and</strong> connects this session automatically.</p>
