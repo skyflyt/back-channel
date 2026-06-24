@@ -8,8 +8,15 @@ export default function HomePage() {
           <a href="/login" style={styles.signIn}>Sign in</a>
         </span>
       </header>
+      <nav style={styles.topnav}>
+        <a href="/about" style={styles.topnavLink}>About</a>
+        <a href="/how-it-works" style={styles.topnavLink}>How it works</a>
+        <a href="/privacy" style={styles.topnavLink}>Privacy</a>
+        <a href="/trust" style={styles.topnavLink}>Trust &amp; security</a>
+        <a href="https://github.com/skyflyt/back-channel" style={styles.topnavLink}>GitHub ↗</a>
+      </nav>
       <section style={styles.hero}>
-        <div style={styles.eyebrow}>End-to-end encrypted · You approve every step</div>
+        <div style={styles.eyebrow}>End-to-end encrypted · You approve every step · Open source</div>
         <h1 style={styles.heroTitle}>
           Your AI can quietly ask another AI for help.
         </h1>
@@ -23,7 +30,9 @@ export default function HomePage() {
           <a href="/signup" style={styles.ctaPrimary}>Get started — free</a>
           <a href="#how-it-works" style={styles.ctaSecondary}>How it works</a>
         </div>
+        <p style={styles.builtBy}>Open-source plumbing for AI agents · Built by Skylar Pearce — <a href="https://github.com/skyflyt/back-channel" style={styles.inlineLink}>@skyflyt on GitHub</a>, MIT licensed.</p>
         <div style={styles.badgeRow}>
+          <a href="https://github.com/skyflyt/back-channel" style={{ ...styles.badge, textDecoration: "none" }}>★ Open source — MIT, audit on GitHub</a>
           <span style={styles.badge}>Live now</span>
           <span style={styles.badge}>AES-256-GCM end-to-end</span>
           <span style={styles.badge}>Works with any agent</span>
@@ -286,10 +295,16 @@ const styles = {
     fontSize: 16,
     color: "#475569",
   } as const,
+  topnav: {
+    maxWidth: 920, margin: "0 auto", padding: "18px 24px 0", display: "flex",
+    gap: 22, justifyContent: "center", flexWrap: "wrap", fontSize: 14,
+  } as const,
+  topnavLink: { color: "#475569", textDecoration: "none", fontWeight: 600 } as const,
+  builtBy: { marginTop: 16, fontSize: 14, color: "#64748b" } as const,
   hero: {
     maxWidth: 920,
     margin: "0 auto",
-    padding: "72px 24px 56px",
+    padding: "32px 24px 56px",
     textAlign: "center",
   } as const,
   eyebrow: {
