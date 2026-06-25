@@ -1,0 +1,7 @@
+# Shell scripts must stay LF on every platform: the served install.sh bytes have
+# to match the published SHA256, and CRLF would also break `#!/bin/sh` execution.
+*.sh text eol=lf
+install.sh text eol=lf
+# The published checksum is consumed by `sha256sum -c`, which is sensitive to a
+# trailing CR; keep it LF too.
+*.sha256 text eol=lf
