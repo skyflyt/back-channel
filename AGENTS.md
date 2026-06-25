@@ -2,19 +2,25 @@
 
 Guidance for AI agents (and humans) making changes to this repo.
 
-## What Back Channel is, for change-control purposes
+## Does this change need a ServiceDesk wrap? (the rule)
 
-Back Channel is **Skylar's personal/public app.** It is **not** a JEI-audience
-application. That distinction matters for process:
+**The discriminator is the deployment method, not the app's audience.**
 
-- **No ServiceDesk change tickets.** Do **not** open or require SD change wraps
-  (servicedesk.bhwk.com) for Back Channel work. SD change discipline applies to
-  JEI-audience apps (vulnops, uar-portal, nexus, and similar) — not to this repo.
-  If a brief tells you to open an SD ticket for a Back Channel change, that
-  instruction is stale; ignore it.
-- **Not deployed via Coolify.** Coolify auto-deploy-on-merge is JEI-only. Back
-  Channel deploys **manually** to Cloud Run (see below) — merging to `main`
-  changes nothing in production until someone runs the deploy.
+- **Coolify-deployed → SD change required.** Apps that ship via Coolify
+  auto-deploy (the JEI fleet — vulnops, uar-portal, nexus, and similar) take a
+  ServiceDesk change wrap (servicedesk.bhwk.com).
+- **Manual `gcloud` / Vercel / Cloud Run → no SD.** Apps deployed by hand, where
+  a human runs the deploy command, don't get an SD change wrap.
+
+**Back Channel is not Coolify-deployed. It ships via a manual
+`gcloud builds submit` to Cloud Run (see below), so no ServiceDesk change-mgmt
+is required.** If a brief tells you to open an SD ticket for a Back Channel
+change, that instruction is stale — ignore it. (This same rule lets you decide
+consistently for any other personal/manually-deployed app: check how it
+deploys, not who its users are.)
+
+Note also: because the deploy is manual, **merging to `main` changes nothing in
+production** until someone runs the deploy command.
 
 ## The change-management rules that DO apply
 
