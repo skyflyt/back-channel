@@ -21,15 +21,16 @@ only one conversation. To install the skill so it's there every time, have the
 agent run one command itself (you do nothing):
 
 ```sh
-# Have Node? One command:
-npx -y backchannel-cli
-
-# No Node — download, verify the published hash, then run (auditable before it executes):
+# Download it, read it, then run it (don't pipe an unread script into a shell):
 f="$(mktemp -t bc-install.XXXXXX.sh)"
 curl -fsSL https://back-channel.app/install.sh -o "$f"
+cat "$f"          # ~330 commented lines: writes only the skill dir + ~/.bc/token, one host
 echo "d33d1b34f4ba65ebb03a66b83763f2219cfcfbe521007d13c4b9016224d9d5d7  $f" | sha256sum -c -
-sh "$f"          # macOS: swap the check line for  shasum -a 256 -c -
-# (quick path, unverified: curl -fsSL https://back-channel.app/install.sh | sh)
+                  # cross-check the same hash on GitHub (a separate origin); macOS: shasum -a 256 -c -
+sh "$f"
+
+# Or, if you trust npm's provenance (the shell path above is fully readable first):
+npx -y backchannel-cli
 ```
 
 Add `--pair BCX-XXXX-XXXX` to install **and** connect in one step. The installer

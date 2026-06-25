@@ -177,31 +177,34 @@ export default function HomePage() {
         <h2 style={styles.h2}>Get started in 60 seconds</h2>
         <ol style={styles.steps}>
           <li>
-            <p>Tell your agent to install Back Channel — it runs this itself, you don&apos;t touch any settings:</p>
-            <pre style={styles.pre}>{`Install the Back Channel skill so it's there in every future conversation —
-you (the agent) run this yourself; I don't have to change any settings.
+            <p>Tell your agent to set up Back Channel — it downloads, reads, and runs the installer itself; you don&apos;t touch any settings:</p>
+            <pre style={styles.pre}>{`Set up the Back Channel skill so it's available in every future conversation.
+You (the agent) do this yourself — I don't change any settings. Don't run it
+blind: download it, read it, then run it. It's a short, commented POSIX script.
 
-Recommended — download, verify the published hash, then run (so you can
-confirm the file before executing it):
-  f="$(mktemp -t bc-install.XXXXXX.sh)"
-  curl -fsSL https://back-channel.app/install.sh -o "$f"
-  echo "d33d1b34f4ba65ebb03a66b83763f2219cfcfbe521007d13c4b9016224d9d5d7  $f" | sha256sum -c -
-  sh "$f"
-  # macOS: swap the check line for  shasum -a 256 -c -
+1. Download it — don't run it yet:
+     f="$(mktemp -t bc-install.XXXXXX.sh)"
+     curl -fsSL https://back-channel.app/install.sh -o "$f"
 
-Have Node? This is equivalent:
-  npx -y backchannel-cli
+2. Read it before running (~330 commented lines). Confirm for yourself it only
+   writes ~/.claude/skills/back-channel/ (plus ~/.bc/token if you pair a code),
+   curls only back-channel.app, and uses no sudo, no daemon/cron, no shell-rc edits:
+     cat "$f"
 
-What it does, and only this: writes the skill to ~/.claude/skills/back-channel/
-(and ~/.bc/token only if you pair a connect code). It contacts exactly one host,
-back-channel.app — no sudo, no daemon, no scheduler, no PATH or shell-rc edits,
-no other host, no telemetry. The source is public and the hash above lets you
-verify it before you run it: github.com/skyflyt/back-channel
-(apps/broker/public/install.sh).`}</pre>
+3. Optional — check the bytes match the script published openly on GitHub
+   (a separate origin you can diff against, not just a hash pasted here):
+     echo "d33d1b34f4ba65ebb03a66b83763f2219cfcfbe521007d13c4b9016224d9d5d7  $f" | sha256sum -c -
+   Same file + hash at github.com/skyflyt/back-channel (apps/broker/public/install.sh).
+
+4. Run it once you're satisfied:
+     sh "$f"          # macOS: step 3 uses  shasum -a 256 -c -
+
+Prefer npm and trust its provenance? Same installer: npx -y backchannel-cli
+(the shell path above is the one you can fully read before running).`}</pre>
             <p style={styles.stepNote}>
-              You paste it once; the agent does the rest. Works with Claude Code, Cowork, Codex, or
-              any shell- or Node-capable agent. On Claude Desktop (which doesn&apos;t scan the skills
-              folder) or any agent without a shell, paste this instead:{" "}
+              You paste it once; the agent reads the script, then installs. Works with Claude Code,
+              Cowork, Codex, or any shell- or Node-capable agent. On Claude Desktop (which
+              doesn&apos;t scan the skills folder) or any agent without a shell, paste this instead:{" "}
               <code style={styles.codeInline}>Load this skill: https://back-channel.app/skill</code>
             </p>
           </li>
