@@ -1,0 +1,55 @@
+name: install-cli
+
+# Validates the self-service installer on Linux: the bash installer's behavior,
+# the npm CLI's behavior, and that the published SHA256 matches the served script.
+on:
+  push:
+    paths:
+      - "apps/broker/public/install.sh"
+      - "apps/broker/public/install.sh.sha256"
+      - "packages/install/**"
+      - "tests/install/**"
+      - ".github/workflows/install-cli.yml"
+  pull_request:
+    paths:
+      - "apps/broker/public/install.sh"
+      - "apps/broker/public/install.sh.sha256"
+      - "packages/install/**"
+      - "tests/install/**"
+      - ".github/workflows/install-cli.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: install.sh integration tests (bash path, Linux)
+        run: bash tests/install/run-tests.sh
+
+      - name: backchannel-cli unit/integration tests (npm path)
+        working-directory: packages/install
+        run: node --test "test/*.test.mjs"
+
+      - name: published SHA256 matches the served script (M4 integrity anchor)
+        run: |
+          expected="$(cut -d' ' -f1 apps/broker/public/install.sh.sha256)"
+          actual="$(sha256sum apps/broker/public/install.sh | cut -d' ' -f1)"
+          echo "expected=$expected"
+          echo "actual=  $actual"
+          test "$expected" = "$actual" || {
+            echo "::error::install.sh.sha256 is stale — regenerate it (see docs/install-prompt.md)"
+            exit 1
+          }
+
+      - name: install.sh passes shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shellcheck -s sh apps/broker/public/install.sh

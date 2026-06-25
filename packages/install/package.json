@@ -1,0 +1,38 @@
+{
+  "name": "backchannel-cli",
+  "version": "0.1.0",
+  "description": "Install the Back Channel agent skill so it persists across conversations — and optionally connect this agent with a one-time code. Zero dependencies.",
+  "bin": {
+    "backchannel-cli": "bin/cli.js"
+  },
+  "type": "commonjs",
+  "files": [
+    "bin/cli.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "keywords": [
+    "back-channel",
+    "backchannel",
+    "agent",
+    "skill",
+    "installer",
+    "claude"
+  ],
+  "author": "Skylar Pearce <https://github.com/skyflyt>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/skyflyt/back-channel.git",
+    "directory": "packages/install"
+  },
+  "homepage": "https://back-channel.app",
+  "bugs": {
+    "url": "https://github.com/skyflyt/back-channel/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

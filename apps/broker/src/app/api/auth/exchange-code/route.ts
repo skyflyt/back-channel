@@ -7,7 +7,7 @@ import { exchangePastePrompt } from "@/lib/notify.mjs";
 export const runtime = "nodejs";
 
 /**
- * POST /api/auth/exchange-code — mint a short-lived (60s), single-use exchange
+ * POST /api/auth/exchange-code — mint a short-lived (15 min), single-use exchange
  * code for the signed-in account (cookie + CSRF). The user pastes ONLY the code
  * to their agent, which trades it at POST /api/auth/exchange for the real bc_
  * key — so the raw key never lands in a chat transcript. Stored hashed at rest.
