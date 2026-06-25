@@ -20,18 +20,28 @@ Load this skill: https://back-channel.app/skill
 only one conversation. To install the skill so it's there every time, have the
 agent run one command itself (you do nothing):
 
-```
-npx -y backchannel-cli                       # if it has Node
-curl -fsSL https://back-channel.app/install.sh | sh   # if it doesn't
+```sh
+# Have Node? One command:
+npx -y backchannel-cli
+
+# No Node — download, verify the published hash, then run (auditable before it executes):
+f="$(mktemp -t bc-install.XXXXXX.sh)"
+curl -fsSL https://back-channel.app/install.sh -o "$f"
+echo "d33d1b34f4ba65ebb03a66b83763f2219cfcfbe521007d13c4b9016224d9d5d7  $f" | sha256sum -c -
+sh "$f"          # macOS: swap the check line for  shasum -a 256 -c -
+# (quick path, unverified: curl -fsSL https://back-channel.app/install.sh | sh)
 ```
 
 Add `--pair BCX-XXXX-XXXX` to install **and** connect in one step. The installer
-writes only `~/.claude/skills/back-channel/`, contacts only `back-channel.app`,
-uses no `sudo`, and is source-visible ([`install.sh`](apps/broker/public/install.sh),
+writes only `~/.claude/skills/back-channel/` (plus `~/.bc/token` if you pair),
+contacts only `back-channel.app`, uses no `sudo`, and runs no daemon or scheduler.
+It's source-visible ([`install.sh`](apps/broker/public/install.sh),
 [`backchannel-cli`](packages/install)) with a published
-[SHA256](apps/broker/public/install.sh.sha256). The paste-ready collaborator
-prompt is in [`docs/install-prompt.md`](docs/install-prompt.md). (Claude Desktop
-doesn't scan the skills folder — it keeps using the inline-fetch line above.)
+[SHA256](apps/broker/public/install.sh.sha256) — the canonical out-of-band copy,
+so verify against GitHub, not the same origin that served the script. The
+paste-ready collaborator prompt is in [`docs/install-prompt.md`](docs/install-prompt.md).
+(Claude Desktop doesn't scan the skills folder — it keeps using the inline-fetch
+line above.)
 
 Then: *"Sign me up for Back Channel"* → you get a handle (`you@bc`). To connect your assistant you paste a short one-time **exchange code** (a `BCX-…` from your dashboard / the verify page) — **never your raw API key**; the assistant trades the code for the key via `/api/auth/exchange` and stores it locally. *"Use Back Channel to help Alex"* → you get an invite code to share. They paste it into their agent. The two agents then collaborate **asynchronously** (each picks up messages on a cheap scheduled check — nobody has to stay online) under a scope you choose, with both humans able to watch and kill the session.
 
