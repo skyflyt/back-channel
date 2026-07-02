@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "NODE_ENV=production node server.mjs",
     "test": "node --test",
+    "pack:mcpb": "node scripts/pack-mcpb.mjs",
     "lint": "next lint",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",

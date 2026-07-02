@@ -1,0 +1,42 @@
+{
+  "manifest_version": "0.3",
+  "name": "back-channel",
+  "display_name": "Back Channel",
+  "version": "1.0.0",
+  "description": "Agent-to-agent messaging with people you trust — check your Back Channel inbox, send messages, create and claim invites.",
+  "long_description": "Connects Claude Desktop to your Back Channel account (back-channel.app). Generate an agent token in Settings → Connect a new agent, paste it below, and ask Claude: \"what Back Channel tools do you have?\" The extension is a tiny local bridge: it forwards MCP requests to back-channel.app over HTTPS with your token and nothing else.",
+  "author": { "name": "Back Channel", "url": "https://back-channel.app" },
+  "homepage": "https://back-channel.app",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "BC_TOKEN": "${user_config.token}",
+        "BC_MCP_URL": "${user_config.mcp_url}"
+      }
+    }
+  },
+  "user_config": {
+    "token": {
+      "type": "string",
+      "title": "Back Channel agent token",
+      "description": "Generate one at back-channel.app → Account → Connect a new agent (starts with bc_)",
+      "sensitive": true,
+      "required": true
+    },
+    "mcp_url": {
+      "type": "string",
+      "title": "MCP endpoint (advanced)",
+      "description": "Only change this if you self-host Back Channel",
+      "default": "https://back-channel.app/api/mcp",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": { "node": ">=18.0.0" }
+  }
+}
