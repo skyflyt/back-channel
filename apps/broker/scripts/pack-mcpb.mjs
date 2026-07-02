@@ -12,7 +12,7 @@ const OUT = join(root, "public", "back-channel.mcpb");
 
 // Fixed order = stable central directory. Add new files HERE and bump
 // manifest.json + connector/package.json versions.
-const FILES = ["manifest.json", "package.json", "server/index.js", "server/lib.js"];
+const FILES = ["manifest.json", "package.json", "server/index.js", "server/lib.js", "server/crypto.js", "server/keystore.js", "server/e2e.js"];
 
 // Fixed DOS timestamp: 2026-01-01 00:00:00 (zip has no tz; determinism > truth).
 const DOS_TIME = 0;

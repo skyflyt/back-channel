@@ -15,7 +15,15 @@
  *    that one message instead of wedging the whole session.
  *  - console.error goes to Desktop's main.log ([UtilityProcess stderr]) — it is
  *    the only visibility we get in the field. Never log the token.
+ *
+ * E2E crypto for bc_send_message/bc_read_messages lives in e2e.js — this file
+ * only calls prepareOutgoing/processIncoming/afterSessionEstablished around
+ * the normal forward, so the transport plumbing above stays unchanged for
+ * every other tool/method.
  */
+
+import { createKeyStore } from "./keystore.js";
+import { prepareOutgoing, processIncoming, afterSessionEstablished } from "./e2e.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
 
@@ -26,6 +34,7 @@ export function createBridge({
   stdout = process.stdout,
   fetchImpl = fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  keystore = createKeyStore(),
   log = (...a) => console.error("[back-channel]", ...a),
 } = {}) {
   let buffer = "";
@@ -36,6 +45,21 @@ export function createBridge({
   };
 
   const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
+
+  /** Raw POST + JSON-parsed response, no stdout writes — used for the bridge's
+   * own internal calls (handshake sends, short handshake-wait polls). */
+  async function post(msgObj) {
+    const res = await fetchImpl(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(msgObj),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = (await res.text().catch(() => "")).trim();
+    if (!text) throw new Error(`empty HTTP ${res.status}`);
+    return JSON.parse(text);
+  }
+  const e2eCtx = { keystore, post, log };
 
   async function forwardOne(line) {
     let msg;
@@ -54,12 +78,29 @@ export function createBridge({
       return;
     }
 
+    let outgoingLine = line;
+    if (msg?.method === "tools/call" && msg.params?.name === "bc_send_message") {
+      let prepared;
+      try {
+        prepared = await prepareOutgoing(msg, e2eCtx);
+      } catch (e) {
+        log(`e2e prepareOutgoing failed: ${e?.message ?? e}`);
+        writeLine(rpcError(id, -32000, "Encryption step failed locally — see the connector logs."));
+        return;
+      }
+      if (prepared.shortCircuitResponse) {
+        writeLine(prepared.shortCircuitResponse);
+        return;
+      }
+      outgoingLine = prepared.line;
+    }
+
     let res;
     try {
       res = await fetchImpl(url, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: line,
+        body: outgoingLine,
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
@@ -87,11 +128,27 @@ export function createBridge({
       writeLine(rpcError(id, -32000, `Back Channel returned an empty HTTP ${res.status} response — try again shortly.`));
       return;
     }
+    let respObj;
     try {
-      writeLine(JSON.parse(text)); // re-serialize → guaranteed single line
+      respObj = JSON.parse(text);
     } catch {
       log(`non-JSON body with HTTP ${res.status}`);
       writeLine(rpcError(id, -32000, `Back Channel returned a malformed response (HTTP ${res.status}).`));
+      return;
+    }
+
+    const name = msg.method === "tools/call" ? msg.params?.name : null;
+    if (name === "bc_read_messages") {
+      try {
+        respObj = await processIncoming(msg, respObj, e2eCtx);
+      } catch (e) {
+        log(`e2e processIncoming failed: ${e?.message ?? e}`); // fall through — better to show sealed frames than nothing
+      }
+    }
+    writeLine(respObj);
+
+    if (name === "bc_create_invite" || name === "bc_claim_invite") {
+      afterSessionEstablished(msg, respObj, e2eCtx).catch((e) => log(`e2e afterSessionEstablished failed: ${e?.message ?? e}`));
     }
   }
 
