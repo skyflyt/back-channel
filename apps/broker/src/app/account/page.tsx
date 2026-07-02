@@ -56,8 +56,8 @@ const NAV: { key: NavKey; label: string; icon: string }[] = [
   { key: "account", label: "Account", icon: "🔑" },
   { key: "agents", label: "Agents", icon: "🤖" },
   { key: "friends", label: "Friends", icon: "👥" },
-  { key: "skills", label: "Library", icon: "📚" },
-  { key: "messages", label: "Messages", icon: "💬" },
+  { key: "skills", label: "Toolkit", icon: "📚" },
+  { key: "messages", label: "Inbox", icon: "💬" },
   { key: "settings", label: "Settings", icon: "⚙️" },
 ];
 // Deep-link anchors used by in-app scroll targets map onto a nav section.
@@ -92,6 +92,14 @@ interface DiscoverSkill { id: string; owner_handle: string; name: string; descri
 
 /** Read the non-httpOnly bc_csrf cookie to echo in the x-bc-csrf header. */
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
+
+const SCOPE_LABELS: Record<string, string> = {
+  "config.read": "read relevant settings",
+  "config.suggest": "suggest changes for you to approve",
+};
+const plainScope = (scope: string) => SCOPE_LABELS[scope] ?? scope.replace(/[._]/g, " ");
+
+const plainKind = (kind: string) => kind === "template" ? "Copyable" : kind === "rpc" ? "Runs with friend" : kind.replace(/[._]/g, " ");
 
 export default function AccountPage() {
   const [me, setMe] = useState<Me | null>(null);
@@ -488,7 +496,7 @@ export default function AccountPage() {
         // P2.6: also offer a paste-now prompt for impatient users. Idempotent install
         // (skip if already set up) — same pattern the skill's agent.payload handler uses.
         const owner = sk.owner_handle.replace(/@bc$/, "");
-        setInstallPrompt((m) => ({ ...m, [sk.id]: `Using your Back Channel skill: install the skill "${sk.name}" that ${owner} shared with me. It's already queued to my Back Channel inbox, but set it up now instead of waiting — call POST https://back-channel.app/api/skills/${sk.id}/copy, verify the template signature, install it locally, then tell me in plain words what it does. If you've already installed "${sk.name}" at this version, just skip it (no duplicate).` }));
+        setInstallPrompt((m) => ({ ...m, [sk.id]: `Using Back Channel: add the tool "${sk.name}" that ${owner} shared with me. It's already queued in my Back Channel Inbox, but set it up now instead of waiting. Fetch the shared copy from https://back-channel.app/api/skills/${sk.id}/copy, verify the author signature before trusting it, add it locally, then tell me in plain words what it does. If you've already added "${sk.name}" at this version, just skip it (no duplicate).` }));
       }
     } catch { /* ignore */ }
     setBusy("");
@@ -632,22 +640,22 @@ export default function AccountPage() {
               <h2 style={s.onboardH}>👋 Get started — {[hasAgent, hasFriend, hasSkill].filter(Boolean).length}/3</h2>
               <Step done={hasAgent} label="Connect an agent" />
               <Step done={hasFriend} label="Add a friend" action={<button style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>Invite a friend</button>} />
-              <Step done={hasSkill} label="Try a skill from your circle, or publish your first" action={<button style={s.onboardBtn} onClick={() => setNav("skills")}>See skills</button>} />
+              <Step done={hasSkill} label="Try a tool from your circle, or save your first Toolkit item" action={<button style={s.onboardBtn} onClick={() => setNav("skills")}>See Toolkit</button>} />
             </section>
           );
         })()}
 
-        {/* Pending approvals — always visible across sections so a phone user can
+        {/* Inbox items needing approval — always visible across sections so a phone user can
             clear them in seconds without opening their agent. Sourced from inbox
             (collaborate) requests today; built to take more approval types later. */}
         {inbox.length > 0 && (
           <section style={s.approvals}>
-            <h2 style={s.approvalsH}>✅ Pending approvals ({inbox.length})</h2>
+            <h2 style={s.approvalsH}>✅ Inbox items needing approval ({inbox.length})</h2>
             {inbox.map((r) => (
               <div key={r.id} style={s.approvalRow}>
                 <div style={s.rowMain}>
-                  <div style={s.approvalText}><strong>{r.requester_handle.replace(/@bc$/, "")}</strong> wants to collaborate with your agent{r.message ? <> — &ldquo;{r.message}&rdquo;</> : null}</div>
-                  <div style={s.rowMeta}>they&apos;d be able to: {r.scopes.join(", ")} · {when(r.created_at)}</div>
+                  <div style={s.approvalText}><strong>{r.requester_handle.replace(/@bc$/, "")}</strong> sent an Inbox request for your agent{r.message ? <> — &ldquo;{r.message}&rdquo;</> : null}</div>
+                  <div style={s.rowMeta}>what they&apos;re asking to use: {r.scopes.map(plainScope).join(", ")} · {when(r.created_at)}</div>
                 </div>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                   <button style={s.btn} disabled={busy === `inbox:${r.id}`} onClick={() => acceptInbox(r.id, r.requester_handle)}>{busy === `inbox:${r.id}` ? "…" : "Approve"}</button>
@@ -655,7 +663,7 @@ export default function AccountPage() {
                 </div>
               </div>
             ))}
-            <p style={s.approvalsNote}>Approving opens a session — your agent still approves the actual work once inside. You can do this here or from your agent; either works.</p>
+            <p style={s.approvalsNote}>Approving opens a conversation in your Inbox. Your agent still checks each requested action before doing real work.</p>
           </section>
         )}
 
@@ -664,8 +672,8 @@ export default function AccountPage() {
         <section style={s.card}>
           <h2 style={s.h2}>👋 You&apos;re connected</h2>
           <p style={s.soon}>{agents.length > 0
-            ? <>{agents.length} agent{agents.length === 1 ? "" : "s"} connected to <strong>{me.handle}</strong>. Manage them in <strong>Agents</strong>, see who you&apos;re connected with in <strong>Friends</strong>, and start a conversation in <strong>Messages</strong>.</>
-            : <>Your account <strong>{me.handle}</strong> is ready. Connect your agent below, then head to <strong>Messages</strong> to reach a friend.</>}</p>
+            ? <>{agents.length} agent{agents.length === 1 ? "" : "s"} connected to <strong>{me.handle}</strong>. Manage them in <strong>Agents</strong>, see who you&apos;re connected with in <strong>Friends</strong>, and start a conversation in <strong>Inbox</strong>.</>
+            : <>Your account <strong>{me.handle}</strong> is ready. Connect your agent below, then head to <strong>Inbox</strong> to reach a friend.</>}</p>
         </section>
 
         {/* API key — developer detail, tucked under a disclosure (R5 #2) */}
@@ -823,7 +831,7 @@ export default function AccountPage() {
                 </select>
                 {CHAT_TAB_RUNTIMES.includes(agentRuntime) && (
                   <p style={{ margin: "10px 0 0", padding: "9px 12px", borderRadius: 8, background: "#fffbeb", border: "1px solid #fde68a", color: "#92400e", fontSize: 13 }}>
-                    ⚠ A web/chat tab can <strong>install read-only artifacts</strong> but can&apos;t connect an account (it can&apos;t make the needed request). To connect, switch to <strong>Claude Code, Cowork, or Codex</strong> — then come back here.
+                    ⚠ A web/chat tab can <strong>read toolkit items</strong> but can&apos;t connect an account (it can&apos;t make the needed request). To connect, switch to <strong>Claude Code, Cowork, or Codex</strong> — then come back here.
                   </p>
                 )}
                 <label style={s.fieldLabel}>How do you want to connect?</label>
@@ -911,8 +919,8 @@ export default function AccountPage() {
           <h2 style={s.h2}>Send a new message</h2>
           {!ssOpen && !ssResult && (
             <>
-              <p style={s.lead}>Message a friend through your agents — like texting them, but your agent does the legwork with theirs. They don&apos;t have to be online; their agent picks it up and replies on its own.</p>
-              <button style={s.btn} onClick={() => setSsOpen(true)}>Message a friend →</button>
+              <p style={s.lead}>Send a request to a friend through your agents — like texting them, but your agent does the follow-up with theirs. They don&apos;t have to be online; their agent picks it up from their Inbox.</p>
+              <button style={s.btn} onClick={() => setSsOpen(true)}>Send to a friend →</button>
             </>
           )}
           {ssOpen && !ssResult && (
@@ -933,7 +941,7 @@ export default function AccountPage() {
                   <label style={s.fieldLabel}>What they can access {!ssCustom && <button style={s.linkBtn} onClick={() => setSsCustom(true)}>customize</button>}</label>
                   {ssCustom
                     ? <input style={s.input} value={ssScopes} onChange={(e) => setSsScopes(e.target.value)} placeholder="config.read, config.suggest" />
-                    : <p style={s.scopeNote}>{ssScopes} <span style={s.muted}>(read + propose changes you approve)</span></p>}
+                    : <p style={s.scopeNote}>Read relevant settings and suggest changes <span style={s.muted}>(you approve anything before it happens)</span></p>}
                 </div>
               </div>
               {ssErr && <p style={s.err}>{ssErr}</p>}
@@ -947,7 +955,7 @@ export default function AccountPage() {
             <>
               <div style={s.reveal}>
                 <p style={s.revealLabel}>✅ Sent to {ssSentTo} — it&apos;s on its way.</p>
-                <p style={s.meta}>Your agent is reaching {ssSentTo}&apos;s agent now. The conversation is under <strong>Messages</strong> below — open <strong>📖 Read here</strong> on it to follow along and reply in your browser. Their agent picks it up on its next check (~10 min); nobody has to stay online.</p>
+                <p style={s.meta}>Your agent is reaching {ssSentTo}&apos;s agent now. The conversation is under <strong>Inbox</strong> below — open <strong>📖 Read here</strong> on it to follow along and reply in your browser. Their agent picks it up on its next check (~10 min); nobody has to stay online.</p>
               </div>
               {/* Secondary: the paste-prompts just make it happen faster, tucked away. */}
               <button style={{ ...s.linkBtn, marginTop: 10 }} onClick={() => setSsShowPrompts((v) => !v)}>{ssShowPrompts ? "Hide" : "⚡ In a hurry? Paste it to your agent now"}</button>
@@ -975,15 +983,15 @@ export default function AccountPage() {
           )}
         </section>
 
-        {/* Messages (threads) */}
+        {/* Inbox (threads) */}
         <section style={s.card}>
-          <h2 style={s.h2}>Messages</h2>
-          <p style={s.soon}>Your conversations with friends&apos; agents. Messages arrive async — your agent picks them up on its next check, so neither of you has to stay online.</p>
+          <h2 style={s.h2}>Inbox</h2>
+          <p style={s.soon}>Requests and replies from friends&apos; agents. New items wait here until you or your agent picks them up, so nobody has to stay online.</p>
           <h3 style={s.h3}>Open threads{active.length ? ` (${active.length})` : ""}</h3>
           {active.length === 0 && (
             <div style={s.empty}>
               <span style={s.emptyIcon}>💬</span>
-              <p style={s.emptyText}>No open threads right now. Start one above to get two copy-paste prompts — one for your assistant, one to text your friend.</p>
+              <p style={s.emptyText}>No open Inbox threads right now. Start one above to reach a friend through your agents.</p>
             </div>
           )}
           {active.map((x) => {
@@ -1089,7 +1097,7 @@ export default function AccountPage() {
                 <div style={s.rowMeta}>last worked together {when(t.last_session_at)}</div>
                 {t.trusted && t.mutual && (
                   <div style={{ marginTop: 6 }}>
-                    <button style={s.btn} onClick={() => askFriend(t.handle, "")}>Message {t.handle.replace(/@bc$/, "")} →</button>
+                    <button style={s.btn} onClick={() => askFriend(t.handle, "")}>Send to {t.handle.replace(/@bc$/, "")} →</button>
                     <span style={{ ...s.rowMeta, marginLeft: 8 }}>no invite code needed</span>
                   </div>
                 )}
@@ -1102,7 +1110,7 @@ export default function AccountPage() {
             </div>
           ))}
         </section>
-        <p style={s.soon}>Requests from friends to collaborate appear at the top of this page under <strong>Pending approvals</strong>.</p>
+        <p style={s.soon}>Requests from friends appear at the top of this page as <strong>Inbox items needing approval</strong>.</p>
 
         </>)}
 
@@ -1112,17 +1120,17 @@ export default function AccountPage() {
           <h2 style={s.h2}>Settings</h2>
           <label style={s.settingRow}>
             <input type="checkbox" checked={notify} onChange={toggleNotify} disabled={busy === "notify"} />
-            <span>Email me when I have a message and my agent is asleep</span>
+            <span>Email me when something lands in my Inbox and my agent is asleep</span>
           </label>
           <p style={s.soon}>Text + browser notifications are coming later.</p>
           <label style={{ ...s.settingRow, marginTop: 14 }}>
             <input type="checkbox" checked={inboxEnabled} onChange={toggleInboxCheck} disabled={busy === "inboxchk"} />
-            <span>Let my agent auto-check for new Back Channel messages</span>
+            <span>Let my agent auto-check my Back Channel Inbox</span>
           </label>
           <label style={{ ...s.settingRow, alignItems: "flex-start" }}>
             <span style={{ flex: 1 }}>
               <strong>How often it checks</strong>
-              <span style={s.soon}> — your agent looks for new messages on this schedule (a cheap check that only does real work when something arrived). Less often = lower usage. Takes effect next time your agent checks in.</span>
+              <span style={s.soon}> — your agent looks for new Inbox items on this schedule (a light check that only does real work when something arrived). Less often = lower usage. Takes effect next time your agent checks in.</span>
             </span>
             <select style={s.select} value={inboxMinutes} disabled={busy === "inboxmin" || !inboxEnabled} onChange={(e) => saveInboxMinutes(Number(e.target.value))}>
               <option value={5}>Every 5 min</option><option value={10}>Every 10 min</option>
@@ -1160,36 +1168,36 @@ export default function AccountPage() {
         </>)}
 
         {nav === "skills" && (<>
-        {/* Your Library — polymorphic artifacts: skills, scheduled tasks, prompts */}
+        {/* Your Toolkit — saved tools, scheduled tasks, and prompts */}
         <section style={s.card} id="skills-section">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-            <h2 style={{ ...s.h2, margin: 0 }}>📚 Your Library</h2>
-            <button style={{ ...s.chipOn, padding: "8px 14px", fontWeight: 700 }} onClick={() => setEditor({ mode: "create" })}>＋ New artifact</button>
+            <h2 style={{ ...s.h2, margin: 0 }}>📚 Your Toolkit</h2>
+            <button style={{ ...s.chipOn, padding: "8px 14px", fontWeight: 700 }} onClick={() => setEditor({ mode: "create" })}>＋ New toolkit item</button>
           </div>
-          <p style={s.soon}>The useful things your agent has — skills, scheduled tasks, and prompts. Add one here, or let your agent publish them. Share privately with a friend, make it discoverable to your circle, or generate a public link anyone can paste into their own agent.</p>
+          <p style={s.soon}>The useful things your agent can reuse: tools it knows how to run, scheduled checks, and saved prompts. Add one here, or let your agent save one for you. Share privately with a friend, make it visible to your circle, or create a link someone can add to their own agent.</p>
           {libFlash && <div style={{ margin: "4px 0 12px", padding: "9px 12px", borderRadius: 8, background: "rgba(58,138,58,0.12)", color: "#2e7d32", fontSize: 14 }}>✅ {libFlash}</div>}
           {skills.length === 0 && (
             <div style={s.empty}>
               <span style={s.emptyIcon}>📚</span>
-              <p style={s.emptyText}>Nothing in your library yet. Your agent publishes skills, scheduled tasks, and prompts here — then you can share them with a friend, your circle, or anyone via a public link.</p>
+              <p style={s.emptyText}>Nothing in your Toolkit yet. Your agent can save tools, scheduled checks, and prompts here — then you can share them with a friend, your circle, or anyone through a link.</p>
             </div>
           )}
           {skills.map((sk) => {
             const trustedHandles = trust.filter((t) => t.trusted).map((t) => t.handle);
             const type = sk.type || "skill";
-            const badge = type === "scheduled_task" ? { icon: "⏰", label: "Scheduled Task" } : type === "prompt" ? { icon: "💬", label: "Prompt" } : { icon: "📜", label: "Skill" };
+            const badge = type === "scheduled_task" ? { icon: "⏰", label: "Scheduled check" } : type === "prompt" ? { icon: "💬", label: "Saved prompt" } : { icon: "📜", label: "Tool" };
             // public-share eligibility mirrors the server gates (spec §3) so the UI explains the block.
             const isRpc = type === "skill" && sk.kind === "rpc";
             const schedOptIn = type !== "scheduled_task" || sk.manifest?.public_share_allowed === true;
             const isSigned = sk.signed !== false; // older rows may omit the flag; don't over-block
             const canPublic = !isRpc && schedOptIn && isSigned;
-            const blockReason = isRpc ? "RPC skills run live during a session — they can't be shared by public link." : !schedOptIn ? "This scheduled task isn't opted in to public sharing. Your agent must publish it with public_share_allowed before you can make a public link." : !isSigned ? "This needs your agent's signature before it can be shared publicly (your agent signs what it publishes)." : "";
+            const blockReason = isRpc ? "This tool runs from your friend's agent during a conversation, so it can't be shared by public link." : !schedOptIn ? "This scheduled check isn't marked shareable yet. Your agent needs to save it as public-share allowed before you can make a public link." : !isSigned ? "This item needs your agent's signature before it can be shared publicly (your agent signs what it saves)." : "";
             const link = sk.public_token ? `https://back-channel.app/a/${sk.public_token}` : null;
             return (
               <div key={sk.id} style={{ ...s.row, alignItems: "flex-start" }}>
                 <div style={s.rowMain}>
                   <strong>{sk.name}</strong> <span style={s.roleTag}>{badge.icon} {badge.label}</span>
-                  {type === "skill" && <span style={{ ...s.rowMeta, marginLeft: 6 }}>{sk.kind}</span>}
+                  {type === "skill" && <span style={{ ...s.rowMeta, marginLeft: 6 }}>{plainKind(sk.kind)}</span>}
                   {sk.description && <div style={s.goal}>{sk.description}</div>}
                   <div style={s.rowMeta}>
                     {sk.shared_with.length ? <>shared with: {sk.shared_with.join(", ")}</> : "private"}
@@ -1209,7 +1217,7 @@ export default function AccountPage() {
                   )}
                   <label style={{ ...s.rowMeta, display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
                     <input type="checkbox" checked={sk.discoverable} disabled={busy === `disc:${sk.id}`} onChange={() => toggleDiscoverable(sk.id, !sk.discoverable)} />
-                    🌐 Let friends discover this by name (they still need you to share it to use it)
+                    🌐 Let friends find this by name (they still need you to share it to use it)
                   </label>
 
                   {/* Inline public-share panel */}
@@ -1219,7 +1227,7 @@ export default function AccountPage() {
                         <div style={{ ...s.rowMeta, marginBottom: 6 }}>🔗 Public link active{sk.public_expires_at ? ` · expires ${new Date(sk.public_expires_at).toLocaleDateString()}` : " · never expires"}</div>
                         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                           <code style={{ flex: "1 1 240px", fontSize: 12, wordBreak: "break-all", background: "rgba(0,0,0,0.05)", padding: "4px 8px", borderRadius: 6 }}>{link}</code>
-                          <button style={s.chipOn} onClick={() => { navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setTimeout(() => setPubCopiedId(null), 1500); }}>{pubCopiedId === sk.id ? "Copied ✓" : "Copy paste-prompt"}</button>
+                          <button style={s.chipOn} onClick={() => { navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setTimeout(() => setPubCopiedId(null), 1500); }}>{pubCopiedId === sk.id ? "Copied ✓" : "Copy add-to-agent note"}</button>
                           <button style={s.chipOff} disabled={busy === `pub:${sk.id}`} onClick={() => publicRevoke(sk.id)}>Revoke</button>
                         </div>
                       </div>
@@ -1249,11 +1257,11 @@ export default function AccountPage() {
           })}
         </section>
 
-        {/* Shared with you — skills a friend shared; install (template) or invoke (RPC) */}
+        {/* Shared with you — tools a friend shared; copyable templates or friend-run tools */}
         {sharedWithMe.length > 0 && (
           <section style={s.card}>
             <h2 style={s.h2}>🎁 Shared with you</h2>
-            <p style={s.soon}>Skills your friends shared directly with you. A <strong>template</strong> installs into your own agent (&ldquo;Send to my agent&rdquo; drops it in your inbox; nothing happens until your agent next checks in). An <strong>RPC</strong> skill runs on <em>their</em> side — &ldquo;Ask their agent&rdquo; starts a message to use it.</p>
+            <p style={s.soon}>Tools your friends shared directly with you. A <strong>copyable tool (template)</strong> gets added to your own agent when you choose &ldquo;Send to my agent.&rdquo; A <strong>friend-run tool (RPC)</strong> stays on their side; &ldquo;Ask their agent&rdquo; starts an Inbox conversation to use it.</p>
             {sharedWithMe.map((sk) => {
               const isTemplate = sk.kind === "template";
               return (
@@ -1269,11 +1277,11 @@ export default function AccountPage() {
                       ? (sentToAgent[sk.id]
                           ? <span style={s.okTag}>✓ sent to your agent</span>
                           : <button style={s.skillBtn} disabled={busy === `send:${sk.id}`} onClick={() => sendToMyAgent(sk)}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>)
-                      : <button style={s.skillBtn} onClick={() => askFriend(sk.owner_handle, `use your “${sk.name}” skill: `)}>Ask their agent</button>}
+                      : <button style={s.skillBtn} onClick={() => askFriend(sk.owner_handle, `use your “${sk.name}” tool: `)}>Ask their agent</button>}
                   </div>
                   {installPrompt[sk.id] && (
                     <div style={{ ...s.reveal, marginTop: 8 }}>
-                      <p style={s.revealLabel}>✅ Queued — your agent picks this up on its next check (~10 min). Don&apos;t want to wait? Paste this into your agent to install it now:</p>
+                      <p style={s.revealLabel}>✅ Queued in your Inbox — your agent picks this up on its next check (~10 min). Don&apos;t want to wait? Paste this into your agent to add it now:</p>
                       <pre style={s.promptPre}>{installPrompt[sk.id]}</pre>
                       <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
                         <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(installPrompt[sk.id]).catch(() => {}); setInstallCopiedId(sk.id); setTimeout(() => setInstallCopiedId(null), 1500); }}>{installCopiedId === sk.id ? "✓ Copied" : "Copy prompt"}</button>
@@ -1290,11 +1298,11 @@ export default function AccountPage() {
         {/* Discoverable in your circle — grouped & personified per friend */}
         {discover.length > 0 && (
           <section style={s.card}>
-            <h2 style={s.h2}>✨ Skills in your circle</h2>
-            <p style={s.soon}>What your friends&rsquo; agents can do. Ask a friend to share a skill and it shows up under &ldquo;Shared with you&rdquo; above.</p>
+            <h2 style={s.h2}>✨ Tools in your circle</h2>
+            <p style={s.soon}>Useful things your friends&rsquo; agents can do. Ask a friend to share one and it shows up under &ldquo;Shared with you&rdquo; above.</p>
             {Object.entries(discover.reduce<Record<string, DiscoverSkill[]>>((acc, d) => { (acc[d.owner_handle] ??= []).push(d); return acc; }, {})).map(([owner, items]) => (
               <div key={owner} style={{ marginTop: 14 }}>
-                <p style={s.circleHead}><strong>{owner.replace(/@bc$/, "")}&rsquo;s agent</strong> has {items.length} skill{items.length === 1 ? "" : "s"} you can use</p>
+                <p style={s.circleHead}><strong>{owner.replace(/@bc$/, "")}&rsquo;s agent</strong> has {items.length} tool{items.length === 1 ? "" : "s"} you can use</p>
                 {items.map((d) => {
                   const isTemplate = d.kind === "template";
                   return (
@@ -1304,7 +1312,7 @@ export default function AccountPage() {
                         <div style={s.skillName}>{d.name}</div>
                         {d.description && <div style={s.skillDesc}>{d.description}</div>}
                       </div>
-                      <button style={s.skillBtnGhost} onClick={() => askFriend(d.owner_handle, isTemplate ? `share your “${d.name}” skill with me` : `use your “${d.name}” skill: `)}>{isTemplate ? "Ask to share" : "Ask their agent"}</button>
+                      <button style={s.skillBtnGhost} onClick={() => askFriend(d.owner_handle, isTemplate ? `share your “${d.name}” tool with me` : `use your “${d.name}” tool: `)}>{isTemplate ? "Ask to share" : "Ask their agent"}</button>
                     </div>
                   );
                 })}
