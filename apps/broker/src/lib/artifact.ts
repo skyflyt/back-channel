@@ -119,16 +119,18 @@ export function buildEnvelope(a: SkillRow, author: { handle: string; pubkey: str
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
 const TYPE_BADGE: Record<string, string> = { skill: "📜 Skill", scheduled_task: "⏰ Scheduled Task", prompt: "💬 Prompt" };
+const LESSON_NOUN: Record<string, string> = { skill: "skill", scheduled_task: "workflow", prompt: "prompt" };
 
 /** Browser landing page for a human who opens /a/<token> (spec §3.2 Variant A). */
 export function landingHtml(a: SkillRow, author: { handle: string }, token: string, opts?: { signedIn?: boolean }): string {
   const who = esc(author.handle.replace(/@bc$/, ""));
   const t = a.type || "skill";
   const badge = TYPE_BADGE[t] ?? "📜 Skill";
+  const lesson = LESSON_NOUN[t] ?? "skill";
   const paste = `Add this to my agent: https://back-channel.app/a/${token}`;
   const expiry = a.publicExpiresAt ? `Link expires ${esc(a.publicExpiresAt.toUTCString())}.` : "This link does not expire.";
   const warn = t === "scheduled_task"
-    ? `<p class="warn">⏰ This installs a <b>recurring task</b> on your agent — it will run on a schedule until you remove it. Only proceed if you trust <b>${who}</b>.</p>`
+    ? `<p class="warn">⏰ This lesson registers a <b>recurring task</b> on your agent — it will run on a schedule until you remove it. Only proceed if you trust <b>${who}</b>.</p>`
     : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -142,6 +144,11 @@ export function landingHtml(a: SkillRow, author: { handle: string }, token: stri
   h1 { font-size: 26px; margin: 14px 0 4px; }
   .by { color:#777; margin:0 0 20px; }
   @media (prefers-color-scheme: dark){ .by{ color:#aaa; } }
+  .proof { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:20px 0; }
+  .proof div { border:1px solid #e3e3e3; border-radius:10px; padding:10px 12px; background:#fff; }
+  .proof b { display:block; font-size:13px; color:#555; }
+  .proof span { display:block; font-weight:700; margin-top:2px; }
+  @media (prefers-color-scheme: dark){ .proof div{ background:#1f1f1f; border-color:#333; } .proof b{ color:#aaa; } }
   .card { border:1px solid #e3e3e3; border-radius:12px; padding:18px 20px; background:#fff; margin:18px 0; }
   .paste { border:1px dashed #bbb; border-radius:10px; padding:14px 16px; background:#fff; display:flex; gap:10px; align-items:center; }
   .paste code { flex:1; font-size:14px; word-break:break-all; background:none; }
@@ -160,26 +167,32 @@ export function landingHtml(a: SkillRow, author: { handle: string }, token: stri
   details { margin-top:14px; } summary { cursor:pointer; color:#4351e8; font-weight:600; }
   pre { overflow:auto; background:#f4f4f4; padding:12px; border-radius:8px; font-size:13px; }
   @media (prefers-color-scheme: dark){ pre{ background:#222; } }
+  @media (max-width:520px){ .proof{ grid-template-columns:1fr; } .paste{ align-items:stretch; flex-direction:column; } }
   footer { margin-top:32px; color:#999; font-size:13px; }
 </style></head><body>
-  <span class="badge">${badge}</span>
-  <h1>${esc(a.name)}</h1>
-  <p class="by">Shared by <b>${who}</b> via Back Channel · signed &amp; verified</p>
+  <span class="badge">Agent lesson · ${badge}</span>
+  <h1>Teach your agent ${esc(a.name)}</h1>
+  <p class="by">Send your agent here to learn and master this ${esc(lesson)} from <b>${who}</b>.</p>
   ${a.description ? `<p>${esc(a.description)}</p>` : ""}
+  <div class="proof" aria-label="Lesson trust signals">
+    <div><b>Agents taught</b><span>Be the first</span></div>
+    <div><b>Stars</b><span>Be the first</span></div>
+    <div><b>Trust</b><span>Signed by ${who}</span></div>
+  </div>
   ${warn}
   <div class="card">
-    <p style="margin-top:0"><b>To add this to your AI agent</b>, paste this into any agent chat (Claude, ChatGPT, Cowork, Codex…):</p>
+    <p style="margin-top:0"><b>Teach my agent</b>: paste this into any agent chat (Claude, ChatGPT, Cowork, Codex…):</p>
     <div class="paste"><code id="p">${esc(paste)}</code><button onclick="navigator.clipboard.writeText(document.getElementById('p').textContent).then(()=>{this.textContent='Copied ✓'})">Copy</button></div>
-    <p class="muted" style="margin-bottom:0">Your agent fetches it, shows you what it does, and asks before installing. ${esc(expiry)}</p>
+    <p class="muted" style="margin-bottom:0">Your agent fetches the signed lesson, previews what it will learn, verifies <b>${who}</b>'s signature, and asks before installing. ${esc(expiry)}</p>
   </div>
-  <details><summary>View source</summary><pre>${esc(a.body)}</pre></details>
+  <details><summary>Preview lesson source</summary><pre>${esc(a.body)}</pre></details>
   ${opts?.signedIn
-    ? `<div class="card" style="text-align:center"><p style="margin:0 0 10px"><b>Want to keep this?</b></p><a href="https://back-channel.app/account?import=${token}"><button>＋ Save to my library</button></a></div>`
+    ? `<div class="card" style="text-align:center"><p style="margin:0 0 10px"><b>Want your agent to keep this lesson?</b></p><a href="https://back-channel.app/account?import=${token}"><button>＋ Save to my Toolkit</button></a></div>`
     : `<div class="card" style="text-align:center">
-        <p style="margin:0 0 6px"><b>Get your own Back Channel</b></p>
-        <p class="muted" style="margin:0 0 12px">It's where your AI agent's useful things live — skills, scheduled tasks, prompts. Share them, manage them, get them from friends. Free to start.</p>
+        <p style="margin:0 0 6px"><b>Get your agent its own lesson library</b></p>
+        <p class="muted" style="margin:0 0 12px">Back Channel is where your agent keeps signed skills, prompts, and scheduled workflows it can learn from people you trust. Free to start.</p>
         <a href="https://back-channel.app/signup?from_share=${token}"><button>Sign up →</button></a>
       </div>`}
-  <footer>Back Channel — where your agent's useful things live. <a href="https://back-channel.app">Learn more</a></footer>
+  <footer>Back Channel — signed lessons for useful agents. <a href="https://back-channel.app">Learn more</a></footer>
 </body></html>`;
 }
