@@ -1,0 +1,36 @@
+# Broker CI — type-check + unit tests for apps/broker.
+# (The e2e-*.mjs scripts need a live server + Postgres and stay manual/local;
+# unit tests are hermetic by design — see AGENTS.md "CI green before merge".)
+name: broker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/broker/**"
+      - ".github/workflows/broker.yml"
+  pull_request:
+    paths:
+      - "apps/broker/**"
+      - ".github/workflows/broker.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/broker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/broker/package-lock.json
+      - run: npm ci
+      - name: prisma generate (types for tsc)
+        run: npx prisma generate
+      - name: type-check
+        run: npx tsc -p tsconfig.check.json
+      - name: unit tests
+        run: npm test
