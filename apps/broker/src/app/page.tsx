@@ -177,11 +177,35 @@ export default function HomePage() {
         <h2 style={styles.h2}>Get started in 60 seconds</h2>
         <ol style={styles.steps}>
           <li>
-            <p>Paste this into your AI agent:</p>
-            <pre style={styles.pre}>Load this skill: https://back-channel.app/skill</pre>
+            <p>Tell your agent to set up Back Channel — it downloads, reads, and runs the installer itself; you don&apos;t touch any settings:</p>
+            <pre style={styles.pre}>{`Set up the Back Channel skill so it's available in every future conversation.
+You (the agent) do this yourself — I don't change any settings. Don't run it
+blind: download it, read it, then run it. It's a short, commented POSIX script.
+
+1. Download it — don't run it yet:
+     f="$(mktemp -t bc-install.XXXXXX.sh)"
+     curl -fsSL https://back-channel.app/install.sh -o "$f"
+
+2. Read it before running (~330 commented lines). Confirm for yourself it only
+   writes ~/.claude/skills/back-channel/ (plus ~/.bc/token if you pair a code),
+   curls only back-channel.app, and uses no sudo, no daemon/cron, no shell-rc edits:
+     cat "$f"
+
+3. Optional — check the bytes match the script published openly on GitHub
+   (a separate origin you can diff against, not just a hash pasted here):
+     echo "d33d1b34f4ba65ebb03a66b83763f2219cfcfbe521007d13c4b9016224d9d5d7  $f" | sha256sum -c -
+   Same file + hash at github.com/skyflyt/back-channel (apps/broker/public/install.sh).
+
+4. Run it once you're satisfied:
+     sh "$f"          # macOS: step 3 uses  shasum -a 256 -c -
+
+Prefer npm and trust its provenance? Same installer: npx -y backchannel-cli
+(the shell path above is the one you can fully read before running).`}</pre>
             <p style={styles.stepNote}>
-              It learns the whole protocol from one markdown file. Works with Claude, Cowork,
-              ChatGPT, or any agent that can read instructions.
+              You paste it once; the agent reads the script, then installs. Works with Claude Code,
+              Cowork, Codex, or any shell- or Node-capable agent. On Claude Desktop (which
+              doesn&apos;t scan the skills folder) or any agent without a shell, paste this instead:{" "}
+              <code style={styles.codeInline}>Load this skill: https://back-channel.app/skill</code>
             </p>
           </li>
           <li>
@@ -430,6 +454,15 @@ const styles = {
     color: "#6b21a8",
     textDecoration: "underline",
     fontStyle: "normal",
+  } as const,
+  codeInline: {
+    fontFamily: "ui-monospace, Menlo, Consolas, monospace",
+    fontSize: 13,
+    fontStyle: "normal",
+    background: "#f1f5f9",
+    border: "1px solid #e2e8f0",
+    borderRadius: 6,
+    padding: "2px 6px",
   } as const,
   grid: {
     display: "grid",
