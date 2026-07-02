@@ -116,11 +116,22 @@ export default function AccountPage() {
   const [inspect, setInspect] = useState<EditorArtifact | null>(null);
   const [libFlash, setLibFlash] = useState<string>("");
   const [newKey, setNewKey] = useState<string | null>(null);
-  // "Connect a new agent" — 2-step: name+runtime, then exchange code (raw key never shown).
+  // "Connect a new agent" — PRIMARY: MCP connector (browser mints the token, the
+  // human wires it into their client's own settings — the agent never executes
+  // anything to establish trust). agentFormOpen drives the MCP form.
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [agentFormOpen, setAgentFormOpen] = useState(false);
   const [agentName, setAgentName] = useState("");
   const [agentRuntime, setAgentRuntime] = useState("other");
+  const [mcpToken, setMcpToken] = useState<string | null>(null); // raw bc_ key — shown once
+  const [mcpClient, setMcpClient] = useState<"claude_desktop" | "claude_code" | "codex" | "other">("claude_desktop");
+  const [mcpOs, setMcpOs] = useState<"windows" | "mac">("windows");
+  const [mcpErr, setMcpErr] = useState("");
+  const [mcpCopied, setMcpCopied] = useState("");
+  // LEGACY: exchange-code flow, demoted behind a disclosure (kept fully working —
+  // it's still the only path for runtimes without MCP support).
+  const [legacyOpen, setLegacyOpen] = useState(false);
+  const [legacyFormOpen, setLegacyFormOpen] = useState(false);
   // Track B (Guided, default) vs Track A (Quick one-paste). Guided = two separate
   // low-stakes pastes; even a cautious agent accepts it because the user is the integrator.
   const [connectTrack, setConnectTrack] = useState<"guided" | "quick">("guided");
@@ -335,6 +346,26 @@ export default function AccountPage() {
     : status === 409 ? "Your email isn't verified yet — check your inbox for the sign-in link."
     : (j.message || `Couldn't generate a code (error ${status}). Try again in a moment.`);
 
+  // MCP connector: mint a per-agent key straight from the dashboard. Maps the
+  // client choice onto the existing runtime enum (Claude Desktop rides the
+  // "cowork" label the UI already renders as "Cowork (Claude desktop)").
+  const MCP_CLIENT_RUNTIME: Record<string, string> = { claude_desktop: "cowork", claude_code: "claude_code", codex: "codex", other: "other" };
+  const MCP_CLIENT_LABEL: Record<string, string> = { claude_desktop: "Claude Desktop", claude_code: "Claude Code", codex: "Codex CLI", other: "Other MCP client" };
+  const mintMcpToken = async () => {
+    setBusy("mcp-mint"); setMcpErr("");
+    try {
+      const r = await fetch("/api/account/agents", {
+        method: "POST", credentials: "include",
+        headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
+        body: JSON.stringify({ agent_name: agentName.trim() || MCP_CLIENT_LABEL[mcpClient], runtime_type: MCP_CLIENT_RUNTIME[mcpClient] }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.api_key) { setMcpToken(j.api_key); setAgentFormOpen(false); setMcpCopied(""); loadAgents(); }
+      else setMcpErr(exchangeErrorMessage(r.status, j));
+    } catch { setMcpErr("Couldn't reach Back Channel. Check your connection and try again."); }
+    setBusy("");
+  };
+
   const connectNewAgent = async () => {
     setBusy("exchange"); setExErr("");
     try {
@@ -344,7 +375,7 @@ export default function AccountPage() {
         body: JSON.stringify({ agent_name: agentName.trim() || "New agent", runtime_type: agentRuntime === "claude_web" ? "other" : agentRuntime }),
       });
       const j = await r.json().catch(() => ({}));
-      if (r.ok && j.code) { setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setAgentFormOpen(false); }
+      if (r.ok && j.code) { setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setLegacyFormOpen(false); }
       else setExErr(exchangeErrorMessage(r.status, j));
     } catch { setExErr("Couldn't reach Back Channel. Check your connection and try again."); }
     setBusy("");
@@ -368,8 +399,10 @@ export default function AccountPage() {
         body: JSON.stringify({ agent_name: a.name, runtime_type: a.runtime_type }),
       });
       const j = await r.json().catch(() => ({}));
+      // Reconnect rides the legacy exchange-code panel — make sure it's visible.
+      setLegacyOpen(true);
       if (r.ok && j.code) {
-        setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setAgentFormOpen(false);
+        setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setLegacyFormOpen(false);
         setNav("account");
         setTimeout(() => document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
       } else {
@@ -660,10 +693,95 @@ export default function AccountPage() {
             </>
           )}
 
-          {/* Connect a new agent — exchange-code flow (raw key never shown). */}
+          {/* Connect a new agent — PRIMARY: MCP connector. You set it up in your
+              client's own settings; the agent is never asked to run anything to
+              establish trust (the whole point vs. the old skill-install flow). */}
           <div style={s.connectBox} id="connect-agent">
             <h3 style={s.h3}>Connect a new agent</h3>
-            <p style={s.meta}>Paste a one-time code into any AI assistant — a new device, a fresh chat, Claude Code — and it connects to your account. Your actual key never goes into the chat.</p>
+            <p style={s.meta}>Back Channel is an <strong>MCP connector</strong>: generate a token, add it in your AI client&apos;s settings, done. Nothing gets pasted into a chat, and your agent never has to run install commands.</p>
+            {mcpErr && <p style={{ margin: "0 0 12px", padding: "9px 12px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 13 }}>⚠ {mcpErr}</p>}
+            {mcpToken ? (() => {
+              const mcpUrl = `${typeof window !== "undefined" ? window.location.origin : "https://back-channel.app"}/api/mcp`;
+              const copyBtn = (id: string, text: string, label = "Copy") => (
+                <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(text).catch(() => {}); setMcpCopied(id); setTimeout(() => setMcpCopied(""), 1500); }}>{mcpCopied === id ? "✓ Copied" : label}</button>
+              );
+              const verifyLine = <p style={{ ...s.meta, marginBottom: 0 }}>✅ <strong>Verify:</strong> open a fresh chat and ask <em>&ldquo;What Back Channel tools do you have?&rdquo;</em> — you should see bc_check_inbox and friends.</p>;
+              const ccCmd = `claude mcp add --transport http back-channel ${mcpUrl} --header "Authorization: Bearer ${mcpToken}" --scope user`;
+              const codexEnv = mcpOs === "windows" ? `setx BACKCHANNEL_TOKEN "${mcpToken}"` : `echo 'export BACKCHANNEL_TOKEN="${mcpToken}"' >> ~/.zshrc && source ~/.zshrc`;
+              const codexToml = `[mcp_servers.back_channel]\nurl = "${mcpUrl}"\nbearer_token_env_var = "BACKCHANNEL_TOKEN"`;
+              return (
+                <div style={s.reveal}>
+                  <p style={s.revealLabel}>🔑 Your agent token — copy it now, it won&apos;t be shown again:</p>
+                  <code style={s.revealKey}>{mcpToken}</code>
+                  <div style={{ margin: "8px 0 14px" }}>{copyBtn("tok", mcpToken)}</div>
+
+                  {mcpClient === "claude_desktop" && (
+                    <ol style={{ margin: "0 0 12px", paddingLeft: 20, fontSize: 13.5, color: "#334155", lineHeight: 1.7 }}>
+                      <li><a href="/back-channel.mcpb" download style={{ color: "#0f766e", fontWeight: 600 }}>Download the Back Channel extension</a> (.mcpb file).</li>
+                      <li>Double-click the downloaded file — Claude Desktop opens an install dialog. Click <strong>Install</strong>.</li>
+                      <li>Paste the token above into the <strong>Back Channel agent token</strong> field and save.</li>
+                    </ol>
+                  )}
+                  {mcpClient === "claude_code" && (
+                    <div style={{ marginBottom: 12 }}>
+                      <p style={{ ...s.meta, marginBottom: 6 }}>Run this once in any terminal (connects Claude Code account-wide):</p>
+                      <pre style={s.promptPre}>{ccCmd}</pre>
+                      <div style={{ marginTop: 6 }}>{copyBtn("cc", ccCmd, "Copy command")}</div>
+                    </div>
+                  )}
+                  {mcpClient === "codex" && (
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                        <button style={mcpOs === "windows" ? s.chipOn : s.chipOff} onClick={() => setMcpOs("windows")}>Windows</button>
+                        <button style={mcpOs === "mac" ? s.chipOn : s.chipOff} onClick={() => setMcpOs("mac")}>Mac / Linux</button>
+                      </div>
+                      <p style={{ ...s.meta, marginBottom: 6 }}>1. Store the token in an environment variable{mcpOs === "windows" ? " (then open a NEW terminal)" : ""}:</p>
+                      <pre style={s.promptPre}>{codexEnv}</pre>
+                      <div style={{ margin: "6px 0 10px" }}>{copyBtn("cxe", codexEnv)}</div>
+                      <p style={{ ...s.meta, marginBottom: 6 }}>2. Add this to <code>~/.codex/config.toml</code> (token stays in the env var, never in the file):</p>
+                      <pre style={s.promptPre}>{codexToml}</pre>
+                      <div style={{ marginTop: 6 }}>{copyBtn("cxt", codexToml)}</div>
+                    </div>
+                  )}
+                  {mcpClient === "other" && (
+                    <div style={{ marginBottom: 12 }}>
+                      <p style={{ ...s.meta, marginBottom: 6 }}>Point any MCP client that supports <strong>remote HTTP servers with custom headers</strong> at:</p>
+                      <pre style={s.promptPre}>{`URL:    ${mcpUrl}\nHeader: Authorization: Bearer ${mcpToken}`}</pre>
+                      <div style={{ marginTop: 6 }}>{copyBtn("oth", `${mcpUrl}\nAuthorization: Bearer ${mcpToken}`)}</div>
+                      <p style={{ ...s.meta, marginTop: 8 }}>Note: claude.ai&apos;s built-in &ldquo;Connectors&rdquo; directory needs OAuth and won&apos;t take a bearer token — use Claude Desktop with our extension instead.</p>
+                    </div>
+                  )}
+                  {verifyLine}
+                  <div style={{ marginTop: 10 }}>
+                    <button style={s.signOut} onClick={() => { setMcpToken(null); setMcpCopied(""); }}>Done — hide token</button>
+                  </div>
+                </div>
+              );
+            })() : agentFormOpen ? (
+              <div>
+                <label style={s.fieldLabel}>Which client are you connecting?</label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+                  {(["claude_desktop", "claude_code", "codex", "other"] as const).map((c) => (
+                    <button key={c} style={mcpClient === c ? s.chipOn : s.chipOff} onClick={() => setMcpClient(c)}>{MCP_CLIENT_LABEL[c]}</button>
+                  ))}
+                </div>
+                <label style={s.fieldLabel}>Name it (so you can tell your agents apart later)</label>
+                <input style={s.input} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder={`e.g. ${MCP_CLIENT_LABEL[mcpClient]} on my laptop`} />
+                <div style={{ marginTop: 12 }}>
+                  <button style={s.btn} disabled={busy === "mcp-mint"} onClick={mintMcpToken}>{busy === "mcp-mint" ? "…" : "Generate token →"}</button>
+                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => setAgentFormOpen(false)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button style={s.btn} onClick={() => { setAgentName(""); setMcpClient("claude_desktop"); setAgentFormOpen(true); }}>Connect a new agent</button>
+            )}
+
+            {/* LEGACY — exchange-code / paste-in flow, for runtimes without MCP. */}
+            <div style={{ marginTop: 16, borderTop: "1px dashed #e2e8f0", paddingTop: 10 }}>
+            {!legacyOpen ? (
+              <button style={s.smallLink2} onClick={() => setLegacyOpen(true)}>Legacy &amp; advanced: connect with a paste-in code (agents without MCP) or the raw key</button>
+            ) : (<>
+            <p style={s.meta}><strong>Legacy connect</strong> — paste a one-time code into any AI assistant and it connects itself. Use this only for runtimes that can&apos;t add an MCP server. <button style={s.smallLink2} onClick={() => setLegacyOpen(false)}>Hide</button></p>
             {exErr && <p style={{ margin: "0 0 12px", padding: "9px 12px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 13 }}>⚠ {exErr}</p>}
             {exCode ? (
               connectTrack === "guided" ? (() => {
@@ -695,7 +813,7 @@ export default function AccountPage() {
                   </div>
                 </div>
               )
-            ) : agentFormOpen ? (
+            ) : legacyFormOpen ? (
               <div>
                 <label style={s.fieldLabel}>What&apos;s this agent? (so you can tell them apart later)</label>
                 <input style={s.input} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="e.g. my laptop, Codex at work, ChatGPT on phone" />
@@ -716,11 +834,11 @@ export default function AccountPage() {
                 <p style={{ ...s.meta, marginTop: 6 }}>{connectTrack === "guided" ? "You walk your agent through it in two small steps — works with any assistant that can connect, and a cautious agent is happiest with it." : "Your agent does the whole setup from one paste. Best on local runtimes (Cowork, Codex, Claude Code)."}</p>
                 <div style={{ marginTop: 12 }}>
                   <button style={s.btn} disabled={busy === "exchange"} onClick={connectNewAgent}>{busy === "exchange" ? "…" : "Get connect code →"}</button>
-                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => setAgentFormOpen(false)}>Cancel</button>
+                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => setLegacyFormOpen(false)}>Cancel</button>
                 </div>
               </div>
             ) : (
-              <button style={s.btn} onClick={() => { setAgentName(""); setAgentRuntime("other"); setConnectTrack("guided"); setAgentFormOpen(true); }}>Connect a new agent</button>
+              <button style={s.btn} onClick={() => { setAgentName(""); setAgentRuntime("other"); setConnectTrack("guided"); setLegacyFormOpen(true); }}>Connect with a code</button>
             )}
             {/* Power-user escape hatch: reveal the raw key for manual scripting. */}
             <div style={{ marginTop: 10 }}>
@@ -738,6 +856,8 @@ export default function AccountPage() {
               ) : (
                 <p style={s.meta}>The code above is the safe way to connect an agent — the key stays out of your chat. If you&apos;re scripting against the API by hand and want the raw key, <button style={s.smallLink2} onClick={revealBootstrap} disabled={busy === "bootstrap"}>{busy === "bootstrap" ? "loading…" : "reveal it"}</button> (shown briefly, then hidden).</p>
               )}
+            </div>
+            </>)}
             </div>
           </div>
         </section>
