@@ -30,7 +30,7 @@ test("forwards a request and writes the response line", async () => {
   assert.deepEqual(h.parsed(), [{ jsonrpc: "2.0", id: 1, result: { ok: true } }]);
 });
 
-test("forwards auth header + body verbatim", async () => {
+test("forwards auth header + body verbatim, with a bounded abort signal", async () => {
   let seen;
   const h = harness({
     fetchImpl: async (url, init) => { seen = { url, init }; return new Response('{"jsonrpc":"2.0","id":5,"result":{}}', { status: 200 }); },
@@ -39,6 +39,7 @@ test("forwards auth header + body verbatim", async () => {
   assert.equal(seen.url, "https://example.test/api/mcp");
   assert.equal(seen.init.headers.authorization, "Bearer bc_test");
   assert.equal(seen.init.body, '{"jsonrpc":"2.0","id":5,"method":"tools/list"}');
+  assert.ok(seen.init.signal instanceof AbortSignal, "every request carries an AbortSignal");
 });
 
 test("notifications produce NO stdout line (202 empty)", async () => {
@@ -82,10 +83,11 @@ test("unreachable server becomes a connectivity error, not a crash", async () =>
 });
 
 test("timeout is translated per-message (session survives)", async () => {
+  // Throw TimeoutError directly rather than waiting on a real AbortSignal.timeout:
+  // its internal timer is unref'ed, so on a quiet event loop (CI) the loop drains
+  // before it fires and node --test cancels the pending test.
   const h = harness({
-    fetchImpl: (_u, init) => new Promise((_res, rej) => {
-      init.signal.addEventListener("abort", () => rej(Object.assign(new Error("t"), { name: "TimeoutError" })));
-    }),
+    fetchImpl: async () => { throw Object.assign(new Error("t"), { name: "TimeoutError" }); },
   });
   await h.send({ jsonrpc: "2.0", id: 4, method: "tools/call" });
   const [r] = h.parsed();
