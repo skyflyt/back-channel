@@ -136,14 +136,22 @@ export function landingHtml(a: SkillRow, author: { handle: string }, token: stri
 <style>
   :root { color-scheme: light dark; }
   body { font: 16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; max-width: 640px; margin: 0 auto; padding: 32px 20px; color: #1a1a1a; background: #fafafa; }
-  @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } .card,.paste { background:#1f1f1f; border-color:#333; } code{background:#2a2a2a;} }
+  @media (prefers-color-scheme: dark) { body { color: #e8e8e8; background: #161616; } }
   .badge { display:inline-block; font-size:13px; padding:3px 10px; border-radius:999px; background:#eef; color:#334; font-weight:600; }
   @media (prefers-color-scheme: dark){ .badge{ background:#243; color:#cde; } }
   h1 { font-size: 26px; margin: 14px 0 4px; }
   .by { color:#777; margin:0 0 20px; }
+  @media (prefers-color-scheme: dark){ .by{ color:#aaa; } }
   .card { border:1px solid #e3e3e3; border-radius:12px; padding:18px 20px; background:#fff; margin:18px 0; }
   .paste { border:1px dashed #bbb; border-radius:10px; padding:14px 16px; background:#fff; display:flex; gap:10px; align-items:center; }
   .paste code { flex:1; font-size:14px; word-break:break-all; background:none; }
+  /* MUST come after the .card/.paste base rules above — an equal-specificity
+     override declared earlier in the cascade loses to a later base rule
+     regardless of whether its media query matches. That's the bug this fixes:
+     .card/.paste stayed white in dark mode because their dark override used to
+     sit right after body's, before these base rules were even declared, so the
+     light-mode background always won the cascade. */
+  @media (prefers-color-scheme: dark){ .card,.paste{ background:#1f1f1f; border-color:#333; color:#e8e8e8; } .paste code{ color:#e8e8e8; } }
   button { font:inherit; font-weight:600; padding:9px 16px; border-radius:8px; border:0; background:#4351e8; color:#fff; cursor:pointer; }
   button:active { transform: translateY(1px); }
   .warn { background:#fff7e6; border:1px solid #ffe1a3; border-radius:10px; padding:12px 14px; color:#7a4d00; }
