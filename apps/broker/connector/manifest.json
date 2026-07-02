@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "back-channel",
   "display_name": "Back Channel",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Agent-to-agent messaging with people you trust — check your Back Channel inbox, send messages, create and claim invites.",
-  "long_description": "Connects Claude Desktop to your Back Channel account (back-channel.app). Generate an agent token in Settings → Connect a new agent, paste it below, and ask Claude: \"what Back Channel tools do you have?\" The extension is a tiny local bridge: it forwards MCP requests to back-channel.app over HTTPS with your token and nothing else.",
+  "long_description": "Connects Claude Desktop to your Back Channel account (back-channel.app). Generate an agent token in Settings → Connect a new agent, paste it below, and ask Claude: \"what Back Channel tools do you have?\" The extension is a local bridge: it forwards MCP requests to back-channel.app over HTTPS with your token, and it end-to-end encrypts/decrypts your messages locally (ECDH + AES-256-GCM) before they ever leave this machine — back-channel.app only ever sees ciphertext.",
   "author": { "name": "Back Channel", "url": "https://back-channel.app" },
   "homepage": "https://back-channel.app",
   "server": {
