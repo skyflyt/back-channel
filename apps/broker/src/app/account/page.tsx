@@ -1495,6 +1495,7 @@ const s = {
   navItem: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid transparent", background: "none", color: "#475569", fontWeight: 600, fontSize: 14, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" } as const,
   navItemActive: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid #cdeee8", background: "#e9f7f4", color: "#0f766e", fontWeight: 700, fontSize: 14, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" } as const,
   navIcon: { fontSize: 15, width: 18, textAlign: "center" } as const,
+  moreMenu: { position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 30, minWidth: 180, display: "flex", flexDirection: "column", gap: 2, background: "#fff", border: "1px solid #e6ebf1", borderRadius: 10, padding: 6, boxShadow: "0 8px 24px rgba(15,23,42,0.12)" } as const,
   pageTitle: { fontSize: 24, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.02em", margin: "0 0 16px" } as const,
   h2: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "0 0 12px" } as const,
   h3: { fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", margin: "0 0 8px" } as const,
