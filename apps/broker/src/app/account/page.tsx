@@ -47,19 +47,26 @@ function threadTurn(x: { unread_count?: number; peer_handle: string; peer_ever_c
     return { key: "connecting", label: `Waiting for ${peer}'s agent`, color: "#b45309", bg: "#fffbeb", border: "#fde68a",
       next: `${peer}'s agent hasn't come online yet — they'll get an email nudge to wake it.` };
   }
-  return { key: "theirs", label: `Waiting on ${peer}`, color: "#64748b", bg: "#f8fafc", border: "#e2e8f0",
+  return { key: "theirs", label: `${peer}'s agent will pick this up`, color: "#64748b", bg: "#f8fafc", border: "#e2e8f0",
     next: x.peer_present ? `${peer}'s agent is online — a reply should come through shortly.` : `Their agent will surface your message on its next inbox check (~10 min).` };
 }
 
 type NavKey = "account" | "agents" | "friends" | "skills" | "messages" | "settings";
+// Primary nav is the 3 tabs people actually live in day to day; Account/Agents/Settings
+// are still fully reachable, just tucked under "More" so first-time users see a short list.
 const NAV: { key: NavKey; label: string; icon: string }[] = [
-  { key: "account", label: "Account", icon: "🔑" },
-  { key: "agents", label: "Agents", icon: "🤖" },
+  { key: "messages", label: "Inbox", icon: "💬" },
   { key: "friends", label: "Friends", icon: "👥" },
   { key: "skills", label: "Toolkit", icon: "📚" },
-  { key: "messages", label: "Inbox", icon: "💬" },
+];
+const NAV_MORE: { key: NavKey; label: string; icon: string }[] = [
+  { key: "account", label: "Account", icon: "🔑" },
+  { key: "agents", label: "Agents", icon: "🤖" },
   { key: "settings", label: "Settings", icon: "⚙️" },
 ];
+const NAV_ALL: { key: NavKey; label: string; icon: string }[] = [...NAV, ...NAV_MORE];
+const NAV_KEYS = new Set(NAV_ALL.map((n) => n.key));
+const isNavKey = (v: string | null): v is NavKey => !!v && NAV_KEYS.has(v as NavKey);
 // Deep-link anchors used by in-app scroll targets map onto a nav section.
 const ANCHOR_NAV: Record<string, NavKey> = { "connect-agent": "account", "friends-section": "friends", "skills-section": "skills", compose: "messages" };
 // Inline styles can't express media queries, so the responsive layout rides on
@@ -145,7 +152,27 @@ export default function AccountPage() {
   const [connectTrack, setConnectTrack] = useState<"guided" | "quick">("guided");
   const [copiedStep, setCopiedStep] = useState<string>("");
   const [agentCheck, setAgentCheck] = useState<Record<string, string>>({}); // per-agent "Check status" verdict
-  const [nav, setNav] = useState<NavKey>("account");
+  // Deep-link support: /account?tab=friends opens directly on that tab. Falls back to
+  // "messages" (Inbox), which is also the default for a bare /account visit (scope: Inbox
+  // is the front door now, not Account). Read once on mount -- client-only (SSR has no URL).
+  const [nav, setNav] = useState<NavKey>(() => {
+    if (typeof window === "undefined") return "messages";
+    const fromUrl = new URLSearchParams(window.location.search).get("tab");
+    return isNavKey(fromUrl) ? fromUrl : "messages";
+  });
+  const [moreOpen, setMoreOpen] = useState(false);
+  // First-run "show everything" override -- quiet escape hatch out of the simplified shell,
+  // persisted so it sticks across visits once someone asks for the full nav (see
+  // bc.km.ctr.* in keymirror-client.ts for the existing localStorage naming convention).
+  const SHOW_EVERYTHING_KEY = "bc.dashboard.showEverything";
+  const [showEverything, setShowEverything] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try { return localStorage.getItem(SHOW_EVERYTHING_KEY) === "1"; } catch { return false; }
+  });
+  const revealEverything = () => {
+    setShowEverything(true);
+    try { localStorage.setItem(SHOW_EVERYTHING_KEY, "1"); } catch { /* ignore */ }
+  };
   const [kmOpen, setKmOpen] = useState<string | null>(null); // sessionId being read in-browser (key mirror)
   const [exCode, setExCode] = useState<string | null>(null);
   const [exPrompt, setExPrompt] = useState<string>("");
@@ -260,6 +287,17 @@ export default function AccountPage() {
       } catch { setState("error"); }
     })();
   }, [loadSessions, loadTrust, loadInbox, loadSkills, loadAgents]);
+
+  // Keep ?tab= in sync with the active nav so the current view is always a shareable/
+  // bookmarkable deep link (e.g. /account?tab=friends). replaceState avoids polluting
+  // back-button history with every tab click.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("tab") === nav) return;
+    url.searchParams.set("tab", nav);
+    window.history.replaceState({}, "", url.pathname + url.search);
+  }, [nav]);
 
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
@@ -599,10 +637,39 @@ export default function AccountPage() {
   if (state === "error" || !me) return <main style={s.page}><div style={s.wrap}><p style={s.err}>Couldn&apos;t load your account. Please try again.</p></div></main>;
 
   const lastUsed = me.api_key_last_used_at ? new Date(me.api_key_last_used_at).toLocaleString() : "never";
-  const when = (iso: string) => new Date(iso).toLocaleString();
+  // Friend-grade relative time ("2 hours ago") for thread/session rows -- falls back to a
+  // plain date once it is far enough back that "N days ago" stops being useful at a glance.
+  const when = (iso: string) => {
+    const d = new Date(iso);
+    const secs = (Date.now() - d.getTime()) / 1000;
+    if (secs < 0) return d.toLocaleString();
+    if (secs < 45) return "just now";
+    if (secs < 90) return "a minute ago";
+    const mins = Math.round(secs / 60);
+    if (mins < 45) return mins + " minutes ago";
+    if (mins < 90) return "an hour ago";
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return hours + " hours ago";
+    if (hours < 36) return "a day ago";
+    const days = Math.round(hours / 24);
+    if (days < 7) return days + " days ago";
+    if (days < 14) return "a week ago";
+    if (days < 30) return Math.round(days / 7) + " weeks ago";
+    return d.toLocaleDateString();
+  };
 
   const initial = (me.display_name || me.handle || "?").trim().charAt(0).toUpperCase();
-  const navTitle = NAV.find((n) => n.key === nav)?.label ?? "Account";
+  const navTitle = NAV_ALL.find((n) => n.key === nav)?.label ?? "Account";
+  // First-run mode: no friends AND no sessions of any kind (active or recent). The WS-A
+  // concierge welcome message lives in the self-inbox as an AgentPayload (kind="welcome"),
+  // not a Session row, so it never shows up in active/recent or summary.active_sessions --
+  // there is no "concierge session" to special-case here, just "has this account done
+  // anything with a real person yet." Returning/populated accounts (any friend, or any
+  // session ever) always get the full nav, never this shell, regardless of the flag below.
+  const hasAnyFriendSignal = trust.length > 0;
+  const hasAnySession = active.length > 0 || recent.length > 0;
+  const isFirstRun = !hasAnyFriendSignal && !hasAnySession && !showEverything;
+  const moreActive = NAV_MORE.some((n) => n.key === nav);
   return (
     <div style={s.page}>
       <style>{RESPONSIVE_CSS}</style>
@@ -616,15 +683,40 @@ export default function AccountPage() {
       </header>
       <div style={s.wrap}>
         <div className="bc-shell">
+          {!isFirstRun && (
           <nav className="bc-sidebar" style={s.sidebar}>
             {NAV.map((n) => (
-              <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => setNav(n.key)}>
+              <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
                 <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
               </button>
             ))}
+            <div style={{ position: "relative" }}>
+              <button
+                className="bc-navitem"
+                style={moreActive ? s.navItemActive : s.navItem}
+                onClick={() => setMoreOpen((v) => !v)}
+                aria-expanded={moreOpen}
+                aria-haspopup="true"
+              >
+                <span style={s.navIcon} aria-hidden>⋯</span>More {moreOpen ? "▴" : "▾"}
+              </button>
+              {moreOpen && (
+                <div style={s.moreMenu}>
+                  {NAV_MORE.map((n) => (
+                    <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
+                      <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </nav>
+          )}
           <main className="bc-main">
             <h1 style={s.pageTitle}>{navTitle}</h1>
+            {isFirstRun && nav !== "messages" && (
+              <p style={s.soon}>Simplified view — <button style={s.smallLink2} onClick={revealEverything}>show everything</button> to reach every tab.</p>
+            )}
 
         {(() => {
           // First-user onboarding checklist — shows until all three are done.
@@ -646,6 +738,12 @@ export default function AccountPage() {
               )}
               <Step done={hasFriend} label="Add a friend" action={<button style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>Invite a friend</button>} />
               <Step done={hasSkill} label="Try a tool from your circle, or save your first Toolkit item" action={<button style={s.onboardBtn} onClick={() => setNav("skills")}>See Toolkit</button>} />
+              {isFirstRun && (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px dashed #99f6e4" }}>
+                  <button className="bc-primary" style={{ ...s.onboardBtn, marginLeft: 0, padding: "9px 18px", fontSize: 14 }} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>＋ Invite a friend</button>
+                  <p style={{ margin: "10px 0 0" }}><button style={s.smallLink2} onClick={revealEverything}>Show everything →</button></p>
+                </div>
+              )}
             </section>
           );
         })()}
@@ -1392,6 +1490,7 @@ const s = {
   navItem: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid transparent", background: "none", color: "#475569", fontWeight: 600, fontSize: 14, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" } as const,
   navItemActive: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid #cdeee8", background: "#e9f7f4", color: "#0f766e", fontWeight: 700, fontSize: 14, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" } as const,
   navIcon: { fontSize: 15, width: 18, textAlign: "center" } as const,
+  moreMenu: { position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 30, minWidth: 180, display: "flex", flexDirection: "column", gap: 2, background: "#fff", border: "1px solid #e6ebf1", borderRadius: 10, padding: 6, boxShadow: "0 8px 24px rgba(15,23,42,0.12)" } as const,
   pageTitle: { fontSize: 24, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.02em", margin: "0 0 16px" } as const,
   h2: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "0 0 12px" } as const,
   h3: { fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", margin: "0 0 8px" } as const,
