@@ -52,14 +52,21 @@ function threadTurn(x: { unread_count?: number; peer_handle: string; peer_ever_c
 }
 
 type NavKey = "account" | "agents" | "friends" | "skills" | "messages" | "settings";
+// Primary nav is the 3 tabs people actually live in day to day; Account/Agents/Settings
+// are still fully reachable, just tucked under "More" so first-time users see a short list.
 const NAV: { key: NavKey; label: string; icon: string }[] = [
-  { key: "account", label: "Account", icon: "🔑" },
-  { key: "agents", label: "Agents", icon: "🤖" },
+  { key: "messages", label: "Inbox", icon: "💬" },
   { key: "friends", label: "Friends", icon: "👥" },
   { key: "skills", label: "Toolkit", icon: "📚" },
-  { key: "messages", label: "Inbox", icon: "💬" },
+];
+const NAV_MORE: { key: NavKey; label: string; icon: string }[] = [
+  { key: "account", label: "Account", icon: "🔑" },
+  { key: "agents", label: "Agents", icon: "🤖" },
   { key: "settings", label: "Settings", icon: "⚙️" },
 ];
+const NAV_ALL: { key: NavKey; label: string; icon: string }[] = [...NAV, ...NAV_MORE];
+const NAV_KEYS = new Set(NAV_ALL.map((n) => n.key));
+const isNavKey = (v: string | null): v is NavKey => !!v && NAV_KEYS.has(v as NavKey);
 // Deep-link anchors used by in-app scroll targets map onto a nav section.
 const ANCHOR_NAV: Record<string, NavKey> = { "connect-agent": "account", "friends-section": "friends", "skills-section": "skills", compose: "messages" };
 // Inline styles can't express media queries, so the responsive layout rides on
