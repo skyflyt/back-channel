@@ -32,6 +32,7 @@ model Account {
   admin            Boolean @default(false) // operator: can read metadata-only analytics (never content)
   reserved         Boolean @default(false) // pre-launch handle hold: occupies the @unique handle (signup 409s) but isn't a real account; transfer = clear this + set the real email
   reservedBy       String?                 // account id that holds the reservation (Skylar) — ownership/transfer marker
+  welcomeSeededAt  DateTime?               // onboarding epic WS-A: set the FIRST time this account's agent connects (first AgentToken minted), seeds one self-inbox welcome AgentPayload; idempotency latch so it never fires twice
 
   // --- user-side decryption / key mirror (docs/user-side-decryption.md v2.1) ---
   // All nullable; presence of mirrorPub is the ONLY new broker-visible signal (I3):
@@ -136,14 +137,17 @@ model ExchangeCode {
 // generic envelope a user drops for their OWN agent to pick up on its next
 // bc-inbox-check. Phase 1 kind="skill": a reference to a skill a trusted peer
 // shared with the user (the broker already holds that share, so `ref` exposes
-// nothing new and isn't sealed). The future clipper (v1.x) will use a sealed
-// kind where the broker stores only an opaque blob. Always self-addressed, so
-// it adds no inbound-spam surface.
+// nothing new and isn't sealed). kind="welcome" (onboarding epic WS-A): the
+// broker-authored concierge message seeded on an account's first agent
+// connect — plaintext is fine since the broker authored it itself (content-
+// blindness is about USER content). The future clipper (v1.x) will use a
+// sealed kind where the broker stores only an opaque blob. Always
+// self-addressed, so it adds no inbound-spam surface.
 model AgentPayload {
   id          String    @id @default(uuid())
   accountId   String                  // owner = recipient = the only addressee (self)
-  kind        String                  // "skill" (Phase 1)
-  ref         Json                    // {skillId, name, skillKind, ownerHandle}
+  kind        String                  // "skill" (Phase 1) | "welcome" (WS-A)
+  ref         Json                    // {skillId, name, skillKind, ownerHandle} | {text} for kind="welcome"
   note        String?
   createdAt   DateTime  @default(now())
   deliveredAt DateTime?               // set when the agent has pulled it

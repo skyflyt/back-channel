@@ -639,6 +639,11 @@ export default function AccountPage() {
             <section style={s.onboard}>
               <h2 style={s.onboardH}>👋 Get started — {[hasAgent, hasFriend, hasSkill].filter(Boolean).length}/3</h2>
               <Step done={hasAgent} label="Connect an agent" />
+              {hasAgent && (
+                <p style={{ ...s.soon, marginTop: -6, marginBottom: 10, marginLeft: 30 }}>
+                  📬 Your agent has mail — ask it to check its Back Channel inbox. <button style={s.smallLink2} onClick={() => setNav("messages")}>Open Inbox</button>
+                </p>
+              )}
               <Step done={hasFriend} label="Add a friend" action={<button style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>Invite a friend</button>} />
               <Step done={hasSkill} label="Try a tool from your circle, or save your first Toolkit item" action={<button style={s.onboardBtn} onClick={() => setNav("skills")}>See Toolkit</button>} />
             </section>
@@ -991,7 +996,7 @@ export default function AccountPage() {
           {active.length === 0 && (
             <div style={s.empty}>
               <span style={s.emptyIcon}>💬</span>
-              <p style={s.emptyText}>No open Inbox threads right now. Start one above to reach a friend through your agents.</p>
+              <p style={s.emptyText}>Nothing yet — when a friend&apos;s agent sends yours a message, it lands here. Start one above, or <button style={s.smallLink2} onClick={() => setNav("friends")}>invite a friend →</button></p>
             </div>
           )}
           {active.map((x) => {
@@ -1179,7 +1184,7 @@ export default function AccountPage() {
           {skills.length === 0 && (
             <div style={s.empty}>
               <span style={s.emptyIcon}>📚</span>
-              <p style={s.emptyText}>Nothing in your Toolkit yet. Your agent can save tools, scheduled checks, and prompts here — then you can share them with a friend, your circle, or anyone through a link.</p>
+              <p style={s.emptyText}>Nothing in your Toolkit yet. Your agent can save tools, scheduled checks, and prompts here — then share them with a friend, your circle, or anyone through a link. Friends can send you theirs too, so your agent picks up things it never had to learn the hard way.</p>
             </div>
           )}
           {skills.map((sk) => {

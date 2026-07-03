@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid, generateApiKey, hashToken } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { seedWelcomeIfFirstConnect } from "@/lib/onboarding";
 
 export const runtime = "nodejs";
 
@@ -64,11 +65,16 @@ export async function POST(req: NextRequest) {
   const agentName = (body.agent_name ?? "").trim().slice(0, 80) || "New agent";
   const runtimeType = (RUNTIMES as readonly string[]).includes(body.runtime_type ?? "") ? (body.runtime_type as (typeof RUNTIMES)[number]) : "other";
 
+  const priorAgentCount = await prisma.agentToken.count({ where: { accountId: account.id } });
   const apiKey = generateApiKey();
   const agent = await prisma.agentToken.create({
     data: { accountId: account.id, keyHash: hashToken(apiKey), name: agentName, runtimeType },
   });
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "key.minted", detail: { via: "dashboard", agent_token_id: agent.id, agent_name: agentName } } }).catch(() => {});
+
+  // Onboarding epic WS-A: first-ever agent connect for this account seeds the
+  // concierge welcome thread into the self-inbox. Never fires again after this.
+  await seedWelcomeIfFirstConnect(account.id, priorAgentCount).catch(() => {});
 
   return NextResponse.json({ api_key: apiKey, agent_id: agent.id, agent_name: agentName, handle: account.handle });
 }
