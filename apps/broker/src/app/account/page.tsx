@@ -152,7 +152,27 @@ export default function AccountPage() {
   const [connectTrack, setConnectTrack] = useState<"guided" | "quick">("guided");
   const [copiedStep, setCopiedStep] = useState<string>("");
   const [agentCheck, setAgentCheck] = useState<Record<string, string>>({}); // per-agent "Check status" verdict
-  const [nav, setNav] = useState<NavKey>("account");
+  // Deep-link support: /account?tab=friends opens directly on that tab. Falls back to
+  // "messages" (Inbox), which is also the default for a bare /account visit (scope: Inbox
+  // is the front door now, not Account). Read once on mount -- client-only (SSR has no URL).
+  const [nav, setNav] = useState<NavKey>(() => {
+    if (typeof window === "undefined") return "messages";
+    const fromUrl = new URLSearchParams(window.location.search).get("tab");
+    return isNavKey(fromUrl) ? fromUrl : "messages";
+  });
+  const [moreOpen, setMoreOpen] = useState(false);
+  // First-run "show everything" override -- quiet escape hatch out of the simplified shell,
+  // persisted so it sticks across visits once someone asks for the full nav (see
+  // bc.km.ctr.* in keymirror-client.ts for the existing localStorage naming convention).
+  const SHOW_EVERYTHING_KEY = "bc.dashboard.showEverything";
+  const [showEverything, setShowEverything] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try { return localStorage.getItem(SHOW_EVERYTHING_KEY) === "1"; } catch { return false; }
+  });
+  const revealEverything = () => {
+    setShowEverything(true);
+    try { localStorage.setItem(SHOW_EVERYTHING_KEY, "1"); } catch { /* ignore */ }
+  };
   const [kmOpen, setKmOpen] = useState<string | null>(null); // sessionId being read in-browser (key mirror)
   const [exCode, setExCode] = useState<string | null>(null);
   const [exPrompt, setExPrompt] = useState<string>("");
