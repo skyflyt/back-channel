@@ -9,11 +9,13 @@ import { useState } from "react";
 
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
 
-// Canonical trust-stance copy (Link Lessons epic) — verbatim; mirrors src/lib/artifact.ts's
-// LINK_HUMAN_WARNING. Kept as a plain literal here (client bundle) rather than importing
-// the server lib.
-export const LINK_HUMAN_WARNING = "We don't scan or review external lessons. A link lesson is whatever its author published — it can change after you save it. Anything you install runs with your agent's access. Read it before you install it, and only take lessons from sources you trust.";
-export const LINK_BADGE_TEXT = "external · unreviewed";
+// Canonical trust-stance copy (Link Lessons epic) — imported from the shared,
+// server-free module so this client bundle stays in sync with src/lib/artifact.ts
+// without hand-duplicating the literal (artifact.ts pulls in node:crypto, which
+// can't ship in a client bundle, so the shared strings live in their own module
+// that both sides import).
+export { LINK_HUMAN_WARNING, LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST, LINK_BADGE_TEXT } from "@/lib/link-warnings";
+import { LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST, LINK_BADGE_TEXT } from "@/lib/link-warnings";
 
 export type EditorArtifact = {
   id: string; name: string; description: string | null; kind: string;
@@ -187,7 +189,7 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
 
             <div style={sWarnBlock}>
               <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-              {LINK_HUMAN_WARNING}
+              <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
               <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 10 }}>
                 <input type="checkbox" checked={linkAckWarning} onChange={(e) => setLinkAckWarning(e.target.checked)} style={{ marginTop: 3 }} />
                 <span>I&apos;ve read this and understand Back Channel hasn&apos;t reviewed the link.</span>
@@ -278,7 +280,7 @@ export function ArtifactInspector({ artifact, onClose }: { artifact: EditorArtif
           <>
             <div style={sWarnBlock}>
               <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-              {LINK_HUMAN_WARNING}
+              <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
             </div>
             <label style={{ ...sLabel, marginTop: 14 }}>Destination</label>
             <p style={{ fontSize: 13, wordBreak: "break-all" }}>

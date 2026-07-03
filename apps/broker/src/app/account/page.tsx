@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { KeyMirrorConversation, BrowserAccessSettings } from "./keymirror-panel";
 import { ArtifactEditor, ArtifactInspector, type EditorArtifact, LINK_HUMAN_WARNING, LINK_BADGE_TEXT } from "./library-editor";
+import { LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST } from "@/lib/link-warnings";
 
 interface Me {
   id: string; handle: string; email: string; display_name: string | null; created_at: string;
@@ -1352,7 +1353,7 @@ export default function AccountPage() {
                       {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action.startsWith("share:") && (
                         <div style={{ ...s.rowMeta, flexBasis: "100%", marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
                           <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-                          {LINK_HUMAN_WARNING}
+                          <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
                           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                             <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
                             <button style={s.chipOn} onClick={() => { const h = linkWarnFor.action.slice("share:".length); setLinkWarnFor(null); shareSkill(sk.id, h, true); }}>I understand, share it</button>
@@ -1379,7 +1380,7 @@ export default function AccountPage() {
                         {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action === "copy" && (
                           <div style={{ ...s.rowMeta, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
                             <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-                            {LINK_HUMAN_WARNING}
+                            <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
                             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                               <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
                               <button style={s.chipOn} onClick={() => { navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setLinkWarnFor(null); setTimeout(() => setPubCopiedId(null), 1500); }}>I understand, copy it</button>
@@ -1400,7 +1401,7 @@ export default function AccountPage() {
                         {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action === "public" && (
                           <div style={{ ...s.rowMeta, flexBasis: "100%", marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
                             <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-                            {LINK_HUMAN_WARNING}
+                            <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
                             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                               <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
                               <button style={s.chipOn} onClick={() => { setLinkWarnFor(null); publicShare(sk.id, pubTtl[sk.id] ?? "7d"); }}>I understand, make it public</button>
@@ -1454,7 +1455,7 @@ export default function AccountPage() {
                   {isLink && linkWarnFor?.id === sk.id && linkWarnFor.action === "send" && (
                     <div style={{ ...s.rowMeta, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
                       <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-                      {LINK_HUMAN_WARNING}
+                      <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
                       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                         <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
                         <button style={s.chipOn} onClick={() => { setLinkWarnFor(null); sendToMyAgent(sk); }}>I understand, send it</button>

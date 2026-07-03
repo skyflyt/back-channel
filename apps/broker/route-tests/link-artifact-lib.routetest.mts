@@ -13,7 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ARTIFACT_TYPES, validateLinkPayload, deriveLinkSource, buildLinkManifest, linkManifestToBody,
-  humanReadableMd, buildEnvelope, landingHtml, LINK_HUMAN_WARNING, LINK_AGENT_WARNING, LINK_BADGE_TEXT,
+  humanReadableMd, buildEnvelope, landingHtml, LINK_HUMAN_WARNING, LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST, LINK_AGENT_WARNING, LINK_BADGE_TEXT,
   LINK_TITLE_MAX, LINK_NOTES_MAX, LINK_URL_MAX,
 } from "@/lib/artifact";
 
@@ -188,7 +188,8 @@ const htmlEscape = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", 
 test("landingHtml for a link renders the FULL destination url and the full canonical human warning", () => {
   const html = landingHtml(baseRow, { handle: authorHandle }, "bcATESTTOKEN0000000000000000000");
   assert.match(html, /https:\/\/example\.com\/some\/path/);
-  assert.ok(html.includes(htmlEscape(LINK_HUMAN_WARNING)), "the ENTIRE canonical warning must render, not a truncated snippet or hover-only tooltip");
+  assert.ok(html.includes(htmlEscape(LINK_HUMAN_WARNING_LEAD)) && html.includes(htmlEscape(LINK_HUMAN_WARNING_REST)), "the ENTIRE canonical warning must render, not a truncated snippet or hover-only tooltip");
+  assert.match(html, new RegExp(`<strong>${htmlEscape(LINK_HUMAN_WARNING_LEAD).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</strong>`), "the warning's lead sentence must render with <strong> emphasis");
   assert.match(html, new RegExp(LINK_BADGE_TEXT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
