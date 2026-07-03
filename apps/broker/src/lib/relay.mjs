@@ -57,6 +57,7 @@ import { parse } from "node:url";
 import { prisma } from "./db.mjs";
 import { rateLimit, clientIp } from "./rate-limit.mjs";
 import { notifyIdleRecipient } from "./notify.mjs";
+import { fireInboxEvent } from "./inbox-bus.mjs";
 
 const UPGRADE_LIMIT_PER_MIN = 30;
 
@@ -155,6 +156,9 @@ function newSlot(session) {
   return {
     startedAt: Date.now(),
     inviteId: inv.id,
+    // Stashed so ingestFrame can resolve dest role -> accountId for
+    // fireInboxEvent without a query (doorbell hook point, design spec S4.2).
+    accountIdByRole: { host: inv.hostAccountId, visitor: inv.visitorAccountId },
     scopesGranted: session.scopesGranted,
     stats: { visitor: newFrameStat(), host: newFrameStat() },
     connected: { visitor: false, host: false },
@@ -363,6 +367,16 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
     const unread = Math.max(1, slot.seq[dest] - slot.lastPolledCursor[dest]);
     slot.lastNudge[dest] = Date.now(); // surfaced as peer_email_nudged_at (C2)
     void notifyIdleRecipient(sessionId, dest, unread);
+  }
+
+  // Ring the inbox doorbell for the recipient's account - instant, unrate-
+  // limited, content-blind (design spec S4.2/S6.1). Same content-frame gate as
+  // the email nudge above but WITHOUT the idle/rate checks: this fires on
+  // every content frame so a present listener (SSE/long-poll) hears it right
+  // away, while notifyIdleRecipient stays the rate-limited AWAY-time email.
+  if (!isControl) {
+    const destAccountId = slot.accountIdByRole?.[dest];
+    if (destAccountId) fireInboxEvent(destAccountId, "frame");
   }
 
   return s;

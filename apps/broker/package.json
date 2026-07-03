@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "NODE_ENV=production node server.mjs",
     "test": "node --test",
+    "test:routes": "node --experimental-strip-types --experimental-test-module-mocks --import ./route-tests/register-hooks.mjs --test route-tests/*.routetest.mts",
     "pack:mcpb": "node scripts/pack-mcpb.mjs",
     "lint": "next lint",
     "db:generate": "prisma generate",

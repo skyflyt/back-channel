@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { fireInboxEvent } from "@/lib/inbox-bus";
 
 export const runtime = "nodejs";
 
@@ -41,6 +42,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     },
   });
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "skill.sent_to_self", detail: { skill: share.skill.name } } }).catch(() => {});
+
+  // Ring the inbox doorbell (design spec S4.2) - a new agent.payload just
+  // landed for this account.
+  fireInboxEvent(account.id, "payload");
 
   return NextResponse.json({ queued: true });
 }

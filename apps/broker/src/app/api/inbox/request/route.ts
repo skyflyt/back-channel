@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { getAccountFromAuth, generateViewToken, viewTokenExpiry, hashToken } from "@/lib/auth";
 import { sendInboxRequestEmail } from "@/lib/email";
 import { rateLimit } from "@/lib/rate-limit";
+import { fireInboxEvent } from "@/lib/inbox-bus";
 
 export const runtime = "nodejs";
 
@@ -63,6 +64,10 @@ export async function POST(req: NextRequest) {
     },
   });
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "inbox.requested", detail: { to: recipient.handle, scopes: body.scopes } } });
+
+  // Ring the inbox doorbell (design spec S4.2) - a new InboxRequest just
+  // landed for the recipient's account.
+  fireInboxEvent(recipient.id, "invite");
 
   // Nudge the recipient by email if verified + opted in — lands them on /account
   // (authenticated via a fresh view-token) to approve/decline. Best-effort.
