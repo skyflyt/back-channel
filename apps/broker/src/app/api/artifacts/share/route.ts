@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromAuth, getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
-import { genPublicToken, ttlToExpiry, contentHash, ARTIFACT_TYPES, TTL_HUMAN } from "@/lib/artifact";
+import { genPublicToken, ttlToExpiry, contentHash, ARTIFACT_TYPES, TTL_HUMAN, validateLinkPayload, buildLinkManifest, linkManifestToBody } from "@/lib/artifact";
 
 export const runtime = "nodejs";
 const APP_URL = process.env.PUBLIC_APP_URL ?? "https://back-channel.app";
@@ -17,6 +17,10 @@ const APP_URL = process.env.PUBLIC_APP_URL ?? "https://back-channel.app";
  * a scheduled_task additionally needs `public_share_allowed`.
  *
  * Body: { type, name, description?, body, manifest?, param_schema?, signature?, ttl? }
+ * For type "link": `manifest` carries { url, title?, notes? } — the broker validates
+ * (parse + http/https scheme + length caps only; it NEVER fetches the url), derives
+ * `source` itself, and mirrors a plain-text rendering into `body` if the caller didn't
+ * send one.
  */
 export async function POST(req: NextRequest) {
   const bearer = await getAccountFromAuth(req.headers.get("authorization"));
@@ -32,11 +36,10 @@ export async function POST(req: NextRequest) {
 
   let b: { type?: string; name?: string; description?: string; body?: string; manifest?: unknown; param_schema?: unknown; signature?: string; ttl?: string };
   try { b = await req.json(); } catch { return NextResponse.json({ error: "invalid_json" }, { status: 400 }); }
-  if (!b.name || !b.body) return NextResponse.json({ error: "name_and_body_required", message: "An artifact needs a name and a body to share." }, { status: 400 });
 
   const type = ARTIFACT_TYPES.includes(b.type as never) ? b.type! : "skill";
   const ttl = ["24h", "7d", "30d", "never"].includes(b.ttl ?? "") ? b.ttl! : "7d";
-  const manifest = b.manifest && typeof b.manifest === "object" ? (b.manifest as Record<string, unknown>) : undefined;
+  let manifest = b.manifest && typeof b.manifest === "object" ? (b.manifest as Record<string, unknown>) : undefined;
 
   if (type === "scheduled_task") {
     const m = (manifest ?? {}) as Record<string, unknown>;
@@ -48,8 +51,19 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  let effectiveBody = b.body;
+  if (type === "link") {
+    const v = validateLinkPayload((manifest ?? {}) as Record<string, unknown>);
+    if (!v.ok) return NextResponse.json({ error: v.error, message: v.message }, { status: 400 });
+    const linkManifest = buildLinkManifest(v);
+    manifest = linkManifest;
+    effectiveBody = effectiveBody && effectiveBody.trim() ? effectiveBody : linkManifestToBody(linkManifest);
+  }
+
+  if (!b.name || !effectiveBody) return NextResponse.json({ error: "name_and_body_required", message: "An artifact needs a name and a body to share." }, { status: 400 });
+
   // 1. Dedup: is an identical artifact already in this library?
-  const hash = contentHash(type, b.name, b.body);
+  const hash = contentHash(type, b.name, effectiveBody);
   const mine = await prisma.userSkill.findMany({ where: { accountId: account.id }, select: { id: true, name: true, type: true, body: true, signature: true, publicToken: true, publicExpiresAt: true, publicRevokedAt: true } });
   const existing = mine.find((s) => contentHash(s.type || "skill", s.name, s.body) === hash);
 
@@ -78,7 +92,7 @@ export async function POST(req: NextRequest) {
     token = genPublicToken(); expiresAt = ttlToExpiry(ttl);
     const created = await prisma.userSkill.create({ data: {
       accountId: account.id, name: b.name, description: b.description ?? null,
-      type, kind: type === "skill" ? "template" : "template", body: b.body, signature: b.signature,
+      type, kind: type === "skill" ? "template" : "template", body: effectiveBody, signature: b.signature,
       manifest: manifest === undefined ? undefined : (manifest as object), paramSchema: b.param_schema === undefined ? undefined : (b.param_schema as object),
       publicToken: token, publicExpiresAt: expiresAt,
     } });

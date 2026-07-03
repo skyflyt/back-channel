@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromAuth, getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
-import { ARTIFACT_TYPES } from "@/lib/artifact";
+import { ARTIFACT_TYPES, validateLinkPayload, buildLinkManifest, linkManifestToBody } from "@/lib/artifact";
 
 export const runtime = "nodejs";
 
@@ -56,14 +56,38 @@ export async function POST(req: NextRequest) {
 
   let body: { name?: string; description?: string; kind?: string; type?: string; body?: string; param_schema?: unknown; signature?: string; manifest?: unknown; revision?: string };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid_json" }, { status: 400 }); }
-  if (!body.name || !body.body) return NextResponse.json({ error: "name_and_body_required" }, { status: 400 });
 
   // Polymorphic artifact type (spec §1.3). "skill" keeps the legacy rpc/template
-  // semantics; "prompt"/"scheduled_task" are content artifacts (never RPC), so we
+  // semantics; "prompt"/"scheduled_task"/"link" are content artifacts (never RPC), so we
   // store them as kind:"template" and treat manifest as their typed payload.
   const type = ARTIFACT_TYPES.includes(body.type as never) ? body.type! : "skill";
   const kind = type === "skill" ? (body.kind === "template" ? "template" : "rpc") : "template";
   if (type === "skill" && kind === "template" && !body.signature) return NextResponse.json({ error: "template_requires_signature" }, { status: 400 });
+
+  // Link lessons: url/title/notes come in via `manifest` (client sends { url, title,
+  // notes }); the broker validates, derives `source` itself, and mirrors a plain-text
+  // rendering into `body` (every artifact requires a non-empty body). The broker never
+  // fetches the url — validation is parse + scheme + length checks only.
+  if (type === "link") {
+    const rawManifest = (body.manifest && typeof body.manifest === "object" ? body.manifest : {}) as Record<string, unknown>;
+    const v = validateLinkPayload(rawManifest);
+    if (!v.ok) return NextResponse.json({ error: v.error, message: v.message }, { status: 400 });
+    if (!body.name) return NextResponse.json({ error: "name_and_body_required" }, { status: 400 });
+    const manifest = buildLinkManifest(v);
+    const linkBody = linkManifestToBody(manifest);
+    const skill = await prisma.userSkill.create({
+      data: {
+        accountId: account.id, name: body.name, description: body.description ?? null,
+        type, kind, body: linkBody, signature: body.signature ?? null,
+        manifest, revision: body.revision ?? null,
+        paramSchema: body.param_schema === undefined ? undefined : (body.param_schema as object),
+      },
+    });
+    await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "skill.published", detail: { skill: skill.id, name: skill.name, kind, type } } }).catch(() => {});
+    return NextResponse.json({ ok: true, id: skill.id, name: skill.name, kind: skill.kind, type });
+  }
+
+  if (!body.name || !body.body) return NextResponse.json({ error: "name_and_body_required" }, { status: 400 });
 
   const manifest = body.manifest && typeof body.manifest === "object" ? (body.manifest as object) : undefined;
   // Type-specific manifest sanity (broker inspects, never executes).

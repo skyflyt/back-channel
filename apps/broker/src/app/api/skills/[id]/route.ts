@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromAuth, getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { validateLinkPayload, buildLinkManifest, linkManifestToBody } from "@/lib/artifact";
 
 export const runtime = "nodejs";
 
@@ -63,6 +64,17 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (typeof m.cron !== "string" || typeof m.prompt !== "string") {
       return NextResponse.json({ error: "scheduled_task_manifest_invalid", message: "scheduled_task manifest needs string `cron` and `prompt`." }, { status: 400 });
     }
+  }
+
+  // link manifest sanity (mirror the create gate). The broker re-validates and
+  // re-derives `source` itself, and re-mirrors `body` from the new payload —
+  // never trust a client-supplied `source` or a stale `body`.
+  if ((skill.type || "skill") === "link" && data.manifest) {
+    const v = validateLinkPayload(data.manifest as Record<string, unknown>);
+    if (!v.ok) return NextResponse.json({ error: v.error, message: v.message }, { status: 400 });
+    const manifest = buildLinkManifest(v);
+    data.manifest = manifest;
+    data.body = linkManifestToBody(manifest);
   }
 
   const contentChanged = "body" in data || "manifest" in data || "name" in data || "paramSchema" in data;
