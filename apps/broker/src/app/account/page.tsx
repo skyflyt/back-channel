@@ -73,14 +73,17 @@ const ANCHOR_NAV: Record<string, NavKey> = { "connect-agent": "account", "friend
 // these class names + one injected stylesheet (sidebar -> horizontal bar on mobile).
 const RESPONSIVE_CSS = `
 .bc-shell { display: flex; gap: 22px; align-items: flex-start; }
-.bc-sidebar { position: sticky; top: 86px; flex: 0 0 210px; display: flex; flex-direction: column; gap: 2px; }
+.bc-navwrap { position: relative; flex: 0 0 210px; }
+.bc-sidebar { position: sticky; top: 86px; display: flex; flex-direction: column; gap: 2px; }
 .bc-sidebar .bc-navitem { width: 100%; }
 .bc-main { flex: 1 1 auto; min-width: 0; }
 @media (max-width: 860px) {
   .bc-shell { flex-direction: column; gap: 14px; }
+  .bc-navwrap { flex: none; width: 100%; }
   .bc-sidebar { position: static; flex: none; width: 100%; flex-direction: row; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
   .bc-sidebar .bc-navitem { flex: 0 0 auto; width: auto; }
   .bc-topbar { padding-left: 16px !important; padding-right: 16px !important; }
+  .bc-moremenu { position: static !important; top: auto !important; left: auto !important; margin-top: 6px; flex-direction: row !important; flex-wrap: wrap !important; gap: 6px !important; min-width: 0 !important; width: 100% !important; box-shadow: none !important; border-radius: 10px; }
 }
 @keyframes bcShimmer { 0% { background-position: -360px 0; } 100% { background-position: 360px 0; } }
 .bc-skel { background: linear-gradient(90deg,#eef2f7 25%,#e2e8f0 37%,#eef2f7 63%); background-size: 720px 100%; animation: bcShimmer 1.3s ease-in-out infinite; border-radius: 7px; }
@@ -684,33 +687,49 @@ export default function AccountPage() {
       <div style={s.wrap}>
         <div className="bc-shell">
           {!isFirstRun && (
+          // .bc-navwrap is the positioned containing block for .bc-moremenu on desktop
+          // (>860px): .bc-shell is an unpositioned flex container, so without this wrapper
+          // s.moreMenu's position:absolute has no positioned ancestor and the panel renders
+          // as a block stacked below the sidebar instead of anchoring under the More button.
+          // The wrapper only sets position:relative + mirrors .bc-sidebar's old flex-basis --
+          // it does NOT get overflow-x, so it can never clip .bc-moremenu the way the old
+          // relative wrapper (removed in this PR) used to on mobile.
+          <div className="bc-navwrap">
           <nav className="bc-sidebar" style={s.sidebar}>
             {NAV.map((n) => (
               <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
                 <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
               </button>
             ))}
-            <div style={{ position: "relative" }}>
-              <button
-                className="bc-navitem"
-                style={moreActive ? s.navItemActive : s.navItem}
-                onClick={() => setMoreOpen((v) => !v)}
-                aria-expanded={moreOpen}
-                aria-haspopup="true"
-              >
-                <span style={s.navIcon} aria-hidden>⋯</span>More {moreOpen ? "▴" : "▾"}
-              </button>
-              {moreOpen && (
-                <div style={s.moreMenu}>
-                  {NAV_MORE.map((n) => (
-                    <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
-                      <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <button
+              className="bc-navitem"
+              style={moreActive ? s.navItemActive : s.navItem}
+              onClick={() => setMoreOpen((v) => !v)}
+              aria-expanded={moreOpen}
+              aria-haspopup="true"
+            >
+              <span style={s.navIcon} aria-hidden>⋯</span>More {moreOpen ? "▴" : "▾"}
+            </button>
           </nav>
+          {moreOpen && (
+            // Sibling of .bc-sidebar (not nested inside it) so it can never be a child of the
+            // mobile horizontal-scroll container. On <=860px .bc-sidebar sets overflow-x: auto,
+            // and per the CSS overflow spec setting overflow-x to anything but visible forces
+            // overflow-y to an implied "auto" too -- an absolutely-positioned dropdown living
+            // inside that box would get clipped by the sidebar's own scrollport (the bug this
+            // fixes). Desktop keeps the familiar anchored dropdown via bc-moremenu's default
+            // (absolute) position from s.moreMenu, now anchored to .bc-navwrap above; the
+            // <=860px media query below switches this same element to a static, wrapping
+            // inline row -- CSS-only, no JS viewport checks, no portal, no z-index tuning.
+            <div className="bc-moremenu" style={s.moreMenu}>
+              {NAV_MORE.map((n) => (
+                <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
+                  <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
+                </button>
+              ))}
+            </div>
+          )}
+          </div>
           )}
           <main className="bc-main">
             <h1 style={s.pageTitle}>{navTitle}</h1>
@@ -1101,7 +1120,7 @@ export default function AccountPage() {
             const turn = threadTurn(x);
             return (
             <div key={x.session_id}>
-              <div style={{ ...s.row, alignItems: "flex-start" }}>
+              <div style={{ ...s.row, alignItems: "flex-start", flexWrap: "wrap" }}>
                 <span style={{ ...s.dot, background: turn.color, marginTop: 5 }} />
                 <div style={s.rowMain}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -1546,7 +1565,7 @@ const s = {
   promptPre: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, lineHeight: 1.55, color: "#0f172a", background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "10px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 } as const,
   onboard: { background: "linear-gradient(135deg,#ecfeff,#f0fdfa)", border: "1px solid #99f6e4", borderRadius: 14, padding: 20, marginBottom: 14 } as const,
   onboardH: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "0 0 14px" } as const,
-  checkRow: { display: "flex", alignItems: "center", gap: 10, padding: "6px 0" } as const,
+  checkRow: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "6px 0" } as const,
   checkBox: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "2px solid #cbd5e1", background: "#fff", color: "#fff", fontSize: 13, fontWeight: 800, flexShrink: 0 } as const,
   checkDone: { background: "#0f766e", borderColor: "#0f766e" } as const,
   checkLbl: { fontSize: 14, color: "#0f172a", fontWeight: 600 } as const,
