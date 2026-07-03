@@ -58,3 +58,30 @@ test("validateToolArgs: multi-type frame (object or string), array-of-strings sc
   assert.match(validateToolArgs(invite, { scopes: "config.read" }), /scopes must be array/);
   assert.match(validateToolArgs(invite, { scopes: ["config.read", 5] }), /array of strings/);
 });
+
+test("bc_check_inbox: wait_seconds schema — optional integer 0-120, description is plain-language (no SSE/long-poll jargon)", () => {
+  const tool = getTool("bc_check_inbox");
+  assert.equal(tool.inputSchema.required, undefined, "wait_seconds is optional");
+  const prop = tool.inputSchema.properties.wait_seconds;
+  assert.equal(prop.type, "integer");
+  assert.equal(prop.minimum, 0);
+  assert.equal(prop.maximum, 120);
+  assert.doesNotMatch(tool.description, /\bSSE\b|long-poll|long poll/i);
+  assert.match(tool.description, /wait/i);
+});
+
+test("validateToolArgs: wait_seconds in range is valid; absent is valid (default 0)", () => {
+  const tool = getTool("bc_check_inbox");
+  assert.equal(validateToolArgs(tool, {}), null);
+  assert.equal(validateToolArgs(tool, { wait_seconds: 0 }), null);
+  assert.equal(validateToolArgs(tool, { wait_seconds: 120 }), null);
+  assert.equal(validateToolArgs(tool, { wait_seconds: 60 }), null);
+});
+
+test("validateToolArgs: wait_seconds out of range or wrong type — clear error, not a silent clamp", () => {
+  const tool = getTool("bc_check_inbox");
+  assert.match(validateToolArgs(tool, { wait_seconds: 121 }), /must be <= 120/);
+  assert.match(validateToolArgs(tool, { wait_seconds: -1 }), /must be >= 0/);
+  assert.match(validateToolArgs(tool, { wait_seconds: 2.5 }), /must be integer/);
+  assert.match(validateToolArgs(tool, { wait_seconds: "5" }), /must be integer/);
+});

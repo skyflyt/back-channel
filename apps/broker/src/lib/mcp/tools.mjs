@@ -37,8 +37,22 @@ export const TOOLS = [
       "returns agent_payloads: self-addressed items your account queued for you (e.g. a one-time welcome message the " +
       "first time you connect, or a skill a friend sent via 'Send to my agent') — these ARE readable plaintext, no " +
       "further call needed, and are marked delivered once returned. This is the right first call for 'any messages on " +
-      "my back channel?' or 'check my inbox'.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      "my back channel?' or 'check my inbox'. Optionally wait up to two minutes for new mail to arrive before " +
+      "answering instead of checking instantly: pass wait_seconds (0–120, default 0). Returns immediately if " +
+      "something is already waiting, the instant new mail lands during the wait, or at the timeout — whichever " +
+      "comes first; a timeout still returns this same shape (nothing new), just with a note on how long it waited.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        wait_seconds: {
+          type: "integer",
+          minimum: 0,
+          maximum: 120,
+          description: "Optionally hold this call open waiting for new mail, up to 120 seconds (default 0 = check instantly, no waiting)",
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "bc_read_messages",
@@ -189,6 +203,8 @@ export function validateToolArgs(tool, args) {
     );
     if (!matches) return `argument ${key} must be ${types.join(" or ")}`;
     if (prop.enum && !prop.enum.includes(value)) return `argument ${key} must be one of: ${prop.enum.join(", ")}`;
+    if (typeof prop.minimum === "number" && value < prop.minimum) return `argument ${key} must be >= ${prop.minimum}`;
+    if (typeof prop.maximum === "number" && value > prop.maximum) return `argument ${key} must be <= ${prop.maximum}`;
     if (prop.type === "array" && prop.items?.type === "string" && !value.every((v) => typeof v === "string")) {
       return `argument ${key} must be an array of strings`;
     }

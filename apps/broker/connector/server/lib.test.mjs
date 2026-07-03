@@ -224,3 +224,132 @@ test("bridge: raw bc_ token passes through unchanged (no exchange call, existing
   assert.equal(exchangeCalled, false);
   assert.deepEqual(h.parsed(), [{ jsonrpc: "2.0", id: 1, result: { ok: true } }]);
 });
+
+// ── bc_check_inbox wait_seconds (doorbell wait) ─────────────────────────────
+
+function checkInboxCall(id, args) {
+  return { jsonrpc: "2.0", id, method: "tools/call", params: { name: "bc_check_inbox", ...(args ? { arguments: args } : {}) } };
+}
+
+test("bc_check_inbox: wait_seconds absent — no doorbell call, forwarded exactly as before (zero behavior change)", async () => {
+  const calls = [];
+  const h = harness({
+    fetchImpl: async (u, init) => {
+      calls.push(String(u));
+      return new Response('{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"sessions\\":[]}"}]}}', { status: 200 });
+    },
+  });
+  await h.send(checkInboxCall(1));
+  assert.equal(calls.length, 1, "only the normal /api/mcp forward, no doorbell GET");
+  assert.ok(calls[0].endsWith("/api/mcp"));
+  const [r] = h.parsed();
+  assert.deepEqual(JSON.parse(r.result.content[0].text), { sessions: [] }, "response passed through untouched");
+});
+
+test("bc_check_inbox: wait_seconds=0 — no doorbell call, same as absent", async () => {
+  const calls = [];
+  const h = harness({
+    fetchImpl: async (u) => { calls.push(String(u)); return new Response('{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{}"}]}}', { status: 200 }); },
+  });
+  await h.send(checkInboxCall(1, { wait_seconds: 0 }));
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].endsWith("/api/mcp"));
+});
+
+test("bc_check_inbox: wait_seconds out of range (>120) — local validation error, nothing forwarded", async () => {
+  let called = false;
+  const h = harness({ fetchImpl: async () => { called = true; return new Response("{}"); } });
+  await h.send(checkInboxCall(1, { wait_seconds: 121 }));
+  assert.equal(called, false, "must not forward or hit the doorbell on an invalid value");
+  const [r] = h.parsed();
+  assert.equal(r.error.code, -32602);
+  assert.match(r.error.message, /between 0 and 120/);
+});
+
+test("bc_check_inbox: negative wait_seconds — local validation error", async () => {
+  let called = false;
+  const h = harness({ fetchImpl: async () => { called = true; return new Response("{}"); } });
+  await h.send(checkInboxCall(1, { wait_seconds: -1 }));
+  assert.equal(called, false);
+  assert.match(h.parsed()[0].error.message, /between 0 and 120/);
+});
+
+test("bc_check_inbox: non-integer wait_seconds — local validation error", async () => {
+  let called = false;
+  const h = harness({ fetchImpl: async () => { called = true; return new Response("{}"); } });
+  await h.send(checkInboxCall(1, { wait_seconds: 2.5 }));
+  assert.equal(called, false);
+  assert.match(h.parsed()[0].error.message, /between 0 and 120/);
+});
+
+test("bc_check_inbox: wait_seconds>0, doorbell reports pending — hits doorbell then forwards a wait_seconds-stripped tools/call", async () => {
+  const calls = [];
+  const h = harness({
+    fetchImpl: async (u, init) => {
+      const url = String(u);
+      calls.push(url);
+      if (url.includes("/api/inbox/check")) {
+        assert.match(url, /wait=5\b/);
+        return new Response(JSON.stringify({ pending_count: 2, since: "t0", timestamp: "t1", kinds: ["frame"], waited_seconds: 1 }), { status: 200 });
+      }
+      const sentMsg = JSON.parse(init.body);
+      assert.equal(sentMsg.params.arguments.wait_seconds, undefined, "wait_seconds must be stripped before forwarding");
+      return new Response('{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"sessions\\":[{\\"id\\":\\"s1\\"}]}"}]}}', { status: 200 });
+    },
+  });
+  await h.send(checkInboxCall(1, { wait_seconds: 5 }));
+  assert.equal(calls.length, 2, "doorbell GET, then the normal /api/mcp forward");
+  assert.ok(calls[0].includes("/api/inbox/check"));
+  assert.ok(calls[1].endsWith("/api/mcp"));
+  const [r] = h.parsed();
+  const body = JSON.parse(r.result.content[0].text);
+  assert.deepEqual(body.sessions, [{ id: "s1" }]);
+});
+
+test("bc_check_inbox: wait_seconds>0, doorbell times out empty — still forwards the normal check, merges waited_seconds into the result", async () => {
+  const h = harness({
+    fetchImpl: async (u) => {
+      const url = String(u);
+      if (url.includes("/api/inbox/check")) {
+        return new Response(JSON.stringify({ pending_count: 0, since: "t0", timestamp: "t1", waited_seconds: 5 }), { status: 200 });
+      }
+      return new Response('{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"sessions\\":[]}"}]}}', { status: 200 });
+    },
+  });
+  await h.send(checkInboxCall(1, { wait_seconds: 5 }));
+  const [r] = h.parsed();
+  const body = JSON.parse(r.result.content[0].text);
+  assert.deepEqual(body.sessions, []);
+  assert.equal(body.waited_seconds, 5, "waited_seconds merged in so the agent knows it actually waited");
+});
+
+test("bc_check_inbox: doorbell call itself fails (network) — falls back to a normal un-waited forward, no waited_seconds merged", async () => {
+  const h = harness({
+    fetchImpl: async (u) => {
+      const url = String(u);
+      if (url.includes("/api/inbox/check")) throw new TypeError("fetch failed");
+      return new Response('{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\\"sessions\\":[]}"}]}}', { status: 200 });
+    },
+  });
+  await h.send(checkInboxCall(1, { wait_seconds: 5 }));
+  const [r] = h.parsed();
+  const body = JSON.parse(r.result.content[0].text);
+  assert.equal(body.waited_seconds, undefined, "no fabricated waited_seconds when the doorbell call itself errored");
+});
+
+test("bc_check_inbox: doorbell GET carries the same bearer token as the normal forward", async () => {
+  let doorbellAuth;
+  const h = harness({
+    token: "bc_mytoken",
+    fetchImpl: async (u, init) => {
+      const url = String(u);
+      if (url.includes("/api/inbox/check")) {
+        doorbellAuth = init.headers.authorization;
+        return new Response(JSON.stringify({ pending_count: 0, waited_seconds: 1 }), { status: 200 });
+      }
+      return new Response('{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{}"}]}}', { status: 200 });
+    },
+  });
+  await h.send(checkInboxCall(1, { wait_seconds: 1 }));
+  assert.equal(doorbellAuth, "Bearer bc_mytoken");
+});
