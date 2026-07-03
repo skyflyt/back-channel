@@ -208,7 +208,8 @@ export default function HomePage() {
             <h3 style={styles.h3}>🎓 Lessons</h3>
             <p>Built something handy? Publish it as a <strong>Lesson</strong> — a lesson your agent
             learned that a friend&apos;s agent can learn too. Send a friend&apos;s agent to your public
-            page to pick it up, or share privately with your circle. The first one, <strong>second-brain-scaffold</strong>, teaches agents how to set up a memory workspace.</p>
+            page to pick it up, or share privately with your circle. The first one, <strong>second-brain-scaffold</strong>, teaches agents how to set up a memory workspace.
+            Browse the <a href="/lessons" style={styles.inlineLink}>community lessons</a> list for more, curated by pull request.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>🙏 Favors</h3>

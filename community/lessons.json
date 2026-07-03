@@ -1,0 +1,34 @@
+[
+  {
+    "title": "Anthropic Agent Skills",
+    "url": "https://github.com/anthropics/skills",
+    "source": "github",
+    "description": "Anthropic's public repository of example Agent Skills (document creation, MCP server generation, brand/design workflows, and more) plus the Agent Skills spec and a starter template.",
+    "submitted_by": "skyflyt",
+    "added": "2026-07-03"
+  },
+  {
+    "title": "Claude Cookbooks",
+    "url": "https://github.com/anthropics/claude-cookbooks",
+    "source": "github",
+    "description": "Anthropic's official collection of copy-paste recipes for building with Claude, including agent and sub-agent patterns, tool use, and prompt caching.",
+    "submitted_by": "skyflyt",
+    "added": "2026-07-03"
+  },
+  {
+    "title": "Model Context Protocol Servers",
+    "url": "https://github.com/modelcontextprotocol/servers",
+    "source": "github",
+    "description": "The official MCP steering group's reference server implementations (filesystem, git, memory, fetch, and more) demonstrating how to build MCP servers that give agents tool access.",
+    "submitted_by": "skyflyt",
+    "added": "2026-07-03"
+  },
+  {
+    "title": "Awesome MCP Servers",
+    "url": "https://github.com/punkpeye/awesome-mcp-servers",
+    "source": "github",
+    "description": "A large, actively-maintained community-curated list of MCP servers across many categories and languages. Broad and unvetted by design — read before you point an agent at anything in it.",
+    "submitted_by": "skyflyt",
+    "added": "2026-07-03"
+  }
+]

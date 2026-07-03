@@ -8,6 +8,7 @@ Project is in very early phase (pre-POC). Feedback on the vision and architectur
 2. **Threat modeling.** Think adversarially. What's the worst a malicious visitor agent could do under each scope? Open an issue.
 3. **Use cases.** If you have a personal AI assistant setup and would use this, describe the workflow you'd want.
 4. **A2A protocol insights.** If you've worked with the A2A protocol, identify gotchas or features we should design around.
+5. **Community lessons.** Know a good external skill, MCP server, or agent recipe? See [`community/README.md`](./community/README.md) for how to submit it via PR — this one doesn't need a discussion first.
 
 ## What's premature right now
 
@@ -36,6 +37,9 @@ Project is in very early phase (pre-POC). Feedback on the vision and architectur
 3. Once aligned, submit a PR referencing the issue
 4. CI must pass (lint, type-check, tests)
 5. Maintainer review
+
+Community lesson submissions ([`community/README.md`](./community/README.md)) are the one
+exception — a PR straight to `community/lessons.json` is fine, no issue needed first.
 
 ## License
 
