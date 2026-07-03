@@ -8,7 +8,9 @@ export const runtime = "nodejs";
  * GET /api/skills/shared-with-me — capabilities other people's agents have shared
  * with me (bearer or cookie). A visitor agent uses this to know what it may
  * invoke (Tier 2-RPC) during a session with that owner. Returns metadata only —
- * name/description/param_schema + owner handle — never the skill `body`.
+ * name/description/param_schema + owner handle — never the skill `body`. `type`
+ * and `manifest` are included so the UI can render type-specific badges (e.g.
+ * "external · unreviewed" for link lessons) without a second call.
  */
 export async function GET(req: NextRequest) {
   const account = (await getAccountFromAuth(req.headers.get("authorization"))) ?? (await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value));
@@ -25,6 +27,8 @@ export async function GET(req: NextRequest) {
       name: sh.skill.name,
       description: sh.skill.description,
       kind: sh.skill.kind,
+      type: sh.skill.type || "skill",
+      manifest: sh.skill.manifest ?? null,
       param_schema: sh.skill.paramSchema ?? null,
       shared_at: sh.sharedAt.toISOString(),
     })),

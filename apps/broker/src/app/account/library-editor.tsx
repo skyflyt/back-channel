@@ -9,16 +9,23 @@ import { useState } from "react";
 
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
 
+// Canonical trust-stance copy (Link Lessons epic) — verbatim; mirrors src/lib/artifact.ts's
+// LINK_HUMAN_WARNING. Kept as a plain literal here (client bundle) rather than importing
+// the server lib.
+export const LINK_HUMAN_WARNING = "We don't scan or review external lessons. A link lesson is whatever its author published — it can change after you save it. Anything you install runs with your agent's access. Read it before you install it, and only take lessons from sources you trust.";
+export const LINK_BADGE_TEXT = "external · unreviewed";
+
 export type EditorArtifact = {
   id: string; name: string; description: string | null; kind: string;
   type?: string; manifest?: Record<string, unknown> | null; body?: string;
 };
 
-type ArtType = "prompt" | "scheduled_task" | "skill";
+type ArtType = "prompt" | "scheduled_task" | "skill" | "link";
 const TYPES: { key: ArtType; icon: string; label: string; blurb: string }[] = [
   { key: "prompt", icon: "💬", label: "Prompt", blurb: "A reusable prompt your agent saves. Nothing runs automatically — you invoke it when you want." },
   { key: "scheduled_task", icon: "⏰", label: "Scheduled Task", blurb: "A recurring job that runs on your own agent on a schedule until you remove it." },
   { key: "skill", icon: "📜", label: "Skill", blurb: "A SKILL.md your agent can run. Paste the skill content; full bundle upload comes later." },
+  { key: "link", icon: "↗", label: "Link", blurb: "A link to something external — a page, gist, or repo. Back Channel never scans or reviews it; it's whatever the source has right now." },
 ];
 
 // Best-effort human-readable cron (common shapes only; falls back gracefully).
@@ -37,12 +44,38 @@ function describeCron(cron: string): { ok: boolean; text: string } {
   return { ok: true, text: time ? `Runs ${when} at ${time}.` : `Runs ${when} (schedule: ${cron}).` };
 }
 
+// Client-side, best-effort title derivation from a url when the author didn't give one
+// (UX nicety only — never a security signal). hostname + last path segment.
+function deriveTitleFromUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const seg = u.pathname.split("/").filter(Boolean).pop();
+    return seg ? `${u.hostname.replace(/^www\./, "")} — ${decodeURIComponent(seg)}` : u.hostname.replace(/^www\./, "");
+  } catch {
+    return raw;
+  }
+}
+
+function cleanDomain(raw: string): string {
+  try { return new URL(raw).hostname.replace(/^www\./, ""); } catch { return raw; }
+}
+
+const LINK_SCHEME_ERR = "Only http:// and https:// links are allowed.";
+function validateUrlClientSide(raw: string): string | null {
+  if (!raw.trim()) return "Paste a url.";
+  let u: URL;
+  try { u = new URL(raw.trim()); } catch { return "That doesn't look like a valid url."; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return LINK_SCHEME_ERR;
+  return null;
+}
+
 const sLabel: React.CSSProperties = { display: "block", fontSize: 13, fontWeight: 600, margin: "12px 0 4px" };
 const sInput: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border, #ccc)", font: "inherit", background: "var(--bg, #fff)", color: "inherit" };
 const sMono: React.CSSProperties = { ...sInput, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 13 };
 const sHint: React.CSSProperties = { fontSize: 12, color: "#888", marginTop: 4 };
 const sBtn: React.CSSProperties = { font: "inherit", fontWeight: 600, padding: "9px 16px", borderRadius: 8, border: 0, background: "#4351e8", color: "#fff", cursor: "pointer" };
 const sBtnGhost: React.CSSProperties = { ...sBtn, background: "transparent", color: "inherit", border: "1px solid var(--border,#ccc)" };
+const sWarnBlock: React.CSSProperties = { marginTop: 14, padding: "12px 14px", borderRadius: 10, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00", fontSize: 13, lineHeight: 1.5 };
 
 export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "create" | "edit"; initial?: EditorArtifact; onClose: () => void; onSaved: (msg: string) => void }) {
   const initType = (initial?.type as ArtType) || "prompt";
@@ -57,6 +90,12 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
   const runTarget = typeof m.run_target === "string" ? m.run_target : "self"; // runs on the user's own agent
   const [shareAllowed, setShareAllowed] = useState(m.public_share_allowed === true);
   const [bundleUrl, setBundleUrl] = useState(typeof m.bundle_url === "string" ? m.bundle_url : "");
+  // Link lesson fields (WS-A).
+  const [linkUrl, setLinkUrl] = useState(typeof m.url === "string" ? m.url : "");
+  const [linkTitle, setLinkTitle] = useState(typeof m.title === "string" ? m.title : "");
+  const [linkTitleTouched, setLinkTitleTouched] = useState(!!(typeof m.title === "string" && m.title));
+  const [linkNotes, setLinkNotes] = useState(typeof m.notes === "string" ? m.notes : "");
+  const [linkAckWarning, setLinkAckWarning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -64,20 +103,36 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
 
   const save = async () => {
     setErr("");
-    if (!name.trim()) return setErr("Give it a name.");
-    if (!body.trim()) return setErr(type === "scheduled_task" ? "Describe what the task should do." : type === "skill" ? "Paste the SKILL.md content." : "Write the prompt.");
-    if (type === "scheduled_task" && !cronDesc.ok) return setErr(cronDesc.text);
+    if (type === "link") {
+      const urlErr = validateUrlClientSide(linkUrl);
+      if (urlErr) return setErr(urlErr);
+      if (!linkAckWarning) return setErr("Please confirm you've read the warning above before saving a link lesson.");
+    } else {
+      if (!name.trim()) return setErr("Give it a name.");
+      if (!body.trim()) return setErr(type === "scheduled_task" ? "Describe what the task should do." : type === "skill" ? "Paste the SKILL.md content." : "Write the prompt.");
+      if (type === "scheduled_task" && !cronDesc.ok) return setErr(cronDesc.text);
+    }
 
     let manifest: Record<string, unknown>;
+    let effectiveName = name;
+    let effectiveBody = body;
     if (type === "prompt") manifest = { type: "prompt", title: name.trim(), tags: tags.split(",").map((t) => t.trim()).filter(Boolean), suggested_invocation: invocation.trim() || undefined };
     else if (type === "scheduled_task") manifest = { type: "scheduled_task", cron: cron.trim(), prompt: body.trim(), run_target: runTarget, public_share_allowed: shareAllowed };
+    else if (type === "link") {
+      const url = linkUrl.trim();
+      const title = linkTitle.trim() || deriveTitleFromUrl(url);
+      manifest = { type: "link", url, title, notes: linkNotes.trim() || undefined };
+      // name/body are broker-required non-empty fields; mirror the link's title/url.
+      effectiveName = (name.trim() || title).slice(0, 200);
+      effectiveBody = [url, title, linkNotes.trim()].filter(Boolean).join("\n");
+    }
     else manifest = { type: "skill", kind: "template", bundle_url: bundleUrl.trim() || undefined };
 
     setBusy(true);
     try {
       const payload = mode === "create"
-        ? { type, name: name.trim(), description: description.trim() || undefined, body: body.trim(), manifest, kind: type === "skill" ? "template" : undefined }
-        : { name: name.trim(), description: description.trim(), body: body.trim(), manifest };
+        ? { type, name: effectiveName.trim(), description: description.trim() || undefined, body: effectiveBody.trim(), manifest, kind: type === "skill" ? "template" : undefined }
+        : { name: effectiveName.trim(), description: description.trim(), body: effectiveBody.trim(), manifest };
       const r = await fetch(mode === "create" ? "/api/skills" : `/api/skills/${initial!.id}`, {
         method: mode === "create" ? "POST" : "PATCH",
         credentials: "include",
@@ -87,7 +142,7 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { setBusy(false); return setErr(j.message || `Couldn't save (${j.error || r.status}).`); }
       setBusy(false);
-      onSaved(mode === "create" ? `Added “${name.trim()}” to your library.` : `Saved “${name.trim()}”.${j.public_revoked ? " Its public link was cleared — re-share once your agent re-signs it." : ""}`);
+      onSaved(mode === "create" ? `Added “${effectiveName.trim()}” to your library.` : `Saved “${effectiveName.trim()}”.${j.public_revoked ? " Its public link was cleared — re-share once your agent re-signs it." : ""}`);
     } catch {
       setBusy(false); setErr("Network error — try again.");
     }
@@ -115,6 +170,37 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
                 <div style={{ fontSize: 13, color: "#888", marginTop: 2 }}>{t.blurb}</div>
               </button>
             ))}
+          </div>
+        ) : type === "link" ? (
+          <div>
+            <div style={{ fontSize: 13, color: "#888", margin: "10px 0 2px" }}>↗ Link{mode === "create" && <button onClick={() => setType(null)} style={{ ...sBtnGhost, padding: "2px 8px", marginLeft: 8, fontSize: 12 }}>change</button>}</div>
+
+            <label style={sLabel}>Save a link lesson</label>
+            <input style={sInput} value={linkUrl} onChange={(e) => { setLinkUrl(e.target.value); if (!linkTitleTouched) setLinkTitle(""); }} placeholder="https://example.com/some-useful-thing" />
+            <div style={sHint}>{cleanDomain(linkUrl) ? `Domain: ${cleanDomain(linkUrl)}` : "Paste any http:// or https:// url."}</div>
+
+            <label style={sLabel}>Title <span style={{ fontWeight: 400, color: "#aaa" }}>(optional — derived from the url if left blank)</span></label>
+            <input style={sInput} value={linkTitle} onChange={(e) => { setLinkTitle(e.target.value); setLinkTitleTouched(true); }} placeholder={linkUrl ? deriveTitleFromUrl(linkUrl) : "A short title"} />
+
+            <label style={sLabel}>Notes <span style={{ fontWeight: 400, color: "#aaa" }}>(optional)</span></label>
+            <textarea style={{ ...sInput, minHeight: 90, resize: "vertical" }} value={linkNotes} onChange={(e) => setLinkNotes(e.target.value)} placeholder="Why this is worth saving, what it's for…" maxLength={2000} />
+
+            <div style={sWarnBlock}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
+              {LINK_HUMAN_WARNING}
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 10 }}>
+                <input type="checkbox" checked={linkAckWarning} onChange={(e) => setLinkAckWarning(e.target.checked)} style={{ marginTop: 3 }} />
+                <span>I&apos;ve read this and understand Back Channel hasn&apos;t reviewed the link.</span>
+              </label>
+            </div>
+
+            {err && <div style={{ marginTop: 14, padding: "9px 12px", borderRadius: 8, background: "rgba(192,57,43,0.1)", color: "#c0392b", fontSize: 13 }}>{err}</div>}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "flex-end" }}>
+              <button style={sBtnGhost} onClick={onClose} disabled={busy}>Cancel</button>
+              <button style={{ ...sBtn, opacity: busy ? 0.6 : 1 }} onClick={save} disabled={busy}>{busy ? "Saving…" : mode === "edit" ? "Save changes" : "Add to library"}</button>
+            </div>
+            <p style={{ ...sHint, marginTop: 12 }}>Back Channel never fetches or previews this url — it stores exactly what you pasted.</p>
           </div>
         ) : (
           <div>
@@ -184,12 +270,27 @@ export function ArtifactInspector({ artifact, onClose }: { artifact: EditorArtif
           <h2 style={{ margin: 0, fontSize: 20 }}>{artifact.name}</h2>
           <button onClick={onClose} aria-label="Close" style={{ ...sBtnGhost, padding: "4px 10px" }}>✕</button>
         </div>
-        <div style={{ fontSize: 13, color: "#888", marginTop: 4 }}>{type === "scheduled_task" ? "⏰ Scheduled Task" : type === "prompt" ? "💬 Prompt" : "📜 Skill"}</div>
+        <div style={{ fontSize: 13, color: "#888", marginTop: 4 }}>{type === "scheduled_task" ? "⏰ Scheduled Task" : type === "prompt" ? "💬 Prompt" : type === "link" ? "↗ Link" : "📜 Skill"}</div>
         {artifact.description && <p style={{ marginTop: 10 }}>{artifact.description}</p>}
         {type === "scheduled_task" && typeof m.cron === "string" && <p style={{ fontSize: 13 }}><strong>Schedule:</strong> <code>{m.cron}</code> — {describeCron(m.cron).text}</p>}
         {type === "prompt" && Array.isArray(m.tags) && (m.tags as string[]).length > 0 && <p style={{ fontSize: 13 }}><strong>Tags:</strong> {(m.tags as string[]).join(", ")}</p>}
-        <label style={{ ...sLabel, marginTop: 14 }}>{type === "skill" ? "SKILL.md" : type === "scheduled_task" ? "What it runs" : "Prompt"}</label>
-        <div style={pre}>{artifact.body || "(empty)"}</div>
+        {type === "link" && (
+          <>
+            <div style={sWarnBlock}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
+              {LINK_HUMAN_WARNING}
+            </div>
+            <label style={{ ...sLabel, marginTop: 14 }}>Destination</label>
+            <p style={{ fontSize: 13, wordBreak: "break-all" }}>
+              <a href={typeof m.url === "string" ? m.url : "#"} target="_blank" rel="noopener noreferrer nofollow">{typeof m.url === "string" ? m.url : "(no url)"}</a>
+            </p>
+            {typeof m.notes === "string" && m.notes && (<><label style={sLabel}>Notes</label><div style={pre}>{m.notes}</div></>)}
+          </>
+        )}
+        {type !== "link" && (<>
+          <label style={{ ...sLabel, marginTop: 14 }}>{type === "skill" ? "SKILL.md" : type === "scheduled_task" ? "What it runs" : "Prompt"}</label>
+          <div style={pre}>{artifact.body || "(empty)"}</div>
+        </>)}
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}><button style={sBtnGhost} onClick={onClose}>Close</button></div>
       </div>
     </div>

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { KeyMirrorConversation, BrowserAccessSettings } from "./keymirror-panel";
-import { ArtifactEditor, ArtifactInspector, type EditorArtifact } from "./library-editor";
+import { ArtifactEditor, ArtifactInspector, type EditorArtifact, LINK_HUMAN_WARNING, LINK_BADGE_TEXT } from "./library-editor";
 
 interface Me {
   id: string; handle: string; email: string; display_name: string | null; created_at: string;
@@ -18,7 +18,7 @@ interface Sess {
   unread_count?: number; live?: boolean; live_until?: string | null;
   peer_present?: boolean; peer_ever_connected?: boolean; last_frame_at?: string | null;
 }
-interface SharedSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; }
+interface SharedSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; type?: string; manifest?: Record<string, unknown> | null; }
 interface AgentRow { id: string; name: string; runtime_type: string; created_at: string; last_used_at: string | null; revoked_at: string | null; }
 const RUNTIME_LABEL: Record<string, string> = { cowork: "Cowork", codex: "Codex", claude_code: "Claude Code", chatgpt: "ChatGPT", other: "Other" };
 
@@ -98,7 +98,7 @@ interface TrustPeer { handle: string; last_session_at: string; trusted: boolean;
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
 interface Skill { id: string; name: string; description: string | null; kind: string; shared_with: string[]; discoverable: boolean; type?: string; manifest?: Record<string, unknown> | null; body?: string; version?: number; signed?: boolean; public_token?: string | null; public_expires_at?: string | null; }
-interface DiscoverSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; }
+interface DiscoverSkill { id: string; owner_handle: string; name: string; description: string | null; kind: string; type?: string; manifest?: Record<string, unknown> | null; }
 
 /** Read the non-httpOnly bc_csrf cookie to echo in the x-bc-csrf header. */
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
@@ -110,6 +110,8 @@ const SCOPE_LABELS: Record<string, string> = {
 const plainScope = (scope: string) => SCOPE_LABELS[scope] ?? scope.replace(/[._]/g, " ");
 
 const plainKind = (kind: string) => kind === "template" ? "Copyable" : kind === "rpc" ? "Runs with friend" : kind.replace(/[._]/g, " ");
+const cleanDomain = (raw: string) => { try { return new URL(raw).hostname.replace(/^www\./, ""); } catch { return raw; } };
+const LINK_SOURCE_LABEL: Record<string, string> = { github: "GitHub", backchannel: "Back Channel", web: "Web" };
 
 export default function AccountPage() {
   const [me, setMe] = useState<Me | null>(null);
@@ -132,6 +134,9 @@ export default function AccountPage() {
   // Library CRUD: editor (create/edit), read-only inspector, and a save flash.
   const [editor, setEditor] = useState<{ mode: "create" | "edit"; initial?: EditorArtifact } | null>(null);
   const [inspect, setInspect] = useState<EditorArtifact | null>(null);
+  // Link lessons (WS-A): which card's install/share action is pending the full-warning
+  // confirmation step. { id, action } - cleared once the user confirms or cancels.
+  const [linkWarnFor, setLinkWarnFor] = useState<{ id: string; action: string } | null>(null);
   const [libFlash, setLibFlash] = useState<string>("");
   const [newKey, setNewKey] = useState<string | null>(null);
   // "Connect a new agent" — PRIMARY: MCP connector (browser mints the token, the
@@ -1307,7 +1312,10 @@ export default function AccountPage() {
           {skills.map((sk) => {
             const trustedHandles = trust.filter((t) => t.trusted).map((t) => t.handle);
             const type = sk.type || "skill";
-            const badge = type === "scheduled_task" ? { icon: "⏰", label: "Scheduled check" } : type === "prompt" ? { icon: "💬", label: "Saved prompt" } : { icon: "📜", label: "Tool" };
+            const badge = type === "scheduled_task" ? { icon: "⏰", label: "Scheduled check" } : type === "prompt" ? { icon: "💬", label: "Saved prompt" } : type === "link" ? { icon: "↗", label: "Link" } : { icon: "📜", label: "Tool" };
+            const linkManifest = type === "link" ? (sk.manifest ?? {}) as Record<string, unknown> : null;
+            const linkUrl = linkManifest && typeof linkManifest.url === "string" ? linkManifest.url : "";
+            const linkSource = linkManifest && typeof linkManifest.source === "string" ? linkManifest.source : "web";
             // public-share eligibility mirrors the server gates (spec §3) so the UI explains the block.
             const isRpc = type === "skill" && sk.kind === "rpc";
             const schedOptIn = type !== "scheduled_task" || sk.manifest?.public_share_allowed === true;
@@ -1320,6 +1328,12 @@ export default function AccountPage() {
                 <div style={s.rowMain}>
                   <strong>{sk.name}</strong> <span style={s.roleTag}>{badge.icon} {badge.label}</span>
                   {type === "skill" && <span style={{ ...s.rowMeta, marginLeft: 6 }}>{plainKind(sk.kind)}</span>}
+                  {type === "link" && (
+                    <>
+                      <span style={{ ...s.rowMeta, marginLeft: 6 }}>{cleanDomain(linkUrl)} · {LINK_SOURCE_LABEL[linkSource] ?? "Web"}</span>{" "}
+                      <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(122,77,0,0.12)", color: "#7a4d00" }} title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</span>
+                    </>
+                  )}
                   {sk.description && <div style={s.goal}>{sk.description}</div>}
                   <div style={s.rowMeta}>
                     {sk.shared_with.length ? <>shared with: {sk.shared_with.join(", ")}</> : "private"}
@@ -1330,11 +1344,21 @@ export default function AccountPage() {
                         const on = sk.shared_with.includes(h);
                         return (
                           <button key={h} style={on ? s.chipOn : s.chipOff} disabled={busy === `skill:${sk.id}:${h}`}
-                            onClick={() => shareSkill(sk.id, h, !on)}>
+                            onClick={() => { if (type === "link" && !on) { setLinkWarnFor({ id: sk.id, action: `share:${h}` }); return; } shareSkill(sk.id, h, !on); }}>
                             {on ? `✓ ${h}` : `share with ${h}`}
                           </button>
                         );
                       })}
+                      {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action.startsWith("share:") && (
+                        <div style={{ ...s.rowMeta, flexBasis: "100%", marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
+                          <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
+                          {LINK_HUMAN_WARNING}
+                          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                            <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
+                            <button style={s.chipOn} onClick={() => { const h = linkWarnFor.action.slice("share:".length); setLinkWarnFor(null); shareSkill(sk.id, h, true); }}>I understand, share it</button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                   <label style={{ ...s.rowMeta, display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
@@ -1349,9 +1373,19 @@ export default function AccountPage() {
                         <div style={{ ...s.rowMeta, marginBottom: 6 }}>🔗 Public link active{sk.public_expires_at ? ` · expires ${new Date(sk.public_expires_at).toLocaleDateString()}` : " · never expires"}</div>
                         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                           <code style={{ flex: "1 1 240px", fontSize: 12, wordBreak: "break-all", background: "rgba(0,0,0,0.05)", padding: "4px 8px", borderRadius: 6 }}>{link}</code>
-                          <button style={s.chipOn} onClick={() => { navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setTimeout(() => setPubCopiedId(null), 1500); }}>{pubCopiedId === sk.id ? "Copied ✓" : "Copy add-to-agent note"}</button>
+                          <button style={s.chipOn} onClick={() => { if (type === "link" && linkWarnFor?.id !== sk.id) { setLinkWarnFor({ id: sk.id, action: "copy" }); return; } navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setLinkWarnFor(null); setTimeout(() => setPubCopiedId(null), 1500); }}>{pubCopiedId === sk.id ? "Copied ✓" : "Copy add-to-agent note"}</button>
                           <button style={s.chipOff} disabled={busy === `pub:${sk.id}`} onClick={() => publicRevoke(sk.id)}>Revoke</button>
                         </div>
+                        {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action === "copy" && (
+                          <div style={{ ...s.rowMeta, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
+                            <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
+                            {LINK_HUMAN_WARNING}
+                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                              <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
+                              <button style={s.chipOn} onClick={() => { navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setLinkWarnFor(null); setTimeout(() => setPubCopiedId(null), 1500); }}>I understand, copy it</button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ) : canPublic ? (
                       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -1362,7 +1396,17 @@ export default function AccountPage() {
                           <option value="30d">expires in 30 days</option>
                           <option value="never">never expires</option>
                         </select>
-                        <button style={s.chipOn} disabled={busy === `pub:${sk.id}`} onClick={() => publicShare(sk.id, pubTtl[sk.id] ?? "7d")}>Generate public link</button>
+                        <button style={s.chipOn} disabled={busy === `pub:${sk.id}`} onClick={() => { if (type === "link") { setLinkWarnFor({ id: sk.id, action: "public" }); return; } publicShare(sk.id, pubTtl[sk.id] ?? "7d"); }}>Generate public link</button>
+                        {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action === "public" && (
+                          <div style={{ ...s.rowMeta, flexBasis: "100%", marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
+                            <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
+                            {LINK_HUMAN_WARNING}
+                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                              <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
+                              <button style={s.chipOn} onClick={() => { setLinkWarnFor(null); publicShare(sk.id, pubTtl[sk.id] ?? "7d"); }}>I understand, make it public</button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div style={s.rowMeta}>🔒 {blockReason}</div>
@@ -1386,21 +1430,37 @@ export default function AccountPage() {
             <p style={s.soon}>Tools your friends shared directly with you. A <strong>copyable tool (template)</strong> gets added to your own agent when you choose &ldquo;Send to my agent.&rdquo; A <strong>friend-run tool (RPC)</strong> stays on their side; &ldquo;Ask their agent&rdquo; starts an Inbox conversation to use it.</p>
             {sharedWithMe.map((sk) => {
               const isTemplate = sk.kind === "template";
+              const isLink = (sk.type || "skill") === "link";
               return (
                 <div key={sk.id}>
                   <div style={s.skillCard}>
-                    <span style={s.skillIcon}>{isTemplate ? "🧩" : "⚡"}</span>
+                    <span style={s.skillIcon}>{isLink ? "↗" : isTemplate ? "🧩" : "⚡"}</span>
                     <div style={s.rowMain}>
                       <div style={s.skillName}>{sk.name}</div>
+                      {isLink && (
+                        <div style={{ ...s.rowMeta, marginBottom: 2 }}>
+                          <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(122,77,0,0.12)", color: "#7a4d00" }} title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</span>
+                        </div>
+                      )}
                       {sk.description && <div style={s.skillDesc}>{sk.description}</div>}
                       <div style={s.skillBy}>Shared by <strong>{sk.owner_handle.replace(/@bc$/, "")}&rsquo;s agent</strong> <span style={s.rowMeta}>({sk.owner_handle})</span></div>
                     </div>
                     {isTemplate
                       ? (sentToAgent[sk.id]
                           ? <span style={s.okTag}>✓ sent to your agent</span>
-                          : <button style={s.skillBtn} disabled={busy === `send:${sk.id}`} onClick={() => sendToMyAgent(sk)}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>)
+                          : <button style={s.skillBtn} disabled={busy === `send:${sk.id}`} onClick={() => { if (isLink && linkWarnFor?.id !== sk.id) { setLinkWarnFor({ id: sk.id, action: "send" }); return; } setLinkWarnFor(null); sendToMyAgent(sk); }}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>)
                       : <button style={s.skillBtn} onClick={() => askFriend(sk.owner_handle, `use your “${sk.name}” tool: `)}>Ask their agent</button>}
                   </div>
+                  {isLink && linkWarnFor?.id === sk.id && linkWarnFor.action === "send" && (
+                    <div style={{ ...s.rowMeta, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
+                      {LINK_HUMAN_WARNING}
+                      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                        <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
+                        <button style={s.chipOn} onClick={() => { setLinkWarnFor(null); sendToMyAgent(sk); }}>I understand, send it</button>
+                      </div>
+                    </div>
+                  )}
                   {installPrompt[sk.id] && (
                     <div style={{ ...s.reveal, marginTop: 8 }}>
                       <p style={s.revealLabel}>✅ Queued in your Inbox — your agent picks this up on its next check (~10 min). Don&apos;t want to wait? Paste this into your agent to add it now:</p>
@@ -1427,11 +1487,17 @@ export default function AccountPage() {
                 <p style={s.circleHead}><strong>{owner.replace(/@bc$/, "")}&rsquo;s agent</strong> has {items.length} tool{items.length === 1 ? "" : "s"} you can use</p>
                 {items.map((d) => {
                   const isTemplate = d.kind === "template";
+                  const isLink = (d.type || "skill") === "link";
                   return (
                     <div key={d.id} style={s.skillCard}>
-                      <span style={s.skillIcon}>{isTemplate ? "🧩" : "⚡"}</span>
+                      <span style={s.skillIcon}>{isLink ? "↗" : isTemplate ? "🧩" : "⚡"}</span>
                       <div style={s.rowMain}>
                         <div style={s.skillName}>{d.name}</div>
+                        {isLink && (
+                          <div style={{ ...s.rowMeta, marginBottom: 2 }}>
+                            <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(122,77,0,0.12)", color: "#7a4d00" }} title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</span>
+                          </div>
+                        )}
                         {d.description && <div style={s.skillDesc}>{d.description}</div>}
                       </div>
                       <button style={s.skillBtnGhost} onClick={() => askFriend(d.owner_handle, isTemplate ? `share your “${d.name}” tool with me` : `use your “${d.name}” tool: `)}>{isTemplate ? "Ask to share" : "Ask their agent"}</button>

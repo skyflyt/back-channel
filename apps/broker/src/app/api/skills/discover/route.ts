@@ -10,6 +10,11 @@ export const runtime = "nodejs";
  * handle ONLY (decision §8.4: no param_schema, no body). Discovery ≠ access —
  * to actually use one, ask the owner to share it with you (then it shows up in
  * /api/skills/shared-with-me). Nothing here is invocable/copyable yet.
+ *
+ * `type` and `manifest` ARE included (they're not sensitive — no body/param_schema)
+ * so the UI can badge type-specific lessons (e.g. "external · unreviewed" for link
+ * lessons) directly in the circle view without a second round trip. No type filter
+ * here: every discoverable artifact type flows through discovery the same way.
  */
 export async function GET(req: NextRequest) {
   const account = (await getAccountFromAuth(req.headers.get("authorization"))) ?? (await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value));
@@ -32,6 +37,8 @@ export async function GET(req: NextRequest) {
       name: s.name,
       description: s.description,
       kind: s.kind,
+      type: s.type || "skill",
+      manifest: s.manifest ?? null,
       // deliberately NO param_schema / body — discovery is name + description only
     })),
   });
