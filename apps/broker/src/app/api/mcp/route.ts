@@ -26,6 +26,7 @@ import { POST as inboxRequestPOST } from "@/app/api/inbox/request/route";
 import { POST as endSessionPOST } from "@/app/api/sessions/[id]/end/route";
 import { GET as scopesGET } from "@/app/api/scopes/route";
 import { POST as viewTokenSelfPOST } from "@/app/api/account/view-token-self/route";
+import { GET as agentPayloadsGET } from "@/app/api/inbox/agent-payloads/route";
 
 export const runtime = "nodejs";
 
@@ -104,8 +105,24 @@ async function dispatchTool(
         }),
       };
     }
-    case "bc_check_inbox":
-      return fromResponse(await sessionsActiveGET(synth(req, "/api/sessions/active?frames=0", "GET")));
+    case "bc_check_inbox": {
+      const active = await fromResponse(await sessionsActiveGET(synth(req, "/api/sessions/active?frames=0", "GET")));
+      if (active.status !== 200) return active;
+      // When Tier-1 (agent_payloads_pending) is nonzero, pull the actual self-inbox
+      // items inline (same "no second round trip" pattern as sessions/active's own
+      // frames=1 default) — e.g. the WS-A concierge welcome message on first connect,
+      // or a skill a friend sent via "Send to my agent". Marks them delivered.
+      try {
+        const body = JSON.parse(active.text);
+        if (typeof body.agent_payloads_pending === "number" && body.agent_payloads_pending > 0) {
+          const payloads = await fromResponse(await agentPayloadsGET(synth(req, "/api/inbox/agent-payloads", "GET")));
+          if (payloads.status === 200) body.agent_payloads = JSON.parse(payloads.text).payloads;
+        }
+        return { status: active.status, text: JSON.stringify(body) };
+      } catch {
+        return active; // best-effort merge; the count alone is still useful
+      }
+    }
     case "bc_read_messages": {
       const read = await fromResponse(
         await pollPOST(

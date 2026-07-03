@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { hashToken, generateApiKey } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { seedWelcomeIfFirstConnect } from "@/lib/onboarding";
 
 export const runtime = "nodejs";
 
@@ -40,6 +41,7 @@ export async function POST(req: NextRequest) {
 
   // Per-agent-tokens: mint a FRESH key unique to this agent now (raw exists only
   // here; only the hash persists), as its own revocable AgentToken.
+  const priorAgentCount = await prisma.agentToken.count({ where: { accountId: row.accountId } });
   const apiKey = generateApiKey();
   const agent = await prisma.agentToken.create({
     data: { accountId: row.accountId, keyHash: hashToken(apiKey), name: row.agentName ?? "New agent", runtimeType: row.runtimeType },
@@ -47,6 +49,10 @@ export async function POST(req: NextRequest) {
 
   // Audit the consumption with the requesting IP + the agent it provisioned — never the key.
   await prisma.accountAudit.create({ data: { accountId: row.accountId, eventType: "key.exchange_consumed", detail: { ip, agent_token_id: agent.id, agent_name: agent.name } } }).catch(() => {});
+
+  // Onboarding epic WS-A: first-ever agent connect for this account seeds the
+  // concierge welcome thread into the self-inbox. Never fires again after this.
+  await seedWelcomeIfFirstConnect(row.accountId, priorAgentCount).catch(() => {});
 
   return NextResponse.json({ api_key: apiKey, handle: row.account.handle, agent_id: agent.id, agent_name: agent.name });
 }
