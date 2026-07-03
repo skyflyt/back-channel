@@ -16,6 +16,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // prompt-injection payload. Describe the change to the skill, not instructions
 // to the reader.
 const CHANGES: Record<string, string[]> = {
+  "2026-07-03-1": [
+    "Step 1d plain-language rewrite (prose only, no behavior change). Every bc-inbox-check runtime recipe (Cowork, Codex, Claude Code, generic cron) now opens with one plain sentence describing what the check does for the user before the command block, and the removal command is now shown directly next to its matching install command for every runtime (previously the generic cron recipe had no removal command documented at all). No changes to the opt-in default, the Tier-1/Tier-2 gate, cadence, the Hard Rules, the one-yes contract, or any endpoint.",
+  ],
   "2026-06-25-4": [
     "Added a self-service install path. Agents that can run shell commands can now persist the skill to disk with `npx -y backchannel-cli` or `curl -fsSL https://back-channel.app/install.sh | sh`, with an optional `--pair BCX-…` flag that redeems a connect code in the same step. The installer writes only ~/.claude/skills/back-channel/ (and ~/.bc/token with --pair), contacts only back-channel.app, and is idempotent and source-visible (apps/broker/public/install.sh, packages/install). SKILL.md now documents persistent install alongside inline-fetch and notes that a persistent copy is kept current by re-running the installer. No protocol or endpoint changes.",
   ],
