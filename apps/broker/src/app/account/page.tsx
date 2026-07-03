@@ -288,6 +288,17 @@ export default function AccountPage() {
     })();
   }, [loadSessions, loadTrust, loadInbox, loadSkills, loadAgents]);
 
+  // Keep ?tab= in sync with the active nav so the current view is always a shareable/
+  // bookmarkable deep link (e.g. /account?tab=friends). replaceState avoids polluting
+  // back-button history with every tab click.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("tab") === nav) return;
+    url.searchParams.set("tab", nav);
+    window.history.replaceState({}, "", url.pathname + url.search);
+  }, [nav]);
+
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
     window.location.href = "/login";
