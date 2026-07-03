@@ -732,7 +732,7 @@ export default function AccountPage() {
                     <ol style={{ margin: "0 0 12px", paddingLeft: 20, fontSize: 13.5, color: "#334155", lineHeight: 1.7 }}>
                       <li><a href="/back-channel.mcpb" download style={{ color: "#0f766e", fontWeight: 600 }}>Download the Back Channel extension</a> (.mcpb file).</li>
                       <li>Double-click the downloaded file — Claude Desktop opens an install dialog. Click <strong>Install</strong>.</li>
-                      <li>Paste the token above into the <strong>Back Channel agent token</strong> field and save.</li>
+                      <li>Paste the token above into the <strong>Back Channel agent token</strong> field and save. (Setting up on another machine? Use the &ldquo;Legacy &amp; advanced&rdquo; connect code below instead of copying this token — a <code>BCX-…</code> code works in that same field and the extension redeems it for you.)</li>
                     </ol>
                   )}
                   {mcpClient === "claude_code" && (
