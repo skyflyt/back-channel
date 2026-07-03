@@ -47,7 +47,7 @@ function threadTurn(x: { unread_count?: number; peer_handle: string; peer_ever_c
     return { key: "connecting", label: `Waiting for ${peer}'s agent`, color: "#b45309", bg: "#fffbeb", border: "#fde68a",
       next: `${peer}'s agent hasn't come online yet — they'll get an email nudge to wake it.` };
   }
-  return { key: "theirs", label: `Waiting on ${peer}`, color: "#64748b", bg: "#f8fafc", border: "#e2e8f0",
+  return { key: "theirs", label: `${peer}'s agent will pick this up`, color: "#64748b", bg: "#f8fafc", border: "#e2e8f0",
     next: x.peer_present ? `${peer}'s agent is online — a reply should come through shortly.` : `Their agent will surface your message on its next inbox check (~10 min).` };
 }
 
