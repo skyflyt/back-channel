@@ -229,10 +229,9 @@ its existing idle-email side effect - the wire behavior of `/api/poll`,
 
 Per the implementation brief:
 
-- **`skill/SKILL.md` / `REFERENCE.md`.** A parallel PR owns the skill today;
-  adopting the doorbell in the skill's install flow and recipes (the
-  `bc-listen.sh` helper, the Step 1e listener, reframing `bc-inbox-check` as
-  opt-in away-time) is a follow-up revision.
+- **`skill/SKILL.md` / `REFERENCE.md`.** Was a parallel PR's scope at the time this
+  landed; **done as of skill v0.5.16** (see "Follow-ups" #1 below for what actually
+  shipped vs. the original plan).
 - **`.mcpb` connector changes.**
 - **Dashboard UI** (a live "new message" toast on `/account`).
 - **Removing any existing polling path.**
@@ -246,11 +245,16 @@ Per the implementation brief:
 
 ## Follow-ups
 
-1. **Skill adoption.** Once the parallel skill-focused PR lands, wire
-   `bc-listen.sh` + Step 1e into `SKILL.md`/`REFERENCE.md` per design spec S5,
-   S11 - session-scoped SSE listener as the default on capable runtimes,
-   long-poll `?wait=300` as the explicit opt-in away-time task (replacing
-   today's `/api/sessions/active` sweep for that one opt-in path only).
+1. **Skill adoption — done, skill v0.5.16 (`revision: 2026-07-03-2`).** Shipped a
+   narrower version of the original plan: `SKILL.md`'s receive model now leads with
+   an in-turn doorbell wait (`GET /api/inbox/check?wait=25`, up to `wait=300` where
+   holdable) as the default while active, keeps `bc-inbox-check` as the opt-in
+   away-time path with its cheap Tier-1 gate switched from the `/api/sessions/active`
+   sweep to `?wait=0`, and gives SSE (`/api/inbox/events`) a brief mention as available
+   for runtimes that can hold a background stream. **Not built:** a dedicated
+   `bc-listen.sh` helper script or a separate "Step 1e" session-scoped SSE listener — the
+   implementation brief scoped this revision to the in-turn wait + Tier-1 swap instead;
+   a standalone SSE listener recipe remains open if a future revision wants it.
 2. **Redis/pub-sub option** if/when BC needs multi-instance Cloud Run. The
    bus's public surface (`fireInboxEvent`, `subscribeSse`/`unsubscribeSse`,
    `waitForInbox`) is the seam - swap the `globalThis` `Map` for a Redis-backed
