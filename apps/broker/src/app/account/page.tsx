@@ -682,16 +682,52 @@ export default function AccountPage() {
         </div>
       </header>
       <div style={s.wrap}>
+        {isFirstRun && (
+          <section style={s.onboard}>
+            <h2 style={s.onboardH}>👋 Welcome to Back Channel</h2>
+            <p style={{ ...s.soon, fontStyle: "normal", margin: "0 0 12px" }}>
+              We have kept things simple while you are getting set up -- your Inbox is below.
+              Once you add a friend, you will get the full dashboard automatically.
+            </p>
+            <button className="bc-primary" style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>＋ Invite a friend</button>
+            <p style={{ margin: "10px 0 0" }}><button style={s.smallLink2} onClick={revealEverything}>Show everything →</button></p>
+          </section>
+        )}
         <div className="bc-shell">
+          {!isFirstRun && (
           <nav className="bc-sidebar" style={s.sidebar}>
             {NAV.map((n) => (
-              <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => setNav(n.key)}>
+              <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
                 <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
               </button>
             ))}
+            <div style={{ position: "relative" }}>
+              <button
+                className="bc-navitem"
+                style={moreActive ? s.navItemActive : s.navItem}
+                onClick={() => setMoreOpen((v) => !v)}
+                aria-expanded={moreOpen}
+                aria-haspopup="true"
+              >
+                <span style={s.navIcon} aria-hidden>⋯</span>More {moreOpen ? "▴" : "▾"}
+              </button>
+              {moreOpen && (
+                <div style={s.moreMenu}>
+                  {NAV_MORE.map((n) => (
+                    <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
+                      <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </nav>
+          )}
           <main className="bc-main">
             <h1 style={s.pageTitle}>{navTitle}</h1>
+            {isFirstRun && nav !== "messages" && (
+              <p style={s.soon}>Simplified view -- <button style={s.smallLink2} onClick={revealEverything}>show everything</button> to reach every tab.</p>
+            )}
 
         {(() => {
           // First-user onboarding checklist — shows until all three are done.
