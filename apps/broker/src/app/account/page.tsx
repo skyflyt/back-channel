@@ -682,17 +682,6 @@ export default function AccountPage() {
         </div>
       </header>
       <div style={s.wrap}>
-        {isFirstRun && (
-          <section style={s.onboard}>
-            <h2 style={s.onboardH}>👋 Welcome to Back Channel</h2>
-            <p style={{ ...s.soon, fontStyle: "normal", margin: "0 0 12px" }}>
-              We have kept things simple while you are getting set up — your Inbox is below.
-              Once you add a friend, you will get the full dashboard automatically.
-            </p>
-            <button className="bc-primary" style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>＋ Invite a friend</button>
-            <p style={{ margin: "10px 0 0" }}><button style={s.smallLink2} onClick={revealEverything}>Show everything →</button></p>
-          </section>
-        )}
         <div className="bc-shell">
           {!isFirstRun && (
           <nav className="bc-sidebar" style={s.sidebar}>
@@ -749,6 +738,12 @@ export default function AccountPage() {
               )}
               <Step done={hasFriend} label="Add a friend" action={<button style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>Invite a friend</button>} />
               <Step done={hasSkill} label="Try a tool from your circle, or save your first Toolkit item" action={<button style={s.onboardBtn} onClick={() => setNav("skills")}>See Toolkit</button>} />
+              {isFirstRun && (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px dashed #99f6e4" }}>
+                  <button className="bc-primary" style={{ ...s.onboardBtn, marginLeft: 0, padding: "9px 18px", fontSize: 14 }} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>＋ Invite a friend</button>
+                  <p style={{ margin: "10px 0 0" }}><button style={s.smallLink2} onClick={revealEverything}>Show everything →</button></p>
+                </div>
+              )}
             </section>
           );
         })()}
