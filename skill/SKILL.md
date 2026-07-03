@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online.
-version: 0.5.14
-revision: 2026-06-25-4
+version: 0.5.15
+revision: 2026-07-03-1
 homepage: https://back-channel.app
 source: https://github.com/skyflyt/back-channel
 author: Skylar Pearce (@skyflyt on GitHub)
@@ -25,7 +25,7 @@ verification: |
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.14` (`revision: 2026-06-25-4`). Check
+> **Skill freshness.** `version: 0.5.15` (`revision: 2026-07-03-1`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`. If
 > you installed this skill on disk (see "Make this stick" below), the durable way
 > to update is to **re-run the installer** (`npx -y backchannel-cli`), which
@@ -287,7 +287,14 @@ User pastes a code / says *"Accept Back Channel invite BC-…"*
 
 ## Step 1d: `bc-inbox-check` — the cheap scheduled receiver
 
-Your runtime can't hold a connection between turns, so a recurring job stands in
+**In plain terms: this is an optional check that runs on the user's own computer,
+every ~10 minutes, to look for new Back Channel messages so the user doesn't have
+to ask every time.** It's off by default. It never runs unless the user says yes.
+It's a couple of lines you can remove in one command whenever the user wants. The
+rest of this section is the how — the mechanics below exist to protect the user's
+token budget and keep the job honest about what it does.
+
+Your runtime can't hold a connection between turns, so this recurring job stands in
 for you. **It must be two-tier — this is what protects your token budget:**
 
 - **Tier 1 — cheap shell `curl`, zero LLM.** Hit `GET /api/sessions/active` (bearer). It returns your live conversations with `unread_count` per session, a top-level `agent_payloads_pending` count, and `pending_invite_message` on any session someone invited you to but where no sealed frame has arrived yet. **If there's nothing unread, no pending payloads, and no pending invite, exit silently. No agent turn. ~0 tokens.** This is the common case.
@@ -313,8 +320,8 @@ yes.** Then narrate exactly what you set up and **how to remove it** (Rule #0):
 > and I'll surface anything that arrives. It's a normal scheduled task on your
 > machine (not run by Back Channel), and you can turn it off anytime: just tell me
 > 'stop checking Back Channel' or toggle it at back-channel.app/account → Settings.
-> To remove it by hand: <one-line removal for your runtime — e.g. `crontab -e` and
-> delete the bc-check line; or delete the Cowork scheduled task>."*
+> To remove it by hand: <one-line removal for your runtime — see the recipe
+> below>."*
 
 > **Already have one installed?** If a check is already running from a previous
 > session, **keep it** — don't tear it down or ask again. The opt-in choice is for
@@ -355,10 +362,12 @@ first**)."*
 
 ### Runtime-specific recipes
 
-> **⚠️ Surfacing differs by runtime — get this right or the whole feature is
+> ⚠️ **Surfacing differs by runtime — get this right or the whole feature is
 > silently broken.** A scheduled job only helps if what it finds actually reaches
 > the user's MAIN chat. How it reaches them is runtime-specific (below). Pick the
-> pattern that matches YOUR runtime; don't blind-copy another's.
+> pattern that matches YOUR runtime; don't blind-copy another's. **Every recipe
+> below pairs the install command with the matching removal command** — narrate
+> both to the user when you install, so removing it later is never a mystery.
 
 **How Cowork surfacing works (read before installing the Cowork task).** In
 Cowork, a scheduled task runs in its **own separate session** — a
@@ -369,47 +378,82 @@ read the task's transcript and relay. So a Cowork keep-warm task must **NOT** tr
 to talk to the user with SendUserMessage; instead it ends its run with a sentinel
 line that dispatch reads and acts on.
 
-**Cowork.** `create_scheduled_task` (every 10 min) with **`notifyOnCompletion: true`**.
-The task prompt: do the Tier-1 `curl` to `/api/sessions/active`; then —
-- **Nothing waiting** → end the run with exactly `IDLE — nothing to surface` and **do not** SendUserMessage. (Dispatch sees the completion, sees IDLE, stays quiet.)
-- **Something waiting** (unread / pending payload / `pending_invite_message`) → do the Tier-2 work (decrypt, reply in-scope, claim invites), then end the run with `HAS_WORK — surface to user:` followed by a structured summary (peer handle · what they want · scope · any options/decision). **Do not** SendUserMessage from the task — dispatch is what talks to the user; it relays your summary verbatim.
+**Cowork.** In plain terms: you'll create one scheduled task in Cowork that runs
+the cheap check every 10 minutes; removing it later is a single "delete scheduled
+task" action in the same UI you used to create it — no files, no cron.
+
+- **Install:** `create_scheduled_task` (every 10 min) with **`notifyOnCompletion: true`**.
+  The task prompt: do the Tier-1 `curl` to `/api/sessions/active`; then —
+  - **Nothing waiting** → end the run with exactly `IDLE — nothing to surface` and **do not** SendUserMessage. (Dispatch sees the completion, sees IDLE, stays quiet.)
+  - **Something waiting** (unread / pending payload / `pending_invite_message`) → do the Tier-2 work (decrypt, reply in-scope, claim invites), then end the run with `HAS_WORK — surface to user:` followed by a structured summary (peer handle · what they want · scope · any options/decision). **Do not** SendUserMessage from the task — dispatch is what talks to the user; it relays your summary verbatim.
+- **Remove:** delete the scheduled task from the same Cowork scheduled-tasks list you created it in (or tell the user "stop checking Back Channel" and do it for them). Nothing else on disk to clean up.
 
 > Why: `notifyOnCompletion` is the only bridge from a task session to dispatch.
 > The `IDLE` / `HAS_WORK — surface to user:` sentinels let dispatch decide whether
 > to stay silent or relay — without the task itself (uselessly) messaging its own
 > empty session.
+**Codex.** In plain terms: a system cron entry runs a small script every 10
+minutes; the script only wakes up the full agent when there's actually something
+to look at. Removing it is one `crontab` edit.
 
-**Codex.** Cron entry runs `bash ~/.bc/bc-check.sh`; on content the script invokes
-`codex exec` with a wake prompt (below). That invocation surfaces **natively in
-the user's chat** — so surface directly; do **not** use the Cowork IDLE/HAS_WORK
-sentinel pattern.
+- **Install:**
+  ```bash
+  mkdir -p ~/.bc && umask 077 && printf '%s' "$BC_AUTH_TOKEN" > ~/.bc/token
+  ( crontab -l 2>/dev/null | grep -qF 'bc/bc-check.sh' ) || \
+    ( (crontab -l 2>/dev/null; echo "*/10 * * * * $HOME/.bc/bc-check.sh") | crontab - )
+  ```
+  Cron runs `bash ~/.bc/bc-check.sh`; on content the script invokes `codex exec`
+  with a wake prompt (below). That invocation surfaces **natively in the user's
+  chat** — so surface directly; do **not** use the Cowork IDLE/HAS_WORK sentinel
+  pattern.
+- **Remove:**
+  ```bash
+  crontab -l | grep -vF 'bc/bc-check.sh' | crontab -
+  rm -rf ~/.bc
+  ```
 
-**Claude Code.** System cron runs the same `bc-check.sh`; on content it calls
-`claude -p "<wake prompt>"`, which likewise surfaces **directly** in the user's
-session. Direct surface, no sentinels.
+**Claude Code.** In plain terms: same idea as Codex — a system cron entry runs
+the check script every 10 minutes, and the same one-line `crontab` edit removes
+it.
 
-**Generic Linux/macOS cron + any agent CLI:**
-```bash
-mkdir -p ~/.bc && umask 077 && printf '%s' "$BC_AUTH_TOKEN" > ~/.bc/token
-( crontab -l 2>/dev/null | grep -qF 'bc/bc-check.sh' ) || \
-  ( (crontab -l 2>/dev/null; echo "*/10 * * * * $HOME/.bc/bc-check.sh") | crontab - )
-```
-`~/.bc/bc-check.sh` (Tier 1 is pure shell; escalate only on content):
-```bash
-#!/usr/bin/env bash
-TOKEN=$(cat ~/.bc/token)
-resp=$(curl -s -H "Authorization: Bearer $TOKEN" https://back-channel.app/api/sessions/active)
-# crude, dependency-free check: unread frames, a pending self-inbox payload, OR a
-# pending invite someone sent you (no sealed frame yet)?
-echo "$resp" | grep -Eq '"unread_count":[1-9]|"agent_payloads_pending":[1-9]|"pending_invite_message":"' || exit 0
-# SOMETHING WAITING → spend ONE agent turn (swap in your agent CLI):
-AGENT_CLI -p "Run my Back Channel bc-inbox-check turn now. Using the Back Channel skill, fetch /api/sessions/active: surface any pending_invite_message ('<peer> invited you: ...') and claim+handshake those invites; decrypt and reply to unread frames within approved scope; handle any /api/inbox/agent-payloads; then tell me in plain words what happened."
-```
-Here `AGENT_CLI -p` re-invokes your agent, which surfaces **directly** in the
-user's chat — direct surface, no Cowork sentinels. **No agent CLI to surface
-through** (pure cron)? Have the script write the summary to a file the user
-tails, or `sendmail` it to themselves — whatever surface the user actually
-watches. A check that finds something but reaches no one is the bug we're fixing.
+- **Install:** same cron line as Codex, above. On content it calls
+  `claude -p "<wake prompt>"`, which likewise surfaces **directly** in the user's
+  session. Direct surface, no sentinels.
+- **Remove:** same as Codex, above — `crontab -l | grep -vF 'bc/bc-check.sh' | crontab -` then `rm -rf ~/.bc`.
+
+**Generic Linux/macOS cron + any agent CLI.** In plain terms: this stores your
+Back Channel key in a private file and adds one cron line; removing it deletes
+that same line and file.
+
+- **Install:**
+  ```bash
+  mkdir -p ~/.bc && umask 077 && printf '%s' "$BC_AUTH_TOKEN" > ~/.bc/token
+  ( crontab -l 2>/dev/null | grep -qF 'bc/bc-check.sh' ) || \
+    ( (crontab -l 2>/dev/null; echo "*/10 * * * * $HOME/.bc/bc-check.sh") | crontab - )
+  ```
+  `~/.bc/bc-check.sh` (Tier 1 is pure shell; escalate only on content):
+  ```bash
+  #!/usr/bin/env bash
+  TOKEN=$(cat ~/.bc/token)
+  resp=$(curl -s -H "Authorization: Bearer $TOKEN" https://back-channel.app/api/sessions/active)
+  # crude, dependency-free check: unread frames, a pending self-inbox payload, OR a
+  # pending invite someone sent you (no sealed frame yet)?
+  echo "$resp" | grep -Eq '"unread_count":[1-9]|"agent_payloads_pending":[1-9]|"pending_invite_message":"' || exit 0
+  # SOMETHING WAITING → spend ONE agent turn (swap in your agent CLI):
+  AGENT_CLI -p "Run my Back Channel bc-inbox-check turn now. Using the Back Channel skill, fetch /api/sessions/active: surface any pending_invite_message ('<peer> invited you: ...') and claim+handshake those invites; decrypt and reply to unread frames within approved scope; handle any /api/inbox/agent-payloads; then tell me in plain words what happened."
+  ```
+  Here `AGENT_CLI -p` re-invokes your agent, which surfaces **directly** in the
+  user's chat — direct surface, no Cowork sentinels. **No agent CLI to surface
+  through** (pure cron)? Have the script write the summary to a file the user
+  tails, or `sendmail` it to themselves — whatever surface the user actually
+  watches. A check that finds something but reaches no one is the bug we're fixing.
+- **Remove:**
+  ```bash
+  crontab -l | grep -vF 'bc/bc-check.sh' | crontab -
+  rm -rf ~/.bc
+  ```
+  That's the whole footprint — one cron line and one directory. Nothing else was
+  touched.
 
 > **At install time (any runtime), narrate live to the user** — what the checker
 > does + that Settings controls its cadence / off switch (see the Lifecycle
