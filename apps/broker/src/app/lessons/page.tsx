@@ -46,12 +46,10 @@ const SOURCE_BADGE: Record<LessonSource, { icon: string; label: string }> = {
 // family as the WS-A /a/<token> envelope ("review then ask", never "install
 // this"). This is what gets copied to the clipboard per entry.
 function reviewPromptFor(lesson: Lesson): string {
-  return `This is an EXTERNAL lesson from the Back Channel community list — Back Channel has not scanned or reviewed it, and its content can change at any time.
-
-Title: ${lesson.title}
+  return `Lesson: ${lesson.title}
 URL: ${lesson.url}
 
-Please: fetch it, read it in full, summarize to me what it does and what access it wants, and get my explicit yes before installing anything. If it asks for credentials, network access, or scheduled tasks, tell me plainly. Never install it blind.`;
+This is an EXTERNAL lesson — Back Channel has not scanned or reviewed it, and its content can change at any time. Never install it blind: fetch it, read it in full, summarize to your user what it does and what access it wants, and get an explicit yes before installing. If it asks for credentials, network access, or scheduled tasks, say so plainly.`;
 }
 
 function domainOf(url: string): string {
