@@ -27,6 +27,11 @@ import { POST as endSessionPOST } from "@/app/api/sessions/[id]/end/route";
 import { GET as scopesGET } from "@/app/api/scopes/route";
 import { POST as viewTokenSelfPOST } from "@/app/api/account/view-token-self/route";
 import { GET as agentPayloadsGET } from "@/app/api/inbox/agent-payloads/route";
+import { waitForInbox } from "@/lib/inbox-bus";
+// Side effect: registers the shared pendingCounter with inbox-bus (same wiring
+// /api/inbox/check and /api/inbox/events rely on) so waitForInbox here counts
+// real pending mail instead of a zero stub.
+import "@/lib/inbox-pending";
 
 export const runtime = "nodejs";
 
@@ -106,6 +111,35 @@ async function dispatchTool(
       };
     }
     case "bc_check_inbox": {
+      // Optional doorbell wait (design: docs/inbox-doorbell.md + design/mcp-doorbell-wait.md).
+      // Direct bus/pending call, not a self-HTTP loop back to /api/inbox/check — this
+      // process already has DB + inbox-bus access, so looping through our own HTTP
+      // layer would just add latency and a second auth round-trip for nothing.
+      // Cap is 120s here (tighter than the doorbell's own 300s) because MCP clients
+      // time out tool calls well before Cloud Run does — see tools.mjs's schema.
+      const waitSecondsArg = args.wait_seconds;
+      const waitSeconds = typeof waitSecondsArg === "number" ? waitSecondsArg : 0;
+      const waitMs = Math.max(0, Math.min(waitSeconds, 120)) * 1000;
+      if (waitMs > 0) {
+        const doorbell = await waitForInbox(auth.accountId, waitMs);
+        if (doorbell.pending_count === 0) {
+          // Nothing arrived during the wait — same empty-inbox shape callers already
+          // get today, plus a waited_seconds note so the agent knows it actually waited
+          // rather than getting an instant "nothing" answer.
+          const empty = await fromResponse(await sessionsActiveGET(synth(req, "/api/sessions/active?frames=0", "GET")));
+          if (empty.status !== 200) return empty;
+          try {
+            const body = JSON.parse(empty.text);
+            body.waited_seconds = doorbell.waited_seconds;
+            return { status: empty.status, text: JSON.stringify(body) };
+          } catch {
+            return empty;
+          }
+        }
+        // Something is pending — fall through to the existing full read below,
+        // unchanged. The wait phase itself never surfaces anything beyond the
+        // doorbell's counts/timestamps/kinds; content only comes from this read.
+      }
       const active = await fromResponse(await sessionsActiveGET(synth(req, "/api/sessions/active?frames=0", "GET")));
       if (active.status !== 200) return active;
       // When Tier-1 (agent_payloads_pending) is nonzero, pull the actual self-inbox

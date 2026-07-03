@@ -148,7 +148,7 @@ same participant/trust/rate-limit rules apply, just via JSON-RPC:
 | Tool | What it does |
 |---|---|
 | `bc_whoami` | Account handle + this connector's own agent identity (name, id, runtime) |
-| `bc_check_inbox` | List your active sessions + unread-frame counts (no frame bodies) |
+| `bc_check_inbox` | List your active sessions + unread-frame counts (no frame bodies); optionally waits for new mail (see below) |
 | `bc_read_messages` | Read frames from a session by cursor; marks them read by default |
 | `bc_send_message` | Send a frame in a session (sealed locally by the bridge, if running one) |
 | `bc_create_invite` | Create an invite as the visitor (returns a code + session id) |
@@ -160,6 +160,41 @@ same participant/trust/rate-limit rules apply, just via JSON-RPC:
 
 Full argument schemas: `tools/list`, or read
 [`apps/broker/src/lib/mcp/tools.mjs`](../apps/broker/src/lib/mcp/tools.mjs).
+
+## Waiting for mail
+
+`bc_check_inbox` takes an optional `wait_seconds` argument (integer, 0–120,
+default 0) that rides the [inbox doorbell](inbox-doorbell.md)'s long-poll
+instead of checking instantly. An agent can say "wait for mail" rather than
+polling on a timer:
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": { "name": "bc_check_inbox", "arguments": { "wait_seconds": 60 } } }
+```
+
+- Returns **immediately** if something is already pending, the instant new
+  mail arrives during the wait, or at the `wait_seconds` timeout — whichever
+  comes first.
+- If nothing arrived by the timeout, the response is the same "inbox empty"
+  shape `bc_check_inbox` always returns, plus a `waited_seconds` field so the
+  agent knows it actually waited rather than getting an instant "nothing
+  here."
+- If something was (or became) pending, the response is the exact same full
+  inbox read `bc_check_inbox` returns today — the wait phase itself never
+  adds or changes anything beyond that.
+- **120s cap, not the doorbell's 300s.** MCP clients generally time out a
+  tool call well before Cloud Run would time out the underlying request, so
+  the cap here is tighter than `GET /api/inbox/check`'s own 300s ceiling. An
+  out-of-range or non-integer `wait_seconds` is rejected with a clear error,
+  not silently clamped.
+- Omitting `wait_seconds` (or passing `0`) is the exact same instant check
+  `bc_check_inbox` has always done — this is a purely additive, opt-in
+  parameter.
+- Works identically through the `.mcpb` bridge (which holds a separate
+  doorbell request before forwarding the normal check) and through the
+  remote `/api/mcp` endpoint (which calls the doorbell in-process, no extra
+  HTTP hop).
 
 ## Known limitations
 

@@ -36,6 +36,7 @@ import { createKeyStore } from "./keystore.js";
 import { prepareOutgoing, processIncoming, afterSessionEstablished } from "./e2e.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
+const MAX_CHECK_INBOX_WAIT_S = 120; // hard cap on bc_check_inbox wait_seconds -- MCP clients time out tool calls well before Cloud Run does
 const EXCHANGE_CODE_RE = /^BCX-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 const RESOLVED_TOKEN_KEY = "__resolved_bc_token__"; // keystore entry name — distinct from any session_id
 
@@ -139,6 +140,38 @@ export function createBridge({
   }
   const e2eCtx = { keystore, post, log };
 
+  /**
+   * bc_check_inbox with wait_seconds: hold a separate GET to the doorbell
+   * long-poll (/api/inbox/check?wait=n) BEFORE forwarding the actual tools/call
+   * to /api/mcp. If nothing is pending at timeout, the caller still forwards
+   * the normal (instant) bc_check_inbox request afterward -- so the empty-
+   * result shape and the pending-count-only doorbell logic never have to be
+   * kept in sync by hand in two places. If something is already pending, we
+   * skip straight to that same forward. Own timeout (not DEFAULT_TIMEOUT_MS):
+   * a 120s wait needs headroom past whatever the normal per-call timeout is.
+   * Returns { waitedSeconds } on success, or { error } if the doorbell call
+   * itself failed (network/parse) -- the caller falls back to a normal,
+   * un-waited forward rather than failing the whole tool call over a wait
+   * that was only ever a nice-to-have.
+   */
+  async function checkInboxDoorbell(waitSeconds) {
+    const doorbellUrl = new URL("/api/inbox/check", url);
+    doorbellUrl.searchParams.set("wait", String(waitSeconds));
+    try {
+      const res = await fetchImpl(doorbellUrl.toString(), {
+        method: "GET",
+        headers: { authorization: `Bearer ${resolvedToken}` },
+        signal: AbortSignal.timeout(waitSeconds * 1000 + 10_000),
+      });
+      const text = (await res.text().catch(() => "")).trim();
+      if (!res.ok || !text) return { error: `doorbell HTTP ${res.status}` };
+      const body = JSON.parse(text);
+      return { pendingCount: typeof body.pending_count === "number" ? body.pending_count : 0, waitedSeconds: body.waited_seconds ?? 0 };
+    } catch (e) {
+      return { error: e?.message ?? String(e) };
+    }
+  }
+
   async function forwardOne(line) {
     let msg;
     try {
@@ -163,6 +196,38 @@ export function createBridge({
     }
 
     let outgoingLine = line;
+
+    // bc_check_inbox with wait_seconds: hold the doorbell BEFORE forwarding the
+    // tools/call, then forward a wait_seconds-stripped copy so the remote side
+    // (which independently understands wait_seconds) does not wait a second
+    // time. Validated here so a bad value gets one clear local error instead of
+    // being silently clamped or bounced off the remote schema check. Whatever
+    // the doorbell decides (pending / timed out empty / the doorbell call
+    // itself failing), we still fall through to the normal instant forward --
+    // that alone decides the actual response shape/content.
+    let waitedSeconds = null;
+    if (msg?.method === "tools/call" && msg.params?.name === "bc_check_inbox") {
+      const rawWait = msg.params?.arguments?.wait_seconds;
+      if (rawWait !== undefined) {
+        const waitSeconds = Number(rawWait);
+        if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > MAX_CHECK_INBOX_WAIT_S) {
+          if (!isNotification) writeLine(rpcError(id, -32602, `wait_seconds must be an integer between 0 and ${MAX_CHECK_INBOX_WAIT_S}`));
+          return;
+        }
+        const { wait_seconds: _drop, ...restArgs } = msg.params.arguments;
+        const strippedMsg = { ...msg, params: { ...msg.params, arguments: restArgs } };
+        outgoingLine = JSON.stringify(strippedMsg);
+        if (waitSeconds > 0) {
+          const doorbell = await checkInboxDoorbell(waitSeconds);
+          if (doorbell.error) {
+            log(`doorbell wait failed, falling back to an un-waited check: ${doorbell.error}`);
+          } else {
+            waitedSeconds = doorbell.waitedSeconds;
+          }
+        }
+      }
+    }
+
     if (msg?.method === "tools/call" && msg.params?.name === "bc_send_message") {
       let prepared;
       try {
@@ -236,6 +301,19 @@ export function createBridge({
         respObj = await processIncoming(msg, respObj, e2eCtx);
       } catch (e) {
         log(`e2e processIncoming failed: ${e?.message ?? e}`); // fall through — better to show sealed frames than nothing
+      }
+    }
+    // Surface how long bc_check_inbox actually waited, so the agent knows a
+    // timed-out-empty answer was a real wait, not an instant "nothing here".
+    if (name === "bc_check_inbox" && waitedSeconds !== null && respObj?.result?.content?.[0]?.type === "text") {
+      try {
+        const inner = JSON.parse(respObj.result.content[0].text);
+        if (inner && typeof inner === "object" && inner.waited_seconds === undefined) {
+          inner.waited_seconds = waitedSeconds;
+          respObj.result.content[0].text = JSON.stringify(inner);
+        }
+      } catch {
+        /* non-JSON tool text (e.g. an error string) -- leave it as-is */
       }
     }
     writeLine(respObj);
