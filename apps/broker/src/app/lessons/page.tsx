@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import lessonsData from "../../../../../community/lessons.json";
+import lessonsData from "../../generated/lessons.json";
 import CopyPromptButton from "./copy-prompt-button";
 
 /**
@@ -11,6 +11,15 @@ import CopyPromptButton from "./copy-prompt-button";
  * the broker content-blind and honest: we show what shipped, not a live feed.
  * Server component (no DB, no request-time data) — the only client-side bit
  * is the copy-to-clipboard button, split into copy-prompt-button.tsx.
+ *
+ * NOTE on the import path: this pulls from src/generated/lessons.json, NOT
+ * community/lessons.json directly. community/lessons.json (repo root) is
+ * still the single canonical, contributor-edited file. npm run build
+ * copies it into src/generated/ via scripts/copy-lessons.mjs (wired in as
+ * the prebuild script) before next build runs. Do not hand-edit
+ * src/generated/lessons.json; it is git-ignored and regenerated on every
+ * build. This indirection exists because the Docker build stage has no
+ * path above apps/broker -- see scripts/copy-lessons.mjs and the Dockerfile.
  *
  * The trust-stance banner copy below is CANONICAL (Link Lessons epic,
  * "the trust stance" section) — reused verbatim, tense adapted for third
