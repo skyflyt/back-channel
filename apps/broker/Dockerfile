@@ -9,6 +9,7 @@ RUN npm ci
 
 COPY apps/broker/ ./
 COPY skill/ /skill/
+COPY community/ /community/
 
 # Generate Prisma client + Next.js build
 ENV NEXT_TELEMETRY_DISABLED=1

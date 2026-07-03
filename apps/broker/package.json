@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node server.mjs",
+    "prebuild": "node scripts/copy-lessons.mjs",
     "build": "next build",
     "start": "NODE_ENV=production node server.mjs",
     "test": "node --test",
