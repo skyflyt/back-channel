@@ -73,11 +73,13 @@ const ANCHOR_NAV: Record<string, NavKey> = { "connect-agent": "account", "friend
 // these class names + one injected stylesheet (sidebar -> horizontal bar on mobile).
 const RESPONSIVE_CSS = `
 .bc-shell { display: flex; gap: 22px; align-items: flex-start; }
-.bc-sidebar { position: sticky; top: 86px; flex: 0 0 210px; display: flex; flex-direction: column; gap: 2px; }
+.bc-navwrap { position: relative; flex: 0 0 210px; }
+.bc-sidebar { position: sticky; top: 86px; display: flex; flex-direction: column; gap: 2px; }
 .bc-sidebar .bc-navitem { width: 100%; }
 .bc-main { flex: 1 1 auto; min-width: 0; }
 @media (max-width: 860px) {
   .bc-shell { flex-direction: column; gap: 14px; }
+  .bc-navwrap { flex: none; width: 100%; }
   .bc-sidebar { position: static; flex: none; width: 100%; flex-direction: row; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
   .bc-sidebar .bc-navitem { flex: 0 0 auto; width: auto; }
   .bc-topbar { padding-left: 16px !important; padding-right: 16px !important; }
@@ -685,6 +687,14 @@ export default function AccountPage() {
       <div style={s.wrap}>
         <div className="bc-shell">
           {!isFirstRun && (
+          // .bc-navwrap is the positioned containing block for .bc-moremenu on desktop
+          // (>860px): .bc-shell is an unpositioned flex container, so without this wrapper
+          // s.moreMenu's position:absolute has no positioned ancestor and the panel renders
+          // as a block stacked below the sidebar instead of anchoring under the More button.
+          // The wrapper only sets position:relative + mirrors .bc-sidebar's old flex-basis --
+          // it does NOT get overflow-x, so it can never clip .bc-moremenu the way the old
+          // relative wrapper (removed in this PR) used to on mobile.
+          <div className="bc-navwrap">
           <nav className="bc-sidebar" style={s.sidebar}>
             {NAV.map((n) => (
               <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
@@ -701,17 +711,16 @@ export default function AccountPage() {
               <span style={s.navIcon} aria-hidden>⋯</span>More {moreOpen ? "▴" : "▾"}
             </button>
           </nav>
-          )}
-          {!isFirstRun && moreOpen && (
+          {moreOpen && (
             // Sibling of .bc-sidebar (not nested inside it) so it can never be a child of the
             // mobile horizontal-scroll container. On <=860px .bc-sidebar sets overflow-x: auto,
             // and per the CSS overflow spec setting overflow-x to anything but visible forces
             // overflow-y to an implied "auto" too -- an absolutely-positioned dropdown living
             // inside that box would get clipped by the sidebar's own scrollport (the bug this
             // fixes). Desktop keeps the familiar anchored dropdown via bc-moremenu's default
-            // (absolute) position from s.moreMenu; the <=860px media query below switches this
-            // same element to a static, wrapping inline row -- CSS-only, no JS viewport checks,
-            // no portal, no z-index tuning.
+            // (absolute) position from s.moreMenu, now anchored to .bc-navwrap above; the
+            // <=860px media query below switches this same element to a static, wrapping
+            // inline row -- CSS-only, no JS viewport checks, no portal, no z-index tuning.
             <div className="bc-moremenu" style={s.moreMenu}>
               {NAV_MORE.map((n) => (
                 <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
@@ -719,6 +728,8 @@ export default function AccountPage() {
                 </button>
               ))}
             </div>
+          )}
+          </div>
           )}
           <main className="bc-main">
             <h1 style={s.pageTitle}>{navTitle}</h1>
