@@ -637,10 +637,39 @@ export default function AccountPage() {
   if (state === "error" || !me) return <main style={s.page}><div style={s.wrap}><p style={s.err}>Couldn&apos;t load your account. Please try again.</p></div></main>;
 
   const lastUsed = me.api_key_last_used_at ? new Date(me.api_key_last_used_at).toLocaleString() : "never";
-  const when = (iso: string) => new Date(iso).toLocaleString();
+  // Friend-grade relative time ("2 hours ago") for thread/session rows -- falls back to a
+  // plain date once it is far enough back that "N days ago" stops being useful at a glance.
+  const when = (iso: string) => {
+    const d = new Date(iso);
+    const secs = (Date.now() - d.getTime()) / 1000;
+    if (secs < 0) return d.toLocaleString();
+    if (secs < 45) return "just now";
+    if (secs < 90) return "a minute ago";
+    const mins = Math.round(secs / 60);
+    if (mins < 45) return mins + " minutes ago";
+    if (mins < 90) return "an hour ago";
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return hours + " hours ago";
+    if (hours < 36) return "a day ago";
+    const days = Math.round(hours / 24);
+    if (days < 7) return days + " days ago";
+    if (days < 14) return "a week ago";
+    if (days < 30) return Math.round(days / 7) + " weeks ago";
+    return d.toLocaleDateString();
+  };
 
   const initial = (me.display_name || me.handle || "?").trim().charAt(0).toUpperCase();
-  const navTitle = NAV.find((n) => n.key === nav)?.label ?? "Account";
+  const navTitle = NAV_ALL.find((n) => n.key === nav)?.label ?? "Account";
+  // First-run mode: no friends AND no sessions of any kind (active or recent). The WS-A
+  // concierge welcome message lives in the self-inbox as an AgentPayload (kind="welcome"),
+  // not a Session row, so it never shows up in active/recent or summary.active_sessions --
+  // there is no "concierge session" to special-case here, just "has this account done
+  // anything with a real person yet." Returning/populated accounts (any friend, or any
+  // session ever) always get the full nav, never this shell, regardless of the flag below.
+  const hasAnyFriendSignal = trust.length > 0;
+  const hasAnySession = active.length > 0 || recent.length > 0;
+  const isFirstRun = !hasAnyFriendSignal && !hasAnySession && !showEverything;
+  const moreActive = NAV_MORE.some((n) => n.key === nav);
   return (
     <div style={s.page}>
       <style>{RESPONSIVE_CSS}</style>
