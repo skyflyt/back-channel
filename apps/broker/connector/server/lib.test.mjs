@@ -1,9 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { createBridge } from "./lib.js";
+import { createBridge, looksLikeExchangeCode, redeemExchangeCode } from "./lib.js";
 
-function harness({ token = "bc_test", fetchImpl } = {}) {
+function memoryKeystore() {
+  let state = {};
+  return { load: () => state, save: (s) => { state = s; }, _peek: () => state };
+}
+
+function harness({ token = "bc_test", fetchImpl, keystore = memoryKeystore() } = {}) {
   const stdin = new PassThrough();
   const outLines = [];
   const stdout = { write: (s) => { outLines.push(...String(s).split("\n").filter(Boolean)); return true; } };
@@ -15,11 +20,12 @@ function harness({ token = "bc_test", fetchImpl } = {}) {
     stdout,
     fetchImpl,
     timeoutMs: 200,
+    keystore,
     log: (...a) => logs.push(a.join(" ")),
   });
   bridge.start();
   const send = async (obj) => { stdin.write(JSON.stringify(obj) + "\n"); await bridge.flush(); };
-  return { stdin, outLines, logs, bridge, send, parsed: () => outLines.map((l) => JSON.parse(l)) };
+  return { stdin, outLines, logs, bridge, send, keystore, parsed: () => outLines.map((l) => JSON.parse(l)) };
 }
 
 const okFetch = (body, status = 200) => async () => new Response(JSON.stringify(body), { status });
@@ -116,4 +122,105 @@ test("garbage input line -> -32700, does not kill the bridge", async () => {
   const rs = h.parsed();
   assert.equal(rs[0].error.code, -32700);
   assert.equal(rs[1].id, 8);
+});
+
+// ── Exchange-code bootstrap (BCX-… in the token field) ──────────────────────
+
+test("looksLikeExchangeCode: recognizes BCX-XXXX-XXXX, case/whitespace-insensitive; rejects bc_ keys", () => {
+  assert.equal(looksLikeExchangeCode("BCX-AB12-CD34"), true);
+  assert.equal(looksLikeExchangeCode("  bcx-ab12-cd34  "), true);
+  assert.equal(looksLikeExchangeCode("bc_realkeyabc123"), false);
+  assert.equal(looksLikeExchangeCode(""), false);
+  assert.equal(looksLikeExchangeCode("BCX-TOOLONGCODE-1234"), false);
+});
+
+test("redeemExchangeCode: success returns the minted api_key", async () => {
+  let seenUrl, seenBody;
+  const fetchImpl = async (url, init) => {
+    seenUrl = url;
+    seenBody = JSON.parse(init.body);
+    return new Response(JSON.stringify({ api_key: "bc_minted123", handle: "alice@bc", agent_id: "a1", agent_name: "Claude Desktop" }), { status: 200 });
+  };
+  const apiKey = await redeemExchangeCode("bcx-ab12-cd34", { mcpUrl: "https://example.test/api/mcp", fetchImpl });
+  assert.equal(apiKey, "bc_minted123");
+  assert.equal(seenUrl, "https://example.test/api/auth/exchange");
+  assert.equal(seenBody.code, "BCX-AB12-CD34"); // normalized upper-case before send
+});
+
+test("redeemExchangeCode: 410 (used/expired/unknown) throws one friendly, non-technical error", async () => {
+  const fetchImpl = async () => new Response(JSON.stringify({ error: "invalid_or_expired_code" }), { status: 410 });
+  await assert.rejects(
+    () => redeemExchangeCode("BCX-AAAA-BBBB", { mcpUrl: "https://example.test/api/mcp", fetchImpl }),
+    (err) => {
+      assert.match(err.message, /already been used, expired, or doesn't exist/);
+      assert.match(err.message, /Connect a new agent/);
+      return true;
+    },
+  );
+});
+
+test("bridge: exchange code in token config is redeemed on first tool call, then used to forward with the minted bc_ key", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push(String(url));
+    if (String(url).endsWith("/api/auth/exchange")) {
+      return new Response(JSON.stringify({ api_key: "bc_minted999", handle: "alice@bc" }), { status: 200 });
+    }
+    assert.equal(init.headers.authorization, "Bearer bc_minted999", "forward must use the MINTED key, not the raw code");
+    return new Response('{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}', { status: 200 });
+  };
+  const h = harness({ token: "BCX-AB12-CD34", fetchImpl });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  assert.deepEqual(h.parsed(), [{ jsonrpc: "2.0", id: 1, result: { tools: [] } }]);
+  assert.ok(calls.some((u) => u.endsWith("/api/auth/exchange")), "exchange endpoint was called");
+});
+
+test("bridge: minted key from a redeemed code is persisted to the keystore and reused without re-redeeming", async () => {
+  const keystore = memoryKeystore();
+  let exchangeCalls = 0;
+  const fetchImpl = async (url, init) => {
+    if (String(url).endsWith("/api/auth/exchange")) {
+      exchangeCalls++;
+      return new Response(JSON.stringify({ api_key: "bc_persisted" }), { status: 200 });
+    }
+    return new Response(`{"jsonrpc":"2.0","id":${JSON.parse(init.body).id},"result":{}}`, { status: 200 });
+  };
+  const h1 = harness({ token: "BCX-AB12-CD34", fetchImpl, keystore });
+  await h1.send({ jsonrpc: "2.0", id: 1, method: "ping" });
+  assert.equal(exchangeCalls, 1);
+
+  // Simulate a Desktop restart: fresh bridge, SAME keystore, SAME (already-used) code still in config.
+  const h2 = harness({ token: "BCX-AB12-CD34", fetchImpl, keystore });
+  await h2.send({ jsonrpc: "2.0", id: 2, method: "ping" });
+  assert.equal(exchangeCalls, 1, "second bridge instance must reuse the persisted key, not re-redeem the code");
+});
+
+test("bridge: already-used/expired code (410) surfaces a friendly local error, nothing forwarded", async () => {
+  const fetchImpl = async (url) => {
+    if (String(url).endsWith("/api/auth/exchange")) return new Response(JSON.stringify({ error: "invalid_or_expired_code" }), { status: 410 });
+    throw new Error("should not forward past a failed redemption");
+  };
+  const h = harness({ token: "BCX-DEAD-BEEF", fetchImpl });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  const [r] = h.parsed();
+  assert.match(r.error.message, /already been used, expired, or doesn't exist/);
+
+  // Second call also fails fast without hammering the exchange endpoint again.
+  await h.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  assert.match(h.parsed()[1].error.message, /already been used, expired, or doesn't exist/);
+});
+
+test("bridge: raw bc_ token passes through unchanged (no exchange call, existing behavior preserved)", async () => {
+  let exchangeCalled = false;
+  const h = harness({
+    token: "bc_rawtoken",
+    fetchImpl: async (url, init) => {
+      if (String(url).endsWith("/api/auth/exchange")) exchangeCalled = true;
+      assert.equal(init.headers.authorization, "Bearer bc_rawtoken");
+      return new Response('{"jsonrpc":"2.0","id":1,"result":{"ok":true}}', { status: 200 });
+    },
+  });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "ping" });
+  assert.equal(exchangeCalled, false);
+  assert.deepEqual(h.parsed(), [{ jsonrpc: "2.0", id: 1, result: { ok: true } }]);
 });

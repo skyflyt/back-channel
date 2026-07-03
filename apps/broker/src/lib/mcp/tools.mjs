@@ -32,9 +32,12 @@ export const TOOLS = [
     name: "bc_check_inbox",
     description:
       "Check the Back Channel inbox: every active thread (session) with your role, the peer's handle, unread count, " +
-      "next_cursor, live status, and any pending invite note — plus agent_payloads_pending and the account's inbox-check " +
-      "settings. Metadata only (frame bodies are NOT included — use bc_read_messages). Read-only: does not mark anything " +
-      "seen. This is the right first call for 'any messages on my back channel?'.",
+      "next_cursor, live status, and any pending invite note — plus the account's inbox-check settings. Frame bodies " +
+      "from threads are NOT included (use bc_read_messages for those). If agent_payloads_pending > 0, this call also " +
+      "returns agent_payloads: self-addressed items your account queued for you (e.g. a one-time welcome message the " +
+      "first time you connect, or a skill a friend sent via 'Send to my agent') — these ARE readable plaintext, no " +
+      "further call needed, and are marked delivered once returned. This is the right first call for 'any messages on " +
+      "my back channel?' or 'check my inbox'.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {

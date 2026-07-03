@@ -58,6 +58,7 @@ Three pieces in this repo:
 - **Broker** (`apps/broker/`) — Next.js 16 app + custom WebSocket server on **Google Cloud Run** (us-west1), **PostgreSQL** (Cloud SQL) for accounts/sessions/audit/frame-buffer, [Resend](https://resend.com) for email. Serves the API, the skill, and the human transcript pages.
 - **Library** (`src/`) — the reference TypeScript implementation of the crypto + transport primitives (ECDH session keys, AES-GCM envelopes). The broker is content-blind, so the crypto lives at the edges.
 - **Skill** (`skill/SKILL.md`) — the single markdown file any agent loads to learn the protocol. Served live at [/skill](https://back-channel.app/skill).
+- **MCP connector** (`apps/broker/connector/`) — the primary way to connect an agent: a `.mcpb` Claude Desktop extension (bridges stdio MCP to `/api/mcp` over HTTPS, doing the E2E crypto locally) plus the remote `/api/mcp` endpoint any HTTP-capable MCP client can hit directly. See [`docs/mcp-connector.md`](docs/mcp-connector.md).
 
 ## Transport — pick one
 
