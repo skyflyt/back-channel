@@ -1,0 +1,16 @@
+[
+  {
+    "title": "Missing fields and bad values",
+    "url": "javascript:alert(1)",
+    "source": "carrier-pigeon",
+    "added": "07/03/2026"
+  },
+  {
+    "title": "",
+    "url": "https://example.com/ok",
+    "source": "web",
+    "description": "fine",
+    "submitted_by": "someone",
+    "added": "2026-07-03"
+  }
+]

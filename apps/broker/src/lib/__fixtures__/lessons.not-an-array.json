@@ -1,0 +1,3 @@
+{
+  "not": "an array — this fixture exists to prove the schema check fails CI on a malformed PR"
+}

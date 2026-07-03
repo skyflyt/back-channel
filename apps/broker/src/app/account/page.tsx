@@ -1538,7 +1538,7 @@ export default function AccountPage() {
         </>)}
 
             <p style={s.footerNav}>
-              <a href="/faq" style={s.footLink}>FAQ</a> · <a href="/commands" style={s.footLink}>Commands</a> · <a href="/" style={s.footLink}>Home</a>
+              <a href="/faq" style={s.footLink}>FAQ</a> · <a href="/commands" style={s.footLink}>Commands</a> · <a href="/lessons" style={s.footLink}>Community lessons</a> · <a href="/" style={s.footLink}>Home</a>
             </p>
           </main>
         </div>
