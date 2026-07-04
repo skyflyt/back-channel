@@ -27,7 +27,7 @@ import { POST as endSessionPOST } from "@/app/api/sessions/[id]/end/route";
 import { GET as scopesGET } from "@/app/api/scopes/route";
 import { POST as viewTokenSelfPOST } from "@/app/api/account/view-token-self/route";
 import { GET as agentPayloadsGET } from "@/app/api/inbox/agent-payloads/route";
-import { waitForInbox } from "@/lib/inbox-bus";
+import { waitForInbox, TooManyWaitersError } from "@/lib/inbox-bus";
 // Side effect: registers the shared pendingCounter with inbox-bus (same wiring
 // /api/inbox/check and /api/inbox/events rely on) so waitForInbox here counts
 // real pending mail instead of a zero stub.
@@ -121,7 +121,20 @@ async function dispatchTool(
       const waitSeconds = typeof waitSecondsArg === "number" ? waitSecondsArg : 0;
       const waitMs = Math.max(0, Math.min(waitSeconds, 120)) * 1000;
       if (waitMs > 0) {
-        const doorbell = await waitForInbox(auth.accountId, waitMs);
+        // L1 (security-pass-2026-07-03.md): waitForInbox caps parked waiters per
+        // account and throws TooManyWaitersError instead of growing unbounded when
+        // this account already has one in flight (e.g. a second concurrent
+        // bc_check_inbox call, or one racing /api/inbox/check). There's no
+        // natural "429" for an MCP tool result, so fall through to an immediate
+        // (non-waiting) read — same shape a caller gets by passing wait_seconds:0,
+        // never an error the agent has to handle specially.
+        let doorbell: Awaited<ReturnType<typeof waitForInbox>>;
+        try {
+          doorbell = await waitForInbox(auth.accountId, waitMs);
+        } catch (e) {
+          if (!(e instanceof TooManyWaitersError)) throw e;
+          doorbell = await waitForInbox(auth.accountId, 0);
+        }
         if (doorbell.pending_count === 0) {
           // Nothing arrived during the wait — same empty-inbox shape callers already
           // get today, plus a waited_seconds note so the agent knows it actually waited

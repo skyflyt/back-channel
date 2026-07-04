@@ -50,6 +50,18 @@ const COALESCE_MS = 300;
 // Long-poll wait cap in ms (design spec S2b: 300s, Cloud Run timeout headroom).
 export const MAX_WAIT_MS = 300 * 1000;
 
+// L1 (security-pass-2026-07-03.md): cap concurrent parked long-poll waiters per
+// account, mirroring SSE's 1-connection-per-account limit (subscribeSse below
+// replaces any existing stream rather than growing unbounded). Long-poll has no
+// single persistent connection object to "replace", so instead of silently
+// evicting an older waiter (which would just move the resource-exhaustion
+// vector from "grow forever" to "starve the first caller"), a waiter over the
+// cap is rejected immediately and the route maps that to a fast, harmless
+// response. 1 mirrors SSE's own limit; legitimate multi-tab/multi-agent use of
+// one account already tends to prefer SSE (held connection) over long-poll
+// (repeated short-lived requests) for exactly this reason.
+export const MAX_LONGPOLL_WAITERS_PER_ACCOUNT = 1;
+
 /** @type {Map<string, AccountBus>} */
 const buses = globalThis.__bcInboxWaiters ?? (globalThis.__bcInboxWaiters = new Map());
 
@@ -241,12 +253,32 @@ export function unsubscribeSse(accountId, writer) {
   bus.sse.delete(writer);
 }
 /**
+ * Thrown by waitForInbox when the account already has MAX_LONGPOLL_WAITERS_PER_ACCOUNT
+ * parked waiters - see the cap's doc comment above. The route catches this and returns
+ * a fast, explicit response instead of piling on a third/fourth/... unbounded waiter.
+ */
+export class TooManyWaitersError extends Error {
+  constructor(accountId) {
+    super(`account ${accountId} already has ${MAX_LONGPOLL_WAITERS_PER_ACCOUNT} parked long-poll waiter(s)`);
+    this.name = "TooManyWaitersError";
+  }
+}
+
+/**
  * Long-poll: resolve immediately with the current snapshot if pending_count
  * > 0, else park a resolver and race a timer - returns the instant
  * fireInboxEvent's coalesce timer runs, no polling-interval granularity.
+ *
+ * L1 fix: before parking, checks the account's current waiter count against
+ * MAX_LONGPOLL_WAITERS_PER_ACCOUNT and throws TooManyWaitersError instead of
+ * growing the Set unbounded - mirrors SSE's per-account cap (subscribeSse).
+ * The immediate (non-parking) path above is never capped: it doesn't hold a
+ * resource, so a burst of polls that all resolve instantly isn't the resource-
+ * exhaustion shape this guards against.
  * @param {string} accountId
  * @param {number} waitMs  capped at MAX_WAIT_MS by the caller (route validates)
  * @returns {Promise<InboxEvent & { waited_seconds: number }>}
+ * @throws {TooManyWaitersError}
  */
 export async function waitForInbox(accountId, waitMs) {
   const startedAt = Date.now();
@@ -256,6 +288,9 @@ export async function waitForInbox(accountId, waitMs) {
   }
 
   const bus = getOrCreateBus(accountId);
+  if (bus.longpoll.size >= MAX_LONGPOLL_WAITERS_PER_ACCOUNT) {
+    throw new TooManyWaitersError(accountId);
+  }
   return new Promise((resolve) => {
     /** @type {{ resolve: (evt: InboxEvent) => void, kinds: Set<InboxKind> }} */
     const waiter = {

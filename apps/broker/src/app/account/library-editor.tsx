@@ -15,7 +15,7 @@ const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?
 // can't ship in a client bundle, so the shared strings live in their own module
 // that both sides import).
 export { LINK_HUMAN_WARNING, LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST, LINK_BADGE_TEXT } from "@/lib/link-warnings";
-import { LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST, LINK_BADGE_TEXT } from "@/lib/link-warnings";
+import { LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST, LINK_BADGE_TEXT, safeHref } from "@/lib/link-warnings";
 
 export type EditorArtifact = {
   id: string; name: string; description: string | null; kind: string;
@@ -284,7 +284,7 @@ export function ArtifactInspector({ artifact, onClose }: { artifact: EditorArtif
             </div>
             <label style={{ ...sLabel, marginTop: 14 }}>Destination</label>
             <p style={{ fontSize: 13, wordBreak: "break-all" }}>
-              <a href={typeof m.url === "string" ? m.url : "#"} target="_blank" rel="noopener noreferrer nofollow">{typeof m.url === "string" ? m.url : "(no url)"}</a>
+              <a href={typeof m.url === "string" ? safeHref(m.url) : "#"} target="_blank" rel="noopener noreferrer nofollow">{typeof m.url === "string" ? m.url : "(no url)"}</a>
             </p>
             {typeof m.notes === "string" && m.notes && (<><label style={sLabel}>Notes</label><div style={pre}>{m.notes}</div></>)}
           </>

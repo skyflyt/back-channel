@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAccountFromAuth } from "@/lib/auth";
-import { waitForInbox, MAX_WAIT_MS } from "@/lib/inbox-bus";
+import { waitForInbox, MAX_WAIT_MS, TooManyWaitersError } from "@/lib/inbox-bus";
 // Side effect: registers the shared pendingCounter with inbox-bus (one
 // definition of "pending", shared with /api/inbox/events - see that module).
 import "@/lib/inbox-pending";
@@ -38,6 +38,23 @@ export async function GET(req: NextRequest) {
   }
   const waitMs = Math.min(Math.max(waitSeconds, 0) * 1000, MAX_WAIT_MS);
 
-  const result = await waitForInbox(account.id, waitMs);
-  return NextResponse.json(result);
+  // L1 (security-pass-2026-07-03.md): waitForInbox caps parked waiters per
+  // account (mirrors SSE's 1-connection limit) and throws instead of growing
+  // unbounded when a caller opens a second concurrent long-poll for the same
+  // account. Map that to a 429 with Retry-After rather than hanging or 500ing
+  // - the caller (an agent's inbox-check loop) should back off and retry, not
+  // treat this as a server error. Never returned for the immediate-resolve
+  // path (already-pending mail resolves before the cap check runs).
+  try {
+    const result = await waitForInbox(account.id, waitMs);
+    return NextResponse.json(result);
+  } catch (e) {
+    if (e instanceof TooManyWaitersError) {
+      return NextResponse.json(
+        { error: "too_many_waiters", message: "This account already has a long-poll request in flight. Wait for it to resolve (or use SSE) instead of opening another." },
+        { status: 429, headers: { "Retry-After": "1" } },
+      );
+    }
+    throw e;
+  }
 }

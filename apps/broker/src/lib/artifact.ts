@@ -149,13 +149,34 @@ const INSTALL_VERB: Record<string, string> = {
 // Lives in ./link-warnings.ts (no server-only imports) so client components can
 // share the same source of truth instead of hand-duplicating the strings.
 export { LINK_HUMAN_WARNING, LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST, LINK_AGENT_WARNING, LINK_BADGE_TEXT } from "@/lib/link-warnings";
-import { LINK_HUMAN_WARNING, LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST, LINK_AGENT_WARNING, LINK_BADGE_TEXT } from "@/lib/link-warnings";
+import { LINK_HUMAN_WARNING, LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST, LINK_AGENT_WARNING, LINK_BADGE_TEXT, safeHref, fenceUntrusted } from "@/lib/link-warnings";
 
 /** Markdown the recipient agent prints to the user before installing (spec §3.2). */
 export function humanReadableMd(a: SkillRow, authorHandle: string): string {
   const who = authorHandle.replace(/@bc$/, "");
   const t = a.type || "skill";
   const label = t === "scheduled_task" ? "scheduled task" : t;
+
+  // L3 (security-pass-2026-07-03.md): a link lesson's title/notes are author-chosen,
+  // untrusted text. Fence them explicitly and put the REAL canonical agent warning
+  // AFTER the fenced block (never only before it) so a crafted title can't spoof a
+  // fake "verified"/"safe" trailer to the reading agent -- the last thing it reads
+  // here is always the genuine warning, not attacker-supplied text.
+  if (t === "link") {
+    const m = (a.manifest && typeof a.manifest === "object" ? a.manifest as Record<string, unknown> : {});
+    const url = typeof m.url === "string" ? m.url : a.body;
+    const notes = typeof m.notes === "string" ? m.notes : "";
+    const untrustedBlock = fenceUntrusted(`title: ${a.name}`, notes ? `notes: ${notes}` : "");
+    const lines = [
+      `↗ **${LINK_BADGE_TEXT}** — a link lesson shared by **${who}** via Back Channel, pointing at: ${url}`,
+      "",
+      untrustedBlock,
+      "",
+      `⚠️ ${LINK_AGENT_WARNING}`,
+    ];
+    return lines.filter((l) => l !== undefined && l !== null).join("\n");
+  }
+
   const lines = [
     `**${a.name}** — a ${label} shared by **${who}** via Back Channel.`,
     a.description ? `\n${a.description}` : "",
@@ -163,13 +184,6 @@ export function humanReadableMd(a: SkillRow, authorHandle: string): string {
   if (t === "scheduled_task") lines.push(`\n⏰ This sets up a **recurring task** on your agent. It will run on a schedule until you remove it.`);
   if (t === "prompt") lines.push(`\n💬 This is a **saved prompt** — nothing runs automatically; you invoke it when you want.`);
   if (t === "skill") lines.push(`\n📜 This is a **skill** your agent can run.`);
-  if (t === "link") {
-    const m = (a.manifest && typeof a.manifest === "object" ? a.manifest as Record<string, unknown> : {});
-    const url = typeof m.url === "string" ? m.url : a.body;
-    lines.push(`\n↗ **${LINK_BADGE_TEXT}** — this is a link to an external resource: ${url}`);
-    lines.push(`\n⚠️ ${LINK_AGENT_WARNING}`);
-    return lines.filter(Boolean).join("\n");
-  }
   lines.push(`\n_Signed by ${who}; verify the signature before trusting the body._`);
   return lines.filter(Boolean).join("\n");
 }
@@ -183,6 +197,11 @@ export function buildEnvelope(a: SkillRow, author: { handle: string; pubkey: str
   // print to the user) so it can't be missed, even though humanReadableMd already
   // folds the warning in above; keep this explicit prepend as the contractual
   // guarantee independent of that function's internals.
+  // L3: this prepend is additional reinforcement, not the load-bearing placement —
+  // humanReadableMd's link branch (see its own L3 comment) already fences the
+  // untrusted title/notes and re-asserts the REAL warning AFTER that fence, so the
+  // LAST occurrence of the warning text in installMd still comes after any attacker-
+  // controlled content, even though this leading copy comes first.
   const installMd = t === "link" ? `⚠️ ${LINK_AGENT_WARNING}\n\n${humanMd}` : humanMd;
   return {
     sdk_version: "0.1",
@@ -233,8 +252,9 @@ export function landingHtml(a: SkillRow, author: { handle: string }, token: stri
   } else if (t === "link") {
     warn = `<p class="warn">↗ <b>${esc(LINK_BADGE_TEXT)}</b> — <strong>${esc(LINK_HUMAN_WARNING_LEAD)}</strong>${esc(LINK_HUMAN_WARNING_REST)}</p>`;
   }
+  const safeLinkUrl = safeHref(linkUrl);
   const linkBlock = t === "link"
-    ? `<div class="card"><p style="margin-top:0"><b>Destination</b></p><p style="word-break:break-all;margin-bottom:0"><a href="${esc(linkUrl)}" rel="noopener noreferrer nofollow">${esc(linkUrl)}</a></p></div>`
+    ? `<div class="card"><p style="margin-top:0"><b>Destination</b></p><p style="word-break:break-all;margin-bottom:0"><a href="${esc(safeLinkUrl)}" rel="noopener noreferrer nofollow">${esc(linkUrl)}</a></p></div>`
     : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

@@ -13,6 +13,8 @@ export {
   writeSseHeartbeat,
   heldStreamCount,
   MAX_WAIT_MS,
+  MAX_LONGPOLL_WAITERS_PER_ACCOUNT,
+  TooManyWaitersError,
 } from "./inbox-bus.mjs";
 export type InboxKind = "frame" | "payload" | "invite";
 export type InboxEvent = {

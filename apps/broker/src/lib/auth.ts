@@ -8,8 +8,8 @@
  * Tokens are random base64url strings, 32 bytes, stored in MagicLink table with 24h TTL.
  */
 
-import { randomBytes, createHash } from "node:crypto";
-import { prisma } from "./db";
+import { randomBytes, randomInt, createHash } from "node:crypto";
+import { prisma } from "@/lib/db";
 import type { Account } from "@prisma/client";
 
 const KEY_PREFIX = "bc_";
@@ -53,9 +53,15 @@ export function generateHandle(email: string): string {
   return `${local || "user"}@bc`;
 }
 
+// L6 (security-pass-2026-07-03.md): CSPRNG, not Math.random() — rate-limited so the practical
+// risk was theoretical, but there's no reason a human-facing secret shouldn't use the same
+// crypto-random source generateExchangeCode (below) already uses. randomInt(0, n) is Node's
+// unbiased CSPRNG draw (internally rejection-samples, unlike a naive randomBytes(1)[0] % n,
+// which is subtly biased for an alphabet length that doesn't evenly divide 256). Same
+// alphabet, length, and BC-XXXX-XXXX format as before — only the entropy source changed.
 export function generateInviteCode(): string {
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-  const part = (n: number) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  const part = (n: number) => Array.from({ length: n }, () => chars[randomInt(0, chars.length)]).join("");
   return `BC-${part(4)}-${part(4)}`;
 }
 

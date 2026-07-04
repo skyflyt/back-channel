@@ -8,10 +8,12 @@ on:
     branches: [main]
     paths:
       - "apps/broker/**"
+      - "community/**"
       - ".github/workflows/broker.yml"
   pull_request:
     paths:
       - "apps/broker/**"
+      - "community/**"
       - ".github/workflows/broker.yml"
 
 jobs:
@@ -28,7 +30,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/broker/package-lock.json
       - run: npm ci
-      - name: generate community lessons (build-time copy, see scripts/copy-lessons.mjs)
+      - name: generate community lessons (build-time copy + validate, see scripts/copy-lessons.mjs)
         run: node scripts/copy-lessons.mjs
       - name: prisma generate (types for tsc)
         run: npx prisma generate

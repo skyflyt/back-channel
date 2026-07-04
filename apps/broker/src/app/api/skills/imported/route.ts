@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromAuth, getAccountFromCookie, SESSION_COOKIE_NAME } from "@/lib/auth";
+import { getAccountFromAuth, getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -24,8 +24,12 @@ export async function GET(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const account = (await getAccountFromAuth(req.headers.get("authorization"))) ?? (await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value));
+  const bearer = await getAccountFromAuth(req.headers.get("authorization"));
+  const account = bearer ?? (await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value));
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  // L4 (security-pass-2026-07-03.md): missing CSRF guard on the cookie-auth path — matches
+  // the copy/route.ts fix and sibling routes' bearer-or-cookie+CSRF pattern.
+  if (!bearer && !csrfValid(req.headers.get(CSRF_HEADER), req.cookies.get(CSRF_COOKIE_NAME)?.value)) return NextResponse.json({ error: "csrf" }, { status: 403 });
   const importId = new URL(req.url).searchParams.get("id");
   if (!importId) return NextResponse.json({ error: "id_required" }, { status: 400 });
   await prisma.skillImport.deleteMany({ where: { id: importId, importedByAccountId: account.id } });

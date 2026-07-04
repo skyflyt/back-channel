@@ -26,8 +26,10 @@ warning banner on the `/lessons` page itself for the full trust stance.
 
    `source` is one of `github`, `backchannel`, or `web` — pick whichever matches where the URL
    lives. Use today's date for `added`.
-3. Open a pull request. CI runs a schema check on `lessons.json` — a malformed entry (missing
-   field, wrong type, bad URL scheme) fails the build.
+3. Open a pull request. Every build validates `lessons.json`'s schema (via `apps/broker/scripts/copy-lessons.mjs`,
+   which runs as part of `npm run build`) — a malformed entry (missing field, wrong type, bad
+   URL scheme like `javascript:`) fails the build, and CI runs that same build on any PR
+   touching this file.
 4. A maintainer reviews the PR against the listing criteria below and merges or asks for changes.
 
 ## Listing criteria
