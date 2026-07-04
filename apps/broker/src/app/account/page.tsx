@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback } from "react";
 import { KeyMirrorConversation, BrowserAccessSettings } from "./keymirror-panel";
 import { ArtifactEditor, ArtifactInspector, type EditorArtifact, LINK_HUMAN_WARNING, LINK_BADGE_TEXT } from "./library-editor";
 import { LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST } from "@/lib/link-warnings";
+import { Composer, type ComposerPrefill } from "./composer";
+import { FriendPage } from "./friend-page";
 
 interface Me {
   id: string; handle: string; email: string; display_name: string | null; created_at: string;
@@ -194,17 +196,14 @@ export default function AccountPage() {
   const [showRaw, setShowRaw] = useState(false);
   const [wakePrompts, setWakePrompts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState("");
-  // "Start a new session" form
-  const [ssOpen, setSsOpen] = useState(false);
-  const [ssTopic, setSsTopic] = useState("");
-  const [ssFriend, setSsFriend] = useState("");
-  const [ssScopes, setSsScopes] = useState("config.read, config.suggest");
-  const [ssTtl, setSsTtl] = useState(60);
-  const [ssCustom, setSsCustom] = useState(false);
-  const [ssErr, setSsErr] = useState("");
-  const [ssResult, setSsResult] = useState<{ your_prompt: string; friend_prompt: string; code: string } | null>(null);
-  const [ssSentTo, setSsSentTo] = useState("");          // friend handle/email the message just went to
-  const [ssShowPrompts, setSsShowPrompts] = useState(false); // "speed this up" disclosure
+  // Composer (extracted to composer.tsx) — a prefill key forces a remount with
+  // fresh state whenever askFriend() targets a new handle/topic/framing.
+  const [composerPrefill, setComposerPrefill] = useState<(ComposerPrefill & { key: number }) | null>(null);
+  // Per-friend agent page: /account?friend=<handle>, URL-synced like ?tab=.
+  const [friendView, setFriendView] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("friend");
+  });
   const [notify, setNotify] = useState(true);
   const [liveDefault, setLiveDefault] = useState(15);
   const [inboxEnabled, setInboxEnabled] = useState(true);
@@ -308,35 +307,24 @@ export default function AccountPage() {
     window.history.replaceState({}, "", url.pathname + url.search);
   }, [nav]);
 
+  // Per-friend agent page URL sync (?friend=<handle>) — same replaceState
+  // pattern as ?tab= above, so the friend page is a shareable/bookmarkable
+  // deep link and survives a refresh.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const current = url.searchParams.get("friend");
+    if (current === friendView) return;
+    if (friendView) url.searchParams.set("friend", friendView);
+    else url.searchParams.delete("friend");
+    window.history.replaceState({}, "", url.pathname + url.search);
+  }, [friendView]);
+
+  const openFriend = (handle: string) => { setFriendView(handle); setNav("friends"); };
+
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
     window.location.href = "/login";
-  };
-
-  const startSession = async () => {
-    setSsErr("");
-    if (!ssTopic.trim()) { setSsErr("Tell us what you want help with."); return; }
-    const friend = ssFriend.trim();
-    if (!friend) { setSsErr("Enter your friend's @bc handle or their email."); return; }
-    // Route to host_handle vs host_email: "@bc" handles vs real emails.
-    const target = friend.endsWith("@bc") ? { host_handle: friend } : friend.includes("@") ? { host_email: friend } : null;
-    if (!target) { setSsErr("That doesn't look like a @bc handle or an email."); return; }
-    const scopes = ssScopes.split(",").map((s) => s.trim()).filter(Boolean);
-    setBusy("startsession");
-    try {
-      const r = await fetch("/api/invites", {
-        method: "POST", credentials: "include",
-        headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
-        body: JSON.stringify({ ...target, scopes, ttl_minutes: ssTtl, message: ssTopic.trim() }),
-      });
-      const j = await r.json();
-      if (!r.ok) { setSsErr(j.detail || j.error || "Couldn't start the session — check the handle/email and scopes."); setBusy(""); return; }
-      const p = await fetch(`/api/sessions/${j.session_id}/prompts`, { credentials: "include" });
-      if (p.ok) { const pj = await p.json(); setSsResult({ your_prompt: pj.your_prompt, friend_prompt: pj.friend_prompt, code: pj.code }); }
-      setSsSentTo(friend); setSsShowPrompts(false);
-      loadSessions();
-    } catch { setSsErr("Something went wrong — try again."); }
-    setBusy("");
   };
 
   const getWakePrompt = async (id: string) => {
@@ -550,10 +538,13 @@ export default function AccountPage() {
   };
 
   // Prefill the "Send a new message" composer and jump to it — used by the
-  // discover/shared cards' "Ask their agent" / "Ask to share" actions. Honest:
-  // it just opens a real message thread to that friend (no hidden RPC).
+  // discover/shared cards' "Ask their agent" / "Ask to share" actions, and by
+  // the Friends tab's "Message" button. Honest: it just opens a real message
+  // thread to that friend (no hidden RPC). Bumps a key so Composer remounts
+  // with fresh state even if a prefill was already showing.
   const askFriend = (handle: string, topic: string) => {
-    setSsResult(null); setSsErr(""); setSsTopic(topic); setSsFriend(handle); setSsOpen(true); setNav("messages");
+    setFriendView(null); setNav("messages");
+    setComposerPrefill((prev) => ({ friend: handle, topic, key: (prev?.key ?? 0) + 1 }));
     setTimeout(() => document.querySelector("#compose")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   };
 
@@ -1042,74 +1033,8 @@ export default function AccountPage() {
         </>)}
 
         {nav === "messages" && (<>
-        {/* Send a new message */}
-        <section style={s.card} id="compose">
-          <h2 style={s.h2}>Send a new message</h2>
-          {!ssOpen && !ssResult && (
-            <>
-              <p style={s.lead}>Send a request to a friend through your agents — like texting them, but your agent does the follow-up with theirs. They don&apos;t have to be online; their agent picks it up from their Inbox.</p>
-              <button style={s.btn} onClick={() => setSsOpen(true)}>Send to a friend →</button>
-            </>
-          )}
-          {ssOpen && !ssResult && (
-            <>
-              <label style={s.fieldLabel}>What do you want help with?</label>
-              <input style={s.input} value={ssTopic} onChange={(e) => setSsTopic(e.target.value)} placeholder="e.g. fix the errors in my automations" />
-              <label style={s.fieldLabel}>Your friend&apos;s @bc handle or email</label>
-              <input style={s.input} value={ssFriend} onChange={(e) => setSsFriend(e.target.value)} placeholder="alex@bc  or  alex@company.com" />
-              <div style={s.fieldRow}>
-                <div>
-                  <label style={s.fieldLabel}>Time limit</label>
-                  <select style={s.select} value={ssTtl} onChange={(e) => setSsTtl(Number(e.target.value))}>
-                    <option value={30}>30 minutes</option><option value={60}>60 minutes</option>
-                    <option value={120}>2 hours</option><option value={360}>6 hours</option>
-                  </select>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={s.fieldLabel}>What they can access {!ssCustom && <button style={s.linkBtn} onClick={() => setSsCustom(true)}>customize</button>}</label>
-                  {ssCustom
-                    ? <input style={s.input} value={ssScopes} onChange={(e) => setSsScopes(e.target.value)} placeholder="config.read, config.suggest" />
-                    : <p style={s.scopeNote}>Read relevant settings and suggest changes <span style={s.muted}>(you approve anything before it happens)</span></p>}
-                </div>
-              </div>
-              {ssErr && <p style={s.err}>{ssErr}</p>}
-              <div style={{ marginTop: 12 }}>
-                <button style={s.btn} disabled={busy === "startsession"} onClick={startSession}>{busy === "startsession" ? "Starting…" : "Send message"}</button>
-                <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setSsOpen(false); setSsErr(""); }}>Cancel</button>
-              </div>
-            </>
-          )}
-          {ssResult && (
-            <>
-              <div style={s.reveal}>
-                <p style={s.revealLabel}>✅ Sent to {ssSentTo} — it&apos;s on its way.</p>
-                <p style={s.meta}>Your agent is reaching {ssSentTo}&apos;s agent now. The conversation is under <strong>Inbox</strong> below — open <strong>📖 Read here</strong> on it to follow along and reply in your browser. Their agent picks it up on its next check (~10 min); nobody has to stay online.</p>
-              </div>
-              {/* Secondary: the paste-prompts just make it happen faster, tucked away. */}
-              <button style={{ ...s.linkBtn, marginTop: 10 }} onClick={() => setSsShowPrompts((v) => !v)}>{ssShowPrompts ? "Hide" : "⚡ In a hurry? Paste it to your agent now"}</button>
-              {ssShowPrompts && (
-                <>
-                  <div style={s.promptPane}>
-                    <p style={s.wakeLabel}>For YOUR assistant — paste this to start it immediately:</p>
-                    <pre style={s.wakePre}>{ssResult.your_prompt}</pre>
-                    <button style={s.btn} onClick={() => navigator.clipboard?.writeText(ssResult.your_prompt).catch(() => {})}>Copy mine</button>
-                  </div>
-                  <div style={s.promptPane}>
-                    <p style={s.wakeLabel}>For your FRIEND — text this so their agent jumps in now:</p>
-                    <pre style={s.wakePre}>{ssResult.friend_prompt}</pre>
-                    <button style={s.btn} onClick={() => navigator.clipboard?.writeText(ssResult.friend_prompt).catch(() => {})}>Copy theirs</button>
-                    {typeof navigator !== "undefined" && "share" in navigator && (
-                      <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => navigator.share?.({ text: ssResult.friend_prompt }).catch(() => {})}>Share…</button>
-                    )}
-                  </div>
-                </>
-              )}
-              <div style={{ marginTop: 12 }}>
-                <button style={s.btn} onClick={() => { setSsResult(null); setSsOpen(false); setSsTopic(""); setSsFriend(""); setSsShowPrompts(false); }}>Done</button>
-              </div>
-            </>
-          )}
-        </section>
+        {/* Send a new message — extracted to composer.tsx (Phase 4). */}
+        <Composer key={composerPrefill?.key ?? 0} prefill={composerPrefill} onSent={loadSessions} />
 
         {/* Inbox (threads) */}
         <section style={s.card}>
@@ -1183,7 +1108,22 @@ export default function AccountPage() {
 
         </>)}
 
-        {nav === "friends" && (<>
+        {nav === "friends" && friendView && (
+          <FriendPage
+            handle={friendView}
+            trust={trust}
+            active={active}
+            recent={recent}
+            discover={discover}
+            sharedWithMe={sharedWithMe}
+            when={when}
+            onBack={() => setFriendView(null)}
+            onOpenThread={(sessionId) => { setFriendView(null); setNav("messages"); setKmOpen(sessionId); setTimeout(() => document.querySelector("#compose")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}
+            onInviteToSomethingNew={() => { setFriendView(null); setFiErr(""); setFiOpen(true); }}
+          />
+        )}
+
+        {nav === "friends" && !friendView && (<>
         {/* Friends */}
         <section style={s.card} id="friends-section">
           <h2 style={s.h2} title="Same as 'trusted peers' — friends are agents you've mutually trusted">Friends</h2>
@@ -1218,15 +1158,18 @@ export default function AccountPage() {
           {trust.map((t) => (
             <div key={t.handle} style={s.row}>
               <div style={s.rowMain}>
-                <strong style={s.peerHandle}>🧑 {t.handle.replace(/@bc$/, "")}</strong> <span style={s.agentVia}>🤖 their agent</span>
+                <button style={s.peerHandleBtn} onClick={() => openFriend(t.handle)} title="Open this friend's agent page">
+                  🧑 <span style={s.peerHandle}>{t.handle.replace(/@bc$/, "")}</span>
+                </button> <span style={s.agentVia}>🤖 their agent</span>
                 {t.trusted && (t.mutual
                   ? <span style={s.okTag}>mutual</span>
                   : <span style={s.pendTag}>waiting for them</span>)}
                 <div style={s.rowMeta}>last worked together {when(t.last_session_at)}</div>
                 {t.trusted && t.mutual && (
                   <div style={{ marginTop: 6 }}>
-                    <button style={s.btn} onClick={() => askFriend(t.handle, "")}>Send to {t.handle.replace(/@bc$/, "")} →</button>
-                    <span style={{ ...s.rowMeta, marginLeft: 8 }}>no invite code needed</span>
+                    <button style={s.btn} onClick={() => askFriend(t.handle, "")}>💬 Message</button>
+                    <button style={{ ...s.smallLink2, marginLeft: 10 }} onClick={() => openFriend(t.handle)}>View agent page →</button>
+                    <div style={{ ...s.rowMeta, marginTop: 4 }}>no invite code needed — or ask your assistant: &ldquo;use Back Channel to reach {t.handle.replace(/@bc$/, "")}&rdquo;</div>
                   </div>
                 )}
               </div>
@@ -1599,6 +1542,7 @@ const s = {
   agentVia: { fontSize: 11.5, fontWeight: 600, color: "#0f766e", background: "#ecfeff", border: "1px solid #cffafe", padding: "1px 8px", borderRadius: 999 } as const,
   okTag: { fontSize: 11, fontWeight: 700, color: "#0f766e", background: "#f0fdfa", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
   peerHandle: { fontFamily: "ui-monospace, Menlo, monospace", color: "#0f172a" } as const,
+  peerHandleBtn: { background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", color: "inherit" } as const,
   peerHint: { fontSize: 12.5, color: "#475569", marginTop: 6, lineHeight: 1.5 } as const,
   peerHintCode: { fontFamily: "ui-monospace, Menlo, monospace", background: "#f1f5f9", padding: "1px 6px", borderRadius: 5, color: "#0f172a" } as const,
   pendTag: { fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fffbeb", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
