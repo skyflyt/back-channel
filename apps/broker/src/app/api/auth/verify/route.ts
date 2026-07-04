@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateApiKey, isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, CSRF_COOKIE_NAME, generateCsrfToken } from "@/lib/auth";
+import { isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, CSRF_COOKIE_NAME, generateCsrfToken, upsertOriginalAgentToken } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 import { bootstrapPrompt } from "@/lib/notify.mjs";
 
@@ -67,6 +67,13 @@ export async function GET(req: NextRequest) {
  * Marks the token used, marks the account verified, and issues + returns the
  * API key. A human button click triggers this; headless scanners don't POST
  * or click buttons, so the token survives any number of GET pre-fetches.
+ *
+ * SEC H1: the raw key is minted here and returned ONCE in the response body —
+ * it is never written to Account.apiKey. Only its SHA-256 hash is persisted,
+ * as the account's "Original" AgentToken (see upsertOriginalAgentToken in
+ * @/lib/auth). The magicLink claim above is atomic single-use, so this POST
+ * body runs at most once per token — there is no "already has a key, reuse
+ * it" case to preserve; every successful verify mints a fresh Original token.
  */
 export async function POST(req: NextRequest) {
   const limit = ipLimit(req);
@@ -101,12 +108,12 @@ export async function POST(req: NextRequest) {
   const account = await prisma.account.findUnique({ where: { email: link.email } });
   if (!account) return NextResponse.json({ error: "account_not_found" }, { status: 404 });
 
-  const apiKey = account.apiKey ?? generateApiKey();
+  // SEC H1: mint the account's Original AgentToken; only its hash persists.
+  const apiKey = await upsertOriginalAgentToken(account.id);
   const updated = await prisma.account.update({
     where: { id: account.id },
     data: {
       emailVerifiedAt: account.emailVerifiedAt ?? new Date(),
-      apiKey: account.apiKey ?? apiKey,
     },
   });
 
@@ -125,9 +132,9 @@ export async function POST(req: NextRequest) {
     status: "verified",
     handle: updated.handle,
     email: updated.email,
-    api_key: updated.apiKey,
+    api_key: apiKey,
     account_id: updated.id,
-    bootstrap_prompt: updated.apiKey ? bootstrapPrompt(updated.apiKey) : null,
+    bootstrap_prompt: bootstrapPrompt(apiKey),
     ...(claimedSessionId ? { claimed_session_id: claimedSessionId } : {}),
   });
   await attachDashboardSession(res, updated.id); // land them authenticated on /account

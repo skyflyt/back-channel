@@ -3,9 +3,20 @@
  *
  * Phase 3.1: account creation goes through magic-link email verification.
  * - POST /api/accounts creates a pending Account (apiKey=null) + a MagicLink token
- * - GET  /api/auth/verify?token=...  marks the account verified, issues + returns the apiKey
+ * - GET  /api/auth/verify?token=...  marks the account verified, issues the account's key
  *
  * Tokens are random base64url strings, 32 bytes, stored in MagicLink table with 24h TTL.
+ *
+ * SEC H1 (2026-07-03): Account.apiKey used to store the raw bc_ key in plaintext.
+ * It no longer does. verify/rotate/recover-key now mint (or replace) a single
+ * per-account AgentToken named "Original" via upsertOriginalAgentToken() below —
+ * same keyHash-only storage every other AgentToken uses. The raw key is still
+ * generated and returned to the caller exactly once; only its hash is ever
+ * persisted. Account.apiKey is written by nothing anymore; it is read only as a
+ * fallback in getAuthContext() for accounts minted before this fix and not yet
+ * covered by the H1 backfill migration (prisma/migrations/20260703221500_h1_apikey_hash_backfill).
+ * Once Skylar confirms that backfill has run in prod, the fallback read (and
+ * eventually the column itself) can be dropped in a follow-up.
  */
 
 import { randomBytes, createHash } from "node:crypto";
@@ -14,14 +25,15 @@ import type { Account } from "@prisma/client";
 
 const KEY_PREFIX = "bc_";
 const TOKEN_TTL_HOURS = 24;
+const ORIGINAL_AGENT_TOKEN_NAME = "Original";
 
 /**
  * Hash a single-use/secret token for AT-REST storage. We hand the RAW token to
  * the user (email link, cookie) but only ever store/look up its SHA-256 hash —
  * so a DB read (or leak) never exposes a usable token. Lookup = hash the
- * incoming raw, query by hash. (API keys are intentionally NOT hashed: they're
- * long-lived bearer creds the agent presents on every call and that we must
- * return at issue time; tokens here are short-lived secrets.)
+ * incoming raw, query by hash. (bc_ API keys are hashed the exact same way as
+ * of SEC H1 — see upsertOriginalAgentToken; the raw is still returned once at
+ * issue time, it's just never written to a plaintext column anymore.)
  */
 export function hashToken(raw: string): string {
   return createHash("sha256").update(raw).digest("hex");
@@ -29,6 +41,36 @@ export function hashToken(raw: string): string {
 
 export function generateApiKey(): string {
   return KEY_PREFIX + randomBytes(24).toString("base64url");
+}
+
+/**
+ * SEC H1: mint a brand-new raw bc_ key for `accountId` and persist ONLY its
+ * hash, as the account's single "Original" AgentToken — the per-agent-tokens
+ * model's slot for the legacy one-key-per-account flows (verify, dashboard
+ * rotate, email recovery). Mirrors exactly how /api/account/agents and
+ * /api/auth/exchange mint per-agent AgentToken rows (generateApiKey() +
+ * hashToken() + prisma.agentToken.create()) — one hashing scheme, not two.
+ *
+ * Safe to call repeatedly: any existing LIVE "Original" token for this account
+ * is revoked (not deleted — keeps the audit trail) before the new one is
+ * created, so there's never more than one live Original token and the
+ * previous raw key stops authenticating immediately — matching the old
+ * "rotating overwrites/invalidates the previous key" behavior.
+ *
+ * Returns the raw key — the ONLY place it exists outside a caller's local
+ * scope. Callers must return it to the HTTP caller and must NOT persist it
+ * anywhere themselves (no writing it to Account.apiKey or logging it).
+ */
+export async function upsertOriginalAgentToken(accountId: string): Promise<string> {
+  const rawKey = generateApiKey();
+  await prisma.agentToken.updateMany({
+    where: { accountId, name: ORIGINAL_AGENT_TOKEN_NAME, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  await prisma.agentToken.create({
+    data: { accountId, keyHash: hashToken(rawKey), name: ORIGINAL_AGENT_TOKEN_NAME, runtimeType: "other" },
+  });
+  return rawKey;
 }
 
 export function generateMagicLinkToken(): string {
@@ -82,8 +124,13 @@ export function exchangeCodeExpiry(): Date {
 /**
  * Resolve a bearer key to its account AND the agent token it came from.
  * Per-agent-tokens: a bc_ key is first looked up as a live AgentToken (revoked
- * tokens 401). Falls back to the legacy single Account.apiKey so existing keys
- * keep working across the migration window (the column is dropped in Phase 1.1).
+ * tokens 401). Falls back to the legacy plaintext Account.apiKey ONLY for
+ * accounts minted before SEC H1 that the backfill migration hasn't reached yet
+ * in prod — see prisma/migrations/20260703221500_h1_apikey_hash_backfill and
+ * the loud note in that migration's header. Nothing writes Account.apiKey
+ * anymore (verify/rotate/recover-key all mint an "Original" AgentToken via
+ * upsertOriginalAgentToken instead), so this fallback strictly shrinks over
+ * time and can be deleted once the backfill is confirmed complete.
  * Touches lastUsedAt (throttled ~1/min) so the dashboard shows per-agent "last
  * active" without a write per request.
  */
@@ -105,7 +152,9 @@ export async function getAuthContext(authHeader: string | null): Promise<{ accou
   }
   if (tok && tok.revokedAt) return null; // explicitly revoked → no fallback
 
-  // 2. Legacy fallback: the pre-migration single Account.apiKey.
+  // 2. Legacy fallback: pre-H1 plaintext Account.apiKey, for accounts the
+  // backfill migration hasn't reached yet. READ-ONLY — nothing writes this
+  // column anymore. Safe to delete once the backfill is confirmed done.
   const account = await prisma.account.findUnique({ where: { apiKey: key } });
   if (account) {
     const last = account.apiKeyLastUsedAt?.getTime() ?? 0;

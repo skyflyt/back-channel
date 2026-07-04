@@ -16,7 +16,9 @@ export async function POST(req: NextRequest) {
   const account = await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value);
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!csrfValid(req.headers.get(CSRF_HEADER), req.cookies.get(CSRF_COOKIE_NAME)?.value)) return NextResponse.json({ error: "csrf" }, { status: 403 });
-  if (!account.apiKey) return NextResponse.json({ error: "no_api_key", message: "Verify your email first — your account doesn't have a key yet." }, { status: 409 });
+  // SEC H1: gate on verification, not the legacy Account.apiKey column (nothing
+  // writes it anymore — see /api/account/agents for the same pattern).
+  if (!account.emailVerifiedAt) return NextResponse.json({ error: "no_api_key", message: "Verify your email first — your account doesn't have a key yet." }, { status: 409 });
 
   // Cap pre-emptive code-grabbing: 15 mints/hour/account (5 was too low — a user
   // wiring several runtimes, each needing its own code, hit it; plus accidental
