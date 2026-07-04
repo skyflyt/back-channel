@@ -7,12 +7,22 @@
  * agents that both connect to it.
  *
  *   const transport = await createBrokerTransport({
- *     relayUrl: "wss://back-channel.app/relay/abc-123?role=visitor&token=abc-123",
+ *     relayUrl: "wss://back-channel.app/relay/abc-123?ticket=<single-use-ticket>",
  *   });
  *
  * The relayUrl typically comes from the Broker's API response:
- *   - POST /api/invites returns `relay_url` for the visitor
- *   - POST /api/invites/:code/claim returns `relay_url` for the host
+ *   - POST /api/invites returns `relay_url` for the visitor (ticket good for one connect)
+ *   - POST /api/invites/:code/claim returns `relay_url` for the host (ditto)
+ *   - POST /api/inbox/:id/accept returns `relay_url` for the host (ditto)
+ *
+ * The embedded ticket is short-lived (~60s) and SINGLE-USE (C1 fix — the
+ * relay used to accept `?role=...&token=<sessionId>`, which let anyone who
+ * learned the session id connect as either party). To RECONNECT (this
+ * transport does not do so itself; callers reconnect by calling
+ * createBrokerTransport again — see docs on turn-based runtimes), first mint
+ * a fresh ticket via `POST /api/sessions/:id/relay-ticket` (bearer-authed,
+ * participants only; role is derived server-side, never client-supplied) and
+ * build a new relayUrl with it before calling this function again.
  *
  * Both ends perform an ECDH handshake (the broker forwards the plaintext
  * pubkey exchange but never sees the content afterward — AES-GCM encrypted).
@@ -46,7 +56,10 @@ function isHandshake(obj: unknown): obj is HandshakeFrame {
 export interface BrokerTransportOptions {
   /**
    * Full relay URL including query params, e.g.
-   *   "wss://back-channel.app/relay/<sessionId>?role=visitor&token=<token>"
+   *   "wss://back-channel.app/relay/<sessionId>?ticket=<single-use-ticket>"
+   * The ticket comes from the Broker's relay_url response field, or from
+   * POST /api/sessions/:id/relay-ticket for a reconnect (fresh ticket each
+   * time — tickets are single-use and short-lived).
    */
   readonly relayUrl: string;
   /** Optional override of how long to wait for handshake (default 30s). */

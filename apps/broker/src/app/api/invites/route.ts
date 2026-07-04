@@ -4,6 +4,7 @@ import { getAccountFromAuth, getAccountFromCookie, generateInviteCode, generateH
 import { validateScopes } from "@/lib/scopes";
 import { sendInviteEmail } from "@/lib/email";
 import { rateLimit } from "@/lib/rate-limit";
+import { mintRelayTicket } from "@/lib/relay";
 import { randomBytes } from "node:crypto";
 
 export const runtime = "nodejs";
@@ -161,7 +162,11 @@ export async function POST(req: NextRequest) {
     invite_id: invite.id,
     session_id: session.id,
     expires_at: invite.expiresAt.toISOString(),
-    relay_url: `${base}/relay/${session.id}?role=visitor&token=${session.id}`,
+    // C1: embed a freshly-minted, single-use ticket for the FIRST connect. A
+    // reconnect (LLM runtimes reopen the socket per turn) must fetch its own
+    // fresh ticket via POST /api/sessions/:id/relay-ticket -- this one is
+    // consumed on first use.
+    relay_url: `${base}/relay/${session.id}?ticket=${mintRelayTicket({ sessionId: session.id, role: "visitor", accountId: visitor.id }).ticket}`,
     host_handle: host.handle,
     scopes: invite.scopes,
     // Opaque: uniform regardless of whether the recipient already had a verified
