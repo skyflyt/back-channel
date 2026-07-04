@@ -267,8 +267,11 @@ export async function sendInviteEmail(args: { to: string; inviterHandle: string;
   const resend = client();
   const claimUrl = `${APP_URL}/signup-and-claim/${encodeURIComponent(args.code)}`;
   const goalLine = args.goal ? `<p style="color:#475569">They want to help with: <strong>${escapeHtml(args.goal)}</strong></p>` : "";
+  // L7 (security-pass-2026-07-03.md): never log the raw invite code -- it's a live,
+  // human-typeable secret. Same redaction convention as sendFriendInviteEmail's log-only
+  // fallback below (which already redacts its single-use token the same way).
   if (!resend) {
-    console.log(`[invite-email] (log-only) to=${args.to} inviter=${args.inviterHandle} code=${args.code} needsSignup=${args.needsSignup} url=${args.needsSignup ? claimUrl : "(accept BC code)"}`);
+    console.log(`[invite-email] (log-only) to=${args.to} inviter=${args.inviterHandle} code=(redacted: live invite code) needsSignup=${args.needsSignup} url=${args.needsSignup ? "(redacted: carries code)" : "(accept BC code, not logged)"}`);
     return false;
   }
   let subject: string, html: string, text: string;

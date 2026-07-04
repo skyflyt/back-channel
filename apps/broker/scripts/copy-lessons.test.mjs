@@ -1,59 +1,80 @@
-// Guards the Docker-build fix for the /lessons page (see scripts/copy-lessons.mjs
-// for the full story). Broker CI runs tsc + `node --test`, not `next build`,
-// so nothing else in CI would catch a regression here -- this is the cheap
-// guard for a bug class that already broke a production Cloud Build once
-// (Turbopack "Module not found" for a deep relative import that only
-// resolved on disk, not inside the Docker image).
-//
-// What this proves:
-//   1. scripts/copy-lessons.mjs actually produces src/generated/lessons.json
-//      from the canonical community/lessons.json (byte-for-byte).
-//   2. src/app/lessons/page.tsx imports from the generated location, not
-//      straight from community/lessons.json -- so a well-meaning revert back
-//      to the deep relative path gets caught here instead of in prod.
+/**
+ * Build-gate test for scripts/copy-lessons.mjs (M3 fix,
+ * security-pass-2026-07-03.md). This does NOT re-test validateLessonsDocument
+ * itself (see src/lib/community-lessons.test.mjs for that) -- it proves the
+ * *script* actually calls the validator and fails the build (non-zero exit,
+ * no generated file written) when community/lessons.json has a bad entry,
+ * since that wiring is the whole point of the fix (a validator that exists
+ * but is never invoked at build time is exactly the bug being closed here).
+ *
+ * Runs the real script as a child process against a throwaway fake repo
+ * layout (os.tmpdir()) so it never touches the actual community/lessons.json.
+ *
+ * Run with: node --test scripts/
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import path from "node:path";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const BROKER_ROOT = path.resolve(here, "..");
-const REPO_ROOT = path.resolve(BROKER_ROOT, "..", "..");
-const CANONICAL_PATH = path.join(REPO_ROOT, "community", "lessons.json");
-const GENERATED_PATH = path.join(BROKER_ROOT, "src", "generated", "lessons.json");
-const COPY_SCRIPT = path.join(BROKER_ROOT, "scripts", "copy-lessons.mjs");
-const PAGE_PATH = path.join(BROKER_ROOT, "src", "app", "lessons", "page.tsx");
+const here = dirname(fileURLToPath(import.meta.url));
+const brokerRoot = join(here, ".."); // scripts/ -> apps/broker
+const scriptPath = join(brokerRoot, "scripts", "copy-lessons.mjs");
+const libDir = join(brokerRoot, "src", "lib");
 
-test("copy-lessons.mjs generates src/generated/lessons.json from the canonical file", () => {
-  // Start from a clean slate so this test actually proves the script writes
-  // the file, rather than passing because a previous build already did.
-  rmSync(GENERATED_PATH, { force: true });
-  assert.ok(!existsSync(GENERATED_PATH), "precondition: generated file should not exist yet");
+// Build a fake "<tmp>/apps/broker" + "<tmp>/community" layout so the script's
+// candidate-path resolution (brokerRoot/../../community/lessons.json) finds
+// our fixture instead of the real repo-root file. We can't relocate the
+// script itself (it imports community-lessons.mjs via a relative path), so
+// instead we copy the whole scripts/+src/lib validator pair into the fake
+// broker root -- cheap, and keeps this test from ever touching the real file.
+function makeFakeRepo(lessonsJson) {
+  const fakeRepoRoot = mkdtempSync(join(tmpdir(), "bc-copy-lessons-"));
+  const fakeBrokerRoot = join(fakeRepoRoot, "apps", "broker");
+  mkdirSync(join(fakeBrokerRoot, "scripts"), { recursive: true });
+  mkdirSync(join(fakeBrokerRoot, "src", "lib"), { recursive: true });
+  mkdirSync(join(fakeRepoRoot, "community"), { recursive: true });
 
-  execFileSync(process.execPath, [COPY_SCRIPT], { cwd: BROKER_ROOT, stdio: "pipe" });
+  copyFileSync(scriptPath, join(fakeBrokerRoot, "scripts", "copy-lessons.mjs"));
+  copyFileSync(join(libDir, "community-lessons.mjs"), join(fakeBrokerRoot, "src", "lib", "community-lessons.mjs"));
+  writeFileSync(join(fakeRepoRoot, "community", "lessons.json"), JSON.stringify(lessonsJson), "utf8");
+  return { fakeRepoRoot, fakeBrokerRoot };
+}
 
-  assert.ok(existsSync(GENERATED_PATH), "copy-lessons.mjs did not create src/generated/lessons.json");
+function runScript(fakeBrokerRoot) {
+  return spawnSync(process.execPath, [join(fakeBrokerRoot, "scripts", "copy-lessons.mjs")], {
+    cwd: fakeBrokerRoot,
+    encoding: "utf8",
+  });
+}
 
-  const canonical = readFileSync(CANONICAL_PATH, "utf8");
-  const generated = readFileSync(GENERATED_PATH, "utf8");
-  assert.equal(generated, canonical, "generated lessons.json must match community/lessons.json byte-for-byte");
+test("copy-lessons.mjs fails the build (non-zero exit) on a javascript: URL scheme", () => {
+  const { fakeRepoRoot, fakeBrokerRoot } = makeFakeRepo([
+    { title: "Evil", url: "javascript:alert(1)", source: "web", description: "d", submitted_by: "x", added: "2026-07-03" },
+  ]);
+  try {
+    const result = runScript(fakeBrokerRoot);
+    assert.notEqual(result.status, 0, `expected non-zero exit, got ${result.status}. stderr:\n${result.stderr}`);
+    assert.match(result.stderr, /scheme/i);
+    assert.match(result.stderr, /javascript:/);
+    assert.equal(existsSync(join(fakeBrokerRoot, "src", "generated", "lessons.json")), false, "must not write the generated file when validation fails");
+  } finally {
+    rmSync(fakeRepoRoot, { recursive: true, force: true });
+  }
 });
 
-test("the /lessons page imports the generated file, not community/lessons.json directly", () => {
-  const src = readFileSync(PAGE_PATH, "utf8");
-  assert.match(
-    src,
-    /from\s+["']\.\.\/\.\.\/generated\/lessons\.json["']/,
-    "page.tsx should import from ../../generated/lessons.json (src/generated/lessons.json) -- " +
-      "a deep relative import straight into community/ at the repo root does not resolve inside " +
-      "the Docker build stage and will break `next build` in Cloud Build (see scripts/copy-lessons.mjs).",
-  );
-  assert.doesNotMatch(
-    src,
-    /from\s+["'](\.\.\/){4,}community\/lessons\.json["']/,
-    "page.tsx must not import community/lessons.json via a deep relative path -- that is the exact " +
-      "regression that broke Cloud Build 4ea61083. Import src/generated/lessons.json instead.",
-  );
+test("copy-lessons.mjs succeeds and writes the generated file for a well-formed lessons.json", () => {
+  const { fakeRepoRoot, fakeBrokerRoot } = makeFakeRepo([
+    { title: "Fine", url: "https://example.com/x", source: "web", description: "d", submitted_by: "x", added: "2026-07-03" },
+  ]);
+  try {
+    const result = runScript(fakeBrokerRoot);
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stderr:\n${result.stderr}`);
+    assert.equal(existsSync(join(fakeBrokerRoot, "src", "generated", "lessons.json")), true);
+  } finally {
+    rmSync(fakeRepoRoot, { recursive: true, force: true });
+  }
 });

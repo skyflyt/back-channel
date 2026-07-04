@@ -135,7 +135,10 @@ export async function POST(req: NextRequest) {
       goal: body.message ?? null,
       needsSignup: recipientNeedsSignup,
     });
-    console.log(`[invites] email invite code=${invite.code} needs_signup=${recipientNeedsSignup} delivered=${delivered}`);
+    // L7 (security-pass-2026-07-03.md): log the invite's DB id, never the raw human code --
+    // the code is a live, human-typeable secret (harvestable from Cloud Logging otherwise);
+    // invite.id is a non-sensitive identifier that still lets support/postmortem find the row.
+    console.log(`[invites] email invite invite_id=${invite.id} needs_signup=${recipientNeedsSignup} delivered=${delivered}`);
   } else if (host.emailVerifiedAt && host.notifyIdleFrames !== false && host.email) {
     // Gap B: invited by HANDLE (an existing account). Don't rely on the recipient
     // happening to run bc-inbox-check — email them the bare fact + code + note, so
@@ -149,7 +152,8 @@ export async function POST(req: NextRequest) {
       goal: body.message ?? null,
       needsSignup: false,
     });
-    console.log(`[invites] handle invite notified host code=${invite.code} delivered=${delivered}`);
+    // L7 (security-pass-2026-07-03.md): same redaction as the email-invite branch above.
+    console.log(`[invites] handle invite notified host invite_id=${invite.id} delivered=${delivered}`);
   }
 
   // Audit dashboard-initiated sessions (cookie path) — metadata only.

@@ -24,10 +24,19 @@
 //   2. /community/lessons.json (the path the Dockerfile COPYs it to)
 // The first one found wins. If neither exists, fail loudly -- a silent empty
 // lessons page is worse than a broken build.
+//
+// Schema + URL-scheme validation (M3, security-pass-2026-07-03.md): CI's unit
+// tests only run when a PR touches apps/broker/** or community/**, and even
+// then `npm test` importing community-lessons.test.mjs is a belt as much as a
+// suspender -- this script is the actual build-time gate. A malformed entry
+// (missing field, wrong type) or a disallowed URL scheme (e.g. `javascript:`,
+// which would otherwise render as a live <a href> on /lessons) now fails the
+// build itself, not just an untriggered test suite.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateLessonsDocument } from "../src/lib/community-lessons.mjs";
 
 const brokerRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const candidates = [
@@ -50,11 +59,23 @@ if (!source) {
 // Validate JSON shape before writing -- fail the build with a clear message
 // rather than shipping a broken generated file.
 let raw;
+let doc;
 try {
   raw = readFileSync(source, "utf8");
-  JSON.parse(raw);
+  doc = JSON.parse(raw);
 } catch (err) {
   console.error(`[copy-lessons] ${source} is not valid JSON: ${err.message}`);
+  process.exit(1);
+}
+
+// Schema + scheme validation (M3 fix): same validator the unit tests use,
+// now enforced on every build, not just on a correctly-triggered CI run.
+const problems = validateLessonsDocument(doc);
+if (problems.length > 0) {
+  console.error(
+    `[copy-lessons] ${source} failed schema validation -- fix the entry/entries below before building:\n` +
+      problems.map((p) => `  - ${p}`).join("\n"),
+  );
   process.exit(1);
 }
 
@@ -63,4 +84,4 @@ const outPath = join(outDir, "lessons.json");
 mkdirSync(outDir, { recursive: true });
 writeFileSync(outPath, raw, "utf8");
 
-console.log(`[copy-lessons] Copied ${source} -> ${outPath}`);
+console.log(`[copy-lessons] Validated + copied ${source} -> ${outPath} (${doc.length} entries)`);

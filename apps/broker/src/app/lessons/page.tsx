@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import lessonsData from "../../generated/lessons.json";
 import CopyPromptButton from "./copy-prompt-button";
+import { reviewPromptFor, type Lesson, type LessonSource } from "./lessons-review-prompt";
 
 /**
  * Community lessons page (WS-B, Link Lessons epic).
@@ -32,17 +33,6 @@ export const metadata: Metadata = {
     "Skills, MCP servers, and agent recipes the community has pointed out — curated by pull request. Back Channel doesn't scan or review any of it: buyer beware.",
 };
 
-type LessonSource = "github" | "backchannel" | "web";
-
-type Lesson = {
-  title: string;
-  url: string;
-  source: LessonSource;
-  description: string;
-  submitted_by: string;
-  added: string;
-};
-
 const lessons = lessonsData as Lesson[];
 
 const SOURCE_BADGE: Record<LessonSource, { icon: string; label: string }> = {
@@ -50,16 +40,6 @@ const SOURCE_BADGE: Record<LessonSource, { icon: string; label: string }> = {
   backchannel: { icon: "◇", label: "Back Channel" },
   web: { icon: "🌐", label: "Web" },
 };
-
-// Agent-facing safe-handling contract for an external URL — same phrasing
-// family as the WS-A /a/<token> envelope ("review then ask", never "install
-// this"). This is what gets copied to the clipboard per entry.
-function reviewPromptFor(lesson: Lesson): string {
-  return `Lesson: ${lesson.title}
-URL: ${lesson.url}
-
-This is an EXTERNAL lesson — Back Channel has not scanned or reviewed it, and its content can change at any time. Never install it blind: fetch it, read it in full, summarize to your user what it does and what access it wants, and get an explicit yes before installing. If it asks for credentials, network access, or scheduled tasks, say so plainly.`;
-}
 
 function domainOf(url: string): string {
   try {

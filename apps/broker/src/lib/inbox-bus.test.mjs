@@ -14,6 +14,8 @@ import {
   waitForInbox,
   heldStreamCount,
   MAX_WAIT_MS,
+  MAX_LONGPOLL_WAITERS_PER_ACCOUNT,
+  TooManyWaitersError,
   _reset,
 } from "./inbox-bus.mjs";
 
@@ -213,4 +215,70 @@ test("_reset clears all bus state and the registered counter", async () => {
   assert.equal(heldStreamCount(), 0, "all streams cleared");
   const evt = await currentEvent("acct1");
   assert.equal(evt.pending_count, 0, "counter was cleared too - falls back to zero snapshot");
+});
+// --- L1 (security-pass-2026-07-03.md): per-account long-poll waiter cap -------------------
+
+test(`MAX_LONGPOLL_WAITERS_PER_ACCOUNT mirrors SSE's 1-connection-per-account limit`, () => {
+  assert.equal(MAX_LONGPOLL_WAITERS_PER_ACCOUNT, 1);
+});
+
+test("a second concurrent long-poll waiter on the SAME account is rejected with TooManyWaitersError, not parked unbounded", async () => {
+  _reset();
+  stubCounter({ acct1: { count: 0, kinds: [] } });
+
+  // First waiter parks (nothing pending yet) - don't await it yet.
+  const first = waitForInbox("acct1", 2000);
+  // Give the first call a tick to actually park its waiter before the second arrives.
+  await new Promise((r) => setTimeout(r, 10));
+
+  await assert.rejects(() => waitForInbox("acct1", 2000), TooManyWaitersError);
+
+  // The first waiter is unaffected - still resolves normally (e.g. via timeout here).
+  const result = await first;
+  assert.equal(result.pending_count, 0);
+});
+
+test("the cap is per-account: a parked waiter on one account does not block a long-poll on another", async () => {
+  _reset();
+  stubCounter({ acct1: { count: 0, kinds: [] }, acct2: { count: 0, kinds: [] } });
+
+  const first = waitForInbox("acct1", 300);
+  await new Promise((r) => setTimeout(r, 10));
+
+  // Different account - must NOT throw.
+  const second = await waitForInbox("acct2", 100);
+  assert.equal(second.pending_count, 0);
+
+  await first; // let the first waiter's timer clean up
+});
+
+test("once a parked waiter resolves (times out), a new long-poll on that account is accepted again (no permanent lockout)", async () => {
+  _reset();
+  stubCounter({ acct1: { count: 0, kinds: [] } });
+
+  const first = await waitForInbox("acct1", 100); // resolves via timeout
+  assert.equal(first.pending_count, 0);
+
+  // The slot should be free again - this must NOT throw.
+  const second = await waitForInbox("acct1", 100);
+  assert.equal(second.pending_count, 0);
+});
+
+test("the immediate-resolve path (pending mail already waiting) is never capped, even with a waiter already parked", async () => {
+  _reset();
+  stubCounter({ acct1: { count: 0, kinds: [] } });
+
+  const parked = waitForInbox("acct1", 2000);
+  await new Promise((r) => setTimeout(r, 10));
+
+  // Now flip to pending mail and issue a THIRD call for the same account - it
+  // should resolve immediately (no parking, so no cap check applies) rather
+  // than throwing.
+  stubCounter({ acct1: { count: 1, kinds: ["frame"] } });
+  const immediate = await waitForInbox("acct1", 2000);
+  assert.equal(immediate.pending_count, 1);
+  assert.equal(immediate.waited_seconds, 0);
+
+  fireInboxEvent("acct1", "frame");
+  await parked;
 });
