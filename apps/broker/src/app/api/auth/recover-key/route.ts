@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { generateApiKey, isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, CSRF_COOKIE_NAME, generateCsrfToken } from "@/lib/auth";
+import { isRecoveryToken, hashToken, generateSessionCookieToken, sessionCookieExpiry, SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, CSRF_COOKIE_NAME, generateCsrfToken, upsertOriginalAgentToken } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 import { bootstrapPrompt } from "@/lib/notify.mjs";
 
@@ -15,6 +15,11 @@ const HOUR = 60 * 60 * 1000;
  * recovery: if the old key leaked, it must stop working once the owner
  * recovers. Mirrors /api/auth/verify's scanner-tolerant model — the GET probe
  * (shared with /api/auth/verify) never consumes; only this POST does.
+ *
+ * SEC H1: the new key is minted as the account's "Original" AgentToken (see
+ * upsertOriginalAgentToken in @/lib/auth), which also revokes any previously
+ * live Original token — only the hash ever persists. Nothing writes
+ * Account.apiKey anymore.
  */
 export async function POST(req: NextRequest) {
   const ip = clientIp(req.headers.get("x-forwarded-for"));
@@ -51,20 +56,20 @@ export async function POST(req: NextRequest) {
   const account = await prisma.account.findUnique({ where: { email: link.email } });
   if (!account) return NextResponse.json({ error: "account_not_found" }, { status: 404 });
 
-  // Rotate: brand-new key, old one is overwritten (and thus invalidated).
-  const newKey = generateApiKey();
+  // Rotate: brand-new key via the Original AgentToken slot (old one revoked, thus invalidated).
+  const newKey = await upsertOriginalAgentToken(account.id);
   const updated = await prisma.account.update({
     where: { id: account.id },
-    data: { apiKey: newKey, emailVerifiedAt: account.emailVerifiedAt ?? new Date() },
+    data: { emailVerifiedAt: account.emailVerifiedAt ?? new Date() },
   });
 
   const res = NextResponse.json({
     status: "key_rotated",
     handle: updated.handle,
     email: updated.email,
-    api_key: updated.apiKey,
+    api_key: newKey,
     account_id: updated.id,
-    bootstrap_prompt: updated.apiKey ? bootstrapPrompt(updated.apiKey) : null,
+    bootstrap_prompt: bootstrapPrompt(newKey),
     note: "Your previous API key has been invalidated. Update your agent with this new key.",
   });
   // Land the user authenticated on /account after the one-time key reveal.

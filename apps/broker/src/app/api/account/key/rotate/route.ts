@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromCookie, generateApiKey, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid, upsertOriginalAgentToken } from "@/lib/auth";
 import { sendKeyRotatedEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
@@ -11,14 +11,18 @@ export const runtime = "nodejs";
  * ONCE (the only time it's shown in full — the dashboard renders it once with a
  * "save it" callout, then only ever shows the masked form). Emails a security
  * notice + audits key.rotated.
+ *
+ * SEC H1: the new key is minted as the account's "Original" AgentToken (see
+ * upsertOriginalAgentToken in @/lib/auth) — only its SHA-256 hash persists.
+ * Nothing writes Account.apiKey anymore.
  */
 export async function POST(req: NextRequest) {
   const account = await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value);
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!csrfValid(req.headers.get(CSRF_HEADER), req.cookies.get(CSRF_COOKIE_NAME)?.value)) return NextResponse.json({ error: "csrf" }, { status: 403 });
 
-  const newKey = generateApiKey();
-  await prisma.account.update({ where: { id: account.id }, data: { apiKey: newKey, apiKeyLastUsedAt: null } });
+  const newKey = await upsertOriginalAgentToken(account.id);
+  await prisma.account.update({ where: { id: account.id }, data: { apiKeyLastUsedAt: null } });
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "key.rotated", detail: {} } });
   void sendKeyRotatedEmail(account.email, account.handle); // fire-and-forget notice
 

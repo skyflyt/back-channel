@@ -29,6 +29,19 @@ export async function resolve(specifier, context, nextResolve) {
       try {
         return await nextResolve(specifier + ".js", context);
       } catch {
+        // Fall through to the relative-import shim below (e.g. "./db" from a
+        // .ts file under src/lib/ — same extensionless-import problem as the
+        // "@/" case above, just via a relative specifier instead of the
+        // alias. Only engage this for specifiers that plain Node resolution
+        // already failed on, and only when the importer lives under
+        // SRC_ROOT, so nothing outside src/ (e.g. node_modules internals) is
+        // ever affected.
+        if ((specifier.startsWith("./") || specifier.startsWith("../")) && context.parentURL?.startsWith(pathToFileURL(SRC_ROOT).href)) {
+          const parentDir = path.dirname(fileURLToPath(context.parentURL));
+          const full = path.resolve(parentDir, specifier);
+          const resolved = resolveWithExt(full);
+          if (resolved !== full) return nextResolve(pathToFileURL(resolved).href, context);
+        }
         throw e;
       }
     }
