@@ -1,12 +1,28 @@
 name: install-cli
 
 # Validates the self-service installer on Linux: the bash installer's behavior,
-# the npm CLI's behavior, and that the published SHA256 matches the served script.
+# the npm CLI's behavior, and that the two published integrity anchors are
+# fresh:
+#   - install.sh.sha256: the installer SCRIPT's own hash, pinned out-of-band in
+#     docs/install-prompt.md so a paste-ready prompt can verify install.sh
+#     itself before running it (unrelated to what install.sh verifies AT
+#     RUNTIME -- see the next bullet).
+#   - skill.sha256: the expected hashes of skill/SKILL.md + skill/REFERENCE.md
+#     that install.sh fetches from raw.githubusercontent.com (an origin
+#     independent of back-channel.app) and cross-checks the fetched skill
+#     content against before writing anything to disk (H3 / SEC-4 fix). This
+#     is the manifest apps/broker/scripts/generate-skill-manifest.mjs
+#     generates from the actual skill files -- CI fails if it's stale so a
+#     drifted manifest can't silently ship and start breaking every install.
 on:
   push:
     paths:
       - "apps/broker/public/install.sh"
       - "apps/broker/public/install.sh.sha256"
+      - "apps/broker/public/skill.sha256"
+      - "apps/broker/scripts/generate-skill-manifest.mjs"
+      - "skill/SKILL.md"
+      - "skill/REFERENCE.md"
       - "packages/install/**"
       - "tests/install/**"
       - ".github/workflows/install-cli.yml"
@@ -14,6 +30,10 @@ on:
     paths:
       - "apps/broker/public/install.sh"
       - "apps/broker/public/install.sh.sha256"
+      - "apps/broker/public/skill.sha256"
+      - "apps/broker/scripts/generate-skill-manifest.mjs"
+      - "skill/SKILL.md"
+      - "skill/REFERENCE.md"
       - "packages/install/**"
       - "tests/install/**"
       - ".github/workflows/install-cli.yml"
@@ -38,7 +58,7 @@ jobs:
         working-directory: packages/install
         run: node --test "test/*.test.mjs"
 
-      - name: published SHA256 matches the served script (M4 integrity anchor)
+      - name: published install.sh.sha256 matches the served script (out-of-band prompt anchor)
         run: |
           expected="$(cut -d' ' -f1 apps/broker/public/install.sh.sha256)"
           actual="$(sha256sum apps/broker/public/install.sh | cut -d' ' -f1)"
@@ -46,6 +66,13 @@ jobs:
           echo "actual=  $actual"
           test "$expected" = "$actual" || {
             echo "::error::install.sh.sha256 is stale — regenerate it (see docs/install-prompt.md)"
+            exit 1
+          }
+
+      - name: published skill.sha256 matches skill/SKILL.md + skill/REFERENCE.md (H3 runtime integrity anchor)
+        run: |
+          node apps/broker/scripts/generate-skill-manifest.mjs --check || {
+            echo "::error::apps/broker/public/skill.sha256 is stale — regenerate with 'node apps/broker/scripts/generate-skill-manifest.mjs', commit it, and push to main (see the SEC-4 PR description / install.sh header comment for why this MUST land on GitHub main, not just in this branch)."
             exit 1
           }
 

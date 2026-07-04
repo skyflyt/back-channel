@@ -41,7 +41,7 @@ stop_mock() { kill "$MOCK_PID" 2>/dev/null; rm -f "$MOCK_OUT"; }
 
 # Fresh sandbox HOME for each scenario so installs don't bleed together.
 new_home() { SBX="$(mktemp -d)"; }
-run_install() { HOME="$SBX" CLAUDE_CONFIG_DIR="" BC_HOST="$BASE" sh "$INSTALL_SH" --allow-host "$@"; }
+run_install() { HOME="$SBX" CLAUDE_CONFIG_DIR="" BC_HOST="$BASE" BC_MANIFEST_HOST="$BASE" sh "$INSTALL_SH" --allow-host "$@"; }
 
 echo "install.sh integration tests"
 echo "============================"
@@ -168,8 +168,66 @@ stop_mock
 # ── 15. --skills-dir override ───────────────────────────────────────────────
 new_home; start_mock
 CUSTOM="$SBX/custom-skills"
-out="$(HOME="$SBX" BC_HOST="$BASE" sh "$INSTALL_SH" --allow-host --quiet --skills-dir "$CUSTOM" 2>&1)"; rc=$?
+out="$(HOME="$SBX" BC_HOST="$BASE" BC_MANIFEST_HOST="$BASE" sh "$INSTALL_SH" --allow-host --quiet --skills-dir "$CUSTOM" 2>&1)"; rc=$?
 [ -f "$CUSTOM/back-channel/SKILL.md" ] && ok "--skills-dir honored" || fail "--skills-dir ignored ($out)"
+stop_mock
+
+# ── 16. H3/SEC-4: matching manifest -> installs + reports verified ─────────
+new_home; start_mock BC_MOCK_MANIFEST=match
+out="$(run_install --quiet 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "matching manifest -> exits 0" || fail "matching manifest rc=$rc ($out)"
+[ -f "$SBX/.claude/skills/back-channel/SKILL.md" ] && ok "matching manifest -> SKILL.md written" || fail "matching manifest -> SKILL.md missing"
+stop_mock
+
+new_home; start_mock BC_MOCK_MANIFEST=match
+out2="$(run_install 2>&1)"; rc2=$?
+echo "$out2" | grep -qi "verified against the GitHub integrity anchor" && ok "matching manifest -> verified message shown" || fail "matching manifest -> no verified message ($out2)"
+stop_mock
+
+# ── 17. H3/SEC-4 (THE key negative test): tampered skill content -> ABORT, nothing written ─
+new_home; start_mock BC_MOCK_SKILL_BODY=tampered BC_MOCK_MANIFEST=match
+out="$(run_install --quiet 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "tampered skill content -> non-zero exit" || fail "tampered skill content exited 0 (SHOULD HAVE ABORTED)"
+[ ! -f "$SBX/.claude/skills/back-channel/SKILL.md" ] && ok "tampered skill content -> SKILL.md NOT written" || fail "tampered skill content -> SKILL.md WAS written (integrity check did not block install)"
+echo "$out" | grep -qi "INTEGRITY CHECK FAILED" && ok "tampered skill content -> clear integrity-failure message" || fail "tampered skill content -> message unclear ($out)"
+stop_mock
+
+# ── 18. H3/SEC-4: stale/mismatched GitHub manifest (not tampering, but disagreement) -> ABORT ─
+new_home; start_mock BC_MOCK_MANIFEST=mismatch
+out="$(run_install --quiet 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "mismatched manifest -> non-zero exit" || fail "mismatched manifest exited 0"
+[ ! -f "$SBX/.claude/skills/back-channel/SKILL.md" ] && ok "mismatched manifest -> SKILL.md NOT written" || fail "mismatched manifest -> SKILL.md WAS written"
+stop_mock
+
+# ── 19. H3/SEC-4: tampered REFERENCE.md is dropped (non-fatal) but SKILL.md still installs+verifies ─
+new_home; start_mock BC_MOCK_REF_BODY=tampered BC_MOCK_MANIFEST=match
+out="$(run_install --quiet 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "tampered REFERENCE.md -> install still exits 0" || fail "tampered REFERENCE.md blocked whole install ($out)"
+[ -f "$SBX/.claude/skills/back-channel/SKILL.md" ] && ok "tampered REFERENCE.md -> SKILL.md still installs" || fail "tampered REFERENCE.md -> SKILL.md missing"
+[ ! -f "$SBX/.claude/skills/back-channel/REFERENCE.md" ] && ok "tampered REFERENCE.md -> REFERENCE.md NOT written" || fail "tampered REFERENCE.md -> REFERENCE.md WAS written (integrity check did not catch it)"
+stop_mock
+
+# ── 20. H3/SEC-4: GitHub manifest unreachable (404) -> fails CLOSED by default ─
+new_home; start_mock BC_MOCK_MANIFEST=404
+out="$(run_install --quiet 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "unreachable manifest -> non-zero exit (fail closed)" || fail "unreachable manifest exited 0 (should fail closed)"
+[ ! -f "$SBX/.claude/skills/back-channel/SKILL.md" ] && ok "unreachable manifest -> nothing written" || fail "unreachable manifest -> SKILL.md WAS written"
+echo "$out" | grep -qi "allow-unverified" && ok "unreachable manifest -> mentions --allow-unverified escape hatch" || fail "unreachable manifest -> no escape-hatch guidance ($out)"
+stop_mock
+
+# ── 21. H3/SEC-4: --allow-unverified degrades to liveness-only with a loud warning ─
+new_home; start_mock BC_MOCK_MANIFEST=404
+out="$(run_install --quiet --allow-unverified 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "--allow-unverified -> install proceeds despite unreachable manifest" || fail "--allow-unverified rc=$rc ($out)"
+[ -f "$SBX/.claude/skills/back-channel/SKILL.md" ] && ok "--allow-unverified -> SKILL.md written" || fail "--allow-unverified -> SKILL.md missing"
+echo "$out" | grep -qi "COULD NOT REACH" && ok "--allow-unverified -> loud warning printed even under --quiet" || fail "--allow-unverified -> no warning surfaced ($out)"
+stop_mock
+
+# ── 22. H3/SEC-4: malformed manifest body (no SKILL.md entry) -> fails closed like unreachable ─
+new_home; start_mock BC_MOCK_MANIFEST=malformed
+out="$(run_install --quiet 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && ok "malformed manifest -> non-zero exit" || fail "malformed manifest exited 0"
+[ ! -f "$SBX/.claude/skills/back-channel/SKILL.md" ] && ok "malformed manifest -> nothing written" || fail "malformed manifest -> SKILL.md WAS written"
 stop_mock
 
 echo "============================"

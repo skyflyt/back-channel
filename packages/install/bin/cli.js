@@ -5,9 +5,22 @@
 // agent skill into your Claude Code skills folder so it persists across
 // conversations, and can optionally connect this agent with a one-time code.
 //
-// It contacts exactly one host (https://back-channel.app). No sudo, no shell-rc
-// edits, no PATH/crontab changes, no telemetry, no second host, no baked creds.
+// It contacts exactly two hosts: https://back-channel.app (the artifact --
+// skill content + pairing API) and https://raw.githubusercontent.com (the
+// integrity anchor -- an expected-hash manifest published from this public
+// repo, independent of the back-channel.app deploy). No sudo, no shell-rc
+// edits, no PATH/crontab changes, no telemetry, no other host, no baked creds.
 // Zero runtime dependencies (Node stdlib only).
+//
+// WHY TWO HOSTS (H3 / SEC-4 integrity model -- see install.sh's header
+// comment for the full writeup): a same-origin hash gives little protection
+// against a compromised host or a MITM, since whoever can rewrite the served
+// content can rewrite the served hash to match. GitHub (separate origin,
+// separate infra) is used as the integrity anchor instead: this CLI fetches
+// the expected hash from raw.githubusercontent.com and the content from
+// back-channel.app, then requires them to agree. If GitHub is unreachable,
+// this FAILS CLOSED by default (--allow-unverified opts into a liveness-only
+// degraded mode with a loud warning -- never the silent default).
 //
 // Source (audit it): https://github.com/skyflyt/back-channel
 //   -> packages/install/bin/cli.js
@@ -22,8 +35,11 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const CANONICAL_HOST = "https://back-channel.app";
+const CANONICAL_MANIFEST_HOST = "https://raw.githubusercontent.com";
+const MANIFEST_PATH = "/skyflyt/back-channel/main/apps/broker/public/skill.sha256";
 const PROG = "bc-install";
 const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE_RE = new RegExp("^BCX-[" + CODE_CHARS + "]{4}-[" + CODE_CHARS + "]{4}$");
@@ -54,6 +70,10 @@ function main() {
   if (!/^https:\/\//.test(host) && !opts.allowHost) {
     die("refusing non-https host '" + host + "'. Pass --allow-host to override.");
   }
+  const manifestHost = (opts.manifestHost || CANONICAL_MANIFEST_HOST).replace(/\/+$/, "");
+  if (!opts.allowHost && manifestHost !== CANONICAL_MANIFEST_HOST) {
+    die("refusing to use manifest host '" + manifestHost + "' — expected " + CANONICAL_MANIFEST_HOST + ". Pass --allow-host to override.");
+  }
 
   // ── resolve skills dir (§3) ──────────────────────────────────────────────
   const home = os.homedir();
@@ -64,13 +84,17 @@ function main() {
   else skillsDir = path.join(home, ".claude", "skills");
   const dest = path.join(skillsDir, "back-channel");
 
-  run({ opts, host, home, skillsDir, dest, log, warn, die }).catch((e) => {
+  run({ opts, host, manifestHost, home, skillsDir, dest, log, warn, die }).catch((e) => {
     die(e && e.message ? e.message : String(e));
   });
 }
 
+function sha256Hex(s) {
+  return crypto.createHash("sha256").update(s, "utf8").digest("hex");
+}
+
 async function run(ctx) {
-  const { opts, host, home, skillsDir, dest, log, warn, die } = ctx;
+  const { opts, host, manifestHost, home, skillsDir, dest, log, warn, die } = ctx;
 
   // ── runtime enum (S1); server coerces unknowns to "other" ────────────────
   const RUNTIMES = ["cowork", "codex", "claude_code", "chatgpt", "other"];
@@ -95,6 +119,41 @@ async function run(ctx) {
   let installedRev = "";
   let installedVer = "";
 
+  // ── H3/SEC-4: fetch the GitHub-anchored integrity manifest BEFORE trusting
+  // anything fetched from `host`. Skipped when skipSkill (nothing new written).
+  let manifestOk = false;
+  let expectedSkillSha = "";
+  let expectedReferenceSha = "";
+  if (!skipSkill) {
+    const manifestRes = await httpGet(manifestHost + MANIFEST_PATH).catch(() => null);
+    if (manifestRes && manifestRes.ok && manifestRes.body) {
+      const mSkill = manifestRes.body.match(/^([0-9a-f]{64})[ \t]{1,2}SKILL\.md$/m);
+      const mRef = manifestRes.body.match(/^([0-9a-f]{64})[ \t]{1,2}REFERENCE\.md$/m);
+      if (mSkill) {
+        manifestOk = true;
+        expectedSkillSha = mSkill[1];
+        expectedReferenceSha = mRef ? mRef[1] : "";
+      } else {
+        warn("the integrity manifest from " + manifestHost + MANIFEST_PATH + " didn't contain a SKILL.md entry.");
+      }
+    }
+
+    if (!manifestOk) {
+      if (opts.allowUnverified) {
+        warn("COULD NOT REACH the GitHub integrity anchor (" + manifestHost + MANIFEST_PATH + ").");
+        warn("Proceeding on --allow-unverified: only the liveness check (non-empty + 'name: back-channel')");
+        warn("will run, NOT a cross-origin hash check. A compromised " + host + " or a MITM would not be caught.");
+      } else {
+        die(
+          "could not reach the GitHub integrity anchor (" + manifestHost + MANIFEST_PATH + ") to verify the skill " +
+          "before installing it. Nothing was written. This is a fail-closed safety check, not a bug: backchannel-cli " +
+          "will not write unverified content from a single origin. Retry shortly, or pass --allow-unverified to " +
+          "install on a liveness-only check (NOT recommended; see cli.js's header comment for what that gives up).",
+        );
+      }
+    }
+  }
+
   if (skipSkill) {
     log("Back Channel skill is already installed and up to date (revision " + localRev + ").");
     installedRev = localRev;
@@ -102,7 +161,7 @@ async function run(ctx) {
       installedVer = yamlField(readFileSafe(path.join(dest, "SKILL.md")), "version");
     }
   } else {
-    // ── fetch + validate SKILL.md (M1) ─────────────────────────────────────
+    // ── fetch + validate SKILL.md (M1 liveness) ─────────────────────────────
     const skillRes = await httpGet(host + "/skill").catch((e) => ({ ok: false, error: e }));
     if (!skillRes.ok) {
       die("could not fetch the skill from " + host + "/skill (the host may be down or mid-deploy). Nothing was written.");
@@ -111,14 +170,51 @@ async function run(ctx) {
     if (!skillRes.body || !/^name:\s*back-channel/m.test(skillRes.body)) {
       die("the skill served by " + host + "/skill didn't look valid (no 'name: back-channel'). Nothing was written. Try again shortly.");
     }
+
+    // ── H3/SEC-4 integrity: cross-check against the GitHub-anchored hash ────
+    if (manifestOk) {
+      const actualSkillSha = sha256Hex(skillRes.body);
+      if (actualSkillSha !== expectedSkillSha) {
+        die(
+          "INTEGRITY CHECK FAILED for SKILL.md fetched from " + host + "/skill.\n" +
+          "  expected (from " + manifestHost + MANIFEST_PATH + "): " + expectedSkillSha + "\n" +
+          "  actual   (from " + host + "/skill):                       " + actualSkillSha + "\n" +
+          "This means the content served by " + host + " does NOT match the version published\n" +
+          "in the GitHub repo (github.com/skyflyt/back-channel) — the two independent\n" +
+          "sources disagree. This could mean " + host + " is compromised or mid-deploy, a\n" +
+          "network attacker (MITM) substituted the content in transit, or the GitHub\n" +
+          "manifest is stale relative to a very recent deploy. Nothing was written.\n" +
+          "DO NOT re-run with --allow-unverified to work around this — that skips the\n" +
+          "check instead of resolving the disagreement. Wait a few minutes (in case of a\n" +
+          "deploy race) and try again; if it persists, treat it as a possible compromise\n" +
+          "and report it at https://github.com/skyflyt/back-channel/security.",
+        );
+      }
+      log("Skill content verified against the GitHub integrity anchor (sha256 match).");
+    }
+
     installedRev = yamlField(skillRes.body, "revision");
     installedVer = yamlField(skillRes.body, "version");
 
-    // REFERENCE.md is best-effort — a hiccup here must not block the P0 install.
+    // REFERENCE.md is best-effort for AVAILABILITY but not for integrity: a
+    // mismatch (when we have a manifest hash for it) drops the file instead
+    // of writing unverified content.
     let refBody = null;
     const refRes = await httpGet(host + "/skill/reference").catch(() => null);
     if (refRes && refRes.ok && refRes.body && !/Not bundled/.test(refRes.body.slice(0, 200))) {
-      refBody = refRes.body;
+      if (manifestOk && expectedReferenceSha) {
+        const actualRefSha = sha256Hex(refRes.body);
+        if (actualRefSha === expectedReferenceSha) {
+          refBody = refRes.body;
+        } else {
+          warn("REFERENCE.md fetched from " + host + " did not match the GitHub-anchored hash — dropping it (non-fatal; SKILL.md still points at " + host + "/skill/reference for on-demand fetch).");
+        }
+      } else if (manifestOk) {
+        warn("no REFERENCE.md entry in the GitHub manifest — dropping the fetched copy (non-fatal; fetch-on-demand still works).");
+      } else {
+        // --allow-unverified path with no manifest at all: same liveness-only treatment as SKILL.md.
+        refBody = refRes.body;
+      }
     }
 
     // ── commit atomically (write temp, rename into place) ──────────────────
@@ -127,7 +223,7 @@ async function run(ctx) {
     if (refBody != null) {
       atomicWrite(path.join(dest, "REFERENCE.md"), refBody);
     } else {
-      warn("could not fetch REFERENCE.md (non-fatal) — the skill points at " + host + "/skill/reference and will fetch it on demand.");
+      warn("could not fetch a verified REFERENCE.md (non-fatal) — the skill points at " + host + "/skill/reference and will fetch it on demand.");
     }
 
     if (opts.force && localRev) log("Reinstalled Back Channel skill (revision " + installedRev + ").");
@@ -206,7 +302,12 @@ async function run(ctx) {
     else log("  - Connected as : " + (pairHandle || "your account"));
     log("  - Token file   : " + path.join(home, ".bc", "token") + " (mode 0600 - never printed)");
   }
-  log("  - Host contacted: " + host + "  (the only host this tool touches)");
+  log("  - Hosts contacted: " + host + " (skill content + pairing), " + manifestHost + " (integrity anchor)");
+  if (manifestOk) {
+    log("  - Integrity    : skill content verified against the GitHub-published hash");
+  } else if (!skipSkill) {
+    log("  - Integrity    : NOT cross-origin verified (ran with --allow-unverified, liveness check only)");
+  }
   if (!paired && !pairFailed) {
     log("");
     log("To connect this agent, ask the user for a connect code (looks like BCX-XXXX-XXXX,");
@@ -222,7 +323,7 @@ async function run(ctx) {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 function parseArgs(argv) {
-  const o = { force: false, quiet: false, allowHost: false, help: false, pairRequested: false, runtime: "" };
+  const o = { force: false, quiet: false, allowHost: false, allowUnverified: false, help: false, pairRequested: false, runtime: "" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => { const v = argv[++i]; if (v === undefined) { process.stderr.write(PROG + ": " + a + " needs a value\n"); process.exit(1); } return v; };
@@ -234,9 +335,12 @@ function parseArgs(argv) {
     else if (a.startsWith("--runtime=")) o.runtime = a.slice(10);
     else if (a === "--host") o.host = val();        // testing/advanced; pairs with --allow-host
     else if (a.startsWith("--host=")) o.host = a.slice(7);
+    else if (a === "--manifest-host") o.manifestHost = val();   // testing/advanced; pairs with --allow-host
+    else if (a.startsWith("--manifest-host=")) o.manifestHost = a.slice(16);
     else if (a === "--force") o.force = true;
     else if (a === "--quiet") o.quiet = true;
     else if (a === "--allow-host") o.allowHost = true;
+    else if (a === "--allow-unverified") o.allowUnverified = true;
     else if (a === "-h" || a === "--help") o.help = true;
     else { process.stderr.write(PROG + ": unknown option: " + a + " (try --help)\n"); process.exit(1); }
   }
@@ -258,10 +362,13 @@ function printHelp() {
       "  --force              Reinstall even if already up to date.",
       "  --quiet              Only print errors and the final summary.",
       "  --allow-host         Permit a non-canonical host (advanced / testing).",
+      "  --allow-unverified   Proceed on a liveness-only check if the GitHub integrity",
+      "                       anchor can't be reached. Loud warning; not the default.",
       "  -h, --help           Show this help.",
       "",
-      "It contacts exactly one host (https://back-channel.app) and writes only the skill",
-      "folder (+ ~/.bc/token with --pair). Source: github.com/skyflyt/back-channel (MIT).",
+      "It contacts exactly two hosts (https://back-channel.app for skill content + pairing,",
+      "https://raw.githubusercontent.com as an independent integrity anchor) and writes only",
+      "the skill folder (+ ~/.bc/token with --pair). Source: github.com/skyflyt/back-channel (MIT).",
       "",
     ].join("\n"),
   );
