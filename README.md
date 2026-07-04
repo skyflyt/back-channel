@@ -26,10 +26,16 @@ curl -fsSL https://back-channel.app/install.sh | sh   # if it doesn't
 ```
 
 Add `--pair BCX-XXXX-XXXX` to install **and** connect in one step. The installer
-writes only `~/.claude/skills/back-channel/`, contacts only `back-channel.app`,
-uses no `sudo`, and is source-visible ([`install.sh`](apps/broker/public/install.sh),
+writes only `~/.claude/skills/back-channel/` and uses no `sudo`. It contacts
+`back-channel.app` for the skill content and pairing, and
+`raw.githubusercontent.com` as an independent integrity anchor — before writing
+anything, it cross-checks the fetched skill content's SHA256 against a manifest
+published from this GitHub repo, so a compromised host or a MITM substituting
+the served skill can't slip content past it undetected (it aborts loudly on any
+mismatch). Source-visible ([`install.sh`](apps/broker/public/install.sh),
 [`backchannel-cli`](packages/install)) with a published
-[SHA256](apps/broker/public/install.sh.sha256). The paste-ready collaborator
+[SHA256 of the script itself](apps/broker/public/install.sh.sha256) for the
+paste-ready prompt to verify before running. The paste-ready collaborator
 prompt is in [`docs/install-prompt.md`](docs/install-prompt.md). (Claude Desktop
 doesn't scan the skills folder — it keeps using the inline-fetch line above.)
 

@@ -52,7 +52,7 @@ function freshHome() {
 
 function runCli(args, { home, host }) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, "--allow-host", "--host", host, ...args], {
+    const child = spawn(process.execPath, [CLI, "--allow-host", "--host", host, "--manifest-host", host, ...args], {
       env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: "", BC_SKILLS_DIR: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -209,5 +209,66 @@ test("--runtime is passed through to the exchange", async () => {
     assert.equal(r.code, 0, r.err);
     // mock echoes runtime_type back; the CLI doesn't print it, but the token proves the round-trip
     assert.ok(fs.existsSync(join(home, ".bc", "token")));
+  });
+});
+
+// ── H3/SEC-4: GitHub-anchored integrity cross-check ─────────────────────────
+
+test("H3: matching manifest -> installs and reports verified", async () => {
+  await withMock({ BC_MOCK_MANIFEST: "match" }, async (host) => {
+    const home = freshHome();
+    const r = await runCli([], { home, host });
+    assert.equal(r.code, 0, r.err);
+    assert.ok(fs.existsSync(join(dest(home), "SKILL.md")));
+    assert.match(r.out, /verified against the GitHub integrity anchor/i);
+  });
+});
+
+test("H3 (key negative test): tampered skill content -> ABORT, nothing written", async () => {
+  await withMock({ BC_MOCK_SKILL_BODY: "tampered", BC_MOCK_MANIFEST: "match" }, async (host) => {
+    const home = freshHome();
+    const r = await runCli(["--quiet"], { home, host });
+    assert.notEqual(r.code, 0, "tampered content must not exit 0");
+    assert.ok(!fs.existsSync(join(dest(home), "SKILL.md")), "SKILL.md must NOT be written");
+    assert.match(r.err, /INTEGRITY CHECK FAILED/i);
+  });
+});
+
+test("H3: mismatched/stale GitHub manifest -> ABORT", async () => {
+  await withMock({ BC_MOCK_MANIFEST: "mismatch" }, async (host) => {
+    const home = freshHome();
+    const r = await runCli(["--quiet"], { home, host });
+    assert.notEqual(r.code, 0);
+    assert.ok(!fs.existsSync(join(dest(home), "SKILL.md")));
+  });
+});
+
+test("H3: tampered REFERENCE.md is dropped (non-fatal), SKILL.md still installs+verifies", async () => {
+  await withMock({ BC_MOCK_REF_BODY: "tampered", BC_MOCK_MANIFEST: "match" }, async (host) => {
+    const home = freshHome();
+    const r = await runCli(["--quiet"], { home, host });
+    assert.equal(r.code, 0, r.err);
+    assert.ok(fs.existsSync(join(dest(home), "SKILL.md")));
+    assert.ok(!fs.existsSync(join(dest(home), "REFERENCE.md")), "tampered REFERENCE.md must not be written");
+  });
+});
+
+test("H3: GitHub manifest unreachable -> fails CLOSED by default", async () => {
+  await withMock({ BC_MOCK_MANIFEST: "404" }, async (host) => {
+    const home = freshHome();
+    const r = await runCli(["--quiet"], { home, host });
+    assert.notEqual(r.code, 0, "should fail closed");
+    assert.ok(!fs.existsSync(join(dest(home), "SKILL.md")));
+    assert.match(r.err, /allow-unverified/i);
+  });
+});
+
+test("H3: --allow-unverified degrades to liveness-only with a loud warning", async () => {
+  await withMock({ BC_MOCK_MANIFEST: "404" }, async (host) => {
+    const home = freshHome();
+    const r = await runCli(["--quiet", "--allow-unverified"], { home, host });
+    assert.equal(r.code, 0, r.err);
+    assert.ok(fs.existsSync(join(dest(home), "SKILL.md")));
+    assert.match(r.err, /COULD NOT REACH/i);
   });
 });

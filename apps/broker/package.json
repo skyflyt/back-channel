@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node server.mjs",
-    "prebuild": "node scripts/copy-lessons.mjs",
+    "prebuild": "node scripts/copy-lessons.mjs && node scripts/generate-skill-manifest.mjs",
     "build": "next build",
     "start": "NODE_ENV=production node server.mjs",
     "test": "node --test",
