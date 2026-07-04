@@ -1,6 +1,6 @@
 {
   "name": "back-channel-connector",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Back Channel .mcpb bridge — stdio to https://back-channel.app/api/mcp",
   "type": "module",
   "private": true

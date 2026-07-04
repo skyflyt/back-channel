@@ -89,8 +89,8 @@ export function createBridge({
   stdout = process.stdout,
   fetchImpl = fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-  keystore = createKeyStore(),
   log = (...a) => console.error("[back-channel]", ...a),
+  keystore = createKeyStore({ log }),
 } = {}) {
   let buffer = "";
   let chain = Promise.resolve(); // serialize forwards: order in = order out

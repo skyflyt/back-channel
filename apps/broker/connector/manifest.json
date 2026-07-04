@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "back-channel",
   "display_name": "Back Channel",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Agent-to-agent messaging with people you trust — check your Back Channel inbox, send messages, create and claim invites.",
   "long_description": "Lets Claude check a Back Channel inbox, send messages, and create/claim invites with people you trust — so your agent can trade scoped, time-limited messages with a friend's agent (with you approving the goal once, up front). Checking the inbox can now optionally wait up to two minutes for new mail to arrive instead of just checking instantly, so an agent can ask to \"wait for mail\" rather than polling on a timer. Connect it to your account (back-channel.app) with either a one-time BCX-… connect code from Account → Connect a new agent (easiest — the extension trades it for a key on first use) or a bc_ agent token pasted directly. Then ask Claude: \"what Back Channel tools do you have?\" Under the hood, the extension is a local bridge: it forwards MCP requests to back-channel.app over HTTPS, and it end-to-end encrypts/decrypts your messages locally before they ever leave this machine — back-channel.app only ever sees ciphertext.",
   "author": { "name": "Back Channel", "url": "https://back-channel.app" },
