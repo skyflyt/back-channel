@@ -54,6 +54,7 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import { parse } from "node:url";
+import { randomBytes } from "node:crypto";
 import { prisma } from "./db.mjs";
 import { rateLimit, clientIp } from "./rate-limit.mjs";
 import { notifyIdleRecipient } from "./notify.mjs";
@@ -98,7 +99,7 @@ const TTL_PERSIST_THRESHOLD_MS = 60 * 1000;
 // Current skill revision — surfaced to agents on connect / in poll responses so
 // a stale copy is noticed immediately. Keep in sync with skill/SKILL.md's
 // `revision:` frontmatter (GET /skill/revision reads the file authoritatively).
-const CURRENT_SKILL_REVISION = "2026-06-25-3"; // keep in sync with skill/SKILL.md frontmatter
+const CURRENT_SKILL_REVISION = "2026-07-03-4"; // keep in sync with skill/SKILL.md frontmatter
 
 // Frames whose `type` the broker routes on — allowed in plaintext. Everything
 // else is "content" and should be a sealed `{type:"enc",...}` envelope.
@@ -134,6 +135,75 @@ const NOTIFY_RATE_MS = 5 * 60 * 1000;
 /** Shared across server.mjs's import and Next route bundles (same process). */
 /** @type {Map<string, PairedSession>} */
 const sessions = globalThis.__bcRelaySessions ?? (globalThis.__bcRelaySessions = new Map());
+
+// -- WS relay tickets (C1 -- session-hijack fix) -----------------------------
+// The WS upgrade at /relay/:sessionId used to authenticate with ONLY
+// `token === sessionId` -- i.e. anyone who learned the session id (it appears
+// in the /sessions/:id watch URL, relay_url, Referer, logs) could connect as
+// EITHER role and read/inject control-plane frames on a live cross-account
+// session. Fix: a party must first mint a short-lived, single-use, CSPRNG
+// ticket via an authed REST call (POST /api/sessions/:id/relay-ticket) that
+// derives the role from the invite's hostAccountId/visitorAccountId -- never
+// from a client-supplied param. The WS upgrade then consumes `?ticket=`
+// instead of trusting a client-asserted role+token.
+//
+// In-memory Map, same pattern as `sessions` above (single-instance Cloud Run;
+// a ticket only needs to survive the few seconds between mint and connect --
+// including a per-turn reconnect, which fetches a FRESH ticket each time).
+/** @typedef {{ sessionId: string, role: Role, accountId: string, expiresAt: number }} RelayTicket */
+/** @type {Map<string, RelayTicket>} */
+const relayTickets = globalThis.__bcRelayTickets ?? (globalThis.__bcRelayTickets = new Map());
+
+const RELAY_TICKET_TTL_MS = 60 * 1000; // short-lived: mint-then-connect is near-immediate
+const RELAY_TICKET_BYTES = 32; // CSPRNG, base64url -- unguessable
+
+/** Drop expired tickets. Cheap O(n) sweep; the map stays tiny (short TTL). */
+function sweepExpiredTickets(now = Date.now()) {
+  for (const [id, t] of relayTickets) {
+    if (t.expiresAt <= now) relayTickets.delete(id);
+  }
+}
+
+/**
+ * Mint a single-use WS relay ticket bound server-side to {sessionId, role,
+ * accountId}. Callers MUST have already verified the caller's account is a
+ * party to the session and derived `role` from the invite (never from a
+ * client param) -- this function just issues the opaque credential.
+ * @param {{ sessionId: string, role: Role, accountId: string }} args
+ * @returns {{ ticket: string, expiresAt: Date }}
+ */
+export function mintRelayTicket({ sessionId, role, accountId }) {
+  sweepExpiredTickets();
+  const ticket = randomBytes(RELAY_TICKET_BYTES).toString("base64url");
+  const expiresAt = Date.now() + RELAY_TICKET_TTL_MS;
+  relayTickets.set(ticket, { sessionId, role, accountId, expiresAt });
+  return { ticket, expiresAt: new Date(expiresAt) };
+}
+
+/**
+ * Redeem a ticket for the WS upgrade path: must exist, be unexpired, and
+ * match `sessionId`. Single-use -- deleted whether or not it matches, so a
+ * replayed/guessed ticket string never validates twice. Returns the bound
+ * role/accountId (the ONLY source of truth for role -- never the client's
+ * `?role=` query param) or null on any mismatch.
+ * @param {string} ticket
+ * @param {string} sessionId
+ * @returns {{ role: Role, accountId: string } | null}
+ */
+export function consumeRelayTicket(ticket, sessionId) {
+  if (!ticket) return null;
+  const t = relayTickets.get(ticket);
+  if (t) relayTickets.delete(ticket); // single-use regardless of outcome
+  if (!t) return null;
+  if (t.expiresAt <= Date.now()) return null;
+  if (t.sessionId !== sessionId) return null;
+  return { role: t.role, accountId: t.accountId };
+}
+
+/** Test-only: clear ticket state between tests. Not used in production code. */
+export function _resetRelayTickets() {
+  relayTickets.clear();
+}
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
 
@@ -303,6 +373,21 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
   const parsed = (() => { try { return JSON.parse(text); } catch { return undefined; } })();
   const type = parsed?.type;
   const isControl = typeof type === "string" && PLAINTEXT_CONTROL_TYPES.has(type);
+
+  // Handshake rotation guard (C1, L5-adjacent): once a role has sent real
+  // content (proof it derived a session key from its CURRENT handshakePub and
+  // used it to seal a frame), that pubkey is PINNED for the rest of the
+  // session. A later handshake.pubkey from the same role with a DIFFERENT key
+  // is not a legitimate retry (retries only happen during the pre-content
+  // connect race) -- it's an injected re-handshake / MITM attempt trying to
+  // swap keys mid-session. Drop it here, before it is persisted, seq'd, or
+  // relayed to the peer, so the peer never sees the forged key at all.
+  if (type === "handshake.pubkey" && typeof parsed?.pubkey === "string" &&
+      slot.handshakeEstablished?.[fromRole] && slot.handshakePub[fromRole] !== parsed.pubkey) {
+    console.warn(`[handshake-rotation-rejected] session=${sessionId} role=${fromRole} -- pubkey change after established session dropped`);
+    return slot.seq[dest]; // no-op: report the current seq, nothing was appended
+  }
+
   // Phase A: observe-only — count plaintext (non-enc) content frames (type only).
   if (!isControl && type !== "enc") {
     plaintextContentFrameCount++;
@@ -347,16 +432,25 @@ async function ingestFrame(slot, sessionId, fromRole, data) {
     await endSession(sessionId, "frame_budget_exceeded");
   }
 
-  // Handshake arbitration: if this role just sent a DIFFERENT pubkey than before
-  // (a retry), the peer who already derived from the old one must re-derive.
-  // Track the latest and signal the peer with handshake.replaced. Clients always
-  // use the LAST handshake.pubkey they received.
+  // Handshake arbitration: if this role just sent a DIFFERENT pubkey than
+  // before (a retry during the pre-content connect race -- the rotation guard
+  // above already rejected any change AFTER the role is established), the
+  // peer who already derived from the old one must re-derive. Track the
+  // latest and signal the peer with handshake.replaced. Clients always use
+  // the LAST handshake.pubkey they received.
   if (type === "handshake.pubkey" && typeof parsed?.pubkey === "string") {
     const prev = slot.handshakePub[fromRole];
     slot.handshakePub[fromRole] = parsed.pubkey;
     if (prev && prev !== parsed.pubkey) {
       await ingestFrame(slot, sessionId, fromRole, JSON.stringify({ type: "handshake.replaced", role: fromRole }));
     }
+  }
+  // Pin: once this role sends its first CONTENT frame, its current
+  // handshakePub is established -- the guard above rejects any further
+  // rotation attempt for this role for the rest of the session.
+  if (!isControl) {
+    if (!slot.handshakeEstablished) slot.handshakeEstablished = { visitor: false, host: false };
+    slot.handshakeEstablished[fromRole] = true;
   }
 
   // Nudge an idle recipient (content frames only; cheap idle + rate checks
@@ -412,13 +506,16 @@ export function handleRelayUpgrade(req, socket, head) {
   const match = url.pathname?.match(/^\/relay\/([^/]+)$/);
   if (!match) { socket.destroy(); return; }
   const sessionId = match[1];
-  const role = /** @type {Role | undefined} */ (url.query.role);
-  const token = /** @type {string | undefined} */ (url.query.token);
+  const ticket = /** @type {string | undefined} */ (url.query.ticket);
 
-  if (!role || (role !== "visitor" && role !== "host")) { socket.destroy(); return; }
-  if (!token) { socket.destroy(); return; }
-  // Phase 3 MVP: token == sessionId (unguessable UUID, distributed via authed API).
-  if (token !== sessionId) { socket.destroy(); return; }
+  // C1: role comes ONLY from the server-minted ticket -- never from a client
+  // query param. A missing/expired/reused/mismatched ticket is rejected
+  // outright (no distinguishing error on the wire -- just a destroyed socket,
+  // same as any other malformed upgrade).
+  if (!ticket || typeof ticket !== "string") { socket.destroy(); return; }
+  const redeemed = consumeRelayTicket(ticket, sessionId);
+  if (!redeemed) { socket.destroy(); return; }
+  const { role } = redeemed;
 
   wss.handleUpgrade(req, socket, head, (ws) => {
     void attachToSession(sessionId, role, ws);

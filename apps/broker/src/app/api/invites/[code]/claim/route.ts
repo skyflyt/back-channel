@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromAuth } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
+import { mintRelayTicket } from "@/lib/relay";
 
 export const runtime = "nodejs";
 
@@ -62,7 +63,9 @@ export async function POST(
 
   return NextResponse.json({
     session_id: invite.session.id,
-    relay_url: `${base}/relay/${invite.session.id}?role=host&token=${invite.session.id}`,
+    // C1: freshly-minted, single-use ticket for the FIRST connect; reconnects
+    // fetch their own fresh ticket via POST /api/sessions/:id/relay-ticket.
+    relay_url: `${base}/relay/${invite.session.id}?ticket=${mintRelayTicket({ sessionId: invite.session.id, role: "host", accountId: account.id }).ticket}`,
     scopes: invite.scopes,
     visitor_handle: invite.visitor.handle,
     visitor_pubkey: invite.visitor.agentPubkey ?? null,

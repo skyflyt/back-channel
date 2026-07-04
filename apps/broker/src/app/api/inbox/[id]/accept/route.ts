@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, generateInviteCode, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { mintRelayTicket } from "@/lib/relay";
 
 export const runtime = "nodejs";
 
@@ -55,7 +56,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   return NextResponse.json({
     ok: true,
     session_id: session.id,
-    relay_url: `${base}/relay/${session.id}?role=host&token=${session.id}`,
+    // C1: freshly-minted, single-use ticket for the FIRST connect; reconnects
+    // fetch their own fresh ticket via POST /api/sessions/:id/relay-ticket.
+    relay_url: `${base}/relay/${session.id}?ticket=${mintRelayTicket({ sessionId: session.id, role: "host", accountId: account.id }).ticket}`,
     scopes: session.scopesGranted,
   });
 }
