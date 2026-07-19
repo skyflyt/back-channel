@@ -74,10 +74,18 @@ export function deriveSessionKey(ownHandle, peerPublicKeyB64) {
   return hkdf(sharedSecret, SESSION_KEY_BYTES);
 }
 
-/** Encrypt + authenticate a plaintext frame object. */
-export function seal(plaintext, sessionKey) {
+/**
+ * Encrypt + authenticate a plaintext frame object.
+ *
+ * The optional `iv` is a ⚠️ KAT/TESTING-ONLY hook (see vectors/crypto-v1.json):
+ * IV reuse under AES-GCM is catastrophic, so production callers must omit it
+ * and take the fresh random IV. A wrong-length IV throws rather than reaching
+ * the cipher — Node would otherwise happily accept it and emit an envelope
+ * that open() then rejects with "Invalid IV length".
+ */
+export function seal(plaintext, sessionKey, iv = randomBytes(IV_BYTES)) {
   if (sessionKey.length !== 32) throw new Error("Session key must be 32 bytes (AES-256)");
-  const iv = randomBytes(IV_BYTES);
+  if (iv.length !== IV_BYTES) throw new Error(`IV must be ${IV_BYTES} bytes`);
   const cipher = createCipheriv(ALGO, sessionKey, iv);
   const json = Buffer.from(JSON.stringify(plaintext), "utf8");
   const ct = Buffer.concat([cipher.update(json), cipher.final()]);

@@ -1,0 +1,58 @@
+# Root library CI — type-check + vitest for the npm package and its test suites.
+#
+# Until this existed, only apps/broker and the install CLI had workflows, so
+# nothing gated a change to src/** or tests/**. The path filters below are wider
+# than "the library" on purpose: broker CI runs `node --test` inside
+# apps/broker and never runs the root vitest suite, so without the bridge-crypto
+# and published-vectors paths listed here, an edit to either could land without
+# tests/vectors.test.ts ever running — which is exactly the drift those vectors
+# exist to catch. (Duplicated between push and pull_request because GitHub
+# Actions does not support YAML anchors.)
+name: library
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "vectors/**"
+      - "scripts/**"
+      - "interop/**"
+      - "apps/broker/connector/server/crypto.js"
+      - "apps/broker/public/interop/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "vitest.config.ts"
+      - ".github/workflows/library.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "vectors/**"
+      - "scripts/**"
+      - "interop/**"
+      - "apps/broker/connector/server/crypto.js"
+      - "apps/broker/public/interop/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "vitest.config.ts"
+      - ".github/workflows/library.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: type-check
+        run: npm run lint
+      - name: tests (includes the crypto-v1 known-answer vectors)
+        run: npm test

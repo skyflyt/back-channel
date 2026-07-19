@@ -1,0 +1,201 @@
+{
+  "_meta": {
+    "name": "back-channel crypto-v1 known-answer vectors",
+    "version": 1,
+    "spec": {
+      "curve": "prime256v1 (P-256), uncompressed points, base64 on the wire",
+      "kdf": "HKDF-SHA-256, salt = 32 zero bytes, info = \"back-channel/v1/session-key\", L = 32",
+      "aead": "AES-256-GCM, 12-byte IV, 16-byte tag, no AAD, plaintext = UTF-8 JSON",
+      "envelope": "{ type: \"enc\", v: 1, iv: b64, ct: b64, tag: b64 }",
+      "contract": "Layer 1: encrypting the exact plaintext_json bytes with key+iv MUST yield exactly ct+tag (and decrypting MUST yield those bytes). Layer 2: receivers compare decrypted JSON semantically; key order/whitespace are not part of the contract."
+    },
+    "generator": "scripts/generate-vectors.ts",
+    "docs": "docs/interop-vectors.md",
+    "published": "https://back-channel.app/interop/crypto-v1.json"
+  },
+  "hkdf": [
+    {
+      "name": "all-zero ikm",
+      "ikm_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "session_key_hex": "9b61fc1a0f9dbe73b1f693e7a6e3e22b0601523a39d0cd3db186f040e1f94cf8"
+    },
+    {
+      "name": "all-0xff ikm",
+      "ikm_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "session_key_hex": "a105ef9f4caf5057d5a283f2ccd18e895c101e8ce6151a51f5df1b54146decec"
+    },
+    {
+      "name": "counting ikm 0x01..0x20",
+      "ikm_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "session_key_hex": "a15349ea1ac9a30fd6e92f4f276a9399c04d6c2ed771329b12cb5bf2a93c7138"
+    },
+    {
+      "name": "fixed arbitrary ikm",
+      "ikm_hex": "deb639352c7afed035c87e97de91a0e7519626b83edfc46622804f1b28e60343",
+      "session_key_hex": "f594a2fff828ccde40d74e1761aec01c81efacbe9cdffcb2f8221cb7e45a298a"
+    }
+  ],
+  "ecdh_p256": [
+    {
+      "name": "fixed keypair 1",
+      "alice_private_hex": "1386042a45becd8d9729130e93886d9890c0505f4efaa890e7e3f723066cefca",
+      "alice_public_b64": "BPCiKnVZdn8k4cYXBp2fTB3tzcVshe/f4QPNErRmEvWxh8husdb/JSEIMkJYdyVHy4XHriGabgQX8btN4/1sFOE=",
+      "bob_private_hex": "453717b7c314d688f1ad3bca6a95bd88fa1b1f931fa2b770e1b931e0aef9de46",
+      "bob_public_b64": "BJQt2VlIdAk3Mn9VWmkUUxGP14XGhComlwqGVYyf09wdJRQ+Yzd7P8rmvYNQkpEuX7YIsT5QnL1BRKaFUfIVgfI=",
+      "shared_secret_hex": "cb8b974ce6193639de6c48993094080fe378b84809b78e599749b5eb84bde5c9",
+      "session_key_hex": "0c4e4e96389d517c3df61b0c5ccc6561ab12a85422f8812c3171c0dd0550bad6"
+    },
+    {
+      "name": "fixed keypair 2",
+      "alice_private_hex": "b5153d32a142e2a87e8b028a4fe78c1676be3b9d2dfb08b5c312d4f44521c002",
+      "alice_public_b64": "BAKiAY74H68njdD0NBY6wJjvvQLLxW4Vh0eTi2cAWoysArwYTGCcNnmjB4CAgIAjxBlEAWEKO4CafkzrbpE2ohU=",
+      "bob_private_hex": "0ffd5df35b5ebdf66d66c761c156cd30dfd0c3e08120a07eb350b35c0ca1b65c",
+      "bob_public_b64": "BN5Rxr97zRIoQEKmATvs71Pgtc41AaKXiavpmR5l2AJZrWQ6H3mvhUMQXTFqyoSh4QMREBBY3RdC2JbnnftA5PE=",
+      "shared_secret_hex": "415f0d797fabd3b63f0ec5f86c39062a1254c1e52ee7ef10502fccd8df2da8bc",
+      "session_key_hex": "5f80d8266a24c407a19025abf84217309bcfcb09a661367d3183505fbb4ff871"
+    },
+    {
+      "name": "fixed keypair 3",
+      "alice_private_hex": "e58f21e079cb75ab18a4950efae9bdff05b4c120f3f22116574fc07089834fed",
+      "alice_public_b64": "BO6I2CrormCJrKc5WK4jV07oRPpjw/Wq7RymdjtgeqP43dQBcIKgG5i5K86YYT3WK0HsfNilGgn4O/eMHEQlKr4=",
+      "bob_private_hex": "daa6f6d96aee88e433ccb39231007f03ef97a45d67266cf6414da329c4ae3a6c",
+      "bob_public_b64": "BABBkZYhO60fpeP/XbmJ0pTLWbjvw9HcRGl6/aqmcAyPwkQp1mxhU3Ad/Ffs+L+SKFy/5TNiQn7y8nLzDI3Ki64=",
+      "shared_secret_hex": "05a305d364c6abc5c39985c4a22040ad8f90ae03ad0f27555f99fb7ccc07128f",
+      "session_key_hex": "b671587b4426ffb6f68daaf5ee6dc047af2903c6a40d20a7d3f61bd45ede7a12"
+    }
+  ],
+  "envelope": [
+    {
+      "name": "simple frame",
+      "key_hex": "23abf98dbe56c65989f540db942d8744a0b84a6a95023f0446e735e84539605c",
+      "iv_b64": "AAECAwQFBgcICQoL",
+      "plaintext": {
+        "type": "meta.dialog",
+        "text": "hello"
+      },
+      "plaintext_json": "{\"type\":\"meta.dialog\",\"text\":\"hello\"}",
+      "envelope": {
+        "type": "enc",
+        "v": 1,
+        "iv": "AAECAwQFBgcICQoL",
+        "ct": "kAq2mMNs8TeRdvxejnBbi0Xmhv+B3HrHW9e1aB4qxPoV/4N34w==",
+        "tag": "6PFcytMA9Wa7TB7fy/dxFA=="
+      }
+    },
+    {
+      "name": "multi-byte utf-8 (emoji + CJK)",
+      "key_hex": "a84624fe15d8a287114f88fb67c00671a228ef619d78aeb559e20643a70aecad",
+      "iv_b64": "CwoJCAcGBQQDAgEA",
+      "plaintext": {
+        "type": "meta.dialog",
+        "text": "hello 👋 世界 — café"
+      },
+      "plaintext_json": "{\"type\":\"meta.dialog\",\"text\":\"hello 👋 世界 — café\"}",
+      "envelope": {
+        "type": "enc",
+        "v": 1,
+        "iv": "CwoJCAcGBQQDAgEA",
+        "ct": "XmB8V/8qz7EXY1iJVol7AlzcfwjqzICOx+7DN90DAojyyUUhhoaoroWhHh8h1bCUxlFUE36I5wZEj+A=",
+        "tag": "vXsYR8mFdH5QHsyKdZR7Gg=="
+      }
+    },
+    {
+      "name": "realistic invoke.request frame",
+      "key_hex": "4a0e8df0e4a123528f44b2cef5439cf93e88f1005a4f75b5cb5d09e7abdc312c",
+      "iv_b64": "qrvM3e7/ABEiM0RV",
+      "plaintext": {
+        "type": "invoke.request",
+        "id": "m_vector_3",
+        "capability": "config.read",
+        "args": {
+          "path": "package.json",
+          "maxBytes": 4096
+        }
+      },
+      "plaintext_json": "{\"type\":\"invoke.request\",\"id\":\"m_vector_3\",\"capability\":\"config.read\",\"args\":{\"path\":\"package.json\",\"maxBytes\":4096}}",
+      "envelope": {
+        "type": "enc",
+        "v": 1,
+        "iv": "qrvM3e7/ABEiM0RV",
+        "ct": "U+tAQ1MVyFPy8dRkQhIOZrwJ8eiMfxJXX3XQb6whYlnQOIc55XkL15gFeDudUsf0JTlTkVSzRC39I0KIS8IVfRLh10cAfciBISPiEO46fWDwlad/OFNKzP0MHcpvHrzs8coS5svCdDYyJO9iP9a6RU05E8fu",
+        "tag": "r0/NxSWZ7fH8d4oHVmAQBQ=="
+      }
+    },
+    {
+      "name": "empty object",
+      "key_hex": "fe1696679c31b4ae248200b2ec9d18366754ebef4bdccd69a4b618216ceb6a7e",
+      "iv_b64": "AQIDBAUGBwgJCgsM",
+      "plaintext": {},
+      "plaintext_json": "{}",
+      "envelope": {
+        "type": "enc",
+        "v": 1,
+        "iv": "AQIDBAUGBwgJCgsM",
+        "ct": "q/Q=",
+        "tag": "OjngLAp8g7dPXgGID1ZoAA=="
+      }
+    }
+  ],
+  "envelope_reject": [
+    {
+      "name": "tampered tag (last byte flipped)",
+      "key_hex": "23abf98dbe56c65989f540db942d8744a0b84a6a95023f0446e735e84539605c",
+      "envelope": {
+        "type": "enc",
+        "v": 1,
+        "iv": "AAECAwQFBgcICQoL",
+        "ct": "kAq2mMNs8TeRdvxejnBbi0Xmhv+B3HrHW9e1aB4qxPoV/4N34w==",
+        "tag": "6PFcytMA9Wa7TB7fy/dx6w=="
+      },
+      "reason": "auth tag does not verify"
+    },
+    {
+      "name": "tampered ciphertext (first byte flipped)",
+      "key_hex": "23abf98dbe56c65989f540db942d8744a0b84a6a95023f0446e735e84539605c",
+      "envelope": {
+        "type": "enc",
+        "v": 1,
+        "iv": "AAECAwQFBgcICQoL",
+        "ct": "bwq2mMNs8TeRdvxejnBbi0Xmhv+B3HrHW9e1aB4qxPoV/4N34w==",
+        "tag": "6PFcytMA9Wa7TB7fy/dxFA=="
+      },
+      "reason": "auth tag does not verify over the modified ciphertext"
+    },
+    {
+      "name": "wrong key",
+      "key_hex": "f9826fb853734e8aee3d5041fb89f959c2c03bede1a38ea26037bf8e61b436ca",
+      "envelope": {
+        "type": "enc",
+        "v": 1,
+        "iv": "AAECAwQFBgcICQoL",
+        "ct": "kAq2mMNs8TeRdvxejnBbi0Xmhv+B3HrHW9e1aB4qxPoV/4N34w==",
+        "tag": "6PFcytMA9Wa7TB7fy/dxFA=="
+      },
+      "reason": "envelope is valid but the session key is different"
+    },
+    {
+      "name": "8-byte IV (wrong length)",
+      "key_hex": "23abf98dbe56c65989f540db942d8744a0b84a6a95023f0446e735e84539605c",
+      "envelope": {
+        "type": "enc",
+        "v": 1,
+        "iv": "AAECAwQFBgc=",
+        "ct": "kAq2mMNs8TeRdvxejnBbi0Xmhv+B3HrHW9e1aB4qxPoV/4N34w==",
+        "tag": "6PFcytMA9Wa7TB7fy/dxFA=="
+      },
+      "reason": "IV must be exactly 12 bytes"
+    },
+    {
+      "name": "unsupported envelope version",
+      "key_hex": "23abf98dbe56c65989f540db942d8744a0b84a6a95023f0446e735e84539605c",
+      "envelope": {
+        "type": "enc",
+        "v": 2,
+        "iv": "AAECAwQFBgcICQoL",
+        "ct": "kAq2mMNs8TeRdvxejnBbi0Xmhv+B3HrHW9e1aB4qxPoV/4N34w==",
+        "tag": "6PFcytMA9Wa7TB7fy/dxFA=="
+      },
+      "reason": "only envelope v:1 is defined by this spec"
+    }
+  ]
+}

@@ -75,7 +75,9 @@ export {
 
 export {
   newEphemeralKeypair,
+  loadEphemeralKeypair,
   deriveSessionKey,
+  deriveSessionKeyFromSharedSecret,
   randomSessionKey,
   type EphemeralKeypair,
 } from "./crypto/session-key.js";
