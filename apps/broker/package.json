@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node server.mjs",
+    "dev:proto": "node node_modules/next/dist/bin/next dev -p 8080",
     "prebuild": "node scripts/copy-lessons.mjs && node scripts/generate-skill-manifest.mjs",
     "build": "next build",
     "start": "NODE_ENV=production node server.mjs",
