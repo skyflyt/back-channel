@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "broker",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:proto", "--prefix", "apps/broker"],
+      "port": 8080
+    }
+  ]
+}

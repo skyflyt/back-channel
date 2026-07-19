@@ -10,7 +10,7 @@
 import { useState } from "react";
 import { Composer, type ComposerPrefill } from "./composer";
 
-export interface FriendTrust { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null }
+export interface FriendTrust { handle: string; last_session_at: string | null; trusted: boolean; mutual: boolean; established_at: string | null }
 export interface FriendSess {
   session_id: string; role: string; peer_handle: string; goal: string | null;
   started_at: string; ended_at: string | null; end_reason: string | null;
@@ -65,15 +65,15 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
       <button style={s.backLink} onClick={onBack}>← Back to Friends</button>
 
       {/* Friend header */}
-      <section style={s.card}>
+      <section className="ds-card" style={{ marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <span style={s.avatar}>{shortHandle.charAt(0).toUpperCase()}</span>
           <div>
             <h2 style={s.h1}>{shortHandle}</h2>
             <div style={s.presenceRow}>
               {friend?.trusted && (friend.mutual
-                ? <span style={s.okTag}>mutual</span>
-                : <span style={s.pendTag}>waiting for them</span>)}
+                ? <span className="ds-chip ok">mutual</span>
+                : <span className="ds-chip warn">waiting for them</span>)}
               <span style={s.presence}>🤖 {presence}</span>
             </div>
           </div>
@@ -83,7 +83,7 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
 
       {/* Their lessons — reuses the existing discover (in-circle) + shared-with-me
           sections and badges, scoped to this friend. Not rebuilt. */}
-      <section style={s.card}>
+      <section className="ds-card" style={{ marginBottom: 14 }}>
         <h3 style={s.h3}>{shortHandle}&apos;s lessons</h3>
         {friendDiscover.length === 0 && friendShared.length === 0 && (
           <p style={s.mutedText}>Nothing visible yet. Ask {shortHandle} to share a lesson, or check back once they&apos;ve marked one discoverable.</p>
@@ -120,7 +120,7 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
       </section>
 
       {/* Your threads with them — filtered existing threads list. */}
-      <section style={s.card}>
+      <section className="ds-card" style={{ marginBottom: 14 }}>
         <h3 style={s.h3}>Your threads with {shortHandle}</h3>
         {friendActive.length === 0 && friendRecent.length === 0 && (
           <p style={s.mutedText}>No conversations yet. Send a message below to start one.</p>
@@ -146,13 +146,13 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
 
       {/* CTA row — Message · Request a lesson · Invite to something new. All ride
           the existing composer + invite plumbing; no new endpoints. */}
-      <section style={s.card}>
+      <section className="ds-card" style={{ marginBottom: 14 }}>
         <h3 style={s.h3}>What do you want to do?</h3>
         {!ctaMode && (
           <div style={s.ctaRow}>
-            <button style={s.ctaBtn} onClick={() => setCtaMode("message")}>💬 Message</button>
-            <button style={s.ctaBtn} onClick={() => setCtaMode("request")}>📚 Request a lesson</button>
-            <button style={s.ctaBtnGhost} onClick={() => onInviteToSomethingNew(handle)}>✨ Invite to something new</button>
+            <button className="ds-btn" onClick={() => setCtaMode("message")}>💬 Message</button>
+            <button className="ds-btn" onClick={() => setCtaMode("request")}>📚 Request a lesson</button>
+            <button className="ds-btn ghost" onClick={() => onInviteToSomethingNew(handle)}>✨ Invite to something new</button>
           </div>
         )}
         {ctaMode === "message" && (
@@ -173,27 +173,22 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
 }
 
 const s = {
-  card: { background: "#fff", border: "1px solid #e8edf3", borderRadius: 16, padding: 24, marginBottom: 16, boxShadow: "0 1px 2px rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.03)" } as const,
-  backLink: { background: "none", border: "none", color: "#0f766e", fontWeight: 600, fontSize: 13, cursor: "pointer", padding: 0, marginBottom: 12, display: "block" } as const,
-  avatar: { width: 44, height: 44, borderRadius: "50%", background: "linear-gradient(135deg,#0f766e,#0d9488)", color: "#fff", fontWeight: 700, fontSize: 18, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } as const,
-  h1: { fontSize: 20, fontWeight: 700, color: "#0f172a", margin: 0, fontFamily: "ui-monospace, Menlo, monospace" } as const,
-  h3: { fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", margin: "0 0 12px" } as const,
+  backLink: { background: "none", border: "none", color: "#635bff", fontWeight: 600, fontSize: 13, cursor: "pointer", padding: 0, marginBottom: 12, display: "block" } as const,
+  avatar: { width: 44, height: 44, borderRadius: "50%", background: "linear-gradient(135deg,#635bff,#00d4ff)", color: "#fff", fontWeight: 700, fontSize: 18, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } as const,
+  h1: { fontSize: 20, fontWeight: 700, color: "#30313d", margin: 0, fontFamily: "ui-monospace, 'Cascadia Code', Consolas, Menlo, monospace" } as const,
+  h3: { fontSize: 12.5, fontWeight: 700, color: "#687385", textTransform: "uppercase", letterSpacing: "0.05em", margin: "0 0 12px" } as const,
   presenceRow: { display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexWrap: "wrap" } as const,
-  presence: { fontSize: 13.5, color: "#475569" } as const,
-  okTag: { fontSize: 11, fontWeight: 700, color: "#0f766e", background: "#f0fdfa", padding: "1px 7px", borderRadius: 6 } as const,
-  pendTag: { fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fffbeb", padding: "1px 7px", borderRadius: 6 } as const,
-  meta: { fontSize: 13, color: "#94a3b8", margin: "10px 0 0" } as const,
-  mutedText: { fontSize: 14, color: "#64748b", lineHeight: 1.5 } as const,
-  subLabel: { fontSize: 12.5, fontWeight: 700, color: "#64748b", margin: "14px 0 8px" } as const,
+  presence: { fontSize: 13.5, color: "#687385" } as const,
+  meta: { fontSize: 13, color: "#8792a2", margin: "10px 0 0" } as const,
+  mutedText: { fontSize: 13.5, color: "#687385", lineHeight: 1.55 } as const,
+  subLabel: { fontSize: 12.5, fontWeight: 700, color: "#687385", margin: "14px 0 8px" } as const,
   ctaRow: { display: "flex", gap: 8, flexWrap: "wrap" } as const,
-  ctaBtn: { background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer" } as const,
-  ctaBtnGhost: { background: "#fff", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 9, padding: "8px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer" } as const,
-  skillRow: { display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 0", borderBottom: "1px solid #f1f5f9" } as const,
+  skillRow: { display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 0", borderBottom: "1px solid #eef1f5" } as const,
   skillIcon: { fontSize: 18, flexShrink: 0 } as const,
-  skillName: { fontSize: 14, fontWeight: 700, color: "#0f172a" } as const,
-  skillDesc: { fontSize: 13, color: "#64748b", marginTop: 2 } as const,
-  rowMeta: { fontSize: 12, color: "#94a3b8", marginTop: 2 } as const,
-  goal: { fontSize: 13, color: "#475569" } as const,
-  threadRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid #f1f5f9", cursor: "pointer" } as const,
-  smallLink: { fontSize: 13, color: "#0f766e", fontWeight: 600, flexShrink: 0 } as const,
+  skillName: { fontSize: 13.5, fontWeight: 600, color: "#30313d" } as const,
+  skillDesc: { fontSize: 13, color: "#687385", marginTop: 2 } as const,
+  rowMeta: { fontSize: 12, color: "#8792a2", marginTop: 2 } as const,
+  goal: { fontSize: 13, color: "#687385" } as const,
+  threadRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid #eef1f5", cursor: "pointer" } as const,
+  smallLink: { fontSize: 13, color: "#635bff", fontWeight: 600, flexShrink: 0 } as const,
 };
