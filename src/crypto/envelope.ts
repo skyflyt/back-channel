@@ -30,10 +30,30 @@ export interface SealedEnvelope {
 
 /** Encrypt + authenticate a plaintext object. */
 export function seal(plaintext: unknown, sessionKey: Buffer): SealedEnvelope {
+  return sealWithIv(plaintext, sessionKey, randomBytes(IV_BYTES));
+}
+
+/**
+ * Seal with a caller-supplied IV.
+ *
+ * ⚠️ KAT/TESTING ENTRY POINT ONLY. IV reuse under AES-GCM is catastrophic —
+ * two messages encrypted with the same key+IV leak the XOR of their plaintexts
+ * and allow forgery of the authentication tag. Production code MUST use
+ * `seal()`, which draws a fresh random IV per message. This exists so the
+ * frozen known-answer vectors (vectors/crypto-v1.json) can be checked in the
+ * encrypt direction; it is deliberately not exported from src/index.ts.
+ */
+export function sealWithIv(
+  plaintext: unknown,
+  sessionKey: Buffer,
+  iv: Buffer,
+): SealedEnvelope {
   if (sessionKey.length !== 32) {
     throw new Error("Session key must be 32 bytes (AES-256)");
   }
-  const iv = randomBytes(IV_BYTES);
+  if (iv.length !== IV_BYTES) {
+    throw new Error(`IV must be ${IV_BYTES} bytes`);
+  }
   const cipher = createCipheriv(ALGO, sessionKey, iv);
   const json = Buffer.from(JSON.stringify(plaintext), "utf8");
   const ct = Buffer.concat([cipher.update(json), cipher.final()]);

@@ -48,6 +48,30 @@ export function deriveSessionKey(
 }
 
 /**
+ * Reconstitute a keypair from a persisted private key (base64 raw scalar).
+ * Mirrors the .mcpb bridge's `loadKeypair`. Useful for fixed-key test vectors
+ * and for any caller that persists an identity across restarts.
+ */
+export function loadEphemeralKeypair(privateKeyB64: string): EphemeralKeypair {
+  const ecdh = createECDH(CURVE);
+  ecdh.setPrivateKey(Buffer.from(privateKeyB64, "base64"));
+  return {
+    publicKey: ecdh.getPublicKey().toString("base64"),
+    _handle: ecdh,
+  };
+}
+
+/**
+ * Derive the 32-byte session key from an already-computed ECDH shared secret.
+ * The same HKDF step `deriveSessionKey` applies internally — exposed for
+ * implementations whose ECDH API hands back a raw shared secret (e.g.
+ * WebCrypto's deriveBits) rather than doing the exchange through node:crypto.
+ */
+export function deriveSessionKeyFromSharedSecret(sharedSecret: Buffer): Buffer {
+  return hkdf(sharedSecret, SESSION_KEY_BYTES);
+}
+
+/**
  * Minimal HKDF-SHA-256 (RFC 5869) — extract + expand.
  * Public-domain implementation, no salt (which is fine when extracting from
  * a high-entropy ECDH shared secret).

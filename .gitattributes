@@ -5,3 +5,10 @@ install.sh text eol=lf
 # The published checksum is consumed by `sha256sum -c`, which is sensitive to a
 # trailing CR; keep it LF too.
 *.sha256 text eol=lf
+# The frozen crypto vectors: the canonical copy and the copy published at
+# /interop/crypto-v1.json must be byte-identical, and tests/vectors.test.ts
+# compares raw bytes. Under core.autocrlf=true a Windows checkout would rewrite
+# both to CRLF and the generator would then rewrite them to LF — keep git out
+# of it entirely.
+vectors/crypto-v1.json text eol=lf
+apps/broker/public/interop/crypto-v1.json text eol=lf
