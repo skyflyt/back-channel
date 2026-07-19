@@ -6,6 +6,9 @@ import { ArtifactEditor, ArtifactInspector, type EditorArtifact, LINK_HUMAN_WARN
 import { LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST } from "@/lib/link-warnings";
 import { Composer, type ComposerPrefill } from "./composer";
 import { FriendPage } from "./friend-page";
+// PROTOTYPE (branch proto/logged-in-redesign) — throwaway redesign variants on this
+// route via ?variant=a|b|c, dev-only. Delete the import + the two hooks below when done.
+import { usePrototypeVariant, PrototypeVariantView, PrototypeSwitcher } from "./prototype-variants";
 
 interface Me {
   id: string; handle: string; email: string; display_name: string | null; created_at: string;
@@ -214,6 +217,8 @@ export default function AccountPage() {
   const [fiNote, setFiNote] = useState("");
   const [fiSent, setFiSent] = useState(false);
   const [fiErr, setFiErr] = useState("");
+  // PROTOTYPE — null in production; {variant, setVariant} in dev.
+  const proto = usePrototypeVariant();
 
   const loadSessions = useCallback(async () => {
     try {
@@ -607,6 +612,18 @@ export default function AccountPage() {
     setBusy(""); loadTrust();
   };
 
+  // PROTOTYPE — with ?variant=a|b|c the whole page is swapped for a throwaway redesign.
+  // Real data flows in when signed in; a demo fixture renders otherwise (no local DB needed).
+  if (proto && proto.variant !== "current") {
+    return (
+      <PrototypeVariantView
+        variant={proto.variant}
+        setVariant={proto.setVariant}
+        data={state === "ok" && me ? { me, active, recent, trust, inbox, skills, discover, sharedWithMe, agents } : null}
+      />
+    );
+  }
+
   if (state === "loading") return (
     <div style={s.page}>
       <style>{RESPONSIVE_CSS}</style>
@@ -632,9 +649,10 @@ export default function AccountPage() {
   if (state === "unauth") return (
     <main style={s.page}><div style={s.wrap}><h1 style={s.h1}>Your account</h1>
       <div style={s.card}><p style={s.lead}>You&apos;re signed out, or your sign-in link expired.</p><a href="/login" style={s.btnLink}>Sign in</a></div>
+      {proto && <PrototypeSwitcher current={proto.variant} setVariant={proto.setVariant} />}
     </div></main>
   );
-  if (state === "error" || !me) return <main style={s.page}><div style={s.wrap}><p style={s.err}>Couldn&apos;t load your account. Please try again.</p></div></main>;
+  if (state === "error" || !me) return <main style={s.page}><div style={s.wrap}><p style={s.err}>Couldn&apos;t load your account. Please try again.</p>{proto && <PrototypeSwitcher current={proto.variant} setVariant={proto.setVariant} />}</div></main>;
 
   const lastUsed = me.api_key_last_used_at ? new Date(me.api_key_last_used_at).toLocaleString() : "never";
   // Friend-grade relative time ("2 hours ago") for thread/session rows -- falls back to a
@@ -673,6 +691,7 @@ export default function AccountPage() {
   return (
     <div style={s.page}>
       <style>{RESPONSIVE_CSS}</style>
+      {proto && <PrototypeSwitcher current={proto.variant} setVariant={proto.setVariant} />}
       <header style={s.topbar} className="bc-topbar">
         <a href="/" style={s.brand}>◇ Back Channel</a>
         <div style={s.topRight}>
