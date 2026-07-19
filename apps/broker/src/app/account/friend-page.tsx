@@ -10,7 +10,7 @@
 import { useState } from "react";
 import { Composer, type ComposerPrefill } from "./composer";
 
-export interface FriendTrust { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null }
+export interface FriendTrust { handle: string; last_session_at: string | null; trusted: boolean; mutual: boolean; established_at: string | null }
 export interface FriendSess {
   session_id: string; role: string; peer_handle: string; goal: string | null;
   started_at: string; ended_at: string | null; end_reason: string | null;

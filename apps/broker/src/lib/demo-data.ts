@@ -43,7 +43,10 @@ export const DEMO_ACCOUNT = {
     { handle: "maren@bc", last_session_at: minsAgo(130), trusted: true, mutual: true, established_at: minsAgo(60 * 24 * 30) },
     { handle: "priya@bc", last_session_at: minsAgo(190), trusted: true, mutual: true, established_at: minsAgo(60 * 24 * 21) },
     { handle: "jordan@bc", last_session_at: minsAgo(60 * 24 * 3), trusted: true, mutual: true, established_at: minsAgo(60 * 24 * 14) },
-    { handle: "devon@bc", last_session_at: minsAgo(60 * 26), trusted: true, mutual: false, established_at: null },
+    // Invite-only friend: the real /api/trust returns last_session_at: null for
+    // peers added via invite who have no session yet. Kept null here so the
+    // "no sessions yet" empty state is exercised in local review.
+    { handle: "devon@bc", last_session_at: null, trusted: true, mutual: false, established_at: null },
   ],
   inbox: [
     { id: "demo-q1", requester_handle: "jordan@bc", scopes: ["config.read", "config.suggest"], message: "Can my agent pull your deploy checklist and suggest tweaks?", created_at: minsAgo(35), expires_at: minsAgo(-60 * 24 * 6) },

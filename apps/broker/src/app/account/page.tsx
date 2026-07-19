@@ -98,7 +98,7 @@ const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork (Clau
 // Runtimes that can read a URL but can't POST — they can install read-only artifacts
 // but cannot connect an account. Honest dead-end instead of a silent failure.
 const CHAT_TAB_RUNTIMES = ["chatgpt", "claude_web"];
-interface TrustPeer { handle: string; last_session_at: string; trusted: boolean; mutual: boolean; established_at: string | null; }
+interface TrustPeer { handle: string; last_session_at: string | null; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
 interface AuditEvent { type: string; label: string; at: string; detail: Record<string, unknown>; }
 interface Skill { id: string; name: string; description: string | null; kind: string; shared_with: string[]; discoverable: boolean; type?: string; manifest?: Record<string, unknown> | null; body?: string; version?: number; signed?: boolean; public_token?: string | null; public_expires_at?: string | null; }
@@ -731,8 +731,8 @@ export default function AccountPage() {
         <div className="ds-imeta">asks to: {r.scopes.map(plainScope).join(", ")} · {when(r.created_at)}</div>
       </div>
       <div className="ds-iright">
-        <button className="ds-btn" disabled={busy === `inbox:${r.id}`} onClick={() => acceptInbox(r.id, r.requester_handle)}>{busy === `inbox:${r.id}` ? "…" : "Approve"}</button>
-        <button className="ds-btn ghost" disabled={busy === `inbox:${r.id}`} onClick={() => rejectInbox(r.id)}>Decline</button>
+        <button className="ds-btn" disabled={busy === `inbox:${r.id}` || demoMode} onClick={() => acceptInbox(r.id, r.requester_handle)}>{busy === `inbox:${r.id}` ? "…" : "Approve"}</button>
+        <button className="ds-btn ghost" disabled={busy === `inbox:${r.id}` || demoMode} onClick={() => rejectInbox(r.id)}>Decline</button>
       </div>
     </div>
   );
@@ -946,8 +946,8 @@ export default function AccountPage() {
                   <strong>They&apos;re asking to:</strong> {selReq.scopes.map(plainScope).join(", ")}. Approving opens a conversation in your Inbox — your agent still checks each requested action before doing real work.
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button className="ds-btn" disabled={busy === `inbox:${selReq.id}`} onClick={() => acceptInbox(selReq.id, selReq.requester_handle)}>{busy === `inbox:${selReq.id}` ? "…" : "Approve"}</button>
-                  <button className="ds-btn ghost" disabled={busy === `inbox:${selReq.id}`} onClick={() => rejectInbox(selReq.id)}>Decline</button>
+                  <button className="ds-btn" disabled={busy === `inbox:${selReq.id}` || demoMode} onClick={() => acceptInbox(selReq.id, selReq.requester_handle)}>{busy === `inbox:${selReq.id}` ? "…" : "Approve"}</button>
+                  <button className="ds-btn ghost" disabled={busy === `inbox:${selReq.id}` || demoMode} onClick={() => rejectInbox(selReq.id)}>Decline</button>
                 </div>
               </div>
             </>
@@ -1105,7 +1105,7 @@ export default function AccountPage() {
               <div style={{ margin: "6px 0 8px" }}>
                 {f.trusted ? (f.mutual ? <Chip tone="ok">mutual</Chip> : <Chip tone="warn">waiting for them</Chip>) : <Chip>not trusted</Chip>}
               </div>
-              <div className="ds-imeta" style={{ marginBottom: 12 }}>last worked together {when(f.last_session_at)}</div>
+              <div className="ds-imeta" style={{ marginBottom: 12 }}>{f.last_session_at ? `last worked together ${when(f.last_session_at)}` : "no sessions yet"}</div>
               {f.trusted && f.mutual ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <button className="ds-btn" onClick={() => askFriend(f.handle, "")} disabled={demoMode}>💬 Message</button>
