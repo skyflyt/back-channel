@@ -1,14 +1,34 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+/**
+ * The logged-in dashboard.
+ *
+ * Layout/IA (2026-07 redesign — see docs/logged-in-redesign.md for the prototype
+ * verdict): Mission-Control shell (top tab nav + Overview landing), a split-pane
+ * reading view for Inbox threads, and a ⌘K command palette. Tabs:
+ *   Overview  — greeting, metrics, approvals, conversations, agent fleet
+ *   Inbox     — thread list + reading pane (turn state, in-browser decryption)
+ *   Friends   — people cards + per-friend page (?friend=)
+ *   Toolkit   — saved tools, shared-with-you, discoverable in circle
+ *   Agents    — registered agents + connect-a-new-agent flows (MCP primary)
+ *   Settings  — notifications/cadence, browser access, API key, activity
+ *
+ * Data + auth are unchanged from before the redesign: everything loads client-side
+ * from /api/* with the bc_session cookie. In non-production builds an unauthenticated
+ * visit falls back to a demo fixture (src/lib/demo-data.ts) so the UI can be
+ * reviewed without a local Postgres; production shows the signed-out card.
+ */
+
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { KeyMirrorConversation, BrowserAccessSettings } from "./keymirror-panel";
 import { ArtifactEditor, ArtifactInspector, type EditorArtifact, LINK_HUMAN_WARNING, LINK_BADGE_TEXT } from "./library-editor";
 import { LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST } from "@/lib/link-warnings";
 import { Composer, type ComposerPrefill } from "./composer";
 import { FriendPage } from "./friend-page";
-// PROTOTYPE (branch proto/logged-in-redesign) — throwaway redesign variants on this
-// route via ?variant=a|b|c, dev-only. Delete the import + the two hooks below when done.
-import { usePrototypeVariant, PrototypeVariantView, PrototypeSwitcher } from "./prototype-variants";
+import { AppShell, type ShellTab } from "@/components/ui/shell";
+import { type PaletteItem } from "@/components/ui/command-palette";
+import { Chip, EmptyState, HealthDot, MetricCard, PersonAvatar, SkeletonRows, agoShort, shortHandle, initialsOf } from "@/components/ui/primitives";
+import { DEMO_ACCOUNT } from "@/lib/demo-data";
 
 interface Me {
   id: string; handle: string; email: string; display_name: string | null; created_at: string;
@@ -42,60 +62,38 @@ function agentHealth(lastUsedAt: string | null): AgentHealth {
 }
 
 // "Whose turn is it" on an open thread, derived from existing session metadata.
-type TurnState = { key: "yours" | "theirs" | "connecting"; label: string; color: string; bg: string; border: string; next: string };
+type TurnState = { key: "yours" | "theirs" | "connecting"; label: string; next: string };
 function threadTurn(x: { unread_count?: number; peer_handle: string; peer_ever_connected?: boolean; peer_present?: boolean }): TurnState {
-  const peer = (x.peer_handle || "they").replace(/@bc$/, "");
+  const peer = shortHandle(x.peer_handle || "they");
   if ((x.unread_count ?? 0) > 0) {
-    return { key: "yours", label: "Your turn", color: "#1d4ed8", bg: "#eff6ff", border: "#bfdbfe",
-      next: "They replied — tap to respond now, or your agent will pick it up on its next check (~10 min)." };
+    return { key: "yours", label: "Your turn",
+      next: "They replied — respond now, or your agent will pick it up on its next check (~10 min)." };
   }
   if (x.peer_ever_connected === false) {
-    return { key: "connecting", label: `Waiting for ${peer}'s agent`, color: "#b45309", bg: "#fffbeb", border: "#fde68a",
+    return { key: "connecting", label: `Waiting for ${peer}'s agent`,
       next: `${peer}'s agent hasn't come online yet — they'll get an email nudge to wake it.` };
   }
-  return { key: "theirs", label: `${peer}'s agent will pick this up`, color: "#64748b", bg: "#f8fafc", border: "#e2e8f0",
-    next: x.peer_present ? `${peer}'s agent is online — a reply should come through shortly.` : `Their agent will surface your message on its next inbox check (~10 min).` };
+  return { key: "theirs", label: `${peer}'s agent will pick this up`,
+    next: x.peer_present ? `${peer}'s agent is online — a reply should come through shortly.` : "Their agent will surface your message on its next inbox check (~10 min)." };
 }
 
-type NavKey = "account" | "agents" | "friends" | "skills" | "messages" | "settings";
-// Primary nav is the 3 tabs people actually live in day to day; Account/Agents/Settings
-// are still fully reachable, just tucked under "More" so first-time users see a short list.
-const NAV: { key: NavKey; label: string; icon: string }[] = [
-  { key: "messages", label: "Inbox", icon: "💬" },
-  { key: "friends", label: "Friends", icon: "👥" },
-  { key: "skills", label: "Toolkit", icon: "📚" },
+type NavKey = "overview" | "agents" | "friends" | "skills" | "messages" | "settings";
+const NAV: { key: NavKey; label: string }[] = [
+  { key: "overview", label: "Overview" },
+  { key: "messages", label: "Inbox" },
+  { key: "friends", label: "Friends" },
+  { key: "skills", label: "Toolkit" },
+  { key: "agents", label: "Agents" },
+  { key: "settings", label: "Settings" },
 ];
-const NAV_MORE: { key: NavKey; label: string; icon: string }[] = [
-  { key: "account", label: "Account", icon: "🔑" },
-  { key: "agents", label: "Agents", icon: "🤖" },
-  { key: "settings", label: "Settings", icon: "⚙️" },
-];
-const NAV_ALL: { key: NavKey; label: string; icon: string }[] = [...NAV, ...NAV_MORE];
-const NAV_KEYS = new Set(NAV_ALL.map((n) => n.key));
-const isNavKey = (v: string | null): v is NavKey => !!v && NAV_KEYS.has(v as NavKey);
+const NAV_KEYS = new Set(NAV.map((n) => n.key));
+// "account" was a tab pre-redesign; old deep links map onto the new IA.
+const LEGACY_TAB: Record<string, NavKey> = { account: "overview" };
+const toNavKey = (v: string | null): NavKey | null =>
+  v && NAV_KEYS.has(v as NavKey) ? (v as NavKey) : v && LEGACY_TAB[v] ? LEGACY_TAB[v] : null;
 // Deep-link anchors used by in-app scroll targets map onto a nav section.
-const ANCHOR_NAV: Record<string, NavKey> = { "connect-agent": "account", "friends-section": "friends", "skills-section": "skills", compose: "messages" };
-// Inline styles can't express media queries, so the responsive layout rides on
-// these class names + one injected stylesheet (sidebar -> horizontal bar on mobile).
-const RESPONSIVE_CSS = `
-.bc-shell { display: flex; gap: 22px; align-items: flex-start; }
-.bc-navwrap { position: relative; flex: 0 0 210px; }
-.bc-sidebar { position: sticky; top: 86px; display: flex; flex-direction: column; gap: 2px; }
-.bc-sidebar .bc-navitem { width: 100%; }
-.bc-main { flex: 1 1 auto; min-width: 0; }
-@media (max-width: 860px) {
-  .bc-shell { flex-direction: column; gap: 14px; }
-  .bc-navwrap { flex: none; width: 100%; }
-  .bc-sidebar { position: static; flex: none; width: 100%; flex-direction: row; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
-  .bc-sidebar .bc-navitem { flex: 0 0 auto; width: auto; }
-  .bc-topbar { padding-left: 16px !important; padding-right: 16px !important; }
-  .bc-moremenu { position: static !important; top: auto !important; left: auto !important; margin-top: 6px; flex-direction: row !important; flex-wrap: wrap !important; gap: 6px !important; min-width: 0 !important; width: 100% !important; box-shadow: none !important; border-radius: 10px; }
-}
-@keyframes bcShimmer { 0% { background-position: -360px 0; } 100% { background-position: 360px 0; } }
-.bc-skel { background: linear-gradient(90deg,#eef2f7 25%,#e2e8f0 37%,#eef2f7 63%); background-size: 720px 100%; animation: bcShimmer 1.3s ease-in-out infinite; border-radius: 7px; }
-.bc-navitem:hover { background: #f1f5f9; }
-.bc-primary:hover { filter: brightness(1.06); }
-.bc-ghost:hover { background: #f8fafc; }`;
+const ANCHOR_NAV: Record<string, NavKey> = { "connect-agent": "agents", "friends-section": "friends", "skills-section": "skills", compose: "messages" };
+
 const RUNTIME_OPTIONS = [["other", "Other / not sure"], ["cowork", "Cowork (Claude desktop)"], ["claude_code", "Claude Code (CLI)"], ["codex", "Codex (CLI)"], ["chatgpt", "ChatGPT (web)"], ["claude_web", "Claude.ai web (chat tab)"]] as const;
 // Runtimes that can read a URL but can't POST — they can install read-only artifacts
 // but cannot connect an account. Honest dead-end instead of a silent failure.
@@ -119,6 +117,35 @@ const plainKind = (kind: string) => kind === "template" ? "Copyable" : kind === 
 const cleanDomain = (raw: string) => { try { return new URL(raw).hostname.replace(/^www\./, ""); } catch { return raw; } };
 const LINK_SOURCE_LABEL: Record<string, string> = { github: "GitHub", backchannel: "Back Channel", web: "Web" };
 
+// Friend-grade relative time ("2 hours ago") for thread/session rows — falls back to a
+// plain date once "N days ago" stops being useful at a glance.
+function when(iso: string): string {
+  const d = new Date(iso);
+  const secs = (Date.now() - d.getTime()) / 1000;
+  if (secs < 0) return d.toLocaleString();
+  if (secs < 45) return "just now";
+  if (secs < 90) return "a minute ago";
+  const mins = Math.round(secs / 60);
+  if (mins < 45) return mins + " minutes ago";
+  if (mins < 90) return "an hour ago";
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return hours + " hours ago";
+  if (hours < 36) return "a day ago";
+  const days = Math.round(hours / 24);
+  if (days < 7) return days + " days ago";
+  if (days < 14) return "a week ago";
+  if (days < 30) return Math.round(days / 7) + " weeks ago";
+  return d.toLocaleDateString();
+}
+
+/** What the Inbox reading pane is showing. */
+type InboxSel =
+  | { kind: "thread"; id: string }
+  | { kind: "recent"; id: string }
+  | { kind: "req"; id: string }
+  | { kind: "compose" }
+  | null;
+
 export default function AccountPage() {
   const [me, setMe] = useState<Me | null>(null);
   const [state, setState] = useState<"loading" | "ok" | "unauth" | "error">("loading");
@@ -128,7 +155,7 @@ export default function AccountPage() {
   const [inbox, setInbox] = useState<InboxReq[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [showAudit, setShowAudit] = useState(false);
-  const [showDevKey, setShowDevKey] = useState(false); // collapse the raw API key (R5 #2 — not the lead)
+  const [showDevKey, setShowDevKey] = useState(false); // collapse the raw API key
   const [skills, setSkills] = useState<Skill[]>([]);
   const [discover, setDiscover] = useState<DiscoverSkill[]>([]);
   const [sharedWithMe, setSharedWithMe] = useState<SharedSkill[]>([]);
@@ -161,33 +188,18 @@ export default function AccountPage() {
   // it's still the only path for runtimes without MCP support).
   const [legacyOpen, setLegacyOpen] = useState(false);
   const [legacyFormOpen, setLegacyFormOpen] = useState(false);
-  // Track B (Guided, default) vs Track A (Quick one-paste). Guided = two separate
-  // low-stakes pastes; even a cautious agent accepts it because the user is the integrator.
+  // Track B (Guided, default) vs Track A (Quick one-paste).
   const [connectTrack, setConnectTrack] = useState<"guided" | "quick">("guided");
   const [copiedStep, setCopiedStep] = useState<string>("");
   const [agentCheck, setAgentCheck] = useState<Record<string, string>>({}); // per-agent "Check status" verdict
-  // Deep-link support: /account?tab=friends opens directly on that tab. Falls back to
-  // "messages" (Inbox), which is also the default for a bare /account visit (scope: Inbox
-  // is the front door now, not Account). Read once on mount -- client-only (SSR has no URL).
+  // Deep-link support: /account?tab=friends opens directly on that tab. Bare /account
+  // lands on Overview (the redesign's home). Read once on mount — client-only.
   const [nav, setNav] = useState<NavKey>(() => {
-    if (typeof window === "undefined") return "messages";
-    const fromUrl = new URLSearchParams(window.location.search).get("tab");
-    return isNavKey(fromUrl) ? fromUrl : "messages";
+    if (typeof window === "undefined") return "overview";
+    return toNavKey(new URLSearchParams(window.location.search).get("tab")) ?? "overview";
   });
-  const [moreOpen, setMoreOpen] = useState(false);
-  // First-run "show everything" override -- quiet escape hatch out of the simplified shell,
-  // persisted so it sticks across visits once someone asks for the full nav (see
-  // bc.km.ctr.* in keymirror-client.ts for the existing localStorage naming convention).
-  const SHOW_EVERYTHING_KEY = "bc.dashboard.showEverything";
-  const [showEverything, setShowEverything] = useState(() => {
-    if (typeof window === "undefined") return false;
-    try { return localStorage.getItem(SHOW_EVERYTHING_KEY) === "1"; } catch { return false; }
-  });
-  const revealEverything = () => {
-    setShowEverything(true);
-    try { localStorage.setItem(SHOW_EVERYTHING_KEY, "1"); } catch { /* ignore */ }
-  };
   const [kmOpen, setKmOpen] = useState<string | null>(null); // sessionId being read in-browser (key mirror)
+  const [inboxSel, setInboxSel] = useState<InboxSel>(null);  // reading-pane selection
   const [exCode, setExCode] = useState<string | null>(null);
   const [exPrompt, setExPrompt] = useState<string>("");
   const [exExpiry, setExExpiry] = useState<number>(0);     // epoch ms
@@ -217,8 +229,6 @@ export default function AccountPage() {
   const [fiNote, setFiNote] = useState("");
   const [fiSent, setFiSent] = useState(false);
   const [fiErr, setFiErr] = useState("");
-  // PROTOTYPE — null in production; {variant, setVariant} in dev.
-  const proto = usePrototypeVariant();
 
   const loadSessions = useCallback(async () => {
     try {
@@ -302,8 +312,7 @@ export default function AccountPage() {
   }, [loadSessions, loadTrust, loadInbox, loadSkills, loadAgents]);
 
   // Keep ?tab= in sync with the active nav so the current view is always a shareable/
-  // bookmarkable deep link (e.g. /account?tab=friends). replaceState avoids polluting
-  // back-button history with every tab click.
+  // bookmarkable deep link. replaceState avoids polluting back-button history.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -312,9 +321,7 @@ export default function AccountPage() {
     window.history.replaceState({}, "", url.pathname + url.search);
   }, [nav]);
 
-  // Per-friend agent page URL sync (?friend=<handle>) — same replaceState
-  // pattern as ?tab= above, so the friend page is a shareable/bookmarkable
-  // deep link and survives a refresh.
+  // Per-friend agent page URL sync (?friend=<handle>) — same replaceState pattern.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
@@ -386,17 +393,14 @@ export default function AccountPage() {
     return () => clearTimeout(t);
   }, [exCode, exExpiry]);
 
-  // Map a failed exchange-code mint to a plain-language message (was silently
-  // swallowed — "blinks and does nothing"). 429/403/409 each get their own line.
+  // Map a failed exchange-code mint to a plain-language message.
   const exchangeErrorMessage = (status: number, j: { message?: string }) =>
     status === 429 ? "You've generated a lot of codes recently — wait a few minutes, or use one you already copied."
     : status === 403 ? "Your sign-in session expired. Refresh the page and try again."
     : status === 409 ? "Your email isn't verified yet — check your inbox for the sign-in link."
     : (j.message || `Couldn't generate a code (error ${status}). Try again in a moment.`);
 
-  // MCP connector: mint a per-agent key straight from the dashboard. Maps the
-  // client choice onto the existing runtime enum (Claude Desktop rides the
-  // "cowork" label the UI already renders as "Cowork (Claude desktop)").
+  // MCP connector: mint a per-agent key straight from the dashboard.
   const MCP_CLIENT_RUNTIME: Record<string, string> = { claude_desktop: "cowork", claude_code: "claude_code", codex: "codex", other: "other" };
   const MCP_CLIENT_LABEL: Record<string, string> = { claude_desktop: "Claude Desktop", claude_code: "Claude Code", codex: "Codex CLI", other: "Other MCP client" };
   const mintMcpToken = async () => {
@@ -451,13 +455,10 @@ export default function AccountPage() {
       setLegacyOpen(true);
       if (r.ok && j.code) {
         setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setLegacyFormOpen(false);
-        setNav("account");
-        setTimeout(() => document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
       } else {
         setExErr(exchangeErrorMessage(r.status, j));
-        setNav("account");
-        setTimeout(() => document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
       }
+      setTimeout(() => document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     } catch { setExErr("Couldn't reach Back Channel. Check your connection and try again."); }
     setBusy("");
   };
@@ -535,22 +536,19 @@ export default function AccountPage() {
         setSentToAgent((m) => ({ ...m, [sk.id]: true }));
         // P2.6: also offer a paste-now prompt for impatient users. Idempotent install
         // (skip if already set up) — same pattern the skill's agent.payload handler uses.
-        const owner = sk.owner_handle.replace(/@bc$/, "");
+        const owner = shortHandle(sk.owner_handle);
         setInstallPrompt((m) => ({ ...m, [sk.id]: `Using Back Channel: add the tool "${sk.name}" that ${owner} shared with me. It's already queued in my Back Channel Inbox, but set it up now instead of waiting. Fetch the shared copy from https://back-channel.app/api/skills/${sk.id}/copy, verify the author signature before trusting it, add it locally, then tell me in plain words what it does. If you've already added "${sk.name}" at this version, just skip it (no duplicate).` }));
       }
     } catch { /* ignore */ }
     setBusy("");
   };
 
-  // Prefill the "Send a new message" composer and jump to it — used by the
-  // discover/shared cards' "Ask their agent" / "Ask to share" actions, and by
-  // the Friends tab's "Message" button. Honest: it just opens a real message
-  // thread to that friend (no hidden RPC). Bumps a key so Composer remounts
-  // with fresh state even if a prefill was already showing.
+  // Open the composer prefilled for this friend/topic — used by the discover/shared
+  // cards' "Ask their agent" / "Ask to share" actions and the Friends tab's Message
+  // button. Honest: it just opens a real message thread (no hidden RPC).
   const askFriend = (handle: string, topic: string) => {
-    setFriendView(null); setNav("messages");
+    setFriendView(null); setNav("messages"); setInboxSel({ kind: "compose" });
     setComposerPrefill((prev) => ({ friend: handle, topic, key: (prev?.key ?? 0) + 1 }));
-    setTimeout(() => document.querySelector("#compose")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   };
 
   const acceptInbox = async (id: string, who: string) => {
@@ -612,323 +610,828 @@ export default function AccountPage() {
     setBusy(""); loadTrust();
   };
 
-  // PROTOTYPE — with ?variant=a|b|c the whole page is swapped for a throwaway redesign.
-  // Real data flows in when signed in; a demo fixture renders otherwise (no local DB needed).
-  if (proto && proto.variant !== "current") {
+  /* ------------------------------------------------------------------ */
+  /* View data: real when signed in; demo fixture in non-prod when not. */
+  /* ------------------------------------------------------------------ */
+
+  const demoMode = state !== "loading" && state !== "ok" && process.env.NODE_ENV !== "production";
+  const vMe: Me | null = demoMode ? (DEMO_ACCOUNT.me as unknown as Me) : me;
+  const vActive: Sess[] = demoMode ? (DEMO_ACCOUNT.active as unknown as Sess[]) : active;
+  const vRecent: Sess[] = demoMode ? (DEMO_ACCOUNT.recent as unknown as Sess[]) : recent;
+  const vTrust: TrustPeer[] = demoMode ? (DEMO_ACCOUNT.trust as unknown as TrustPeer[]) : trust;
+  const vInbox: InboxReq[] = demoMode ? (DEMO_ACCOUNT.inbox as unknown as InboxReq[]) : inbox;
+  const vSkills: Skill[] = demoMode ? (DEMO_ACCOUNT.skills as unknown as Skill[]) : skills;
+  const vDiscover: DiscoverSkill[] = demoMode ? (DEMO_ACCOUNT.discover as unknown as DiscoverSkill[]) : discover;
+  const vShared: SharedSkill[] = demoMode ? (DEMO_ACCOUNT.sharedWithMe as unknown as SharedSkill[]) : sharedWithMe;
+  const vAgents: AgentRow[] = demoMode ? (DEMO_ACCOUNT.agents as unknown as AgentRow[]) : agents;
+
+  const yoursThreads = vActive.filter((t) => threadTurn(t).key === "yours");
+  const needsYou = vInbox.length + yoursThreads.length;
+  const healthyAgents = vAgents.filter((a) => ["active", "idle"].includes(agentHealth(a.last_used_at).key)).length;
+  const mutualFriends = vTrust.filter((f) => f.trusted && f.mutual);
+
+  // Default reading-pane selection: first item that needs the user, else first thread.
+  const effectiveSel: InboxSel = inboxSel ?? (vInbox[0] ? { kind: "req", id: vInbox[0].id } : vActive[0] ? { kind: "thread", id: vActive[0].session_id } : null);
+
+  const shellTabs: ShellTab[] = NAV.map((n) => ({
+    key: n.key, label: n.label,
+    count: n.key === "messages" ? needsYou || undefined : undefined,
+    onSelect: () => { setNav(n.key); if (n.key !== "friends") setFriendView(null); },
+  }));
+
+  const paletteItems: PaletteItem[] = useMemo(() => {
+    const items: PaletteItem[] = [];
+    for (const n of NAV) items.push({ id: `nav-${n.key}`, group: "Navigate", label: n.label, icon: "→", onSelect: () => { setNav(n.key); if (n.key !== "friends") setFriendView(null); } });
+    items.push({ id: "act-compose", group: "Actions", label: "New message…", icon: "✎", onSelect: () => { setNav("messages"); setInboxSel({ kind: "compose" }); } });
+    items.push({ id: "act-invite", group: "Actions", label: "Invite a friend…", icon: "＋", onSelect: () => { setNav("friends"); setFriendView(null); setFiErr(""); setFiOpen(true); } });
+    items.push({ id: "act-connect", group: "Actions", label: "Connect a new agent…", icon: "⚡", onSelect: () => { setNav("agents"); setAgentName(""); setMcpClient("claude_desktop"); setAgentFormOpen(true); } });
+    for (const t of vActive) items.push({ id: `t-${t.session_id}`, group: "Threads", label: shortHandle(t.peer_handle), meta: t.goal ?? undefined, icon: "💬", onSelect: () => { setNav("messages"); setInboxSel({ kind: "thread", id: t.session_id }); } });
+    for (const f of vTrust) items.push({ id: `f-${f.handle}`, group: "Friends", label: shortHandle(f.handle), meta: f.mutual ? "mutual friend" : "invite pending", icon: "☺", onSelect: () => openFriend(f.handle) });
+    for (const sk of vSkills) items.push({ id: `s-${sk.id}`, group: "Toolkit", label: sk.name, meta: sk.description ?? undefined, icon: "⚒", onSelect: () => { setNav("skills"); setFriendView(null); } });
+    for (const sk of vShared) items.push({ id: `sw-${sk.id}`, group: "Toolkit", label: sk.name, meta: `shared by ${shortHandle(sk.owner_handle)}`, icon: "🎁", onSelect: () => { setNav("skills"); setFriendView(null); } });
+    return items;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vActive, vTrust, vSkills, vShared]);
+
+  /* ---------------------------- shell states ---------------------------- */
+
+  const shellProps = {
+    tabs: shellTabs,
+    activeTab: nav,
+    userLabel: vMe ? initialsOf(vMe.display_name || vMe.handle) : "?",
+    userTitle: vMe ? `${vMe.display_name || vMe.handle} — settings` : undefined,
+    onAvatarClick: () => setNav("settings"),
+    paletteItems,
+    demoBanner: demoMode ? (
+      <div className="ds-demo-banner">
+        Previewing with <strong>demo data</strong> — sign in (needs a local DB) for your real account. Actions are disabled.
+      </div>
+    ) : undefined,
+  };
+
+  if (state === "loading") {
     return (
-      <PrototypeVariantView
-        variant={proto.variant}
-        setVariant={proto.setVariant}
-        data={state === "ok" && me ? { me, active, recent, trust, inbox, skills, discover, sharedWithMe, agents } : null}
-      />
+      <AppShell {...shellProps} demoBanner={undefined}>
+        <div className="ds-wrap">
+          <div className="ds-skel" style={{ width: 220, height: 26, marginBottom: 8 }} />
+          <div className="ds-skel" style={{ width: 320, height: 14, marginBottom: 24 }} />
+          <div className="ds-metrics">
+            {[0, 1, 2, 3].map((i) => <div key={i} className="ds-card"><SkeletonRows rows={2} /></div>)}
+          </div>
+          <div className="ds-grid">
+            <div className="ds-card"><SkeletonRows rows={6} /></div>
+            <div className="ds-card"><SkeletonRows rows={4} /></div>
+          </div>
+        </div>
+      </AppShell>
     );
   }
 
-  if (state === "loading") return (
-    <div style={s.page}>
-      <style>{RESPONSIVE_CSS}</style>
-      <div style={s.topbar} className="bc-topbar"><span style={s.brand}>◇ Back Channel</span></div>
-      <div style={s.wrap}>
-        <div className="bc-shell">
-          <nav className="bc-sidebar" style={s.sidebar}>{[0,1,2,3,4,5].map((i) => <div key={i} className="bc-skel" style={{ height: 38, marginBottom: 2 }} />)}</nav>
-          <main className="bc-main">
-            <div className="bc-skel" style={{ width: 180, height: 28, marginBottom: 18 }} />
-            {[0,1].map((i) => (
-              <div key={i} style={s.card}>
-                <div className="bc-skel" style={{ width: 150, height: 18, marginBottom: 16 }} />
-                <div className="bc-skel" style={{ width: "100%", height: 12, marginBottom: 9 }} />
-                <div className="bc-skel" style={{ width: "82%", height: 12, marginBottom: 9 }} />
-                <div className="bc-skel" style={{ width: "60%", height: 12 }} />
-              </div>
-            ))}
-          </main>
+  if (!demoMode && (state === "unauth" || state === "error" || !me)) {
+    return (
+      <AppShell tabs={[]} userLabel="?" >
+        <div className="ds-wrap" style={{ maxWidth: 520 }}>
+          <h1 className="ds-h1">Your account</h1>
+          <div className="ds-card" style={{ marginTop: 14 }}>
+            {state === "unauth"
+              ? (<><p style={{ margin: "0 0 14px", lineHeight: 1.6 }}>You&apos;re signed out, or your sign-in link expired.</p><a className="ds-btn" style={{ textDecoration: "none", display: "inline-block" }} href="/login">Sign in</a></>)
+              : <p className="ds-call danger" style={{ margin: 0 }}>Couldn&apos;t load your account. Please try again.</p>}
+          </div>
         </div>
+      </AppShell>
+    );
+  }
+
+  const m = vMe!;
+  const lastUsed = m.api_key_last_used_at ? new Date(m.api_key_last_used_at).toLocaleString() : "never";
+  const hourNow = new Date().getHours();
+  const greet = hourNow < 12 ? "morning" : hourNow < 18 ? "afternoon" : "evening";
+
+  // First-run: no friends AND no sessions of any kind — Overview leads with the
+  // getting-started card instead of metrics.
+  const hasAgent = vAgents.length > 0;
+  const hasFriend = vTrust.some((t) => t.trusted) || fiSent;
+  const hasSkill = vSkills.length > 0 || Object.keys(sentToAgent).length > 0;
+  const onboarded = hasAgent && hasFriend && hasSkill;
+  const isFirstRun = !vTrust.length && !vActive.length && !vRecent.length;
+
+  /* --------------------------- shared fragments --------------------------- */
+
+  const turnChip = (t: Sess) => {
+    const tu = threadTurn(t);
+    return <Chip tone={tu.key === "yours" ? "acc" : tu.key === "connecting" ? "warn" : undefined}>{tu.label}</Chip>;
+  };
+
+  const approvalItem = (r: InboxReq) => (
+    <div className="ds-item" key={r.id}>
+      <PersonAvatar handle={r.requester_handle} />
+      <div style={{ minWidth: 0 }}>
+        <div className="ds-iname">{shortHandle(r.requester_handle)}</div>
+        <div className="ds-igoal">{r.message ?? "wants to collaborate"}</div>
+        <div className="ds-imeta">asks to: {r.scopes.map(plainScope).join(", ")} · {when(r.created_at)}</div>
+      </div>
+      <div className="ds-iright">
+        <button className="ds-btn" disabled={busy === `inbox:${r.id}`} onClick={() => acceptInbox(r.id, r.requester_handle)}>{busy === `inbox:${r.id}` ? "…" : "Approve"}</button>
+        <button className="ds-btn ghost" disabled={busy === `inbox:${r.id}`} onClick={() => rejectInbox(r.id)}>Decline</button>
       </div>
     </div>
   );
-  if (state === "unauth") return (
-    <main style={s.page}><div style={s.wrap}><h1 style={s.h1}>Your account</h1>
-      <div style={s.card}><p style={s.lead}>You&apos;re signed out, or your sign-in link expired.</p><a href="/login" style={s.btnLink}>Sign in</a></div>
-      {proto && <PrototypeSwitcher current={proto.variant} setVariant={proto.setVariant} />}
-    </div></main>
+
+  const linkWarnBox = (onConfirm: () => void, confirmLabel: string) => (
+    <div className="ds-call warn" style={{ marginTop: 8, flexBasis: "100%" }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
+      <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button className="ds-btn ghost" onClick={() => setLinkWarnFor(null)}>Cancel</button>
+        <button className="ds-btn" onClick={onConfirm}>{confirmLabel}</button>
+      </div>
+    </div>
   );
-  if (state === "error" || !me) return <main style={s.page}><div style={s.wrap}><p style={s.err}>Couldn&apos;t load your account. Please try again.</p>{proto && <PrototypeSwitcher current={proto.variant} setVariant={proto.setVariant} />}</div></main>;
 
-  const lastUsed = me.api_key_last_used_at ? new Date(me.api_key_last_used_at).toLocaleString() : "never";
-  // Friend-grade relative time ("2 hours ago") for thread/session rows -- falls back to a
-  // plain date once it is far enough back that "N days ago" stops being useful at a glance.
-  const when = (iso: string) => {
-    const d = new Date(iso);
-    const secs = (Date.now() - d.getTime()) / 1000;
-    if (secs < 0) return d.toLocaleString();
-    if (secs < 45) return "just now";
-    if (secs < 90) return "a minute ago";
-    const mins = Math.round(secs / 60);
-    if (mins < 45) return mins + " minutes ago";
-    if (mins < 90) return "an hour ago";
-    const hours = Math.round(mins / 60);
-    if (hours < 24) return hours + " hours ago";
-    if (hours < 36) return "a day ago";
-    const days = Math.round(hours / 24);
-    if (days < 7) return days + " days ago";
-    if (days < 14) return "a week ago";
-    if (days < 30) return Math.round(days / 7) + " weeks ago";
-    return d.toLocaleDateString();
-  };
+  /* ------------------------------ overview ------------------------------ */
 
-  const initial = (me.display_name || me.handle || "?").trim().charAt(0).toUpperCase();
-  const navTitle = NAV_ALL.find((n) => n.key === nav)?.label ?? "Account";
-  // First-run mode: no friends AND no sessions of any kind (active or recent). The WS-A
-  // concierge welcome message lives in the self-inbox as an AgentPayload (kind="welcome"),
-  // not a Session row, so it never shows up in active/recent or summary.active_sessions --
-  // there is no "concierge session" to special-case here, just "has this account done
-  // anything with a real person yet." Returning/populated accounts (any friend, or any
-  // session ever) always get the full nav, never this shell, regardless of the flag below.
-  const hasAnyFriendSignal = trust.length > 0;
-  const hasAnySession = active.length > 0 || recent.length > 0;
-  const isFirstRun = !hasAnyFriendSignal && !hasAnySession && !showEverything;
-  const moreActive = NAV_MORE.some((n) => n.key === nav);
-  return (
-    <div style={s.page}>
-      <style>{RESPONSIVE_CSS}</style>
-      {proto && <PrototypeSwitcher current={proto.variant} setVariant={proto.setVariant} />}
-      <header style={s.topbar} className="bc-topbar">
-        <a href="/" style={s.brand}>◇ Back Channel</a>
-        <div style={s.topRight}>
-          <span style={s.avatar}>{initial}</span>
-          <div style={s.topWho}><div style={s.topHandle}>{me.display_name || me.handle}</div><div style={s.topEmail}>{me.handle}</div></div>
-          <button onClick={signOut} style={s.signOut}>Sign out</button>
+  const overview = (
+    <>
+      <h1 className="ds-h1">Good {greet}, {m.display_name || shortHandle(m.handle)}</h1>
+      <p className="ds-sub">Here&apos;s what your agents have been up to.</p>
+
+      {!onboarded && (
+        <div className="ds-card" style={{ marginBottom: 22, borderColor: "var(--ds-acc-line)" }}>
+          <h2 className="ds-cardh">👋 Get started — {[hasAgent, hasFriend, hasSkill].filter(Boolean).length}/3</h2>
+          <p className="ds-cardsub">Three steps and your agent can start collaborating.</p>
+          {[
+            { done: hasAgent, label: "Connect an agent", action: () => { setNav("agents"); setAgentFormOpen(true); } },
+            { done: hasFriend, label: "Add a friend", action: () => { setNav("friends"); setFiErr(""); setFiOpen(true); } },
+            { done: hasSkill, label: "Try a tool from your circle, or save your first Toolkit item", action: () => setNav("skills") },
+          ].map((step, i) => (
+            <div className="ds-item" key={i} style={{ alignItems: "center" }}>
+              <span aria-hidden style={{
+                width: 20, height: 20, borderRadius: 6, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center",
+                fontSize: 12, fontWeight: 700, color: "#fff", background: step.done ? "var(--ds-ok)" : "var(--ds-line)",
+              }}>{step.done ? "✓" : ""}</span>
+              <span style={{ color: step.done ? "var(--ds-faint)" : "var(--ds-ink)", textDecoration: step.done ? "line-through" : "none", fontSize: 13.5 }}>{step.label}</span>
+              {!step.done && <div className="ds-iright"><button className="ds-btn ghost" onClick={step.action}>Go</button></div>}
+            </div>
+          ))}
+          {hasAgent && !onboarded && (
+            <p className="ds-fine" style={{ marginTop: 10 }}>📬 Your agent has mail — ask it to check its Back Channel inbox, or <button className="ds-link" onClick={() => setNav("messages")}>open your Inbox</button>.</p>
+          )}
         </div>
-      </header>
-      <div style={s.wrap}>
-        <div className="bc-shell">
-          {!isFirstRun && (
-          // .bc-navwrap is the positioned containing block for .bc-moremenu on desktop
-          // (>860px): .bc-shell is an unpositioned flex container, so without this wrapper
-          // s.moreMenu's position:absolute has no positioned ancestor and the panel renders
-          // as a block stacked below the sidebar instead of anchoring under the More button.
-          // The wrapper only sets position:relative + mirrors .bc-sidebar's old flex-basis --
-          // it does NOT get overflow-x, so it can never clip .bc-moremenu the way the old
-          // relative wrapper (removed in this PR) used to on mobile.
-          <div className="bc-navwrap">
-          <nav className="bc-sidebar" style={s.sidebar}>
-            {NAV.map((n) => (
-              <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
-                <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
-              </button>
-            ))}
-            <button
-              className="bc-navitem"
-              style={moreActive ? s.navItemActive : s.navItem}
-              onClick={() => setMoreOpen((v) => !v)}
-              aria-expanded={moreOpen}
-              aria-haspopup="true"
-            >
-              <span style={s.navIcon} aria-hidden>⋯</span>More {moreOpen ? "▴" : "▾"}
-            </button>
-          </nav>
-          {moreOpen && (
-            // Sibling of .bc-sidebar (not nested inside it) so it can never be a child of the
-            // mobile horizontal-scroll container. On <=860px .bc-sidebar sets overflow-x: auto,
-            // and per the CSS overflow spec setting overflow-x to anything but visible forces
-            // overflow-y to an implied "auto" too -- an absolutely-positioned dropdown living
-            // inside that box would get clipped by the sidebar's own scrollport (the bug this
-            // fixes). Desktop keeps the familiar anchored dropdown via bc-moremenu's default
-            // (absolute) position from s.moreMenu, now anchored to .bc-navwrap above; the
-            // <=860px media query below switches this same element to a static, wrapping
-            // inline row -- CSS-only, no JS viewport checks, no portal, no z-index tuning.
-            <div className="bc-moremenu" style={s.moreMenu}>
-              {NAV_MORE.map((n) => (
-                <button key={n.key} className="bc-navitem" style={nav === n.key ? s.navItemActive : s.navItem} onClick={() => { setNav(n.key); setMoreOpen(false); }}>
-                  <span style={s.navIcon} aria-hidden>{n.icon}</span>{n.label}
-                </button>
-              ))}
+      )}
+
+      <div className="ds-metrics">
+        <MetricCard label="Needs you" value={needsYou} accent={needsYou > 0}
+          note={`${vInbox.length} approval${vInbox.length === 1 ? "" : "s"} · ${yoursThreads.length} repl${yoursThreads.length === 1 ? "y" : "ies"}`} />
+        <MetricCard label="Open threads" value={vActive.length} note={`${vRecent.length} finished recently`} />
+        <MetricCard label="Agents healthy" value={<>{healthyAgents}<span style={{ color: "var(--ds-mut)", fontSize: 16 }}> / {vAgents.length}</span></>}>
+          <div className="ds-hbar"><div style={{ width: `${vAgents.length ? (healthyAgents / vAgents.length) * 100 : 0}%` }} /></div>
+        </MetricCard>
+        <MetricCard label="Friends" value={mutualFriends.length}
+          note={`${vTrust.filter((f) => f.trusted && !f.mutual).length} invite pending`} />
+      </div>
+
+      <div className="ds-grid">
+        <div className="ds-col">
+          {vInbox.length > 0 && (
+            <div className="ds-card">
+              <h2 className="ds-cardh">✅ Waiting for your approval</h2>
+              <p className="ds-cardsub">Friends&apos; agents asking to work with yours. Approving opens a conversation; your agent still checks each action.</p>
+              {vInbox.map(approvalItem)}
             </div>
           )}
-          </div>
-          )}
-          <main className="bc-main">
-            <h1 style={s.pageTitle}>{navTitle}</h1>
-            {isFirstRun && nav !== "messages" && (
-              <p style={s.soon}>Simplified view — <button style={s.smallLink2} onClick={revealEverything}>show everything</button> to reach every tab.</p>
+          <div className="ds-card">
+            <h2 className="ds-cardh">Conversations</h2>
+            <p className="ds-cardsub">Agent-to-agent threads with your friends. New items wait here until you or your agent picks them up — nobody has to stay online.</p>
+            {vActive.length === 0 && (
+              <EmptyState icon="💬">Nothing yet — when a friend&apos;s agent messages yours, it lands here.{" "}
+                <button className="ds-link" onClick={() => { setNav("messages"); setInboxSel({ kind: "compose" }); }}>Start one →</button>
+              </EmptyState>
             )}
-
-        {(() => {
-          // First-user onboarding checklist — shows until all three are done.
-          const hasAgent = agents.length > 0;
-          const hasFriend = trust.some((t) => t.trusted) || fiSent;
-          const hasSkill = skills.length > 0 || Object.keys(sentToAgent).length > 0;
-          if (hasAgent && hasFriend && hasSkill) return null;
-          const Step = ({ done, label, action }: { done: boolean; label: string; action?: React.ReactNode }) => (
-            <div style={s.checkRow}><span style={{ ...s.checkBox, ...(done ? s.checkDone : {}) }}>{done ? "✓" : ""}</span><span style={done ? s.checkLblDone : s.checkLbl}>{label}</span>{!done && action}</div>
-          );
-          return (
-            <section style={s.onboard}>
-              <h2 style={s.onboardH}>👋 Get started — {[hasAgent, hasFriend, hasSkill].filter(Boolean).length}/3</h2>
-              <Step done={hasAgent} label="Connect an agent" />
-              {hasAgent && (
-                <p style={{ ...s.soon, marginTop: -6, marginBottom: 10, marginLeft: 30 }}>
-                  📬 Your agent has mail — ask it to check its Back Channel inbox. <button style={s.smallLink2} onClick={() => setNav("messages")}>Open Inbox</button>
-                </p>
-              )}
-              <Step done={hasFriend} label="Add a friend" action={<button style={s.onboardBtn} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>Invite a friend</button>} />
-              <Step done={hasSkill} label="Try a tool from your circle, or save your first Toolkit item" action={<button style={s.onboardBtn} onClick={() => setNav("skills")}>See Toolkit</button>} />
-              {isFirstRun && (
-                <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px dashed #99f6e4" }}>
-                  <button className="bc-primary" style={{ ...s.onboardBtn, marginLeft: 0, padding: "9px 18px", fontSize: 14 }} onClick={() => { setFiErr(""); setFiOpen(true); setNav("friends"); }}>＋ Invite a friend</button>
-                  <p style={{ margin: "10px 0 0" }}><button style={s.smallLink2} onClick={revealEverything}>Show everything →</button></p>
+            {vActive.map((t) => (
+              <div className="ds-item" key={t.session_id}>
+                <PersonAvatar handle={t.peer_handle} />
+                <div style={{ minWidth: 0 }}>
+                  <div className="ds-iname">{shortHandle(t.peer_handle)} {turnChip(t)}{t.live && <> <Chip tone="ok">● live</Chip></>}</div>
+                  {t.goal && <div className="ds-igoal">{t.goal}</div>}
+                  <div className="ds-imeta">started {when(t.started_at)}</div>
                 </div>
-              )}
-            </section>
-          );
-        })()}
-
-        {/* Inbox items needing approval — always visible across sections so a phone user can
-            clear them in seconds without opening their agent. Sourced from inbox
-            (collaborate) requests today; built to take more approval types later. */}
-        {inbox.length > 0 && (
-          <section style={s.approvals}>
-            <h2 style={s.approvalsH}>✅ Inbox items needing approval ({inbox.length})</h2>
-            {inbox.map((r) => (
-              <div key={r.id} style={s.approvalRow}>
-                <div style={s.rowMain}>
-                  <div style={s.approvalText}><strong>{r.requester_handle.replace(/@bc$/, "")}</strong> sent an Inbox request for your agent{r.message ? <> — &ldquo;{r.message}&rdquo;</> : null}</div>
-                  <div style={s.rowMeta}>what they&apos;re asking to use: {r.scopes.map(plainScope).join(", ")} · {when(r.created_at)}</div>
-                </div>
-                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                  <button style={s.btn} disabled={busy === `inbox:${r.id}`} onClick={() => acceptInbox(r.id, r.requester_handle)}>{busy === `inbox:${r.id}` ? "…" : "Approve"}</button>
-                  <button style={s.endBtn} disabled={busy === `inbox:${r.id}`} onClick={() => rejectInbox(r.id)}>Decline</button>
+                <div className="ds-iright">
+                  <button className={threadTurn(t).key === "yours" ? "ds-btn" : "ds-btn ghost"}
+                    onClick={() => { setNav("messages"); setInboxSel({ kind: "thread", id: t.session_id }); }}>
+                    {threadTurn(t).key === "yours" ? "Respond" : "Open"}
+                  </button>
                 </div>
               </div>
             ))}
-            <p style={s.approvalsNote}>Approving opens a conversation in your Inbox. Your agent still checks each requested action before doing real work.</p>
-          </section>
-        )}
-
-        {nav === "account" && (<>
-        {/* Friendly lead — what a normal user wants first, not the API key (R5 #2). */}
-        <section style={s.card}>
-          <h2 style={s.h2}>👋 You&apos;re connected</h2>
-          <p style={s.soon}>{agents.length > 0
-            ? <>{agents.length} agent{agents.length === 1 ? "" : "s"} connected to <strong>{me.handle}</strong>. Manage them in <strong>Agents</strong>, see who you&apos;re connected with in <strong>Friends</strong>, and start a conversation in <strong>Inbox</strong>.</>
-            : <>Your account <strong>{me.handle}</strong> is ready. Connect your agent below, then head to <strong>Inbox</strong> to reach a friend.</>}</p>
-        </section>
-
-        {/* API key — developer detail, tucked under a disclosure (R5 #2) */}
-        <section style={s.card}>
-          <h2 style={s.h2}>Your API key</h2>
-          {newKey ? (
-            <div style={s.reveal}>
-              <p style={s.revealLabel}>🔑 Your new key — copy it now, it won&apos;t be shown again:</p>
-              <code style={s.revealKey}>{newKey}</code>
-              <div style={{ marginTop: 10 }}>
-                <button style={s.btn} onClick={() => navigator.clipboard?.writeText(newKey).catch(() => {})}>Copy</button>
-                <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setNewKey(null); window.location.reload(); }}>Done</button>
-              </div>
-              <p style={s.meta}>Give this to your agent (replace the old key). The previous key no longer works.</p>
-            </div>
-          ) : !showDevKey ? (
-            <p style={s.meta}>Advanced — most people never need this. <button style={s.smallLink2} onClick={() => setShowDevKey(true)}>Show developer key</button></p>
-          ) : (
-            <>
-              <div style={s.keyRow}>
-                <code style={s.key}>{me.api_key_masked ?? "—"}</code>
-                <button style={s.btn} onClick={rotateKey} disabled={busy === "key"}>{busy === "key" ? "Rotating…" : "Rotate key"}</button>
-              </div>
-              <p style={s.meta}>Last used {lastUsed}. We never show the full key here — only the last 4 characters. <button style={s.smallLink2} onClick={() => setShowDevKey(false)}>Hide</button></p>
-            </>
-          )}
-
-          {/* Connect a new agent — PRIMARY: MCP connector. You set it up in your
-              client's own settings; the agent is never asked to run anything to
-              establish trust (the whole point vs. the old skill-install flow). */}
-          <div style={s.connectBox} id="connect-agent">
-            <h3 style={s.h3}>Connect a new agent</h3>
-            <p style={s.meta}>Back Channel is an <strong>MCP connector</strong>: generate a token, add it in your AI client&apos;s settings, done. Nothing gets pasted into a chat, and your agent never has to run install commands.</p>
-            {mcpErr && <p style={{ margin: "0 0 12px", padding: "9px 12px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 13 }}>⚠ {mcpErr}</p>}
-            {mcpToken ? (() => {
-              const mcpUrl = `${typeof window !== "undefined" ? window.location.origin : "https://back-channel.app"}/api/mcp`;
-              const copyBtn = (id: string, text: string, label = "Copy") => (
-                <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(text).catch(() => {}); setMcpCopied(id); setTimeout(() => setMcpCopied(""), 1500); }}>{mcpCopied === id ? "✓ Copied" : label}</button>
-              );
-              const verifyLine = <p style={{ ...s.meta, marginBottom: 0 }}>✅ <strong>Verify:</strong> open a fresh chat and ask <em>&ldquo;What Back Channel tools do you have?&rdquo;</em> — you should see bc_check_inbox and friends.</p>;
-              const ccCmd = `claude mcp add --transport http back-channel ${mcpUrl} --header "Authorization: Bearer ${mcpToken}" --scope user`;
-              const codexEnv = mcpOs === "windows" ? `setx BACKCHANNEL_TOKEN "${mcpToken}"` : `echo 'export BACKCHANNEL_TOKEN="${mcpToken}"' >> ~/.zshrc && source ~/.zshrc`;
-              const codexToml = `[mcp_servers.back_channel]\nurl = "${mcpUrl}"\nbearer_token_env_var = "BACKCHANNEL_TOKEN"`;
+          </div>
+        </div>
+        <div className="ds-col">
+          <div className="ds-card">
+            <h2 className="ds-cardh">Agent fleet</h2>
+            <p className="ds-cardsub">Last time each agent checked in.</p>
+            {vAgents.length === 0 && <EmptyState icon="🤖">No agents yet. <button className="ds-link" onClick={() => { setNav("agents"); setAgentFormOpen(true); }}>Connect one →</button></EmptyState>}
+            {vAgents.map((a) => {
+              const h = agentHealth(a.last_used_at);
               return (
-                <div style={s.reveal}>
-                  <p style={s.revealLabel}>🔑 Your agent token — copy it now, it won&apos;t be shown again:</p>
-                  <code style={s.revealKey}>{mcpToken}</code>
-                  <div style={{ margin: "8px 0 14px" }}>{copyBtn("tok", mcpToken)}</div>
-
-                  {mcpClient === "claude_desktop" && (
-                    <ol style={{ margin: "0 0 12px", paddingLeft: 20, fontSize: 13.5, color: "#334155", lineHeight: 1.7 }}>
-                      <li><a href="/back-channel.mcpb" download style={{ color: "#0f766e", fontWeight: 600 }}>Download the Back Channel extension</a> (.mcpb file).</li>
-                      <li>Double-click the downloaded file — Claude Desktop opens an install dialog. Click <strong>Install</strong>.</li>
-                      <li>Paste the token above into the <strong>Back Channel agent token</strong> field and save. (Setting up on another machine? Use the &ldquo;Legacy &amp; advanced&rdquo; connect code below instead of copying this token — a <code>BCX-…</code> code works in that same field and the extension redeems it for you.)</li>
-                    </ol>
-                  )}
-                  {mcpClient === "claude_code" && (
-                    <div style={{ marginBottom: 12 }}>
-                      <p style={{ ...s.meta, marginBottom: 6 }}>Run this once in any terminal (connects Claude Code account-wide):</p>
-                      <pre style={s.promptPre}>{ccCmd}</pre>
-                      <div style={{ marginTop: 6 }}>{copyBtn("cc", ccCmd, "Copy command")}</div>
-                    </div>
-                  )}
-                  {mcpClient === "codex" && (
-                    <div style={{ marginBottom: 12 }}>
-                      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                        <button style={mcpOs === "windows" ? s.chipOn : s.chipOff} onClick={() => setMcpOs("windows")}>Windows</button>
-                        <button style={mcpOs === "mac" ? s.chipOn : s.chipOff} onClick={() => setMcpOs("mac")}>Mac / Linux</button>
-                      </div>
-                      <p style={{ ...s.meta, marginBottom: 6 }}>1. Store the token in an environment variable{mcpOs === "windows" ? " (then open a NEW terminal)" : ""}:</p>
-                      <pre style={s.promptPre}>{codexEnv}</pre>
-                      <div style={{ margin: "6px 0 10px" }}>{copyBtn("cxe", codexEnv)}</div>
-                      <p style={{ ...s.meta, marginBottom: 6 }}>2. Add this to <code>~/.codex/config.toml</code> (token stays in the env var, never in the file):</p>
-                      <pre style={s.promptPre}>{codexToml}</pre>
-                      <div style={{ marginTop: 6 }}>{copyBtn("cxt", codexToml)}</div>
-                    </div>
-                  )}
-                  {mcpClient === "other" && (
-                    <div style={{ marginBottom: 12 }}>
-                      <p style={{ ...s.meta, marginBottom: 6 }}>Point any MCP client that supports <strong>remote HTTP servers with custom headers</strong> at:</p>
-                      <pre style={s.promptPre}>{`URL:    ${mcpUrl}\nHeader: Authorization: Bearer ${mcpToken}`}</pre>
-                      <div style={{ marginTop: 6 }}>{copyBtn("oth", `${mcpUrl}\nAuthorization: Bearer ${mcpToken}`)}</div>
-                      <p style={{ ...s.meta, marginTop: 8 }}>Note: claude.ai&apos;s built-in &ldquo;Connectors&rdquo; directory needs OAuth and won&apos;t take a bearer token — use Claude Desktop with our extension instead.</p>
-                    </div>
-                  )}
-                  {verifyLine}
-                  <div style={{ marginTop: 10 }}>
-                    <button style={s.signOut} onClick={() => { setMcpToken(null); setMcpCopied(""); }}>Done — hide token</button>
+                <div className="ds-item" key={a.id} style={{ alignItems: "center" }}>
+                  <HealthDot color={h.color} label={h.label} />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="ds-iname" style={{ fontSize: 13 }}>{a.name}</div>
+                    <div className="ds-imeta">{h.label} · {a.last_used_at ? when(a.last_used_at) : "never used"}</div>
                   </div>
                 </div>
               );
-            })() : agentFormOpen ? (
-              <div>
-                <label style={s.fieldLabel}>Which client are you connecting?</label>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
-                  {(["claude_desktop", "claude_code", "codex", "other"] as const).map((c) => (
-                    <button key={c} style={mcpClient === c ? s.chipOn : s.chipOff} onClick={() => setMcpClient(c)}>{MCP_CLIENT_LABEL[c]}</button>
-                  ))}
-                </div>
-                <label style={s.fieldLabel}>Name it (so you can tell your agents apart later)</label>
-                <input style={s.input} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder={`e.g. ${MCP_CLIENT_LABEL[mcpClient]} on my laptop`} />
-                <div style={{ marginTop: 12 }}>
-                  <button style={s.btn} disabled={busy === "mcp-mint"} onClick={mintMcpToken}>{busy === "mcp-mint" ? "…" : "Generate token →"}</button>
-                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => setAgentFormOpen(false)}>Cancel</button>
+            })}
+            {vAgents.length > 0 && <button className="ds-btn ghost" style={{ marginTop: 10, width: "100%" }} onClick={() => setNav("agents")}>Manage agents</button>}
+          </div>
+          <div className="ds-card">
+            <h2 className="ds-cardh">Toolkit</h2>
+            <p className="ds-cardsub">{vSkills.length} saved · {vShared.length} shared with you</p>
+            {vSkills.slice(0, 3).map((sk) => (
+              <div className="ds-item" key={sk.id} style={{ alignItems: "center" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div className="ds-iname" style={{ fontSize: 13 }}>{sk.name}</div>
+                  <div className="ds-imeta">{plainKind(sk.kind).toLowerCase()}{sk.discoverable ? " · in your circle" : ""}</div>
                 </div>
               </div>
-            ) : (
-              <button style={s.btn} onClick={() => { setAgentName(""); setMcpClient("claude_desktop"); setAgentFormOpen(true); }}>Connect a new agent</button>
-            )}
+            ))}
+            <button className="ds-btn ghost" style={{ marginTop: 10, width: "100%" }} onClick={() => setNav("skills")}>View all</button>
+          </div>
+          <div className="ds-card ds-promo">
+            <h2 className="ds-cardh">Grow your circle</h2>
+            <p className="ds-cardsub">Back Channel gets better with every friend. Invite someone and your agents can collaborate.</p>
+            <button className="ds-btn ghost" onClick={() => { setNav("friends"); setFiErr(""); setFiOpen(true); }}>Invite a friend</button>
+          </div>
+        </div>
+      </div>
+      {isFirstRun && <p className="ds-fine" style={{ marginTop: 16 }}>New here? The <button className="ds-link" onClick={() => setNav("messages")}>Inbox</button> is where conversations with friends&apos; agents happen once you&apos;re set up.</p>}
+    </>
+  );
 
-            {/* LEGACY — exchange-code / paste-in flow, for runtimes without MCP. */}
-            <div style={{ marginTop: 16, borderTop: "1px dashed #e2e8f0", paddingTop: 10 }}>
-            {!legacyOpen ? (
-              <button style={s.smallLink2} onClick={() => setLegacyOpen(true)}>Legacy &amp; advanced: connect with a paste-in code (agents without MCP) or the raw key</button>
-            ) : (<>
-            <p style={s.meta}><strong>Legacy connect</strong> — paste a one-time code into any AI assistant and it connects itself. Use this only for runtimes that can&apos;t add an MCP server. <button style={s.smallLink2} onClick={() => setLegacyOpen(false)}>Hide</button></p>
-            {exErr && <p style={{ margin: "0 0 12px", padding: "9px 12px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 13 }}>⚠ {exErr}</p>}
+  /* ------------------------- inbox (split-pane) ------------------------- */
+
+  const selThread = effectiveSel?.kind === "thread" ? vActive.find((t) => t.session_id === effectiveSel.id) : undefined;
+  const selRecent = effectiveSel?.kind === "recent" ? vRecent.find((t) => t.session_id === effectiveSel.id) : undefined;
+  const selReq = effectiveSel?.kind === "req" ? vInbox.find((r) => r.id === effectiveSel.id) : undefined;
+
+  const inboxPane = (
+    <>
+      <h1 className="ds-h1">Inbox</h1>
+      <p className="ds-sub">Requests and replies from friends&apos; agents — async by default, so nobody has to stay online.</p>
+      <div className="ds-split" id="compose">
+        <div className="ds-split-list">
+          <div className="ds-split-lhead">
+            <button className="ds-btn" style={{ width: "100%" }} onClick={() => setInboxSel({ kind: "compose" })}>✎ New message</button>
+          </div>
+          <div className="ds-split-scroll">
+            {vInbox.length > 0 && <div className="ds-lsec">Approvals</div>}
+            {vInbox.map((r) => (
+              <button key={r.id} className={`ds-litem${effectiveSel?.kind === "req" && effectiveSel.id === r.id ? " on" : ""}`} onClick={() => setInboxSel({ kind: "req", id: r.id })}>
+                <PersonAvatar handle={r.requester_handle} size={34} />
+                <span style={{ minWidth: 0 }}>
+                  <span className="ds-lname">{shortHandle(r.requester_handle)} <Chip tone="warn">wants in</Chip></span>
+                  <span className="ds-lsnip">{r.message ?? "Collaboration request"}</span>
+                </span>
+                <span className="ds-ltime">{agoShort(r.created_at)}</span>
+              </button>
+            ))}
+            <div className="ds-lsec">Open threads{vActive.length ? ` (${vActive.length})` : ""}</div>
+            {vActive.length === 0 && (
+              <EmptyState icon="💬">Nothing yet. Start one above, or <button className="ds-link" onClick={() => setNav("friends")}>invite a friend →</button></EmptyState>
+            )}
+            {vActive.map((t) => {
+              const tu = threadTurn(t);
+              return (
+                <button key={t.session_id} className={`ds-litem${effectiveSel?.kind === "thread" && effectiveSel.id === t.session_id ? " on" : ""}`} onClick={() => setInboxSel({ kind: "thread", id: t.session_id })}>
+                  <PersonAvatar handle={t.peer_handle} size={34} />
+                  <span style={{ minWidth: 0 }}>
+                    <span className="ds-lname">{(t.unread_count ?? 0) > 0 && <span className="ds-dotu" />}{shortHandle(t.peer_handle)}{t.live && <Chip tone="ok">live</Chip>}</span>
+                    <span className="ds-lsnip">{tu.key === "yours" ? "Replied — your turn. " : ""}{t.goal}</span>
+                  </span>
+                  <span className="ds-ltime">{agoShort(t.started_at)}</span>
+                </button>
+              );
+            })}
+            <div className="ds-lsec">Recent — 30 days</div>
+            {vRecent.length === 0 && <p className="ds-fine" style={{ padding: "4px 10px" }}>Nothing in the last 30 days.</p>}
+            {vRecent.map((t) => (
+              <button key={t.session_id} className={`ds-litem${effectiveSel?.kind === "recent" && effectiveSel.id === t.session_id ? " on" : ""}`} style={{ opacity: 0.7 }} onClick={() => setInboxSel({ kind: "recent", id: t.session_id })}>
+                <PersonAvatar handle={t.peer_handle} size={34} />
+                <span style={{ minWidth: 0 }}>
+                  <span className="ds-lname">{shortHandle(t.peer_handle)}</span>
+                  <span className="ds-lsnip">{t.goal}</span>
+                </span>
+                <span className="ds-ltime">{t.ended_at ? agoShort(t.ended_at) : ""}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="ds-split-detail">
+          {effectiveSel?.kind === "compose" && (
+            <div className="ds-dbody" style={{ maxHeight: "none" }}>
+              <Composer key={composerPrefill?.key ?? 0} prefill={composerPrefill} onSent={loadSessions} />
+            </div>
+          )}
+
+          {selReq && (
+            <>
+              <div className="ds-dhead">
+                <h2>{shortHandle(selReq.requester_handle)} wants to collaborate</h2>
+                <div className="ds-dsub">{selReq.requester_handle} · {when(selReq.created_at)}</div>
+              </div>
+              <div className="ds-dbody">
+                {selReq.message && <div className="ds-call" style={{ background: "#f8fafc", border: "1px solid var(--ds-line)", marginBottom: 14 }}>&ldquo;{selReq.message}&rdquo;</div>}
+                <div className="ds-call acc" style={{ marginBottom: 16 }}>
+                  <strong>They&apos;re asking to:</strong> {selReq.scopes.map(plainScope).join(", ")}. Approving opens a conversation in your Inbox — your agent still checks each requested action before doing real work.
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="ds-btn" disabled={busy === `inbox:${selReq.id}`} onClick={() => acceptInbox(selReq.id, selReq.requester_handle)}>{busy === `inbox:${selReq.id}` ? "…" : "Approve"}</button>
+                  <button className="ds-btn ghost" disabled={busy === `inbox:${selReq.id}`} onClick={() => rejectInbox(selReq.id)}>Decline</button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {selThread && (() => {
+            const tu = threadTurn(selThread);
+            return (
+              <>
+                <div className="ds-dhead">
+                  <h2>{shortHandle(selThread.peer_handle)}</h2>
+                  <div className="ds-dsub">{selThread.peer_handle} · via your agents · started {when(selThread.started_at)}{selThread.live && <> · <Chip tone="ok">● live</Chip></>}</div>
+                </div>
+                <div className="ds-dbody">
+                  <div className={`ds-call ${tu.key === "yours" ? "acc" : tu.key === "connecting" ? "warn" : "ok"}`} style={{ marginBottom: 16 }}>
+                    <strong>{tu.label}.</strong> {tu.next}
+                  </div>
+                  {selThread.goal && (
+                    <div className="ds-call" style={{ background: "#f8fafc", border: "1px solid var(--ds-line)", marginBottom: 16 }}>
+                      <span className="ds-imeta" style={{ display: "block", marginBottom: 3 }}>Topic</span>{selThread.goal}
+                    </div>
+                  )}
+
+                  {kmOpen === selThread.session_id && !demoMode && me ? (
+                    <KeyMirrorConversation
+                      sessionId={selThread.session_id}
+                      accountId={me.id}
+                      peerHandle={selThread.peer_handle}
+                      csrf={csrf()}
+                      enrolled={!!me.key_mirror_enrolled}
+                      displayName={me.display_name || me.handle}
+                      onEnrolled={() => setMe((prev) => (prev ? { ...prev, key_mirror_enrolled: true } : prev))}
+                    />
+                  ) : (
+                    <div className="ds-call" style={{ border: "1px dashed var(--ds-line)", background: "transparent", textAlign: "center", marginBottom: 16, color: "var(--ds-mut)" }}>
+                      🔒 Messages are end-to-end encrypted — decrypt and read them right here in your browser.
+                      <div style={{ marginTop: 10 }}>
+                        <button className="ds-btn ghost" onClick={() => setKmOpen(kmOpen === selThread.session_id ? null : selThread.session_id)} disabled={demoMode}>
+                          {demoMode ? "Unlock & read (sign in first)" : "Unlock & read"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                    {tu.key === "yours"
+                      ? <button className="ds-btn" disabled={busy === `wp:${selThread.session_id}` || demoMode} onClick={() => getWakePrompt(selThread.session_id)}>{busy === `wp:${selThread.session_id}` ? "…" : "Respond via my agent"}</button>
+                      : <button className="ds-btn ghost" disabled={busy === `wp:${selThread.session_id}` || demoMode} onClick={() => getWakePrompt(selThread.session_id)}>{busy === `wp:${selThread.session_id}` ? "…" : tu.key === "theirs" ? "🤝 Nudge" : "🤝 Wake my agent"}</button>}
+                    <a className="ds-btn ghost" style={{ textDecoration: "none" }} href={`/sessions/${selThread.session_id}`}>Watch live</a>
+                    <button className="ds-btn danger" disabled={busy === selThread.session_id || demoMode} onClick={() => endSession(selThread.session_id, selThread.peer_handle)}>{busy === selThread.session_id ? "…" : "End"}</button>
+                  </div>
+                  {wakePrompts[selThread.session_id] && (
+                    <div className="ds-call acc" style={{ marginTop: 10 }}>
+                      <p style={{ margin: "0 0 8px", fontWeight: 600 }}>📋 Paste this to your AI assistant to get it back into this session:</p>
+                      <pre className="ds-pre">{wakePrompts[selThread.session_id]}</pre>
+                      <button className="ds-btn" style={{ marginTop: 8 }} onClick={() => navigator.clipboard?.writeText(wakePrompts[selThread.session_id]).catch(() => {})}>Copy</button>
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: 20 }}>
+                    <h3 className="ds-lsec" style={{ padding: "0 0 6px" }}>Context</h3>
+                    <div className="ds-ctxrow"><span>Status</span><span>{tu.label}</span></div>
+                    <div className="ds-ctxrow"><span>Friend since</span><span>{vTrust.find((f) => f.handle === selThread.peer_handle)?.mutual ? "mutual friends" : "not mutual yet"}</span></div>
+                    <div className="ds-ctxrow"><span>Tools they share with you</span><span>{vShared.filter((t) => t.owner_handle === selThread.peer_handle).map((t) => t.name).join(", ") || "none"}</span></div>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
+
+          {selRecent && (
+            <>
+              <div className="ds-dhead">
+                <h2>{shortHandle(selRecent.peer_handle)}</h2>
+                <div className="ds-dsub">{selRecent.peer_handle} · ended {selRecent.ended_at ? when(selRecent.ended_at) : ""} · {selRecent.duration_min ?? "?"} min · {selRecent.end_reason ?? "ended"}</div>
+              </div>
+              <div className="ds-dbody">
+                {selRecent.goal && (
+                  <div className="ds-call" style={{ background: "#f8fafc", border: "1px solid var(--ds-line)", marginBottom: 16 }}>
+                    <span className="ds-imeta" style={{ display: "block", marginBottom: 3 }}>Topic</span>{selRecent.goal}
+                  </div>
+                )}
+                <button className="ds-btn" onClick={() => askFriend(selRecent.peer_handle, "")} disabled={demoMode}>✎ Message {shortHandle(selRecent.peer_handle)} again</button>
+              </div>
+            </>
+          )}
+
+          {!effectiveSel && (
+            <EmptyState icon="✉"><div style={{ paddingTop: 60 }}>Select a conversation to read it here.</div></EmptyState>
+          )}
+        </div>
+      </div>
+    </>
+  );
+
+  /* ------------------------------ friends ------------------------------ */
+
+  const friendsPane = friendView ? (
+    <FriendPage
+      handle={friendView}
+      trust={vTrust}
+      active={vActive}
+      recent={vRecent}
+      discover={vDiscover}
+      sharedWithMe={vShared}
+      when={when}
+      onBack={() => setFriendView(null)}
+      onOpenThread={(sessionId) => { setFriendView(null); setNav("messages"); setInboxSel({ kind: "thread", id: sessionId }); setKmOpen(sessionId); }}
+      onInviteToSomethingNew={() => { setFriendView(null); setFiErr(""); setFiOpen(true); }}
+    />
+  ) : (
+    <>
+      <h1 className="ds-h1">Friends</h1>
+      <p className="ds-sub" title="Same as 'trusted peers' — friends are agents you've mutually trusted">
+        People you&apos;ve worked with. Adding a friend lets their agent reach yours without a new invite code — you still approve each session.
+      </p>
+
+      <div id="friends-section" style={{ marginBottom: 14 }}>
+        {fiSent ? (
+          <div className="ds-call ok" style={{ marginBottom: 14 }}>
+            <strong>✅ Invitation sent!</strong> We emailed them a link to set up Back Channel and connect with you. When they accept, you&apos;ll become friends automatically.{" "}
+            <button className="ds-link" onClick={() => setFiSent(false)}>Invite another</button>
+          </div>
+        ) : fiOpen ? (
+          <div className="ds-card" style={{ marginBottom: 14 }}>
+            <h2 className="ds-cardh">Invite a friend</h2>
+            <label className="ds-label">Your friend&apos;s email</label>
+            <input className="ds-input" type="email" value={fiEmail} onChange={(e) => setFiEmail(e.target.value)} placeholder="friend@email.com" disabled={demoMode} />
+            <label className="ds-label">A note (optional)</label>
+            <input className="ds-input" value={fiNote} onChange={(e) => setFiNote(e.target.value)} placeholder="Let's connect our agents on Back Channel" disabled={demoMode} />
+            {fiErr && <p className="ds-call danger" style={{ marginTop: 10 }}>{fiErr}</p>}
+            <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+              <button className="ds-btn" disabled={busy === "friendinvite" || demoMode} onClick={inviteFriend}>{busy === "friendinvite" ? "Sending…" : "Send invite"}</button>
+              <button className="ds-btn ghost" onClick={() => { setFiOpen(false); setFiErr(""); }}>Cancel</button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {vTrust.length === 0 && !fiOpen && !fiSent ? (
+        <div className="ds-card">
+          <EmptyState icon="👋">
+            No friends yet. Invite someone by email — when they accept, your agents can reach each other without invite codes (you still approve every session).
+            <div style={{ marginTop: 12 }}><button className="ds-btn" onClick={() => { setFiErr(""); setFiOpen(true); }}>Invite a friend</button></div>
+          </EmptyState>
+        </div>
+      ) : (
+        <div className="ds-people">
+          {vTrust.map((f) => (
+            <div className="ds-card" key={f.handle} style={{ textAlign: "center" }}>
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}><PersonAvatar handle={f.handle} size={52} /></div>
+              <button className="ds-iname" style={{ fontSize: 15, background: "none", border: "none", cursor: "pointer", padding: 0, font: "inherit", fontWeight: 600 }} title="Open this friend's agent page" onClick={() => openFriend(f.handle)}>
+                {shortHandle(f.handle)}
+              </button>
+              <div style={{ margin: "6px 0 8px" }}>
+                {f.trusted ? (f.mutual ? <Chip tone="ok">mutual</Chip> : <Chip tone="warn">waiting for them</Chip>) : <Chip>not trusted</Chip>}
+              </div>
+              <div className="ds-imeta" style={{ marginBottom: 12 }}>last worked together {when(f.last_session_at)}</div>
+              {f.trusted && f.mutual ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <button className="ds-btn" onClick={() => askFriend(f.handle, "")} disabled={demoMode}>💬 Message</button>
+                  <button className="ds-btn ghost" onClick={() => openFriend(f.handle)}>View agent page</button>
+                </div>
+              ) : (
+                <button className={f.trusted ? "ds-btn danger" : "ds-btn"} style={{ width: "100%" }} disabled={busy === `trust:${f.handle}` || demoMode} onClick={() => toggleTrust(f.handle, !f.trusted)}>
+                  {busy === `trust:${f.handle}` ? "…" : f.trusted ? "Remove" : "Add as a friend"}
+                </button>
+              )}
+              {f.trusted && f.mutual && (
+                <button className="ds-link" style={{ marginTop: 8 }} disabled={busy === `trust:${f.handle}` || demoMode} onClick={() => toggleTrust(f.handle, false)}>Remove friend</button>
+              )}
+            </div>
+          ))}
+          <div className="ds-card" style={{ textAlign: "center", display: "flex", flexDirection: "column", justifyContent: "center", borderStyle: "dashed", minHeight: 180 }}>
+            <div style={{ fontSize: 26, marginBottom: 8, color: "var(--ds-faint)" }}>＋</div>
+            <button className="ds-btn ghost" onClick={() => { setFiErr(""); setFiOpen(true); }}>Invite a friend</button>
+          </div>
+        </div>
+      )}
+      <p className="ds-fine" style={{ marginTop: 14 }}>Requests from friends appear on <button className="ds-link" onClick={() => setNav("overview")}>Overview</button> and in your <button className="ds-link" onClick={() => setNav("messages")}>Inbox</button> as items needing approval. Mutual friends&apos; agents can also be reached by asking your assistant: &ldquo;use Back Channel to reach &lt;name&gt;&rdquo;.</p>
+    </>
+  );
+
+  /* ------------------------------ toolkit ------------------------------ */
+
+  const toolkitPane = (
+    <>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <h1 className="ds-h1">Toolkit</h1>
+          <p className="ds-sub">The useful things your agent can reuse: tools it knows how to run, scheduled checks, and saved prompts. Share privately with a friend, make one visible to your circle, or create a link anyone can add to their own agent.</p>
+        </div>
+        <button className="ds-btn" onClick={() => setEditor({ mode: "create" })} disabled={demoMode}>＋ New toolkit item</button>
+      </div>
+
+      {libFlash && <div className="ds-call ok" style={{ marginBottom: 14 }}>✅ {libFlash}</div>}
+
+      <div className="ds-card" id="skills-section" style={{ marginBottom: 14 }}>
+        <h2 className="ds-cardh">Yours{vSkills.length ? ` (${vSkills.length})` : ""}</h2>
+        {vSkills.length === 0 && (
+          <EmptyState icon="📚">Nothing in your Toolkit yet. Your agent can save tools, scheduled checks, and prompts here — then share them with a friend, your circle, or anyone through a link.</EmptyState>
+        )}
+        {vSkills.map((sk) => {
+          const trustedHandles = vTrust.filter((t) => t.trusted).map((t) => t.handle);
+          const type = sk.type || "skill";
+          const badge = type === "scheduled_task" ? { icon: "⏰", label: "Scheduled check" } : type === "prompt" ? { icon: "💬", label: "Saved prompt" } : type === "link" ? { icon: "↗", label: "Link" } : { icon: "📜", label: "Tool" };
+          const linkManifest = type === "link" ? (sk.manifest ?? {}) as Record<string, unknown> : null;
+          const linkUrl = linkManifest && typeof linkManifest.url === "string" ? linkManifest.url : "";
+          const linkSource = linkManifest && typeof linkManifest.source === "string" ? linkManifest.source : "web";
+          // public-share eligibility mirrors the server gates (spec §3) so the UI explains the block.
+          const isRpc = type === "skill" && sk.kind === "rpc";
+          const schedOptIn = type !== "scheduled_task" || sk.manifest?.public_share_allowed === true;
+          const isSigned = sk.signed !== false; // older rows may omit the flag; don't over-block
+          const canPublic = !isRpc && schedOptIn && isSigned;
+          const blockReason = isRpc ? "This tool runs from your friend's agent during a conversation, so it can't be shared by public link." : !schedOptIn ? "This scheduled check isn't marked shareable yet. Your agent needs to save it as public-share allowed before you can make a public link." : !isSigned ? "This item needs your agent's signature before it can be shared publicly (your agent signs what it saves)." : "";
+          const link = sk.public_token ? `https://back-channel.app/a/${sk.public_token}` : null;
+          return (
+            <div className="ds-item" key={sk.id}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="ds-iname">
+                  {sk.name} <Chip>{badge.icon} {badge.label}</Chip>
+                  {type === "skill" && <> <Chip>{plainKind(sk.kind)}</Chip></>}
+                  {type === "link" && <> <span className="ds-imeta">{cleanDomain(linkUrl)} · {LINK_SOURCE_LABEL[linkSource] ?? "Web"}</span> <Chip tone="warn" title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</Chip></>}
+                </div>
+                {sk.description && <div className="ds-igoal">{sk.description}</div>}
+                <div className="ds-imeta">{sk.shared_with.length ? <>shared with: {sk.shared_with.map(shortHandle).join(", ")}</> : "private"}</div>
+
+                {trustedHandles.length > 0 && (
+                  <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {trustedHandles.map((h) => {
+                      const on = sk.shared_with.includes(h);
+                      return (
+                        <button key={h} className={on ? "ds-btn" : "ds-btn ghost"} style={{ fontSize: 12, padding: "4px 10px" }} disabled={busy === `skill:${sk.id}:${h}` || demoMode}
+                          onClick={() => { if (type === "link" && !on) { setLinkWarnFor({ id: sk.id, action: `share:${h}` }); return; } shareSkill(sk.id, h, !on); }}>
+                          {on ? `✓ ${shortHandle(h)}` : `share with ${shortHandle(h)}`}
+                        </button>
+                      );
+                    })}
+                    {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action.startsWith("share:") &&
+                      linkWarnBox(() => { const h = linkWarnFor.action.slice("share:".length); setLinkWarnFor(null); shareSkill(sk.id, h, true); }, "I understand, share it")}
+                  </div>
+                )}
+
+                <label className="ds-imeta" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: "pointer" }}>
+                  <input type="checkbox" checked={sk.discoverable} disabled={busy === `disc:${sk.id}` || demoMode} onChange={() => toggleDiscoverable(sk.id, !sk.discoverable)} />
+                  🌐 Let friends find this by name (they still need you to share it to use it)
+                </label>
+
+                {/* Inline public-share panel */}
+                <div className="ds-call acc" style={{ marginTop: 10, padding: "10px 12px" }}>
+                  {link ? (
+                    <div>
+                      <div className="ds-imeta" style={{ marginBottom: 6 }}>🔗 Public link active{sk.public_expires_at ? ` · expires ${new Date(sk.public_expires_at).toLocaleDateString()}` : " · never expires"}</div>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                        <code className="ds-mono" style={{ flex: "1 1 240px", fontSize: 12, wordBreak: "break-all", background: "rgba(0,0,0,0.05)", padding: "4px 8px", borderRadius: 6 }}>{link}</code>
+                        <button className="ds-btn" style={{ fontSize: 12, padding: "5px 10px" }} onClick={() => { if (type === "link" && linkWarnFor?.id !== sk.id) { setLinkWarnFor({ id: sk.id, action: "copy" }); return; } navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setLinkWarnFor(null); setTimeout(() => setPubCopiedId(null), 1500); }}>{pubCopiedId === sk.id ? "Copied ✓" : "Copy add-to-agent note"}</button>
+                        <button className="ds-btn ghost" style={{ fontSize: 12, padding: "5px 10px" }} disabled={busy === `pub:${sk.id}` || demoMode} onClick={() => publicRevoke(sk.id)}>Revoke</button>
+                      </div>
+                      {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action === "copy" &&
+                        linkWarnBox(() => { navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setLinkWarnFor(null); setTimeout(() => setPubCopiedId(null), 1500); }, "I understand, copy it")}
+                    </div>
+                  ) : canPublic ? (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span className="ds-imeta">🌍 Public link:</span>
+                      <select className="ds-select" style={{ fontSize: 12.5, padding: "4px 8px" }} value={pubTtl[sk.id] ?? "7d"} onChange={(e) => setPubTtl((mp) => ({ ...mp, [sk.id]: e.target.value }))}>
+                        <option value="24h">expires in 24h</option>
+                        <option value="7d">expires in 7 days</option>
+                        <option value="30d">expires in 30 days</option>
+                        <option value="never">never expires</option>
+                      </select>
+                      <button className="ds-btn" style={{ fontSize: 12, padding: "5px 10px" }} disabled={busy === `pub:${sk.id}` || demoMode} onClick={() => { if (type === "link") { setLinkWarnFor({ id: sk.id, action: "public" }); return; } publicShare(sk.id, pubTtl[sk.id] ?? "7d"); }}>Generate public link</button>
+                      {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action === "public" &&
+                        linkWarnBox(() => { setLinkWarnFor(null); publicShare(sk.id, pubTtl[sk.id] ?? "7d"); }, "I understand, make it public")}
+                    </div>
+                  ) : (
+                    <div className="ds-imeta">🔒 {blockReason}</div>
+                  )}
+                </div>
+              </div>
+              <div className="ds-iright" style={{ flexDirection: "column", alignItems: "stretch" }}>
+                <button className="ds-btn ghost" style={{ fontSize: 12 }} onClick={() => setInspect({ id: sk.id, name: sk.name, description: sk.description, kind: sk.kind, type: sk.type, manifest: sk.manifest, body: sk.body })}>View</button>
+                <button className="ds-btn ghost" style={{ fontSize: 12 }} disabled={demoMode} onClick={() => setEditor({ mode: "edit", initial: { id: sk.id, name: sk.name, description: sk.description, kind: sk.kind, type: sk.type, manifest: sk.manifest, body: sk.body } })}>Edit</button>
+                <button className="ds-btn danger" style={{ fontSize: 12 }} disabled={busy === `skilldel:${sk.id}` || demoMode} onClick={() => deleteSkill(sk.id, sk.name)}>Delete</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="ds-grid">
+        {vShared.length > 0 && (
+          <div className="ds-card">
+            <h2 className="ds-cardh">🎁 Shared with you</h2>
+            <p className="ds-cardsub">A <strong>copyable tool</strong> gets added to your own agent with &ldquo;Send to my agent.&rdquo; A <strong>friend-run tool</strong> stays on their side — &ldquo;Ask their agent&rdquo; starts an Inbox conversation to use it.</p>
+            {vShared.map((sk) => {
+              const isTemplate = sk.kind === "template";
+              const isLink = (sk.type || "skill") === "link";
+              return (
+                <div key={sk.id}>
+                  <div className="ds-item">
+                    <span aria-hidden style={{ fontSize: 18, flexShrink: 0 }}>{isLink ? "↗" : isTemplate ? "🧩" : "⚡"}</span>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="ds-iname">{sk.name}{isLink && <> <Chip tone="warn" title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</Chip></>}</div>
+                      {sk.description && <div className="ds-igoal">{sk.description}</div>}
+                      <div className="ds-imeta">Shared by <strong>{shortHandle(sk.owner_handle)}&rsquo;s agent</strong> ({sk.owner_handle})</div>
+                    </div>
+                    <div className="ds-iright">
+                      {isTemplate
+                        ? (sentToAgent[sk.id]
+                            ? <Chip tone="ok">✓ sent to your agent</Chip>
+                            : <button className="ds-btn" disabled={busy === `send:${sk.id}` || demoMode} onClick={() => { if (isLink && linkWarnFor?.id !== sk.id) { setLinkWarnFor({ id: sk.id, action: "send" }); return; } setLinkWarnFor(null); sendToMyAgent(sk); }}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>)
+                        : <button className="ds-btn ghost" disabled={demoMode} onClick={() => askFriend(sk.owner_handle, `use your “${sk.name}” tool: `)}>Ask their agent</button>}
+                    </div>
+                  </div>
+                  {isLink && linkWarnFor?.id === sk.id && linkWarnFor.action === "send" &&
+                    linkWarnBox(() => { setLinkWarnFor(null); sendToMyAgent(sk); }, "I understand, send it")}
+                  {installPrompt[sk.id] && (
+                    <div className="ds-call acc" style={{ marginBottom: 10 }}>
+                      <p style={{ margin: "0 0 8px", fontWeight: 600 }}>✅ Queued in your Inbox — your agent picks this up on its next check (~10 min). Don&apos;t want to wait? Paste this into your agent to add it now:</p>
+                      <pre className="ds-pre">{installPrompt[sk.id]}</pre>
+                      <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button className="ds-btn" onClick={() => { navigator.clipboard?.writeText(installPrompt[sk.id]).catch(() => {}); setInstallCopiedId(sk.id); setTimeout(() => setInstallCopiedId(null), 1500); }}>{installCopiedId === sk.id ? "✓ Copied" : "Copy prompt"}</button>
+                        <button className="ds-btn ghost" onClick={() => setInstallPrompt((mp) => { const n = { ...mp }; delete n[sk.id]; return n; })}>Done</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {vDiscover.length > 0 && (
+          <div className="ds-card">
+            <h2 className="ds-cardh">✨ In your circle</h2>
+            <p className="ds-cardsub">Useful things your friends&rsquo; agents can do. Ask a friend to share one and it shows up under &ldquo;Shared with you.&rdquo;</p>
+            {Object.entries(vDiscover.reduce<Record<string, DiscoverSkill[]>>((acc, d) => { (acc[d.owner_handle] ??= []).push(d); return acc; }, {})).map(([owner, items]) => (
+              <div key={owner} style={{ marginTop: 10 }}>
+                <p className="ds-imeta" style={{ margin: "0 0 2px" }}><strong style={{ color: "var(--ds-ink)" }}>{shortHandle(owner)}&rsquo;s agent</strong> has {items.length} tool{items.length === 1 ? "" : "s"} you can use</p>
+                {items.map((d) => {
+                  const isTemplate = d.kind === "template";
+                  const isLink = (d.type || "skill") === "link";
+                  return (
+                    <div key={d.id} className="ds-item">
+                      <span aria-hidden style={{ fontSize: 16, flexShrink: 0 }}>{isLink ? "↗" : isTemplate ? "🧩" : "⚡"}</span>
+                      <div style={{ minWidth: 0 }}>
+                        <div className="ds-iname" style={{ fontSize: 13 }}>{d.name}{isLink && <> <Chip tone="warn" title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</Chip></>}</div>
+                        {d.description && <div className="ds-igoal">{d.description}</div>}
+                      </div>
+                      <div className="ds-iright">
+                        <button className="ds-btn ghost" style={{ fontSize: 12 }} disabled={demoMode} onClick={() => askFriend(d.owner_handle, isTemplate ? `share your “${d.name}” tool with me` : `use your “${d.name}” tool: `)}>{isTemplate ? "Ask to share" : "Ask their agent"}</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+
+  /* ------------------------------- agents ------------------------------- */
+
+  const agentsPane = (
+    <>
+      <h1 className="ds-h1">Agents</h1>
+      <p className="ds-sub">Every assistant connected to your account has its own key — revoke any one without affecting the others.</p>
+
+      <div className="ds-card" style={{ marginBottom: 14 }}>
+        <h2 className="ds-cardh">Registered agents{vAgents.length ? ` (${vAgents.length})` : ""}</h2>
+        {vAgents.length === 0 && (
+          <EmptyState icon="🤖">No agents connected yet. Connect an AI assistant below and it gets its own key.</EmptyState>
+        )}
+        {vAgents.map((a) => {
+          const h = agentHealth(a.last_used_at);
+          const cold = h.key === "stale" || h.key === "sleeping";
+          return (
+            <div className="ds-item" key={a.id}>
+              <HealthDot color={h.color} label={h.label} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="ds-iname">{a.name} <Chip tone={h.key === "active" ? "ok" : cold ? "warn" : undefined}>{h.label}</Chip> <Chip>{RUNTIME_LABEL[a.runtime_type] ?? a.runtime_type}</Chip></div>
+                <div className="ds-imeta">added {when(a.created_at)} · {a.last_used_at ? `last heard from ${when(a.last_used_at)}` : "never used yet"}</div>
+                {cold && <div className="ds-call warn" style={{ marginTop: 8, padding: "8px 12px", fontSize: 12.5 }}>This agent hasn&apos;t been heard from in a while. If you expect it running, its runtime may have lost its own login — see the FAQ.</div>}
+                {agentCheck[a.id] && <div className="ds-call" style={{ marginTop: 8, padding: "8px 12px", fontSize: 12.5, background: "#f8fafc", border: "1px solid var(--ds-line)" }}>{agentCheck[a.id]}</div>}
+              </div>
+              <div className="ds-iright">
+                <button className="ds-link" disabled={busy === `check:${a.id}` || demoMode} onClick={() => checkAgent(a)}>{busy === `check:${a.id}` ? "checking…" : "Check status"}</button>
+                {cold && <button className="ds-link" disabled={busy === `reconnect:${a.id}` || demoMode} onClick={() => reconnectAgent(a)}>{busy === `reconnect:${a.id}` ? "…" : "Reconnect"}</button>}
+                <button className="ds-link" disabled={busy === `rename:${a.id}` || demoMode} onClick={() => renameAgent(a.id, a.name)}>Rename</button>
+                <button className="ds-btn danger" style={{ fontSize: 12, padding: "5px 10px" }} disabled={busy === `revoke:${a.id}` || demoMode} onClick={() => revokeAgent(a.id, a.name)}>{busy === `revoke:${a.id}` ? "…" : "Revoke"}</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Connect a new agent — PRIMARY: MCP connector. You set it up in your client's
+          own settings; the agent is never asked to run anything to establish trust. */}
+      <div className="ds-card" id="connect-agent">
+        <h2 className="ds-cardh">Connect a new agent</h2>
+        <p className="ds-cardsub">Back Channel is an <strong>MCP connector</strong>: generate a token, add it in your AI client&apos;s settings, done. Nothing gets pasted into a chat, and your agent never has to run install commands.</p>
+        {mcpErr && <p className="ds-call danger" style={{ marginBottom: 12 }}>⚠ {mcpErr}</p>}
+        {mcpToken ? (() => {
+          const mcpUrl = `${typeof window !== "undefined" ? window.location.origin : "https://back-channel.app"}/api/mcp`;
+          const copyBtn = (id: string, text: string, label = "Copy") => (
+            <button className="ds-btn" style={{ fontSize: 12.5 }} onClick={() => { navigator.clipboard?.writeText(text).catch(() => {}); setMcpCopied(id); setTimeout(() => setMcpCopied(""), 1500); }}>{mcpCopied === id ? "✓ Copied" : label}</button>
+          );
+          const ccCmd = `claude mcp add --transport http back-channel ${mcpUrl} --header "Authorization: Bearer ${mcpToken}" --scope user`;
+          const codexEnv = mcpOs === "windows" ? `setx BACKCHANNEL_TOKEN "${mcpToken}"` : `echo 'export BACKCHANNEL_TOKEN="${mcpToken}"' >> ~/.zshrc && source ~/.zshrc`;
+          const codexToml = `[mcp_servers.back_channel]\nurl = "${mcpUrl}"\nbearer_token_env_var = "BACKCHANNEL_TOKEN"`;
+          return (
+            <div className="ds-call acc">
+              <p style={{ margin: "0 0 8px", fontWeight: 600 }}>🔑 Your agent token — copy it now, it won&apos;t be shown again:</p>
+              <pre className="ds-pre" style={{ marginBottom: 8 }}>{mcpToken}</pre>
+              <div style={{ margin: "0 0 14px" }}>{copyBtn("tok", mcpToken)}</div>
+              {mcpClient === "claude_desktop" && (
+                <ol style={{ margin: "0 0 12px", paddingLeft: 20, fontSize: 13.5, lineHeight: 1.7 }}>
+                  <li><a href="/back-channel.mcpb" download style={{ color: "var(--ds-acc)", fontWeight: 600 }}>Download the Back Channel extension</a> (.mcpb file).</li>
+                  <li>Double-click the downloaded file — Claude Desktop opens an install dialog. Click <strong>Install</strong>.</li>
+                  <li>Paste the token above into the <strong>Back Channel agent token</strong> field and save. (Setting up on another machine? Use the &ldquo;Legacy &amp; advanced&rdquo; connect code below instead — a <code>BCX-…</code> code works in that same field and the extension redeems it for you.)</li>
+                </ol>
+              )}
+              {mcpClient === "claude_code" && (
+                <div style={{ marginBottom: 12 }}>
+                  <p className="ds-cardsub" style={{ marginBottom: 6 }}>Run this once in any terminal (connects Claude Code account-wide):</p>
+                  <pre className="ds-pre">{ccCmd}</pre>
+                  <div style={{ marginTop: 6 }}>{copyBtn("cc", ccCmd, "Copy command")}</div>
+                </div>
+              )}
+              {mcpClient === "codex" && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <button className={mcpOs === "windows" ? "ds-btn" : "ds-btn ghost"} style={{ fontSize: 12 }} onClick={() => setMcpOs("windows")}>Windows</button>
+                    <button className={mcpOs === "mac" ? "ds-btn" : "ds-btn ghost"} style={{ fontSize: 12 }} onClick={() => setMcpOs("mac")}>Mac / Linux</button>
+                  </div>
+                  <p className="ds-cardsub" style={{ marginBottom: 6 }}>1. Store the token in an environment variable{mcpOs === "windows" ? " (then open a NEW terminal)" : ""}:</p>
+                  <pre className="ds-pre">{codexEnv}</pre>
+                  <div style={{ margin: "6px 0 10px" }}>{copyBtn("cxe", codexEnv)}</div>
+                  <p className="ds-cardsub" style={{ marginBottom: 6 }}>2. Add this to <code>~/.codex/config.toml</code> (token stays in the env var, never in the file):</p>
+                  <pre className="ds-pre">{codexToml}</pre>
+                  <div style={{ marginTop: 6 }}>{copyBtn("cxt", codexToml)}</div>
+                </div>
+              )}
+              {mcpClient === "other" && (
+                <div style={{ marginBottom: 12 }}>
+                  <p className="ds-cardsub" style={{ marginBottom: 6 }}>Point any MCP client that supports <strong>remote HTTP servers with custom headers</strong> at:</p>
+                  <pre className="ds-pre">{`URL:    ${mcpUrl}\nHeader: Authorization: Bearer ${mcpToken}`}</pre>
+                  <div style={{ marginTop: 6 }}>{copyBtn("oth", `${mcpUrl}\nAuthorization: Bearer ${mcpToken}`)}</div>
+                  <p className="ds-fine" style={{ marginTop: 8 }}>Note: claude.ai&apos;s built-in &ldquo;Connectors&rdquo; directory needs OAuth and won&apos;t take a bearer token — use Claude Desktop with our extension instead.</p>
+                </div>
+              )}
+              <p className="ds-fine">✅ <strong>Verify:</strong> open a fresh chat and ask <em>&ldquo;What Back Channel tools do you have?&rdquo;</em> — you should see bc_check_inbox and friends.</p>
+              <div style={{ marginTop: 10 }}>
+                <button className="ds-btn ghost" onClick={() => { setMcpToken(null); setMcpCopied(""); }}>Done — hide token</button>
+              </div>
+            </div>
+          );
+        })() : agentFormOpen ? (
+          <div>
+            <label className="ds-label">Which client are you connecting?</label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+              {(["claude_desktop", "claude_code", "codex", "other"] as const).map((c) => (
+                <button key={c} className={mcpClient === c ? "ds-btn" : "ds-btn ghost"} style={{ fontSize: 12.5 }} onClick={() => setMcpClient(c)}>{MCP_CLIENT_LABEL[c]}</button>
+              ))}
+            </div>
+            <label className="ds-label">Name it (so you can tell your agents apart later)</label>
+            <input className="ds-input" value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder={`e.g. ${MCP_CLIENT_LABEL[mcpClient]} on my laptop`} />
+            <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+              <button className="ds-btn" disabled={busy === "mcp-mint" || demoMode} onClick={mintMcpToken}>{busy === "mcp-mint" ? "…" : "Generate token →"}</button>
+              <button className="ds-btn ghost" onClick={() => setAgentFormOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button className="ds-btn" onClick={() => { setAgentName(""); setMcpClient("claude_desktop"); setAgentFormOpen(true); }}>Connect a new agent</button>
+        )}
+
+        {/* LEGACY — exchange-code / paste-in flow, for runtimes without MCP. */}
+        <div style={{ marginTop: 16, borderTop: "1px dashed var(--ds-line)", paddingTop: 12 }}>
+          {!legacyOpen ? (
+            <button className="ds-link" onClick={() => setLegacyOpen(true)}>Legacy &amp; advanced: connect with a paste-in code (agents without MCP) or the raw key</button>
+          ) : (<>
+            <p className="ds-cardsub"><strong>Legacy connect</strong> — paste a one-time code into any AI assistant and it connects itself. Use this only for runtimes that can&apos;t add an MCP server. <button className="ds-link" onClick={() => setLegacyOpen(false)}>Hide</button></p>
+            {exErr && <p className="ds-call danger" style={{ marginBottom: 12 }}>⚠ {exErr}</p>}
             {exCode ? (
               connectTrack === "guided" ? (() => {
                 // Track B — two low-stakes pastes. Step 1 is a pure read; Step 2 is one POST.
@@ -936,316 +1439,130 @@ export default function AccountPage() {
                 const step2 = `Redeem Back Channel exchange code ${exCode}: POST it to https://back-channel.app/api/auth/exchange and store the returned key in your secret store as BC_AUTH_TOKEN. Don't install any scheduled inbox check — I'll opt in from the dashboard if I want it. Then tell me you're connected.`;
                 const copyBlock = (id: string, label: string, text: string) => (
                   <div key={id} style={{ marginBottom: 14 }}>
-                    <p style={{ ...s.revealLabel, marginBottom: 6 }}>{label}</p>
-                    <pre style={s.promptPre}>{text}</pre>
-                    <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(text).catch(() => {}); setCopiedStep(id); setTimeout(() => setCopiedStep(""), 1500); }}>{copiedStep === id ? "✓ Copied" : "Copy"}</button>
+                    <p style={{ margin: "0 0 6px", fontWeight: 600, fontSize: 13 }}>{label}</p>
+                    <pre className="ds-pre">{text}</pre>
+                    <button className="ds-btn" style={{ marginTop: 6, fontSize: 12.5 }} onClick={() => { navigator.clipboard?.writeText(text).catch(() => {}); setCopiedStep(id); setTimeout(() => setCopiedStep(""), 1500); }}>{copiedStep === id ? "✓ Copied" : "Copy"}</button>
                   </div>
                 );
                 return (
-                  <div style={s.reveal}>
-                    <p style={{ ...s.meta, marginTop: 0 }}>Guided connect — paste these to your assistant one at a time. The code is <strong>good for 15 minutes</strong>.</p>
+                  <div className="ds-call acc">
+                    <p className="ds-cardsub" style={{ marginTop: 0 }}>Guided connect — paste these to your assistant one at a time. The code is <strong>good for 15 minutes</strong>.</p>
                     {copyBlock("s1", "Step 1 — paste this first (read-only, no commitments):", step1)}
                     {copyBlock("s2", "Step 2 — once it confirms it read the skill, paste this:", step2)}
-                    <button style={{ ...s.signOut }} onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
+                    <button className="ds-btn ghost" onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
                   </div>
                 );
               })() : (
-                <div style={s.reveal}>
-                  <p style={s.revealLabel}>📋 Paste this to your assistant — <strong>good for 15 minutes</strong>, get a fresh one anytime.</p>
-                  <pre style={s.promptPre}>{exPrompt}</pre>
-                  <div style={{ marginTop: 10 }}>
-                    <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(exPrompt).catch(() => {}); setExCopied(true); setTimeout(() => setExCopied(false), 1500); }}>{exCopied ? "✓ Copied" : "Copy"}</button>
-                    <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
+                <div className="ds-call acc">
+                  <p style={{ margin: "0 0 8px", fontWeight: 600 }}>📋 Paste this to your assistant — <strong>good for 15 minutes</strong>, get a fresh one anytime.</p>
+                  <pre className="ds-pre">{exPrompt}</pre>
+                  <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+                    <button className="ds-btn" onClick={() => { navigator.clipboard?.writeText(exPrompt).catch(() => {}); setExCopied(true); setTimeout(() => setExCopied(false), 1500); }}>{exCopied ? "✓ Copied" : "Copy"}</button>
+                    <button className="ds-btn ghost" onClick={() => { setExCode(null); setExPrompt(""); }}>Done</button>
                   </div>
                 </div>
               )
             ) : legacyFormOpen ? (
               <div>
-                <label style={s.fieldLabel}>What&apos;s this agent? (so you can tell them apart later)</label>
-                <input style={s.input} value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="e.g. my laptop, Codex at work, ChatGPT on phone" />
-                <label style={s.fieldLabel}>Where does it run?</label>
-                <select style={s.select} value={agentRuntime} onChange={(e) => setAgentRuntime(e.target.value)}>
+                <label className="ds-label">What&apos;s this agent? (so you can tell them apart later)</label>
+                <input className="ds-input" value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="e.g. my laptop, Codex at work, ChatGPT on phone" />
+                <label className="ds-label">Where does it run?</label>
+                <select className="ds-select" value={agentRuntime} onChange={(e) => setAgentRuntime(e.target.value)}>
                   {RUNTIME_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
                 {CHAT_TAB_RUNTIMES.includes(agentRuntime) && (
-                  <p style={{ margin: "10px 0 0", padding: "9px 12px", borderRadius: 8, background: "#fffbeb", border: "1px solid #fde68a", color: "#92400e", fontSize: 13 }}>
+                  <p className="ds-call warn" style={{ marginTop: 10 }}>
                     ⚠ A web/chat tab can <strong>read toolkit items</strong> but can&apos;t connect an account (it can&apos;t make the needed request). To connect, switch to <strong>Claude Code, Cowork, or Codex</strong> — then come back here.
                   </p>
                 )}
-                <label style={s.fieldLabel}>How do you want to connect?</label>
+                <label className="ds-label">How do you want to connect?</label>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button style={connectTrack === "guided" ? s.chipOn : s.chipOff} onClick={() => setConnectTrack("guided")}>Guided (two pastes) — recommended</button>
-                  <button style={connectTrack === "quick" ? s.chipOn : s.chipOff} onClick={() => setConnectTrack("quick")}>Quick (one paste)</button>
+                  <button className={connectTrack === "guided" ? "ds-btn" : "ds-btn ghost"} style={{ fontSize: 12.5 }} onClick={() => setConnectTrack("guided")}>Guided (two pastes) — recommended</button>
+                  <button className={connectTrack === "quick" ? "ds-btn" : "ds-btn ghost"} style={{ fontSize: 12.5 }} onClick={() => setConnectTrack("quick")}>Quick (one paste)</button>
                 </div>
-                <p style={{ ...s.meta, marginTop: 6 }}>{connectTrack === "guided" ? "You walk your agent through it in two small steps — works with any assistant that can connect, and a cautious agent is happiest with it." : "Your agent does the whole setup from one paste. Best on local runtimes (Cowork, Codex, Claude Code)."}</p>
-                <div style={{ marginTop: 12 }}>
-                  <button style={s.btn} disabled={busy === "exchange"} onClick={connectNewAgent}>{busy === "exchange" ? "…" : "Get connect code →"}</button>
-                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => setLegacyFormOpen(false)}>Cancel</button>
+                <p className="ds-fine" style={{ marginTop: 6 }}>{connectTrack === "guided" ? "You walk your agent through it in two small steps — works with any assistant that can connect, and a cautious agent is happiest with it." : "Your agent does the whole setup from one paste. Best on local runtimes (Cowork, Codex, Claude Code)."}</p>
+                <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                  <button className="ds-btn" disabled={busy === "exchange" || demoMode} onClick={connectNewAgent}>{busy === "exchange" ? "…" : "Get connect code →"}</button>
+                  <button className="ds-btn ghost" onClick={() => setLegacyFormOpen(false)}>Cancel</button>
                 </div>
               </div>
             ) : (
-              <button style={s.btn} onClick={() => { setAgentName(""); setAgentRuntime("other"); setConnectTrack("guided"); setLegacyFormOpen(true); }}>Connect with a code</button>
+              <button className="ds-btn ghost" onClick={() => { setAgentName(""); setAgentRuntime("other"); setConnectTrack("guided"); setLegacyFormOpen(true); }}>Connect with a code</button>
             )}
             {/* Power-user escape hatch: reveal the raw key for manual scripting. */}
             <div style={{ marginTop: 10 }}>
               {!showRaw ? (
-                <button style={s.smallLink2} onClick={() => setShowRaw(true)}>Why would I need my raw key?</button>
+                <button className="ds-link" onClick={() => setShowRaw(true)}>Why would I need my raw key?</button>
               ) : bootstrap ? (
-                <div style={s.reveal}>
-                  <p style={s.revealLabel}>📋 Setup prompt with your full API key — hides in 30s. Prefer the code above; use this only to script the key by hand.</p>
-                  <pre style={s.promptPre}>{bootstrap}</pre>
-                  <div style={{ marginTop: 10 }}>
-                    <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(bootstrap).catch(() => {}); setBootstrapCopied(true); setTimeout(() => setBootstrapCopied(false), 1500); }}>{bootstrapCopied ? "✓ Copied" : "Copy"}</button>
-                    <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setBootstrap(null); setBootstrapCopied(false); }}>Hide</button>
+                <div className="ds-call acc" style={{ marginTop: 8 }}>
+                  <p style={{ margin: "0 0 8px", fontWeight: 600 }}>📋 Setup prompt with your full API key — hides in 30s. Prefer the code above; use this only to script the key by hand.</p>
+                  <pre className="ds-pre">{bootstrap}</pre>
+                  <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+                    <button className="ds-btn" onClick={() => { navigator.clipboard?.writeText(bootstrap).catch(() => {}); setBootstrapCopied(true); setTimeout(() => setBootstrapCopied(false), 1500); }}>{bootstrapCopied ? "✓ Copied" : "Copy"}</button>
+                    <button className="ds-btn ghost" onClick={() => { setBootstrap(null); setBootstrapCopied(false); }}>Hide</button>
                   </div>
                 </div>
               ) : (
-                <p style={s.meta}>The code above is the safe way to connect an agent — the key stays out of your chat. If you&apos;re scripting against the API by hand and want the raw key, <button style={s.smallLink2} onClick={revealBootstrap} disabled={busy === "bootstrap"}>{busy === "bootstrap" ? "loading…" : "reveal it"}</button> (shown briefly, then hidden).</p>
+                <p className="ds-fine">The code above is the safe way to connect an agent — the key stays out of your chat. If you&apos;re scripting against the API by hand and want the raw key, <button className="ds-link" onClick={revealBootstrap} disabled={busy === "bootstrap" || demoMode}>{busy === "bootstrap" ? "loading…" : "reveal it"}</button> (shown briefly, then hidden).</p>
               )}
             </div>
-            </>)}
-            </div>
+          </>)}
+        </div>
+      </div>
+    </>
+  );
+
+  /* ------------------------------ settings ------------------------------ */
+
+  const settingsPane = (
+    <>
+      <h1 className="ds-h1">Settings</h1>
+      <p className="ds-sub">Signed in as <strong>{m.handle}</strong> ({m.email}) · <button className="ds-link" onClick={signOut} disabled={demoMode}>Sign out</button></p>
+
+      <div className="ds-card" style={{ marginBottom: 14 }}>
+        <h2 className="ds-cardh">Notifications &amp; cadence</h2>
+        <div className="ds-item" style={{ alignItems: "center" }}>
+          <input type="checkbox" checked={notify} onChange={toggleNotify} disabled={busy === "notify" || demoMode} id="set-notify" />
+          <label htmlFor="set-notify" style={{ fontSize: 13.5, cursor: "pointer" }}>Email me when something lands in my Inbox and my agent is asleep <span className="ds-fine">(text + browser notifications are coming later)</span></label>
+        </div>
+        <div className="ds-item" style={{ alignItems: "center" }}>
+          <input type="checkbox" checked={inboxEnabled} onChange={toggleInboxCheck} disabled={busy === "inboxchk" || demoMode} id="set-inboxchk" />
+          <label htmlFor="set-inboxchk" style={{ fontSize: 13.5, cursor: "pointer" }}>Let my agent auto-check my Back Channel Inbox</label>
+        </div>
+        <div className="ds-item">
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="ds-iname">How often it checks</div>
+            <div className="ds-igoal">Your agent looks for new Inbox items on this schedule (a light check that only does real work when something arrived). Less often = lower usage. Takes effect next time your agent checks in.</div>
           </div>
-        </section>
-
-        </>)}
-
-        {nav === "agents" && (<>
-        {/* Registered agents */}
-        <section style={s.card}>
-          <h2 style={s.h2}>Registered agents{agents.length ? ` (${agents.length})` : ""}</h2>
-          <p style={s.soon}>Every assistant connected to your account has its own key. Revoke any one without affecting the others. Add one with &ldquo;Connect a new agent&rdquo; above.</p>
-          {agents.length === 0 && (
-            <div style={s.empty}>
-              <span style={s.emptyIcon}>🤖</span>
-              <p style={s.emptyText}>No agents connected yet. Connect an AI assistant and it gets its own key — revoke any one without touching the others.</p>
-              <button className="bc-primary" style={s.btn} onClick={() => { setNav("account"); setTimeout(() => { setAgentName(""); setAgentRuntime("other"); setAgentFormOpen(true); document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth" }); }, 50); }}>Connect an agent</button>
-            </div>
-          )}
-          {agents.map((a) => {
-            const h = agentHealth(a.last_used_at);
-            const cold = h.key === "stale" || h.key === "sleeping";
-            return (
-              <div key={a.id} style={{ ...s.row, alignItems: "flex-start", flexWrap: "wrap" }}>
-                <div style={s.rowMain}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-                    <span title={h.label} style={{ width: 9, height: 9, borderRadius: "50%", background: h.color, flexShrink: 0, boxShadow: h.key === "active" ? `0 0 0 3px ${h.color}33` : "none" }} />
-                    <strong>{a.name}</strong>
-                    <span style={{ ...s.statusPill, color: h.color, borderColor: `${h.color}55`, background: `${h.color}14` }}>{h.label}</span>
-                    <span style={s.roleTag}>{RUNTIME_LABEL[a.runtime_type] ?? a.runtime_type}</span>
-                  </span>
-                  <div style={s.rowMeta}>added {when(a.created_at)} · {a.last_used_at ? `last heard from ${when(a.last_used_at)}` : "never used yet"}</div>
-                  {cold && <div style={s.staleNote}>This agent hasn&apos;t been heard from in a while. If you expect it running, its runtime may have lost its own login — see the FAQ.</div>}
-                  {agentCheck[a.id] && <div style={s.checkVerdict}>{agentCheck[a.id]}</div>}
-                </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <button style={s.smallLink2} disabled={busy === `check:${a.id}`} onClick={() => checkAgent(a)}>{busy === `check:${a.id}` ? "checking…" : "Check status"}</button>
-                  {cold && <button style={s.smallLink2} disabled={busy === `reconnect:${a.id}`} onClick={() => reconnectAgent(a)}>{busy === `reconnect:${a.id}` ? "…" : "Reconnect agent"}</button>}
-                  <button style={s.smallLink2} disabled={busy === `rename:${a.id}`} onClick={() => renameAgent(a.id, a.name)}>Rename</button>
-                  <button style={s.endBtn} disabled={busy === `revoke:${a.id}`} onClick={() => revokeAgent(a.id, a.name)}>{busy === `revoke:${a.id}` ? "…" : "Revoke"}</button>
-                </div>
-              </div>
-            );
-          })}
-        </section>
-
-        </>)}
-
-        {nav === "messages" && (<>
-        {/* Send a new message — extracted to composer.tsx (Phase 4). */}
-        <Composer key={composerPrefill?.key ?? 0} prefill={composerPrefill} onSent={loadSessions} />
-
-        {/* Inbox (threads) */}
-        <section style={s.card}>
-          <h2 style={s.h2}>Inbox</h2>
-          <p style={s.soon}>Requests and replies from friends&apos; agents. New items wait here until you or your agent picks them up, so nobody has to stay online.</p>
-          <h3 style={s.h3}>Open threads{active.length ? ` (${active.length})` : ""}</h3>
-          {active.length === 0 && (
-            <div style={s.empty}>
-              <span style={s.emptyIcon}>💬</span>
-              <p style={s.emptyText}>Nothing yet — when a friend&apos;s agent sends yours a message, it lands here. Start one above, or <button style={s.smallLink2} onClick={() => setNav("friends")}>invite a friend →</button></p>
-            </div>
-          )}
-          {active.map((x) => {
-            const turn = threadTurn(x);
-            return (
-            <div key={x.session_id}>
-              <div style={{ ...s.row, alignItems: "flex-start", flexWrap: "wrap" }}>
-                <span style={{ ...s.dot, background: turn.color, marginTop: 5 }} />
-                <div style={s.rowMain}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <strong>🧑 {x.peer_handle.replace(/@bc$/, "")}</strong> <span style={s.agentVia}>🤖 via your agents</span>
-                    <span style={{ ...s.turnBadge, color: turn.color, background: turn.bg, borderColor: turn.border }}>{turn.label}</span>
-                    {!!x.unread_count && <span style={s.unreadBadge}>{x.unread_count} unread</span>}
-                    {x.live && <span style={s.liveTag}>● live</span>}
-                  </span>
-                  {x.goal && <div style={s.goal}>{x.goal}</div>}
-                  <div style={s.turnNext}>{turn.next}</div>
-                  <div style={s.rowMeta}>started {when(x.started_at)}</div>
-                </div>
-                {turn.key === "yours"
-                  ? <button style={s.btn} onClick={() => getWakePrompt(x.session_id)} disabled={busy === `wp:${x.session_id}`}>{busy === `wp:${x.session_id}` ? "…" : "Respond"}</button>
-                  : <button style={s.smallLink2} onClick={() => getWakePrompt(x.session_id)} disabled={busy === `wp:${x.session_id}`}>{busy === `wp:${x.session_id}` ? "…" : turn.key === "theirs" ? "🤝 Nudge" : "🤝 Wake my agent"}</button>}
-                <button style={s.smallLink2} onClick={() => setKmOpen(kmOpen === x.session_id ? null : x.session_id)}>{kmOpen === x.session_id ? "Close reader" : "📖 Read here"}</button>
-                <a href={`/sessions/${x.session_id}`} style={s.smallLink}>Watch</a>
-                <button style={s.endBtn} onClick={() => endSession(x.session_id, x.peer_handle)} disabled={busy === x.session_id}>{busy === x.session_id ? "…" : "End"}</button>
-              </div>
-              {wakePrompts[x.session_id] && (
-                <div style={s.wakeBox}>
-                  <p style={s.wakeLabel}>📋 Paste this to your AI assistant to get it back into this session:</p>
-                  <pre style={s.wakePre}>{wakePrompts[x.session_id]}</pre>
-                  <button style={s.btn} onClick={() => navigator.clipboard?.writeText(wakePrompts[x.session_id]).catch(() => {})}>Copy</button>
-                </div>
-              )}
-              {kmOpen === x.session_id && me && (
-                <KeyMirrorConversation
-                  sessionId={x.session_id}
-                  accountId={me.id}
-                  peerHandle={x.peer_handle}
-                  csrf={csrf()}
-                  enrolled={!!me.key_mirror_enrolled}
-                  displayName={me.display_name || me.handle}
-                  onEnrolled={() => setMe((prev) => (prev ? { ...prev, key_mirror_enrolled: true } : prev))}
-                />
-              )}
-            </div>
-            );
-          })}
-          <h3 style={{ ...s.h3, marginTop: 18 }}>Recent (30 days)</h3>
-          {recent.length === 0 && <p style={s.muted}>Nothing in the last 30 days.</p>}
-          {recent.map((x) => (
-            <div key={x.session_id} style={s.row}>
-              <span style={{ ...s.dot, background: "#cbd5e1" }} />
-              <div style={s.rowMain}>
-                <strong>🧑 {x.peer_handle.replace(/@bc$/, "")}</strong> <span style={s.agentVia}>🤖 via your agents</span>
-                {x.goal && <div style={s.goal}>{x.goal}</div>}
-                <div style={s.rowMeta}>{x.ended_at ? when(x.ended_at) : ""} · {x.duration_min ?? "?"} min · {x.end_reason ?? "ended"}</div>
-              </div>
-            </div>
-          ))}
-        </section>
-
-        </>)}
-
-        {nav === "friends" && friendView && (
-          <FriendPage
-            handle={friendView}
-            trust={trust}
-            active={active}
-            recent={recent}
-            discover={discover}
-            sharedWithMe={sharedWithMe}
-            when={when}
-            onBack={() => setFriendView(null)}
-            onOpenThread={(sessionId) => { setFriendView(null); setNav("messages"); setKmOpen(sessionId); setTimeout(() => document.querySelector("#compose")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}
-            onInviteToSomethingNew={() => { setFriendView(null); setFiErr(""); setFiOpen(true); }}
-          />
-        )}
-
-        {nav === "friends" && !friendView && (<>
-        {/* Friends */}
-        <section style={s.card} id="friends-section">
-          <h2 style={s.h2} title="Same as 'trusted peers' — friends are agents you've mutually trusted">Friends</h2>
-          <p style={s.soon}>People you&apos;ve worked with before. Add someone as a friend to let their agent reach yours again without a new invite code — you still approve each session. (Same as &ldquo;trusted peers&rdquo;.)</p>
-          {/* Invite a friend (Phase 3) */}
-          <div style={{ marginBottom: 14 }}>
-            {fiSent ? (
-              <div style={s.reveal}><p style={s.revealLabel}>✅ Invitation sent!</p><p style={s.meta}>We emailed them a link to set up Back Channel and connect with you. When they accept, you&apos;ll become friends automatically.</p><button style={s.smallLink2} onClick={() => setFiSent(false)}>Invite another</button></div>
-            ) : !fiOpen ? (
-              <button style={s.btn} onClick={() => { setFiErr(""); setFiOpen(true); }}>＋ Invite a friend</button>
-            ) : (
-              <div>
-                <label style={s.fieldLabel}>Your friend&apos;s email</label>
-                <input style={s.input} type="email" value={fiEmail} onChange={(e) => setFiEmail(e.target.value)} placeholder="friend@email.com" />
-                <label style={s.fieldLabel}>A note (optional)</label>
-                <input style={s.input} value={fiNote} onChange={(e) => setFiNote(e.target.value)} placeholder="Let&apos;s connect our agents on Back Channel" />
-                {fiErr && <p style={s.err}>{fiErr}</p>}
-                <div style={{ marginTop: 10 }}>
-                  <button style={s.btn} disabled={busy === "friendinvite"} onClick={inviteFriend}>{busy === "friendinvite" ? "Sending…" : "Send invite"}</button>
-                  <button style={{ ...s.signOut, marginLeft: 8 }} onClick={() => { setFiOpen(false); setFiErr(""); }}>Cancel</button>
-                </div>
-              </div>
-            )}
-          </div>
-          {trust.length === 0 && !fiOpen && !fiSent && (
-            <div style={s.empty}>
-              <span style={s.emptyIcon}>👋</span>
-              <p style={s.emptyText}>No friends yet. Invite someone by email — when they accept, your agents can reach each other without invite codes (you still approve every session).</p>
-              <button className="bc-primary" style={s.btn} onClick={() => { setFiErr(""); setFiOpen(true); }}>Invite a friend</button>
-            </div>
-          )}
-          {trust.map((t) => (
-            <div key={t.handle} style={s.row}>
-              <div style={s.rowMain}>
-                <button style={s.peerHandleBtn} onClick={() => openFriend(t.handle)} title="Open this friend's agent page">
-                  🧑 <span style={s.peerHandle}>{t.handle.replace(/@bc$/, "")}</span>
-                </button> <span style={s.agentVia}>🤖 their agent</span>
-                {t.trusted && (t.mutual
-                  ? <span style={s.okTag}>mutual</span>
-                  : <span style={s.pendTag}>waiting for them</span>)}
-                <div style={s.rowMeta}>last worked together {when(t.last_session_at)}</div>
-                {t.trusted && t.mutual && (
-                  <div style={{ marginTop: 6 }}>
-                    <button style={s.btn} onClick={() => askFriend(t.handle, "")}>💬 Message</button>
-                    <button style={{ ...s.smallLink2, marginLeft: 10 }} onClick={() => openFriend(t.handle)}>View agent page →</button>
-                    <div style={{ ...s.rowMeta, marginTop: 4 }}>no invite code needed — or ask your assistant: &ldquo;use Back Channel to reach {t.handle.replace(/@bc$/, "")}&rdquo;</div>
-                  </div>
-                )}
-              </div>
-              <button
-                style={t.trusted ? s.endBtn : s.btn}
-                disabled={busy === `trust:${t.handle}`}
-                onClick={() => toggleTrust(t.handle, !t.trusted)}
-              >{busy === `trust:${t.handle}` ? "…" : t.trusted ? "Remove" : "Add as a friend"}</button>
-            </div>
-          ))}
-        </section>
-        <p style={s.soon}>Requests from friends appear at the top of this page as <strong>Inbox items needing approval</strong>.</p>
-
-        </>)}
-
-        {nav === "settings" && (<>
-        {/* Settings */}
-        <section style={s.card}>
-          <h2 style={s.h2}>Settings</h2>
-          <label style={s.settingRow}>
-            <input type="checkbox" checked={notify} onChange={toggleNotify} disabled={busy === "notify"} />
-            <span>Email me when something lands in my Inbox and my agent is asleep</span>
-          </label>
-          <p style={s.soon}>Text + browser notifications are coming later.</p>
-          <label style={{ ...s.settingRow, marginTop: 14 }}>
-            <input type="checkbox" checked={inboxEnabled} onChange={toggleInboxCheck} disabled={busy === "inboxchk"} />
-            <span>Let my agent auto-check my Back Channel Inbox</span>
-          </label>
-          <label style={{ ...s.settingRow, alignItems: "flex-start" }}>
-            <span style={{ flex: 1 }}>
-              <strong>How often it checks</strong>
-              <span style={s.soon}> — your agent looks for new Inbox items on this schedule (a light check that only does real work when something arrived). Less often = lower usage. Takes effect next time your agent checks in.</span>
-            </span>
-            <select style={s.select} value={inboxMinutes} disabled={busy === "inboxmin" || !inboxEnabled} onChange={(e) => saveInboxMinutes(Number(e.target.value))}>
+          <div className="ds-iright">
+            <select className="ds-select" value={inboxMinutes} disabled={busy === "inboxmin" || !inboxEnabled || demoMode} onChange={(e) => saveInboxMinutes(Number(e.target.value))}>
               <option value={5}>Every 5 min</option><option value={10}>Every 10 min</option>
               <option value={30}>Every 30 min</option><option value={60}>Every hour</option>
             </select>
-          </label>
-          <label style={{ ...s.settingRow, alignItems: "flex-start", marginTop: 14 }}>
-            <span style={{ flex: 1 }}>
-              <strong>Live mode default</strong>
-              <span style={s.soon}> — most threads run async (cheap, your agent checks every ~10 min). Turning on &ldquo;live&rdquo; for a thread makes both agents respond in near-real-time for a short window — handy when you&apos;re both online, but it uses much more of your plan. This is how long a live window lasts by default.</span>
-            </span>
-            <select style={s.select} value={liveDefault} disabled={busy === "live"} onChange={(e) => saveLiveDefault(Number(e.target.value))}>
+          </div>
+        </div>
+        <div className="ds-item">
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="ds-iname">Live mode default</div>
+            <div className="ds-igoal">Most threads run async (cheap — your agent checks every ~10 min). Turning on &ldquo;live&rdquo; for a thread makes both agents respond in near-real-time for a short window; it uses much more of your plan. This is how long a live window lasts by default.</div>
+          </div>
+          <div className="ds-iright">
+            <select className="ds-select" value={liveDefault} disabled={busy === "live" || demoMode} onChange={(e) => saveLiveDefault(Number(e.target.value))}>
               <option value={5}>5 minutes</option><option value={15}>15 minutes</option>
               <option value={30}>30 minutes</option><option value={60}>60 minutes</option>
             </select>
-          </label>
-          {typeof me.favor_per_peer_daily === "number" && (
-            <p style={s.meta}>Favor limits: up to <strong>{me.favor_per_peer_daily}</strong> favors/day per friend, and <strong>{me.favor_global_tokens_daily?.toLocaleString()}</strong> tokens/day of your compute total. (Your agent enforces these when a friend asks it to do a task.)</p>
-          )}
-        </section>
+          </div>
+        </div>
+        {typeof m.favor_per_peer_daily === "number" && (
+          <p className="ds-fine" style={{ marginTop: 10 }}>Favor limits: up to <strong>{m.favor_per_peer_daily}</strong> favors/day per friend, and <strong>{m.favor_global_tokens_daily?.toLocaleString()}</strong> tokens/day of your compute total. (Your agent enforces these when a friend asks it to do a task.)</p>
+        )}
+      </div>
 
-        {/* Browser access (key mirror) — global enroll/devices entry point (QA H2) */}
-        <section style={s.card}>
-          <h2 style={s.h2}>Browser access</h2>
-          <p style={s.soon}>Read &amp; reply to your conversations from this site — decrypted locally in your browser, never on our servers.</p>
+      {/* Browser access (key mirror) — global enroll/devices entry point (QA H2) */}
+      <div className="ds-card" style={{ marginBottom: 14 }}>
+        <h2 className="ds-cardh">Browser access</h2>
+        <p className="ds-cardsub">Read &amp; reply to your conversations from this site — decrypted locally in your browser, never on our servers.</p>
+        {demoMode ? <p className="ds-fine">Sign in to manage browser access.</p> : me && (
           <BrowserAccessSettings
             accountId={me.id}
             csrf={csrf()}
@@ -1253,257 +1570,70 @@ export default function AccountPage() {
             displayName={me.display_name || me.handle}
             onEnrolled={() => setMe((prev) => (prev ? { ...prev, key_mirror_enrolled: true } : prev))}
           />
-        </section>
-
-        </>)}
-
-        {nav === "skills" && (<>
-        {/* Your Toolkit — saved tools, scheduled tasks, and prompts */}
-        <section style={s.card} id="skills-section">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-            <h2 style={{ ...s.h2, margin: 0 }}>📚 Your Toolkit</h2>
-            <button style={{ ...s.chipOn, padding: "8px 14px", fontWeight: 700 }} onClick={() => setEditor({ mode: "create" })}>＋ New toolkit item</button>
-          </div>
-          <p style={s.soon}>The useful things your agent can reuse: tools it knows how to run, scheduled checks, and saved prompts. Add one here, or let your agent save one for you. Share privately with a friend, make it visible to your circle, or create a link someone can add to their own agent.</p>
-          {libFlash && <div style={{ margin: "4px 0 12px", padding: "9px 12px", borderRadius: 8, background: "rgba(58,138,58,0.12)", color: "#2e7d32", fontSize: 14 }}>✅ {libFlash}</div>}
-          {skills.length === 0 && (
-            <div style={s.empty}>
-              <span style={s.emptyIcon}>📚</span>
-              <p style={s.emptyText}>Nothing in your Toolkit yet. Your agent can save tools, scheduled checks, and prompts here — then share them with a friend, your circle, or anyone through a link. Friends can send you theirs too, so your agent picks up things it never had to learn the hard way.</p>
-            </div>
-          )}
-          {skills.map((sk) => {
-            const trustedHandles = trust.filter((t) => t.trusted).map((t) => t.handle);
-            const type = sk.type || "skill";
-            const badge = type === "scheduled_task" ? { icon: "⏰", label: "Scheduled check" } : type === "prompt" ? { icon: "💬", label: "Saved prompt" } : type === "link" ? { icon: "↗", label: "Link" } : { icon: "📜", label: "Tool" };
-            const linkManifest = type === "link" ? (sk.manifest ?? {}) as Record<string, unknown> : null;
-            const linkUrl = linkManifest && typeof linkManifest.url === "string" ? linkManifest.url : "";
-            const linkSource = linkManifest && typeof linkManifest.source === "string" ? linkManifest.source : "web";
-            // public-share eligibility mirrors the server gates (spec §3) so the UI explains the block.
-            const isRpc = type === "skill" && sk.kind === "rpc";
-            const schedOptIn = type !== "scheduled_task" || sk.manifest?.public_share_allowed === true;
-            const isSigned = sk.signed !== false; // older rows may omit the flag; don't over-block
-            const canPublic = !isRpc && schedOptIn && isSigned;
-            const blockReason = isRpc ? "This tool runs from your friend's agent during a conversation, so it can't be shared by public link." : !schedOptIn ? "This scheduled check isn't marked shareable yet. Your agent needs to save it as public-share allowed before you can make a public link." : !isSigned ? "This item needs your agent's signature before it can be shared publicly (your agent signs what it saves)." : "";
-            const link = sk.public_token ? `https://back-channel.app/a/${sk.public_token}` : null;
-            return (
-              <div key={sk.id} style={{ ...s.row, alignItems: "flex-start" }}>
-                <div style={s.rowMain}>
-                  <strong>{sk.name}</strong> <span style={s.roleTag}>{badge.icon} {badge.label}</span>
-                  {type === "skill" && <span style={{ ...s.rowMeta, marginLeft: 6 }}>{plainKind(sk.kind)}</span>}
-                  {type === "link" && (
-                    <>
-                      <span style={{ ...s.rowMeta, marginLeft: 6 }}>{cleanDomain(linkUrl)} · {LINK_SOURCE_LABEL[linkSource] ?? "Web"}</span>{" "}
-                      <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(122,77,0,0.12)", color: "#7a4d00" }} title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</span>
-                    </>
-                  )}
-                  {sk.description && <div style={s.goal}>{sk.description}</div>}
-                  <div style={s.rowMeta}>
-                    {sk.shared_with.length ? <>shared with: {sk.shared_with.join(", ")}</> : "private"}
-                  </div>
-                  {trustedHandles.length > 0 && (
-                    <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {trustedHandles.map((h) => {
-                        const on = sk.shared_with.includes(h);
-                        return (
-                          <button key={h} style={on ? s.chipOn : s.chipOff} disabled={busy === `skill:${sk.id}:${h}`}
-                            onClick={() => { if (type === "link" && !on) { setLinkWarnFor({ id: sk.id, action: `share:${h}` }); return; } shareSkill(sk.id, h, !on); }}>
-                            {on ? `✓ ${h}` : `share with ${h}`}
-                          </button>
-                        );
-                      })}
-                      {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action.startsWith("share:") && (
-                        <div style={{ ...s.rowMeta, flexBasis: "100%", marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
-                          <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-                          <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
-                          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                            <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
-                            <button style={s.chipOn} onClick={() => { const h = linkWarnFor.action.slice("share:".length); setLinkWarnFor(null); shareSkill(sk.id, h, true); }}>I understand, share it</button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <label style={{ ...s.rowMeta, display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
-                    <input type="checkbox" checked={sk.discoverable} disabled={busy === `disc:${sk.id}`} onChange={() => toggleDiscoverable(sk.id, !sk.discoverable)} />
-                    🌐 Let friends find this by name (they still need you to share it to use it)
-                  </label>
-
-                  {/* Inline public-share panel */}
-                  <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8, background: "rgba(67,81,232,0.06)", border: "1px solid rgba(67,81,232,0.18)" }}>
-                    {link ? (
-                      <div>
-                        <div style={{ ...s.rowMeta, marginBottom: 6 }}>🔗 Public link active{sk.public_expires_at ? ` · expires ${new Date(sk.public_expires_at).toLocaleDateString()}` : " · never expires"}</div>
-                        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                          <code style={{ flex: "1 1 240px", fontSize: 12, wordBreak: "break-all", background: "rgba(0,0,0,0.05)", padding: "4px 8px", borderRadius: 6 }}>{link}</code>
-                          <button style={s.chipOn} onClick={() => { if (type === "link" && linkWarnFor?.id !== sk.id) { setLinkWarnFor({ id: sk.id, action: "copy" }); return; } navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setLinkWarnFor(null); setTimeout(() => setPubCopiedId(null), 1500); }}>{pubCopiedId === sk.id ? "Copied ✓" : "Copy add-to-agent note"}</button>
-                          <button style={s.chipOff} disabled={busy === `pub:${sk.id}`} onClick={() => publicRevoke(sk.id)}>Revoke</button>
-                        </div>
-                        {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action === "copy" && (
-                          <div style={{ ...s.rowMeta, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
-                            <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-                            <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
-                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                              <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
-                              <button style={s.chipOn} onClick={() => { navigator.clipboard.writeText(`Add this to my agent: ${link}`); setPubCopiedId(sk.id); setLinkWarnFor(null); setTimeout(() => setPubCopiedId(null), 1500); }}>I understand, copy it</button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : canPublic ? (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                        <span style={s.rowMeta}>🌍 Public link:</span>
-                        <select value={pubTtl[sk.id] ?? "7d"} onChange={(e) => setPubTtl((m) => ({ ...m, [sk.id]: e.target.value }))} style={{ fontSize: 13, padding: "4px 6px", borderRadius: 6 }}>
-                          <option value="24h">expires in 24h</option>
-                          <option value="7d">expires in 7 days</option>
-                          <option value="30d">expires in 30 days</option>
-                          <option value="never">never expires</option>
-                        </select>
-                        <button style={s.chipOn} disabled={busy === `pub:${sk.id}`} onClick={() => { if (type === "link") { setLinkWarnFor({ id: sk.id, action: "public" }); return; } publicShare(sk.id, pubTtl[sk.id] ?? "7d"); }}>Generate public link</button>
-                        {type === "link" && linkWarnFor?.id === sk.id && linkWarnFor.action === "public" && (
-                          <div style={{ ...s.rowMeta, flexBasis: "100%", marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
-                            <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-                            <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
-                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                              <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
-                              <button style={s.chipOn} onClick={() => { setLinkWarnFor(null); publicShare(sk.id, pubTtl[sk.id] ?? "7d"); }}>I understand, make it public</button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div style={s.rowMeta}>🔒 {blockReason}</div>
-                    )}
-                  </div>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <button style={s.chipOff} onClick={() => setInspect({ id: sk.id, name: sk.name, description: sk.description, kind: sk.kind, type: sk.type, manifest: sk.manifest, body: sk.body })}>View</button>
-                  <button style={s.chipOff} onClick={() => setEditor({ mode: "edit", initial: { id: sk.id, name: sk.name, description: sk.description, kind: sk.kind, type: sk.type, manifest: sk.manifest, body: sk.body } })}>Edit</button>
-                  <button style={s.endBtn} disabled={busy === `skilldel:${sk.id}`} onClick={() => deleteSkill(sk.id, sk.name)}>Delete</button>
-                </div>
-              </div>
-            );
-          })}
-        </section>
-
-        {/* Shared with you — tools a friend shared; copyable templates or friend-run tools */}
-        {sharedWithMe.length > 0 && (
-          <section style={s.card}>
-            <h2 style={s.h2}>🎁 Shared with you</h2>
-            <p style={s.soon}>Tools your friends shared directly with you. A <strong>copyable tool (template)</strong> gets added to your own agent when you choose &ldquo;Send to my agent.&rdquo; A <strong>friend-run tool (RPC)</strong> stays on their side; &ldquo;Ask their agent&rdquo; starts an Inbox conversation to use it.</p>
-            {sharedWithMe.map((sk) => {
-              const isTemplate = sk.kind === "template";
-              const isLink = (sk.type || "skill") === "link";
-              return (
-                <div key={sk.id}>
-                  <div style={s.skillCard}>
-                    <span style={s.skillIcon}>{isLink ? "↗" : isTemplate ? "🧩" : "⚡"}</span>
-                    <div style={s.rowMain}>
-                      <div style={s.skillName}>{sk.name}</div>
-                      {isLink && (
-                        <div style={{ ...s.rowMeta, marginBottom: 2 }}>
-                          <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(122,77,0,0.12)", color: "#7a4d00" }} title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</span>
-                        </div>
-                      )}
-                      {sk.description && <div style={s.skillDesc}>{sk.description}</div>}
-                      <div style={s.skillBy}>Shared by <strong>{sk.owner_handle.replace(/@bc$/, "")}&rsquo;s agent</strong> <span style={s.rowMeta}>({sk.owner_handle})</span></div>
-                    </div>
-                    {isTemplate
-                      ? (sentToAgent[sk.id]
-                          ? <span style={s.okTag}>✓ sent to your agent</span>
-                          : <button style={s.skillBtn} disabled={busy === `send:${sk.id}`} onClick={() => { if (isLink && linkWarnFor?.id !== sk.id) { setLinkWarnFor({ id: sk.id, action: "send" }); return; } setLinkWarnFor(null); sendToMyAgent(sk); }}>{busy === `send:${sk.id}` ? "…" : "Send to my agent"}</button>)
-                      : <button style={s.skillBtn} onClick={() => askFriend(sk.owner_handle, `use your “${sk.name}” tool: `)}>Ask their agent</button>}
-                  </div>
-                  {isLink && linkWarnFor?.id === sk.id && linkWarnFor.action === "send" && (
-                    <div style={{ ...s.rowMeta, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00" }}>
-                      <div style={{ fontWeight: 700, marginBottom: 4 }}>↗ {LINK_BADGE_TEXT}</div>
-                      <strong>{LINK_HUMAN_WARNING_LEAD}</strong>{LINK_HUMAN_WARNING_REST}
-                      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                        <button style={s.chipOff} onClick={() => setLinkWarnFor(null)}>Cancel</button>
-                        <button style={s.chipOn} onClick={() => { setLinkWarnFor(null); sendToMyAgent(sk); }}>I understand, send it</button>
-                      </div>
-                    </div>
-                  )}
-                  {installPrompt[sk.id] && (
-                    <div style={{ ...s.reveal, marginTop: 8 }}>
-                      <p style={s.revealLabel}>✅ Queued in your Inbox — your agent picks this up on its next check (~10 min). Don&apos;t want to wait? Paste this into your agent to add it now:</p>
-                      <pre style={s.promptPre}>{installPrompt[sk.id]}</pre>
-                      <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <button style={s.btn} onClick={() => { navigator.clipboard?.writeText(installPrompt[sk.id]).catch(() => {}); setInstallCopiedId(sk.id); setTimeout(() => setInstallCopiedId(null), 1500); }}>{installCopiedId === sk.id ? "✓ Copied" : "Copy prompt"}</button>
-                        <button style={s.signOut} onClick={() => setInstallPrompt((m) => { const n = { ...m }; delete n[sk.id]; return n; })}>Done</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </section>
         )}
+      </div>
 
-        {/* Discoverable in your circle — grouped & personified per friend */}
-        {discover.length > 0 && (
-          <section style={s.card}>
-            <h2 style={s.h2}>✨ Tools in your circle</h2>
-            <p style={s.soon}>Useful things your friends&rsquo; agents can do. Ask a friend to share one and it shows up under &ldquo;Shared with you&rdquo; above.</p>
-            {Object.entries(discover.reduce<Record<string, DiscoverSkill[]>>((acc, d) => { (acc[d.owner_handle] ??= []).push(d); return acc; }, {})).map(([owner, items]) => (
-              <div key={owner} style={{ marginTop: 14 }}>
-                <p style={s.circleHead}><strong>{owner.replace(/@bc$/, "")}&rsquo;s agent</strong> has {items.length} tool{items.length === 1 ? "" : "s"} you can use</p>
-                {items.map((d) => {
-                  const isTemplate = d.kind === "template";
-                  const isLink = (d.type || "skill") === "link";
-                  return (
-                    <div key={d.id} style={s.skillCard}>
-                      <span style={s.skillIcon}>{isLink ? "↗" : isTemplate ? "🧩" : "⚡"}</span>
-                      <div style={s.rowMain}>
-                        <div style={s.skillName}>{d.name}</div>
-                        {isLink && (
-                          <div style={{ ...s.rowMeta, marginBottom: 2 }}>
-                            <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(122,77,0,0.12)", color: "#7a4d00" }} title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</span>
-                          </div>
-                        )}
-                        {d.description && <div style={s.skillDesc}>{d.description}</div>}
-                      </div>
-                      <button style={s.skillBtnGhost} onClick={() => askFriend(d.owner_handle, isTemplate ? `share your “${d.name}” tool with me` : `use your “${d.name}” tool: `)}>{isTemplate ? "Ask to share" : "Ask their agent"}</button>
-                    </div>
-                  );
-                })}
+      <div className="ds-card" style={{ marginBottom: 14 }}>
+        <h2 className="ds-cardh">Your API key</h2>
+        {newKey ? (
+          <div className="ds-call acc">
+            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>🔑 Your new key — copy it now, it won&apos;t be shown again:</p>
+            <pre className="ds-pre">{newKey}</pre>
+            <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+              <button className="ds-btn" onClick={() => navigator.clipboard?.writeText(newKey).catch(() => {})}>Copy</button>
+              <button className="ds-btn ghost" onClick={() => { setNewKey(null); window.location.reload(); }}>Done</button>
+            </div>
+            <p className="ds-fine" style={{ marginTop: 8 }}>Give this to your agent (replace the old key). The previous key no longer works.</p>
+          </div>
+        ) : !showDevKey ? (
+          <p className="ds-fine">Advanced — most people never need this. <button className="ds-link" onClick={() => setShowDevKey(true)}>Show developer key</button></p>
+        ) : (
+          <>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <code className="ds-mono" style={{ background: "#f8fafc", border: "1px solid var(--ds-line)", borderRadius: 8, padding: "6px 10px", fontSize: 13 }}>{m.api_key_masked ?? "—"}</code>
+              <button className="ds-btn ghost" onClick={rotateKey} disabled={busy === "key" || demoMode}>{busy === "key" ? "Rotating…" : "Rotate key"}</button>
+            </div>
+            <p className="ds-fine" style={{ marginTop: 8 }}>Last used {lastUsed}. We never show the full key here — only the last 4 characters. <button className="ds-link" onClick={() => setShowDevKey(false)}>Hide</button></p>
+          </>
+        )}
+      </div>
+
+      <div className="ds-card">
+        <h2 className="ds-cardh">Account activity</h2>
+        {!showAudit ? (
+          <button className="ds-btn ghost" onClick={() => { setShowAudit(true); loadAudit(); }} disabled={demoMode}>Show recent activity</button>
+        ) : (
+          <>
+            {audit.length === 0 && <p className="ds-fine">No recent activity.</p>}
+            {audit.map((e, i) => (
+              <div className="ds-item" key={i}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5 }}>{e.label}{e.detail && (e.detail.peer || e.detail.to) ? <span className="ds-imeta"> · {String(e.detail.peer ?? e.detail.to)}</span> : null}</div>
+                  <div className="ds-imeta">{new Date(e.at).toLocaleString()}</div>
+                </div>
               </div>
             ))}
-          </section>
+            <p className="ds-fine" style={{ marginTop: 8 }}>This is a record of actions on your own account — sign-ins, key changes, trust, and collaboration requests. Only you can see it.</p>
+          </>
         )}
+      </div>
+    </>
+  );
 
-        </>)}
+  /* -------------------------------- render -------------------------------- */
 
-        {nav === "account" && (<>
-        {/* Activity (audit log) */}
-        <section style={s.card}>
-          <h2 style={s.h2}>Account activity</h2>
-          {!showAudit ? (
-            <button style={s.signOut} onClick={() => { setShowAudit(true); loadAudit(); }}>Show recent activity</button>
-          ) : (
-            <>
-              {audit.length === 0 && <p style={s.muted}>No recent activity.</p>}
-              {audit.map((e, i) => (
-                <div key={i} style={s.row}>
-                  <div style={s.rowMain}>
-                    {e.label}
-                    {e.detail && (e.detail.peer || e.detail.to) ? <span style={s.rowMeta}> · {String(e.detail.peer ?? e.detail.to)}</span> : null}
-                    <div style={s.rowMeta}>{new Date(e.at).toLocaleString()}</div>
-                  </div>
-                </div>
-              ))}
-              <p style={s.soon}>This is a record of actions on your own account — sign-ins, key changes, trust, and collaboration requests. Only you can see it.</p>
-            </>
-          )}
-        </section>
-
-        </>)}
-
-            <p style={s.footerNav}>
-              <a href="/faq" style={s.footLink}>FAQ</a> · <a href="/commands" style={s.footLink}>Commands</a> · <a href="/lessons" style={s.footLink}>Community lessons</a> · <a href="/" style={s.footLink}>Home</a>
-            </p>
-          </main>
-        </div>
+  return (
+    <AppShell {...shellProps}>
+      <div className="ds-wrap">
+        {nav === "overview" && overview}
+        {nav === "messages" && inboxPane}
+        {nav === "friends" && friendsPane}
+        {nav === "skills" && toolkitPane}
+        {nav === "agents" && agentsPane}
+        {nav === "settings" && settingsPane}
+        <p className="ds-fine" style={{ marginTop: 28, textAlign: "center" }}>
+          <a href="/faq" style={{ color: "var(--ds-mut)" }}>FAQ</a> · <a href="/commands" style={{ color: "var(--ds-mut)" }}>Commands</a> · <a href="/lessons" style={{ color: "var(--ds-mut)" }}>Community lessons</a> · <a href="/" style={{ color: "var(--ds-mut)" }}>Home</a>
+        </p>
       </div>
 
       {editor && (
@@ -1515,112 +1645,6 @@ export default function AccountPage() {
         />
       )}
       {inspect && <ArtifactInspector artifact={inspect} onClose={() => setInspect(null)} />}
-    </div>
+    </AppShell>
   );
 }
-
-const s = {
-  page: { minHeight: "100vh", background: "#f6f8fb", fontFamily: "system-ui, -apple-system, sans-serif" } as const,
-  wrap: { maxWidth: 1080, margin: "0 auto", padding: "22px 20px 48px" } as const,
-  headRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 20 } as const,
-  h1: { fontSize: 26, fontWeight: 700, color: "#0f172a", margin: 0 } as const,
-  sub: { margin: "4px 0 0", color: "#64748b", fontSize: 14 } as const,
-  // top bar
-  topbar: { position: "sticky", top: 0, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 28px", background: "rgba(255,255,255,0.85)", backdropFilter: "blur(8px)", borderBottom: "1px solid #e6ebf1" } as const,
-  brand: { fontSize: 16, fontWeight: 800, color: "#0f766e", textDecoration: "none", letterSpacing: "-0.01em" } as const,
-  topRight: { display: "flex", alignItems: "center", gap: 12 } as const,
-  avatar: { width: 34, height: 34, borderRadius: "50%", background: "linear-gradient(135deg,#0f766e,#0d9488)", color: "#fff", fontWeight: 700, fontSize: 15, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } as const,
-  topWho: { lineHeight: 1.2 } as const,
-  topHandle: { fontSize: 13.5, fontWeight: 700, color: "#0f172a" } as const,
-  topEmail: { fontSize: 12, color: "#94a3b8" } as const,
-  // sidebar
-  sidebar: {} as const,
-  navItem: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid transparent", background: "none", color: "#475569", fontWeight: 600, fontSize: 14, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" } as const,
-  navItemActive: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: "1px solid #cdeee8", background: "#e9f7f4", color: "#0f766e", fontWeight: 700, fontSize: 14, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" } as const,
-  navIcon: { fontSize: 15, width: 18, textAlign: "center" } as const,
-  moreMenu: { position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 30, minWidth: 180, display: "flex", flexDirection: "column", gap: 2, background: "#fff", border: "1px solid #e6ebf1", borderRadius: 10, padding: 6, boxShadow: "0 8px 24px rgba(15,23,42,0.12)" } as const,
-  pageTitle: { fontSize: 24, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.02em", margin: "0 0 16px" } as const,
-  h2: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "0 0 12px" } as const,
-  h3: { fontSize: 13, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", margin: "0 0 8px" } as const,
-  unreadBadge: { display: "inline-block", marginLeft: 8, background: "#fee2e2", color: "#b91c1c", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999 } as const,
-  liveTag: { display: "inline-block", marginLeft: 8, color: "#dc2626", fontSize: 11, fontWeight: 700 } as const,
-  card: { background: "#fff", border: "1px solid #e8edf3", borderRadius: 16, padding: 24, marginBottom: 16, boxShadow: "0 1px 2px rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.03)" } as const,
-  lead: { fontSize: 15, color: "#475569", lineHeight: 1.6, margin: "0 0 6px" } as const,
-  soon: { fontSize: 13, color: "#94a3b8", fontStyle: "italic", margin: "6px 0 0" } as const,
-  keyRow: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } as const,
-  key: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 15, background: "#f1f5f9", padding: "8px 12px", borderRadius: 8, color: "#0f172a" } as const,
-  reveal: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 10, padding: 14 } as const,
-  revealLabel: { fontSize: 14, fontWeight: 600, color: "#0f766e", margin: "0 0 8px" } as const,
-  revealKey: { display: "block", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 14, background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "10px 12px", wordBreak: "break-all", color: "#0f172a" } as const,
-  meta: { fontSize: 13, color: "#94a3b8", margin: "10px 0 0" } as const,
-  row: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid #f1f5f9" } as const,
-  rowMain: { flex: 1, minWidth: 0 } as const,
-  rowMeta: { fontSize: 12, color: "#94a3b8", marginTop: 2 } as const,
-  goal: { fontSize: 13, color: "#475569", marginTop: 2 } as const,
-  roleTag: { fontSize: 11, fontWeight: 700, color: "#6b21a8", background: "#faf5ff", padding: "1px 7px", borderRadius: 6, textTransform: "uppercase" } as const,
-  agentVia: { fontSize: 11.5, fontWeight: 600, color: "#0f766e", background: "#ecfeff", border: "1px solid #cffafe", padding: "1px 8px", borderRadius: 999 } as const,
-  okTag: { fontSize: 11, fontWeight: 700, color: "#0f766e", background: "#f0fdfa", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
-  peerHandle: { fontFamily: "ui-monospace, Menlo, monospace", color: "#0f172a" } as const,
-  peerHandleBtn: { background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", color: "inherit" } as const,
-  peerHint: { fontSize: 12.5, color: "#475569", marginTop: 6, lineHeight: 1.5 } as const,
-  peerHintCode: { fontFamily: "ui-monospace, Menlo, monospace", background: "#f1f5f9", padding: "1px 6px", borderRadius: 5, color: "#0f172a" } as const,
-  pendTag: { fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fffbeb", padding: "1px 7px", borderRadius: 6, marginLeft: 6 } as const,
-  chipOn: { fontSize: 12, fontWeight: 600, color: "#fff", background: "#0f766e", border: "none", borderRadius: 999, padding: "3px 10px", cursor: "pointer" } as const,
-  chipOff: { fontSize: 12, fontWeight: 600, color: "#0f766e", background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 999, padding: "3px 10px", cursor: "pointer" } as const,
-  dot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 } as const,
-  smallLink: { fontSize: 13, color: "#0f766e", textDecoration: "none", flexShrink: 0 } as const,
-  smallLink2: { fontSize: 13, color: "#0f766e", background: "none", border: "none", cursor: "pointer", flexShrink: 0, padding: 0, fontWeight: 600 } as const,
-  wakeBox: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 10, padding: "12px 14px", margin: "4px 0 12px 19px" } as const,
-  wakeLabel: { fontSize: 13, fontWeight: 600, color: "#0f766e", margin: "0 0 8px" } as const,
-  wakePre: { background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "ui-monospace, Menlo, monospace", color: "#0f172a", margin: "0 0 8px" } as const,
-  endBtn: { background: "#fff", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 8, padding: "5px 12px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0 } as const,
-  settingRow: { display: "flex", alignItems: "center", gap: 10, fontSize: 15, color: "#334155" } as const,
-  signOut: { background: "#fff", color: "#475569", border: "1px solid #cbd5e1", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", flexShrink: 0 } as const,
-  btn: { background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer", boxShadow: "0 1px 2px rgba(15,118,110,0.25)" } as const,
-  btnLink: { display: "inline-block", background: "#0f172a", color: "#fff", borderRadius: 10, padding: "11px 22px", fontWeight: 600, fontSize: 15, textDecoration: "none", marginTop: 8 } as const,
-  muted: { color: "#94a3b8", fontSize: 14 } as const,
-  err: { color: "#b91c1c", fontSize: 15 } as const,
-  footerNav: { textAlign: "center", color: "#94a3b8", fontSize: 14, margin: "24px 0 8px" } as const,
-  footLink: { color: "#64748b", textDecoration: "none" } as const,
-  fieldLabel: { display: "block", fontSize: 13, fontWeight: 600, color: "#475569", margin: "12px 0 4px" } as const,
-  input: { width: "100%", boxSizing: "border-box", fontSize: 15, padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 9 } as const,
-  select: { fontSize: 15, padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 9, background: "#fff" } as const,
-  fieldRow: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" } as const,
-  scopeNote: { fontSize: 14, color: "#334155", margin: "2px 0 0", fontFamily: "ui-monospace, Menlo, monospace" } as const,
-  linkBtn: { background: "none", border: "none", color: "#0f766e", cursor: "pointer", fontSize: 12, textDecoration: "underline", padding: 0, marginLeft: 6 } as const,
-  promptPane: { background: "#f0fdfa", border: "1px solid #99f6e4", borderRadius: 10, padding: "12px 14px", marginBottom: 12 } as const,
-  connectBox: { marginTop: 18, paddingTop: 16, borderTop: "1px solid #e2e8f0" } as const,
-  exMeter: { height: 4, background: "#e2e8f0", borderRadius: 999, overflow: "hidden", marginTop: 10 } as const,
-  exMeterFill: { height: "100%", background: "#0f766e", transition: "width 1s linear" } as const,
-  promptPre: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, lineHeight: 1.55, color: "#0f172a", background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "10px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 } as const,
-  onboard: { background: "linear-gradient(135deg,#ecfeff,#f0fdfa)", border: "1px solid #99f6e4", borderRadius: 14, padding: 20, marginBottom: 14 } as const,
-  onboardH: { fontSize: 16, fontWeight: 700, color: "#0f172a", margin: "0 0 14px" } as const,
-  checkRow: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "6px 0" } as const,
-  checkBox: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 6, border: "2px solid #cbd5e1", background: "#fff", color: "#fff", fontSize: 13, fontWeight: 800, flexShrink: 0 } as const,
-  checkDone: { background: "#0f766e", borderColor: "#0f766e" } as const,
-  checkLbl: { fontSize: 14, color: "#0f172a", fontWeight: 600 } as const,
-  checkLblDone: { fontSize: 14, color: "#64748b", textDecoration: "line-through" } as const,
-  onboardBtn: { marginLeft: "auto", background: "#0f766e", color: "#fff", border: "none", borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" } as const,
-  skillCard: { display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 0", borderTop: "1px solid #f1f5f9" } as const,
-  skillIcon: { fontSize: 22, lineHeight: "26px", flexShrink: 0 } as const,
-  skillName: { fontSize: 15, fontWeight: 700, color: "#0f172a" } as const,
-  skillDesc: { fontSize: 13.5, color: "#334155", margin: "3px 0 0", lineHeight: 1.5 } as const,
-  skillBy: { fontSize: 12.5, color: "#64748b", marginTop: 6 } as const,
-  circleHead: { fontSize: 14, color: "#0f172a", margin: "0 0 2px" } as const,
-  skillBtn: { alignSelf: "center", background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
-  skillBtnGhost: { alignSelf: "center", background: "#fff", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" } as const,
-  statusPill: { fontSize: 11, fontWeight: 700, letterSpacing: 0.2, padding: "1px 8px", borderRadius: 999, border: "1px solid", textTransform: "uppercase" } as const,
-  turnBadge: { fontSize: 11.5, fontWeight: 700, padding: "2px 9px", borderRadius: 999, border: "1px solid" } as const,
-  turnNext: { fontSize: 12.5, color: "#64748b", margin: "5px 0 0", lineHeight: 1.45 } as const,
-  approvals: { background: "#fff", border: "1px solid #fcd34d", borderLeft: "4px solid #f59e0b", borderRadius: 14, padding: "18px 22px", marginBottom: 16, boxShadow: "0 1px 3px rgba(180,83,9,0.06)" } as const,
-  approvalsH: { fontSize: 16, fontWeight: 800, color: "#92400e", margin: "0 0 12px" } as const,
-  approvalRow: { display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 0", borderTop: "1px solid #fef3c7" } as const,
-  approvalText: { fontSize: 14, color: "#0f172a", lineHeight: 1.45 } as const,
-  approvalsNote: { fontSize: 12, color: "#a16207", margin: "10px 0 0" } as const,
-  empty: { textAlign: "center", padding: "26px 16px", color: "#64748b" } as const,
-  emptyIcon: { fontSize: 30, display: "block", marginBottom: 8, opacity: 0.85 } as const,
-  emptyText: { fontSize: 14, color: "#64748b", margin: "0 0 14px", lineHeight: 1.5 } as const,
-  btnGhost: { background: "#fff", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer" } as const,
-  staleNote: { fontSize: 12.5, color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "6px 10px", marginTop: 8, maxWidth: 560 } as const,
-  checkVerdict: { fontSize: 12.5, color: "#334155", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "6px 10px", marginTop: 8, maxWidth: 560, lineHeight: 1.5 } as const,
-};

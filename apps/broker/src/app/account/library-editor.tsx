@@ -71,13 +71,13 @@ function validateUrlClientSide(raw: string): string | null {
   return null;
 }
 
-const sLabel: React.CSSProperties = { display: "block", fontSize: 13, fontWeight: 600, margin: "12px 0 4px" };
-const sInput: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border, #ccc)", font: "inherit", background: "var(--bg, #fff)", color: "inherit" };
-const sMono: React.CSSProperties = { ...sInput, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 13 };
-const sHint: React.CSSProperties = { fontSize: 12, color: "#888", marginTop: 4 };
-const sBtn: React.CSSProperties = { font: "inherit", fontWeight: 600, padding: "9px 16px", borderRadius: 8, border: 0, background: "#4351e8", color: "#fff", cursor: "pointer" };
-const sBtnGhost: React.CSSProperties = { ...sBtn, background: "transparent", color: "inherit", border: "1px solid var(--border,#ccc)" };
-const sWarnBlock: React.CSSProperties = { marginTop: 14, padding: "12px 14px", borderRadius: 10, background: "#fff7e6", border: "1px solid #ffe1a3", color: "#7a4d00", fontSize: 13, lineHeight: 1.5 };
+const sLabel: React.CSSProperties = { display: "block", fontSize: 12.5, fontWeight: 600, color: "#687385", margin: "12px 0 5px" };
+const sInput: React.CSSProperties = { width: "100%", boxSizing: "border-box", padding: "8px 12px", borderRadius: 8, border: "1px solid #e3e8ee", font: "inherit", background: "#fff", color: "#30313d" };
+const sMono: React.CSSProperties = { ...sInput, fontFamily: "ui-monospace, 'Cascadia Code', Consolas, Menlo, monospace", fontSize: 13 };
+const sHint: React.CSSProperties = { fontSize: 12, color: "#8792a2", marginTop: 4 };
+const sBtn: React.CSSProperties = { font: "inherit", fontWeight: 600, fontSize: 13.5, padding: "8px 16px", borderRadius: 8, border: 0, background: "#635bff", color: "#fff", cursor: "pointer" };
+const sBtnGhost: React.CSSProperties = { ...sBtn, background: "#fff", color: "#30313d", fontWeight: 500, border: "1px solid #e3e8ee" };
+const sWarnBlock: React.CSSProperties = { marginTop: 14, padding: "12px 14px", borderRadius: 10, background: "#fff7ed", border: "1px solid #fed7aa", color: "#c2410c", fontSize: 13, lineHeight: 1.5 };
 
 export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "create" | "edit"; initial?: EditorArtifact; onClose: () => void; onSaved: (msg: string) => void }) {
   const initType = (initial?.type as ArtType) || "prompt";
@@ -150,8 +150,8 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
     }
   };
 
-  const overlay: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "5vh 16px", zIndex: 1000, overflowY: "auto" };
-  const panel: React.CSSProperties = { width: "100%", maxWidth: 560, background: "var(--card-bg, #fff)", color: "inherit", borderRadius: 14, padding: "22px 24px", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" };
+  const overlay: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(22,24,35,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "5vh 16px", zIndex: 1000, overflowY: "auto" };
+  const panel: React.CSSProperties = { width: "100%", maxWidth: 560, background: "#fff", color: "#30313d", border: "1px solid #e3e8ee", borderRadius: 14, padding: "22px 24px", boxShadow: "0 12px 40px rgba(16,24,40,0.16)" };
 
   return (
     <div style={overlay} onClick={onClose}>
@@ -164,27 +164,27 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
         {/* Type picker (create only) */}
         {!type ? (
           <div style={{ marginTop: 14 }}>
-            <p style={{ color: "#888", fontSize: 14 }}>What do you want to add?</p>
+            <p style={{ color: "#687385", fontSize: 14 }}>What do you want to add?</p>
             {TYPES.map((t) => (
               <button key={t.key} onClick={() => { setType(t.key); if (t.key === "scheduled_task") setBody(""); }}
-                style={{ display: "block", width: "100%", textAlign: "left", margin: "8px 0", padding: "12px 14px", borderRadius: 10, border: "1px solid var(--border,#ddd)", background: "transparent", color: "inherit", cursor: "pointer" }}>
+                style={{ display: "block", width: "100%", textAlign: "left", margin: "8px 0", padding: "12px 14px", borderRadius: 10, border: "1px solid #e3e8ee", background: "#fff", color: "inherit", cursor: "pointer", font: "inherit" }}>
                 <div style={{ fontWeight: 700 }}>{t.icon} {t.label}</div>
-                <div style={{ fontSize: 13, color: "#888", marginTop: 2 }}>{t.blurb}</div>
+                <div style={{ fontSize: 13, color: "#687385", marginTop: 2 }}>{t.blurb}</div>
               </button>
             ))}
           </div>
         ) : type === "link" ? (
           <div>
-            <div style={{ fontSize: 13, color: "#888", margin: "10px 0 2px" }}>↗ Link{mode === "create" && <button onClick={() => setType(null)} style={{ ...sBtnGhost, padding: "2px 8px", marginLeft: 8, fontSize: 12 }}>change</button>}</div>
+            <div style={{ fontSize: 13, color: "#687385", margin: "10px 0 2px" }}>↗ Link{mode === "create" && <button onClick={() => setType(null)} style={{ ...sBtnGhost, padding: "2px 8px", marginLeft: 8, fontSize: 12 }}>change</button>}</div>
 
             <label style={sLabel}>Save a link lesson</label>
             <input style={sInput} value={linkUrl} onChange={(e) => { setLinkUrl(e.target.value); if (!linkTitleTouched) setLinkTitle(""); }} placeholder="https://example.com/some-useful-thing" />
             <div style={sHint}>{cleanDomain(linkUrl) ? `Domain: ${cleanDomain(linkUrl)}` : "Paste any http:// or https:// url."}</div>
 
-            <label style={sLabel}>Title <span style={{ fontWeight: 400, color: "#aaa" }}>(optional — derived from the url if left blank)</span></label>
+            <label style={sLabel}>Title <span style={{ fontWeight: 400, color: "#8792a2" }}>(optional — derived from the url if left blank)</span></label>
             <input style={sInput} value={linkTitle} onChange={(e) => { setLinkTitle(e.target.value); setLinkTitleTouched(true); }} placeholder={linkUrl ? deriveTitleFromUrl(linkUrl) : "A short title"} />
 
-            <label style={sLabel}>Notes <span style={{ fontWeight: 400, color: "#aaa" }}>(optional)</span></label>
+            <label style={sLabel}>Notes <span style={{ fontWeight: 400, color: "#8792a2" }}>(optional)</span></label>
             <textarea style={{ ...sInput, minHeight: 90, resize: "vertical" }} value={linkNotes} onChange={(e) => setLinkNotes(e.target.value)} placeholder="Why this is worth saving, what it's for…" maxLength={2000} />
 
             <div style={sWarnBlock}>
@@ -196,7 +196,7 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
               </label>
             </div>
 
-            {err && <div style={{ marginTop: 14, padding: "9px 12px", borderRadius: 8, background: "rgba(192,57,43,0.1)", color: "#c0392b", fontSize: 13 }}>{err}</div>}
+            {err && <div style={{ marginTop: 14, padding: "9px 12px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 13 }}>{err}</div>}
 
             <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "flex-end" }}>
               <button style={sBtnGhost} onClick={onClose} disabled={busy}>Cancel</button>
@@ -206,18 +206,18 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
           </div>
         ) : (
           <div>
-            <div style={{ fontSize: 13, color: "#888", margin: "10px 0 2px" }}>{TYPES.find((t) => t.key === type)?.icon} {TYPES.find((t) => t.key === type)?.label}{mode === "create" && <button onClick={() => setType(null)} style={{ ...sBtnGhost, padding: "2px 8px", marginLeft: 8, fontSize: 12 }}>change</button>}</div>
+            <div style={{ fontSize: 13, color: "#687385", margin: "10px 0 2px" }}>{TYPES.find((t) => t.key === type)?.icon} {TYPES.find((t) => t.key === type)?.label}{mode === "create" && <button onClick={() => setType(null)} style={{ ...sBtnGhost, padding: "2px 8px", marginLeft: 8, fontSize: 12 }}>change</button>}</div>
 
             <label style={sLabel}>{type === "scheduled_task" ? "Task name" : "Title"}</label>
             <input style={sInput} value={name} onChange={(e) => setName(e.target.value)} placeholder={type === "prompt" ? "Polite rewrite" : type === "scheduled_task" ? "Morning inbox digest" : "My skill"} />
 
-            <label style={sLabel}>Description <span style={{ fontWeight: 400, color: "#aaa" }}>(optional)</span></label>
+            <label style={sLabel}>Description <span style={{ fontWeight: 400, color: "#8792a2" }}>(optional)</span></label>
             <input style={sInput} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="One line on what it's for" />
 
             {type === "scheduled_task" && (<>
               <label style={sLabel}>Schedule (cron)</label>
               <input style={sMono} value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 9 * * 1" />
-              <div style={{ ...sHint, color: cronDesc.ok ? "#3a8a3a" : "#c0392b" }}>{cronDesc.ok ? "🗓 " : "⚠ "}{cronDesc.text}</div>
+              <div style={{ ...sHint, color: cronDesc.ok ? "#059669" : "#b91c1c" }}>{cronDesc.ok ? "🗓 " : "⚠ "}{cronDesc.text}</div>
             </>)}
 
             <label style={sLabel}>{type === "skill" ? "SKILL.md content" : type === "scheduled_task" ? "What should it do? (the prompt that runs)" : "Prompt"}</label>
@@ -225,26 +225,26 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
               placeholder={type === "skill" ? "---\nname: my-skill\n---\n\n# My skill\n..." : type === "scheduled_task" ? "Summarize my unread email and surface anything urgent." : "Rewrite the following text to be warm and concise:"} />
 
             {type === "prompt" && (<>
-              <label style={sLabel}>Tags <span style={{ fontWeight: 400, color: "#aaa" }}>(comma-separated, optional)</span></label>
+              <label style={sLabel}>Tags <span style={{ fontWeight: 400, color: "#8792a2" }}>(comma-separated, optional)</span></label>
               <input style={sInput} value={tags} onChange={(e) => setTags(e.target.value)} placeholder="writing, email" />
-              <label style={sLabel}>When to use it <span style={{ fontWeight: 400, color: "#aaa" }}>(optional)</span></label>
+              <label style={sLabel}>When to use it <span style={{ fontWeight: 400, color: "#8792a2" }}>(optional)</span></label>
               <input style={sInput} value={invocation} onChange={(e) => setInvocation(e.target.value)} placeholder="When I ask you to make something more polite" />
             </>)}
 
             {type === "scheduled_task" && (
               <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 14, fontSize: 13 }}>
                 <input type="checkbox" checked={shareAllowed} onChange={(e) => setShareAllowed(e.target.checked)} style={{ marginTop: 3 }} />
-                <span>Allow public sharing of this scheduled task. <span style={{ color: "#888" }}>Off by default — a public link would install this recurring job on a stranger's agent, so it's opt-in.</span></span>
+                <span>Allow public sharing of this scheduled task. <span style={{ color: "#687385" }}>Off by default — a public link would install this recurring job on a stranger's agent, so it's opt-in.</span></span>
               </label>
             )}
 
             {type === "skill" && (<>
-              <label style={sLabel}>Full bundle URL <span style={{ fontWeight: 400, color: "#aaa" }}>(optional)</span></label>
+              <label style={sLabel}>Full bundle URL <span style={{ fontWeight: 400, color: "#8792a2" }}>(optional)</span></label>
               <input style={sInput} value={bundleUrl} onChange={(e) => setBundleUrl(e.target.value)} placeholder="https://… where the full skill bundle can be fetched" />
               <div style={sHint}>Inline SKILL.md is enough for most skills. Use this if the skill needs extra files.</div>
             </>)}
 
-            {err && <div style={{ marginTop: 14, padding: "9px 12px", borderRadius: 8, background: "rgba(192,57,43,0.1)", color: "#c0392b", fontSize: 13 }}>{err}</div>}
+            {err && <div style={{ marginTop: 14, padding: "9px 12px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 13 }}>{err}</div>}
 
             <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "flex-end" }}>
               <button style={sBtnGhost} onClick={onClose} disabled={busy}>Cancel</button>
@@ -262,9 +262,9 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
 export function ArtifactInspector({ artifact, onClose }: { artifact: EditorArtifact; onClose: () => void }) {
   const m = (artifact.manifest ?? {}) as Record<string, unknown>;
   const type = artifact.type || "skill";
-  const overlay: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "5vh 16px", zIndex: 1000, overflowY: "auto" };
-  const panel: React.CSSProperties = { width: "100%", maxWidth: 560, background: "var(--card-bg, #fff)", color: "inherit", borderRadius: 14, padding: "22px 24px", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" };
-  const pre: React.CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word", background: "rgba(0,0,0,0.05)", padding: 12, borderRadius: 8, fontSize: 13, fontFamily: "ui-monospace, monospace", maxHeight: 320, overflowY: "auto" };
+  const overlay: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(22,24,35,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "5vh 16px", zIndex: 1000, overflowY: "auto" };
+  const panel: React.CSSProperties = { width: "100%", maxWidth: 560, background: "#fff", color: "#30313d", border: "1px solid #e3e8ee", borderRadius: 14, padding: "22px 24px", boxShadow: "0 12px 40px rgba(16,24,40,0.16)" };
+  const pre: React.CSSProperties = { whiteSpace: "pre-wrap", wordBreak: "break-word", background: "#f6f8fa", border: "1px solid #e3e8ee", color: "#30313d", padding: 12, borderRadius: 8, fontSize: 13, fontFamily: "ui-monospace, 'Cascadia Code', Consolas, Menlo, monospace", maxHeight: 320, overflowY: "auto" };
   return (
     <div style={overlay} onClick={onClose}>
       <div style={panel} onClick={(e) => e.stopPropagation()}>
@@ -272,7 +272,7 @@ export function ArtifactInspector({ artifact, onClose }: { artifact: EditorArtif
           <h2 style={{ margin: 0, fontSize: 20 }}>{artifact.name}</h2>
           <button onClick={onClose} aria-label="Close" style={{ ...sBtnGhost, padding: "4px 10px" }}>✕</button>
         </div>
-        <div style={{ fontSize: 13, color: "#888", marginTop: 4 }}>{type === "scheduled_task" ? "⏰ Scheduled Task" : type === "prompt" ? "💬 Prompt" : type === "link" ? "↗ Link" : "📜 Skill"}</div>
+        <div style={{ fontSize: 13, color: "#687385", marginTop: 4 }}>{type === "scheduled_task" ? "⏰ Scheduled Task" : type === "prompt" ? "💬 Prompt" : type === "link" ? "↗ Link" : "📜 Skill"}</div>
         {artifact.description && <p style={{ marginTop: 10 }}>{artifact.description}</p>}
         {type === "scheduled_task" && typeof m.cron === "string" && <p style={{ fontSize: 13 }}><strong>Schedule:</strong> <code>{m.cron}</code> — {describeCron(m.cron).text}</p>}
         {type === "prompt" && Array.isArray(m.tags) && (m.tags as string[]).length > 0 && <p style={{ fontSize: 13 }}><strong>Tags:</strong> {(m.tags as string[]).join(", ")}</p>}

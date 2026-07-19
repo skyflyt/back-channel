@@ -4,6 +4,8 @@
 
 import { useEffect, useState } from "react";
 
+// Intentionally NOT prod-gated: this page exists to test hydration under the real
+// production server (server.mjs). It renders no data and is deleted with the branch work.
 export default function HydrationCanary() {
   const [n, setN] = useState(0);
   const [mounted, setMounted] = useState(false);

@@ -219,7 +219,7 @@ export function BrowserAccessSettings(props: { accountId: string; csrf: string; 
           <p style={s.muted}>You can read &amp; reply to your conversations from this site (decrypted locally in your browser). Open any conversation in <strong>Messages → Read here</strong>.</p>
           <p style={{ ...s.muted, margin: "0 0 6px" }}><strong>Your devices ({devices.length})</strong></p>
           {devices.map((d) => (
-            <div key={d.id} style={{ fontSize: 13, color: "#334155", padding: "3px 0" }}>🔑 {d.label || "Device"} <span style={{ color: "#94a3b8" }}>· {d.method}</span></div>
+            <div key={d.id} style={{ fontSize: 13, color: "#30313d", padding: "3px 0" }}>🔑 {d.label || "Device"} <span style={{ color: "#8792a2" }}>· {d.method}</span></div>
           ))}
           <p style={{ ...s.foot, marginTop: 10 }}>Using another device? If your passkeys sync (iCloud Keychain / Google), it just works — open this page there and unlock. Otherwise use your recovery phrase on that device. (Removing a device &amp; turning this off are coming soon.)</p>
         </>
@@ -235,20 +235,20 @@ export function BrowserAccessSettings(props: { accountId: string; csrf: string; 
 }
 
 const s = {
-  box: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 12, padding: 16, marginTop: 10 } as const,
-  h: { fontSize: 14.5, fontWeight: 700, color: "#0f172a", margin: "0 0 6px" } as const,
-  muted: { fontSize: 13, color: "#64748b", margin: "0 0 12px", lineHeight: 1.5 } as const,
+  box: { background: "#f6f8fa", border: "1px solid #e3e8ee", borderRadius: 12, padding: 16, marginTop: 10 } as const,
+  h: { fontSize: 14.5, fontWeight: 600, color: "#30313d", margin: "0 0 6px" } as const,
+  muted: { fontSize: 13, color: "#687385", margin: "0 0 12px", lineHeight: 1.55 } as const,
   err: { fontSize: 12.5, color: "#b91c1c", margin: "10px 0 0", lineHeight: 1.45 } as const,
   row: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 } as const,
-  btn: { background: "#fff", color: "#0f766e", border: "1px solid #99f6e4", borderRadius: 9, padding: "8px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" } as const,
-  btnPrimary: { background: "#0f766e", color: "#fff", border: "none", borderRadius: 9, padding: "8px 18px", fontWeight: 600, fontSize: 14, cursor: "pointer" } as const,
-  mnemonic: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13.5, lineHeight: 1.7, color: "#0f172a", background: "#fff", border: "1px solid #cbd5e1", borderRadius: 8, padding: "12px 14px", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 } as const,
+  btn: { background: "#fff", color: "#635bff", border: "1px solid #c7c2ff", borderRadius: 8, padding: "7px 14px", fontWeight: 600, fontSize: 13, cursor: "pointer" } as const,
+  btnPrimary: { background: "#635bff", color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontWeight: 600, fontSize: 13.5, cursor: "pointer" } as const,
+  mnemonic: { fontFamily: "ui-monospace, 'Cascadia Code', Consolas, Menlo, monospace", fontSize: 13.5, lineHeight: 1.7, color: "#30313d", background: "#fff", border: "1px solid #e3e8ee", borderRadius: 8, padding: "12px 14px", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 } as const,
   transcript: { maxHeight: 360, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: "4px 2px" } as const,
-  bubbleMe: { background: "#0f766e", color: "#fff", borderRadius: "12px 12px 4px 12px", padding: "8px 12px", maxWidth: "78%", fontSize: 14, lineHeight: 1.45 } as const,
-  bubblePeer: { background: "#fff", color: "#0f172a", border: "1px solid #e2e8f0", borderRadius: "12px 12px 12px 4px", padding: "8px 12px", maxWidth: "78%", fontSize: 14, lineHeight: 1.45 } as const,
+  bubbleMe: { background: "#635bff", color: "#fff", borderRadius: "12px 12px 4px 12px", padding: "8px 12px", maxWidth: "78%", fontSize: 14, lineHeight: 1.45 } as const,
+  bubblePeer: { background: "#fff", color: "#30313d", border: "1px solid #e3e8ee", borderRadius: "12px 12px 12px 4px", padding: "8px 12px", maxWidth: "78%", fontSize: 14, lineHeight: 1.45 } as const,
   bubbleWho: { fontSize: 11, fontWeight: 700, opacity: 0.7, marginBottom: 2 } as const,
   bubbleText: { whiteSpace: "pre-wrap", wordBreak: "break-word" } as const,
   composer: { display: "flex", gap: 8, alignItems: "flex-end", marginTop: 10 } as const,
-  textarea: { flex: 1, resize: "vertical", border: "1px solid #cbd5e1", borderRadius: 9, padding: "8px 10px", fontSize: 14, fontFamily: "inherit", minHeight: 38 } as const,
-  foot: { fontSize: 11.5, color: "#94a3b8", margin: "8px 0 0" } as const,
+  textarea: { flex: 1, resize: "vertical", border: "1px solid #e3e8ee", borderRadius: 8, padding: "8px 10px", fontSize: 14, fontFamily: "inherit", minHeight: 38, color: "#30313d", background: "#fff" } as const,
+  foot: { fontSize: 11.5, color: "#8792a2", margin: "8px 0 0" } as const,
 };
