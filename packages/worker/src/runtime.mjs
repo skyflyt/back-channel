@@ -59,6 +59,33 @@ function runtimeHelper(executable, args) {
         helper.once('error', finish); helper.once('close', finish);
     });
 }
+export function parseCodexResult(stdout, code) {
+    const invalid = {status: 'failed', text: 'Runtime did not return a valid structured completion result'};
+    try {
+        const events = stdout.trim().split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
+        const failure = events.findLast(e => e.type === 'turn.failed' || e.type === 'error');
+        if (failure) {
+            let message = failure.error?.message ?? failure.message ?? 'Runtime reported a failed turn';
+            try { message = JSON.parse(message).error?.message ?? message; } catch { }
+            return {status: 'failed', text: String(message).slice(0, 2000)};
+        }
+        // Codex emits commentary as agent_message too. Only the final message
+        // is the schema-constrained result; never fall back to an earlier one.
+        const final = events.findLast(e => e.type === 'item.completed' && e.item?.type === 'agent_message');
+        const structured = JSON.parse(final?.item.text);
+        if (!structured || typeof structured !== 'object' || Array.isArray(structured)
+            || Object.keys(structured).length !== 2
+            || !Object.hasOwn(structured, 'status') || !Object.hasOwn(structured, 'text')
+            || !['completed', 'failed', 'waiting_user'].includes(structured.status)
+            || typeof structured.text !== 'string') return invalid;
+        if (code !== 0) return {status: 'failed', text: structured.text || 'Runtime exited unsuccessfully'};
+        if (!events.some(e => e.type === 'turn.completed'))
+            return {status: 'failed', text: 'Runtime did not report a completed turn'};
+        return {status: structured.status, text: structured.text};
+    } catch {
+        return invalid;
+    }
+}
 export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}) {
     validateProfile(profile);
     return new Promise(resolve => {
@@ -106,8 +133,10 @@ export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}
         const complete = code => {
             if (reason)
                 return finish({ status: 'interrupted', text: reason });
+            if (profile.adapter === 'codex')
+                return finish(parseCodexResult(stdout, code));
             let text = stdout.trim(), status = code === 0 ? 'completed' : 'failed';
-            let structured, runtimeError;
+            let structured;
             if (profile.adapter === 'claude') {
                 try {
                     const r = JSON.parse(text);
@@ -122,23 +151,6 @@ export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}
                     status = 'failed';
                 }
             }
-            if (profile.adapter === 'codex') {
-                try {
-                    const events = text.split('\n').filter(Boolean).map(JSON.parse);
-                    const messages = events.filter(e => e.type === 'item.completed' && e.item?.type === 'agent_message').map(e => e.item.text);
-                    text = messages.join('\n');
-                    const failure = events.findLast(e => e.type === 'turn.failed' || e.type === 'error');
-                    if (failure) {
-                        status = 'failed';
-                        runtimeError = failure.error?.message ?? failure.message ?? 'Runtime reported a failed turn';
-                        try { runtimeError = JSON.parse(runtimeError).error?.message ?? runtimeError; } catch { }
-                    }
-                    if (text) structured = JSON.parse(text);
-                }
-                catch {
-                    status = 'failed';
-                }
-            }
             if (profile.adapter !== 'fixture') {
                 if (structured && ['completed', 'failed', 'waiting_user'].includes(structured.status) && typeof structured.text === 'string') {
                     if (status === 'completed')
@@ -147,7 +159,7 @@ export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}
                 }
                 else {
                     status = 'failed';
-                    text = runtimeError ? String(runtimeError).slice(0, 2000) : 'Runtime did not return a valid structured completion result';
+                    text = 'Runtime did not return a valid structured completion result';
                 }
             }
             if (!text) {
