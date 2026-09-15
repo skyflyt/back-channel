@@ -17,7 +17,7 @@ export function validateProfile(p) {
         throw Error('Unsupported sandbox');
     if (p.adapter === 'claude' && !['plan', 'manual'].includes(p.permissionMode ?? 'plan'))
         throw Error('Unsupported permission mode');
-    for (const [name, maximum] of [['maxRuntimeMs', 3600000], ['maxOutputBytes', 32000]]) {
+    for (const [name, maximum] of [['maxRuntimeMs', 3600000], ['maxOutputBytes', 32000], ['maxTranscriptBytes', 4 * 1024 * 1024]]) {
         if (p[name] !== undefined && (!Number.isSafeInteger(p[name]) || p[name] < 1 || p[name] > maximum))
             throw Error(`Invalid profile ${name}; expected positive integer at most ${maximum}`);
     }
@@ -96,7 +96,8 @@ export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}
             if (name.startsWith('BC_'))
                 delete environment[name];
         const child = spawn(profile.executable, runtimeArgs(profile), { cwd: profile.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: process.platform !== 'win32', env: environment });
-        let stdout = '', stderr = '', bytes = 0, reason, settled = false, stopDeadline;
+        const stdoutChunks = [], stderrChunks = [];
+        let bytes = 0, reason, settled = false, stopDeadline;
         const stop = why => {
             if (reason) return;
             reason = why;
@@ -106,14 +107,20 @@ export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}
                 finish({status: 'interrupted', requiresRecovery: true, text: reason + '; process cleanup deadline reached, review local processes before recovery'});
             }, 12000);
         };
-        const maxBytes = Math.min(profile.maxOutputBytes ?? 32000, 32000);
-        const collect = which => chunk => { bytes += chunk.length; if (bytes > maxBytes) {
-            stop('Output limit exceeded');
-            return;
-        } if (which === 'out')
-            stdout += chunk.toString();
-        else
-            stderr += chunk.toString(); };
+        const maxResultBytes = profile.maxOutputBytes ?? 32000;
+        // CLI progress/tool events are transport, not the final result. Keep
+        // their combined stdout/stderr budget finite without shrinking reports.
+        const maxBytes = profile.adapter === 'fixture'
+            ? maxResultBytes : profile.maxTranscriptBytes ?? 1024 * 1024;
+        const collect = which => chunk => {
+            if (reason || settled) return;
+            if (chunk.length > maxBytes - bytes) {
+                stop(profile.adapter === 'fixture' ? 'Output limit exceeded' : 'Transcript limit exceeded');
+                return;
+            }
+            bytes += chunk.length;
+            (which === 'out' ? stdoutChunks : stderrChunks).push(Buffer.from(chunk));
+        };
         child.stdout.on('data', collect('out'));
         child.stderr.on('data', collect('err'));
         const abort = () => stop('Cancelled or lease lost');
@@ -133,8 +140,14 @@ export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}
         const complete = code => {
             if (reason)
                 return finish({ status: 'interrupted', text: reason });
+            // Decode after collecting bytes so a UTF-8 character split across
+            // pipe chunks is preserved and measured accurately in the result.
+            const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+            const stderr = Buffer.concat(stderrChunks).toString('utf8');
+            const finishResult = result => finish(Buffer.byteLength(result.text, 'utf8') > maxResultBytes
+                ? {status: 'failed', text: 'Final result limit exceeded'} : result);
             if (profile.adapter === 'codex')
-                return finish(parseCodexResult(stdout, code));
+                return finishResult(parseCodexResult(stdout, code));
             let text = stdout.trim(), status = code === 0 ? 'completed' : 'failed';
             let structured;
             if (profile.adapter === 'claude') {
@@ -166,7 +179,7 @@ export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}
                 status = 'failed';
                 text = stderr.trim() || 'Runtime produced no captured result';
             }
-            finish({ status, text });
+            finishResult({ status, text });
         };
         child.once('exit', async code => {
             clearTimeout(timer);
