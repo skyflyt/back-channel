@@ -1,0 +1,23 @@
+name: worker
+on:
+  pull_request:
+    paths: ['packages/worker/**', 'scripts/*dispatch-worker.ps1', '.github/workflows/worker.yml']
+  push:
+    branches: [main]
+    paths: ['packages/worker/**', 'scripts/*dispatch-worker.ps1', '.github/workflows/worker.yml']
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test --prefix packages/worker
+      - name: Package Windows bootstrap
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-dispatch-worker.ps1 -OutputDirectory "${{ runner.temp }}/back-channel-worker"
