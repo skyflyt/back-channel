@@ -41,7 +41,7 @@ try{
  const a=await agent(account.id,'sender'),b=await agent(account.id,'receiver'),c=await agent(other.id,'outsider');
  const workspace=path.join(root,'workspace');fs.mkdirSync(workspace);assert.equal(spawnSync('git',['init',workspace],{windowsHide:true}).status,0);
  const fixture=path.resolve('../../packages/worker/test/fixtures/runtime.mjs');
- const actual=process.env.BC_TEST_CODEX_EXE;
+ const actual=process.env.BC_TEST_CODEX_EXE || undefined;
  const profile={adapter:actual?'codex':'fixture',testOnly:!actual,executable:actual??process.execPath,cwd:workspace,fixtureScript:fixture,allowedSenders:[a.config.agentId,b.config.agentId],sandbox:'read-only',maxRuntimeMs:120000,maxOutputBytes:32000};
  for(const [local,peer]of [[a,b],[b,a]]){
   local.config.peers={[peer.config.agentId]:{encryptionKey:peer.config.identity.encryptionKey,signingKey:peer.config.identity.signingKey}};

@@ -189,6 +189,34 @@ test('state path components and file names cannot escape approved directory', t 
     fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
     assert.throws(() => new Store(path.join(repo, 'state')), /outside repositories/);
 });
+function descendantState(pid) {
+    try { process.kill(pid, 0); }
+    catch (error) {
+        if (error.code === 'ESRCH') return 'absent';
+        throw error;
+    }
+    if (process.platform !== 'linux') return 'live';
+    try {
+        // kill(pid, 0) also succeeds for zombies. A zombie has exited and closed
+        // its handles; only its adopted parent's wait/reaping remains pending.
+        // comm can contain spaces and parentheses, so split after its last ')'.
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0];
+    } catch (error) {
+        if (error.code === 'ENOENT') return 'absent';
+        throw error;
+    }
+}
+async function assertDescendantStopped(pid, {timeoutMs = 2000, state = descendantState} = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let observed;
+    do {
+        observed = state(pid);
+        if (['absent', 'Z', 'X', 'x'].includes(observed)) return;
+        await new Promise(resolve => setTimeout(resolve, 20));
+    } while (Date.now() < deadline);
+    assert.fail(`Descendant ${pid} still has a live process state (${observed}) after ${timeoutMs}ms`);
+}
 test('cancellation stops a real runtime descendant process', async t => {
     const s = setup(t), abort = new AbortController();
     const running = runRuntime(s.profile, 'TREE_FIXTURE', {signal: abort.signal});
@@ -200,12 +228,7 @@ test('cancellation stops a real runtime descendant process', async t => {
     abort.abort();
     const result = await running;
     assert.equal(result.status, 'interrupted');
-    let alive = true;
-    for (let attempt = 0; attempt < 50 && alive; attempt++) {
-        try { process.kill(pid, 0); await new Promise(r => setTimeout(r, 20)); }
-        catch (error) { assert.equal(error.code, 'ESRCH'); alive = false; }
-    }
-    assert.equal(alive, false, 'descendant was terminated');
+    await assertDescendantStopped(pid);
 });
 test('exited runtime with inherited descendant pipes completes and cleans the child', async t => {
     const s = setup(t);
@@ -213,7 +236,11 @@ test('exited runtime with inherited descendant pipes completes and cleans the ch
     assert.equal(result.status, 'completed');
     assert.match(result.text, /fixture-result/);
     const pid = Number(fs.readFileSync(path.join(s.profile.cwd, 'tree-pid'), 'utf8'));
-    assert.throws(() => process.kill(pid, 0), {code: 'ESRCH'});
+    await assertDescendantStopped(pid);
+});
+test('descendant termination check distinguishes an exited zombie from a live process', async () => {
+    await assertDescendantStopped(123, {state: () => 'Z'});
+    await assert.rejects(assertDescendantStopped(123, {timeoutMs: 20, state: () => 'S'}), /still has a live process state/);
 });
 test('sender continuation retains the original local scope and tool restrictions', async t => {
     const s = setup(t), objective = 'Return OK. Do not use tools or change files.';
