@@ -1,0 +1,56 @@
+name: dispatch integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/broker/**"
+      - "packages/worker/**"
+      - ".github/workflows/dispatch-integration.yml"
+  pull_request:
+    paths:
+      - "apps/broker/**"
+      - "packages/worker/**"
+      - ".github/workflows/dispatch-integration.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/broker
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: dispatch_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d dispatch_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres@127.0.0.1:5432/dispatch_test
+      # CI always uses the deterministic runtime fixture, never a signed-in CLI.
+      BC_TEST_CODEX_EXE: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/broker/package-lock.json
+      - run: npm ci
+      - name: Initialize the isolated test database
+        # Historical migrations do not contain a complete initial schema.
+        # db push is restricted to this disposable service, not deployment.
+        run: npx prisma db push
+      - name: Exercise broker and worker against PostgreSQL over HTTP
+        run: node --experimental-strip-types --import ./route-tests/register-hooks.mjs scripts/dispatch-integration.mts
