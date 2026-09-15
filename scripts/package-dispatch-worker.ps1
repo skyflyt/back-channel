@@ -22,4 +22,3 @@ Get-ChildItem -LiteralPath $taskSource -Recurse -File | Where-Object {
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install-dispatch-worker.ps1') -Destination $taskOutput
 Compress-Archive -Path (Join-Path $taskOutput '*') -DestinationPath ($taskOutput + '.zip')
 Get-FileHash -LiteralPath ($taskOutput + '.zip') -Algorithm SHA256
-
