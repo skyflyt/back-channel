@@ -98,6 +98,10 @@ Only one executor may hold a state-directory lock. If a previous worker crashed,
 stop its remaining child processes, review possible side effects, then run
 `recover --confirm-stopped`. Recovery refuses a live previous worker PID and
 marks interrupted executions and continuations for explicit owner recovery.
+If process cleanup exceeds its deadline, the worker also records a durable
+recovery block and exits. Restarting preserves this block. Only
+`recover --confirm-stopped`, after you stop and review the remaining processes,
+clears it; captured results can still be delivered while execution stays blocked.
 Submit a new task after that review; original task IDs are never rerun.
 
 State is durable across restarts, not automatically pruned. The daemon scans at
