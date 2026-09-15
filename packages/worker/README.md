@@ -35,7 +35,8 @@ Do not copy it into source control or shared storage.
   "allowedSenders": ["the-other-enrolled-agent-id"],
   "sandbox": "read-only",
   "maxRuntimeMs": 300000,
-  "maxOutputBytes": 32000
+  "maxOutputBytes": 32000,
+  "maxTranscriptBytes": 1048576
 }
 ```
 
@@ -73,8 +74,13 @@ The roundtrip is task → authorized recipient CLI → captured signed and encry
 result → approved sender CLI continuation. The sender's continuation receives
 result evidence, not new permission grants. Both runtimes must produce a
 structured completed/failed/waiting_user outcome. A zero process exit alone does
-not establish completion. Output is limited to 32 KB and execution to at most
-one hour per invocation; profile limits may be lower.
+not establish completion. Final result text is limited to 32,000 UTF-8 bytes
+(`maxOutputBytes`); oversized results fail instead of being silently truncated.
+Codex and Claude stdout/stderr transcripts have a separate combined budget of
+1 MiB by default. A local profile may set `maxTranscriptBytes` to a positive
+integer up to 4 MiB. Crossing that budget interrupts execution. Execution is
+limited to one hour per invocation; profile limits may be lower. Test fixtures
+retain their original combined stdout/stderr `maxOutputBytes` limit.
 
 `status` prints the durable journal, excluding lease tokens. `cancel --id UUID`
 cancels an outbound task; heartbeat loss stops the receiver's child process tree.
