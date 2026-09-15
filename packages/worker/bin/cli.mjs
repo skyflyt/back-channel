@@ -34,8 +34,10 @@ async function main() {
             }
             fs.unlinkSync(f);
         }
-        await new Worker(store).recover();
-        console.log('Interrupted jobs will not replay; submit a new task after reviewing side effects.');
+        const releaseRecoveryLock = store.lock();
+        try { await new Worker(store).recover({confirmStopped: true}); }
+        finally { releaseRecoveryLock(); }
+        console.log('Confirmed recovery recorded. Interrupted jobs will not replay; submit a new task after reviewing side effects.');
         return;
     }
     const unlock = ['send', 'status', 'cancel', 'agents'].includes(command) ? () => { } : store.lock();
@@ -109,17 +111,19 @@ async function main() {
                 do {
                     try {
                         await worker.cycle();
+                        worker.assertReady();
                         failures = 0;
                     }
                     catch (e) {
+                        worker.assertReady();
                         if (v.once || [401, 403].includes(e.status))
                             throw e;
                         failures++;
                         console.error(`Worker cycle failed; retrying durable work: ${e.message}`);
                     }
-                    if (!v.once && !stopped)
+                    if (!v.once && !stopped && !worker.stopped)
                         await new Promise(r => setTimeout(r, Math.min(60000, 5000 * 2 ** Math.min(failures, 4))));
-                } while (!v.once && !stopped);
+                } while (!v.once && !stopped && !worker.stopped);
             }
             finally {
                 process.off('SIGINT', stop);
