@@ -108,10 +108,35 @@ model AgentToken {
   createdAt   DateTime    @default(now())
   lastUsedAt  DateTime?                        // touched (throttled) on each authed request
   revokedAt   DateTime?                        // set on revoke; auth requires revokedAt IS NULL
+  dispatchName String?
+  dispatchEncryptionKey String?
+  dispatchSigningKey String?
+  dispatchSent DispatchTask[] @relation("DispatchSender")
+  dispatchReceived DispatchTask[] @relation("DispatchTarget")
   account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([keyHash])
   @@index([accountId, revokedAt])
+}
+
+// Opaque authenticated encrypted envelopes only. A lost execution lease is never requeued.
+model DispatchTask {
+  id String @id
+  senderAgentId String
+  targetAgentId String
+  status String @default("queued")
+  sealed String
+  resultSealed String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  leaseHash String?
+  leaseExpiresAt DateTime?
+  sender AgentToken @relation("DispatchSender", fields: [senderAgentId], references: [id], onDelete: Cascade)
+  target AgentToken @relation("DispatchTarget", fields: [targetAgentId], references: [id], onDelete: Cascade)
+
+  @@index([senderAgentId, createdAt, id])
+  @@index([targetAgentId, createdAt, id])
 }
 
 // Exchange-code flow (device-code pattern): keeps raw bc_ keys out of LLM chat
