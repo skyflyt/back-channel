@@ -21,3 +21,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/package-dispatch-worker.ps1 -OutputDirectory "${{ runner.temp }}/back-channel-worker"
+      - name: Check packaged installer in Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: '& "${{ runner.temp }}/back-channel-worker/install-dispatch-worker.ps1" -CheckPrerequisitesOnly'

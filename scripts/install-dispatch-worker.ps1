@@ -2,7 +2,8 @@
 param(
     [string]$Name = "$env:COMPUTERNAME agent",
     [uri]$Broker = 'https://back-channel.app',
-    [switch]$StartAtLogon
+    [switch]$StartAtLogon,
+    [switch]$CheckPrerequisitesOnly
 )
 $ErrorActionPreference = 'Stop'
 function Assert-WorkerPathWithoutLinks([string]$Path) {
@@ -19,8 +20,9 @@ function Assert-WorkerPathWithoutLinks([string]$Path) {
 if ($env:OS -ne 'Windows_NT') { throw 'This bootstrap is for Windows. Use the worker CLI on other platforms.' }
 if ($Broker.Scheme -ne 'https' -or $Broker.UserInfo -or $Broker.Query -or $Broker.Fragment) { throw 'An HTTPS broker URL without credentials is required.' }
 $taskNode = (Get-Command node.exe -ErrorAction Stop).Source
-$taskVersion = & $taskNode -p 'process.versions.node.split(".")[0]'
-if ($LASTEXITCODE -ne 0 -or [int]$taskVersion -lt 22) { throw 'Install Node.js 22 or newer, then rerun this bootstrap.' }
+$taskVersion = & $taskNode --version
+if ($LASTEXITCODE -ne 0 -or $taskVersion -notmatch '^v(?<major>\d+)\.') { throw 'Could not read the installed Node.js version.' }
+if ([int]$Matches.major -lt 22) { throw 'Install Node.js 22 or newer, then rerun this bootstrap.' }
 $taskSource = Join-Path $PSScriptRoot 'worker'
 Assert-WorkerPathWithoutLinks $taskSource
 if (!(Test-Path -LiteralPath (Join-Path $taskSource 'bin/cli.mjs'))) { throw 'Extract the complete worker bundle before running this script.' }
@@ -41,6 +43,10 @@ $taskLauncher = Join-Path $taskRoot 'run-worker.ps1'
 # before copying files or exchanging a credential.
 foreach ($taskCheckedPath in @($taskRoot, $taskState, (Join-Path $taskState 'config.json'), $taskApplications, $taskInstall, $taskLauncher)) {
     Assert-WorkerPathWithoutLinks $taskCheckedPath
+}
+if ($CheckPrerequisitesOnly) {
+    Write-Host "Prerequisites passed: Node.js $taskVersion; bundle integrity and local paths verified."
+    return
 }
 New-Item -ItemType Directory -Path $taskRoot -Force | Out-Null
 $taskSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
