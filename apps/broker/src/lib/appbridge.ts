@@ -24,7 +24,7 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, v
 import { NextRequest, NextResponse } from "next/server";
 import type { AppBridgeDevice, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { rateLimit } from "@/lib/rate-limit";
+import { rateLimit, rateLimitPeek } from "@/lib/rate-limit";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 import { checkOwnerAdmin, ownerGateInput } from "@/lib/admin";
 
@@ -37,6 +37,15 @@ const LEASE_TTL_MS = 120_000;
 const CONNECTION_LOG_MS = 7 * 86_400_000;
 const MAX_REMOTES_PER_ACCOUNT = 3;
 const MAX_PAIRS_PER_REMOTE = 4;
+const MAX_PRESENCE_PER_ACCOUNT = 4;
+// A rotated credential's predecessor stays valid until the new one is first used, or this long at most.
+const CREDENTIAL_GRACE_MS = 86_400_000;
+// Rate budgets, per minute. The "failed" budgets are spent only by refusals (see budget()/spend()).
+const EXCHANGE_FAILURES = 1000;
+const REDEEMS_PER_KEY = 60;          // pass issuance allows 30/min per device; never below that
+const REDEEM_FAILURES = 600;         // global: every junk client connect the relay signs lands here
+const REDEEM_FAILURES_PER_KEY = 10;
+const LEASE_CALLS_PER_LEASE = 30;    // renew + release; the relay renews each lease about once a minute
 const MAX_BODY = 4096;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HEX64 = /^[0-9A-F]{64}$/;
@@ -64,6 +73,14 @@ function limit(bucket: string, key: string, max: number, windowMs: number): void
   const r = rateLimit(bucket, key, max, windowMs);
   if (!r.ok) fail(429, "rate_limited", r.retryAfterSec);
 }
+// Budgets only refusals spend: budget() checks before the work without counting, spend() records a
+// refusal. A caller who succeeds is never charged for an attacker's junk, and is turned away only once
+// the budget itself is used up.
+function budget(bucket: string, key: string, max: number): void {
+  const r = rateLimitPeek(bucket, key, max);
+  if (!r.ok) fail(429, "rate_limited", r.retryAfterSec);
+}
+function spend(bucket: string, key: string, max: number): void { rateLimit(bucket, key, max, 60_000); }
 const sha256Hex = (raw: string) => createHash("sha256").update(raw).digest("hex");
 const newId = () => randomBytes(16).toString("base64url");
 
@@ -172,16 +189,32 @@ if (process.env.NODE_ENV === "production") setInterval(() => void sweep(), 10 * 
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
-/** Resolve an `ab_` device credential. Anything else — a bc_ key, a cookie, no header — is 401. */
-async function deviceContext(req: NextRequest, scope: Scope): Promise<{ device: AppBridgeDevice; keyHash: string; scopes: string[] }> {
+type CredentialRow = Prisma.AppBridgeCredentialGetPayload<{ include: { device: true } }>;
+/** The `ab_` bearer's credential row, live or not; a malformed bearer, an unknown one or an account mismatch is 401. */
+async function bearerCredential(req: NextRequest): Promise<CredentialRow> {
   const m = /^Bearer (\S+)$/.exec(req.headers.get("authorization") ?? "");
   if (!m || !CREDENTIAL.test(m[1])) fail(401, "unauthorized");
-  const keyHash = sha256Hex(m[1]);
-  const cred = await prisma.appBridgeCredential.findUnique({ where: { keyHash }, include: { device: true } });
-  if (!cred || cred.revokedAt || cred.expiresAt.getTime() <= Date.now() || cred.device.revokedAt || !cred.device.enabled || cred.device.accountId !== cred.accountId) fail(401, "unauthorized");
+  const cred = await prisma.appBridgeCredential.findUnique({ where: { keyHash: sha256Hex(m[1]) }, include: { device: true } });
+  if (!cred || cred.device.accountId !== cred.accountId) fail(401, "unauthorized");
+  return cred;
+}
+
+/** Resolve an `ab_` device credential. Anything else — a bc_ key, a cookie, no header — is 401. */
+async function deviceContext(req: NextRequest, scope: Scope): Promise<{ device: AppBridgeDevice; keyHash: string; scopes: string[] }> {
+  const cred = await bearerCredential(req);
+  if (cred.revokedAt || cred.expiresAt.getTime() <= Date.now() || cred.device.revokedAt || !cred.device.enabled) fail(401, "unauthorized");
   if (!cred.scopes.includes(scope)) fail(403, "scope");
   limit("appbridge:device", cred.deviceId, 60, 60_000);
-  return { device: cred.device, keyHash, scopes: cred.scopes };
+  if (cred.replacesKeyHash) {
+    // First use of a rotated credential: the device has certainly saved it, so the one it replaced
+    // (kept alive in case the device crashed before saving this one) ends now.
+    const replaced = cred.replacesKeyHash; const now = new Date();
+    await prisma.$transaction(async tx => {
+      await tx.appBridgeCredential.updateMany({ where: { keyHash: replaced, deviceId: cred.deviceId, revokedAt: null }, data: { revokedAt: now } });
+      await tx.appBridgeCredential.updateMany({ where: { keyHash: cred.keyHash, replacesKeyHash: replaced }, data: { replacesKeyHash: null } });
+    }, serializable);
+  }
+  return { device: cred.device, keyHash: cred.keyHash, scopes: cred.scopes };
 }
 
 // The relay (a Cloudflare Worker) signs every request with its Ed25519 key; the broker holds only the
@@ -225,7 +258,9 @@ async function relayRequest(req: NextRequest): Promise<Body> {
   for (const [n, expires] of seenNonces) { if (expires > now && seenNonces.size < MAX_NONCES) break; seenNonces.delete(n); }
   if (seenNonces.has(nonce)) fail(401, "unauthorized");
   seenNonces.set(nonce, now + NONCE_TTL_MS);
-  limit("appbridge:relay", "relay", 1200, 60_000);
+  // No shared bucket here (H1): one bucket for redeem, renew and release let a flood of fake client
+  // connects — each one a redeem the relay signs — 429 the renewals and tear down every live session.
+  // Each route applies its own budget: redeem by presented key and by failures, renew/release per lease.
   return parseBody(raw);
 }
 
@@ -265,9 +300,21 @@ const serializable = { isolationLevel: "Serializable" as const };
 
 // ── Device-facing routes ────────────────────────────────────────────────────
 
-/** POST /devices/exchange — trade a dashboard-minted code and a key proof for a device credential. */
+/**
+ * POST /devices/exchange — trade a dashboard-minted code and a key proof for a device credential.
+ * Unauthenticated by nature, so only FAILED exchanges spend its global budget (M1): junk can no longer
+ * block registration until it has used up the whole budget. Guessing stays hopeless — a code is one
+ * of 31^8, lives 10 minutes and works once — and minting codes stays limited per account.
+ */
 export const exchangeDevice = (req: NextRequest) => handle(async () => {
-  limit("appbridge:exchange", "all", 30, 60_000);
+  budget("appbridge:exchange-failed", "all", EXCHANGE_FAILURES);
+  try { return await exchange(req); }
+  catch (e) {
+    if (e instanceof AppBridgeError && e.status < 500 && e.status !== 429) spend("appbridge:exchange-failed", "all", EXCHANGE_FAILURES);
+    throw e;
+  }
+});
+async function exchange(req: NextRequest): Promise<NextResponse> {
   const body = await readBody(req);
   exact(body, ["code", "role", "connectorSpki", "proof"]);
   if (typeof body.code !== "string" || !CODE.test(body.code)) fail(400, "invalid_request");
@@ -293,7 +340,7 @@ export const exchangeDevice = (req: NextRequest) => handle(async () => {
   if ("error" in result) fail(result.error, result.code);
   await prisma.accountAudit.create({ data: { accountId: result.device.accountId, eventType: "appbridge.device_registered", detail: { deviceId: result.device.id, role } } }).catch(() => {});
   return json({ deviceId: result.device.id, credential, expiresAt: expiresAt.toISOString(), scopes: [...SCOPES[role]] });
-});
+}
 
 /** GET /devices/self — the device's own record and whether remote access is available to it. */
 export const getSelf = (req: NextRequest) => handle(async () => {
@@ -303,17 +350,50 @@ export const getSelf = (req: NextRequest) => handle(async () => {
     remoteAccess: !rolloutOn() ? "rollout_off" : !ent?.active ? "not_entitled" : "available" });
 });
 
-/** POST /devices/self/credential — replace the calling credential with a fresh one (same scopes, new expiry). */
+/**
+ * POST /devices/self/credential — replace the calling credential with a fresh one (same scopes, new expiry).
+ * Crash-safe: the calling credential keeps working until the new one is first used (deviceContext then
+ * revokes it), or for CREDENTIAL_GRACE_MS at most, so a PC that dies before saving the reply is not locked out.
+ */
 export const rotateCredential = (req: NextRequest) => handle(async () => {
   const { device, keyHash, scopes } = await deviceContext(req, "appbridge.device");
   const credential = CREDENTIAL_PREFIX + randomBytes(32).toString("base64url");
   const now = new Date(); const expiresAt = new Date(now.getTime() + CREDENTIAL_TTL_MS);
   await prisma.$transaction(async tx => {
-    const revoked = await tx.appBridgeCredential.updateMany({ where: { keyHash, revokedAt: null }, data: { revokedAt: now } });
-    if (revoked.count !== 1) fail(401, "unauthorized");
-    await tx.appBridgeCredential.create({ data: { keyHash: sha256Hex(credential), deviceId: device.id, accountId: device.accountId, scopes, expiresAt } });
+    const current = await tx.appBridgeCredential.findUnique({ where: { keyHash } });
+    if (!current || current.revokedAt || current.expiresAt <= now) fail(401, "unauthorized");
+    // A successor minted earlier from this credential was never used (its reply was lost): it ends now.
+    await tx.appBridgeCredential.updateMany({ where: { replacesKeyHash: keyHash, revokedAt: null }, data: { revokedAt: now } });
+    // The grace is bounded from the first rotation: a repeat never extends it.
+    await tx.appBridgeCredential.update({ where: { keyHash }, data: { expiresAt: new Date(Math.min(current.expiresAt.getTime(), now.getTime() + CREDENTIAL_GRACE_MS)) } });
+    await tx.appBridgeCredential.create({ data: { keyHash: sha256Hex(credential), deviceId: device.id, accountId: device.accountId, scopes, expiresAt, replacesKeyHash: keyHash } });
   }, serializable);
   return json({ credential, expiresAt: expiresAt.toISOString() });
+});
+
+/**
+ * DELETE /devices/self — the device unregisters itself (the Windows host's Unregister; a phone may too):
+ * the device, all its credentials, its pairings and live leases end in one transaction. 204. Idempotent:
+ * a retry with the credential that did it (live at the moment of revocation) is 204 again; any other
+ * dead or unknown credential is 401, so a rotated-away credential can never unregister a live device.
+ */
+export const deleteSelf = (req: NextRequest) => handle(async () => {
+  const cred = await bearerCredential(req);
+  const revokedAt = cred.device.revokedAt;
+  if (revokedAt) {
+    const wasLive = cred.revokedAt?.getTime() === revokedAt.getTime() && cred.expiresAt > revokedAt;
+    if (!wasLive) fail(401, "unauthorized");
+    limit("appbridge:device", cred.deviceId, 60, 60_000);
+    return new NextResponse(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+  }
+  const { device } = await deviceContext(req, "appbridge.device");
+  await prisma.$transaction(async tx => {
+    const fresh = await tx.appBridgeDevice.findUnique({ where: { id: device.id } });
+    if (!fresh || fresh.revokedAt) return;
+    await revokeInTx(tx, device.id, new Date());
+  }, serializable);
+  await prisma.accountAudit.create({ data: { accountId: device.accountId, eventType: "appbridge.device_unregistered", detail: { deviceId: device.id, role: device.role } } }).catch(() => {});
+  return new NextResponse(null, { status: 204, headers: { "Cache-Control": "no-store" } });
 });
 
 /** PUT /devices/self/connector — rotate the connector key, proven by both the old and the new key. */
@@ -347,6 +427,7 @@ export const setRelay = (req: NextRequest) => handle(async () => {
 /** PUT /hosts/self/pairings/{enrollmentId} — the host attests its owner approved this remote on the LAN. */
 export const attestPairing = (req: NextRequest, enrollmentId: string) => handle(async () => {
   const { device } = await deviceContext(req, "appbridge.host.relay");
+  if (device.role !== "host") fail(403, "scope"); // defence in depth: the scope already implies it
   id(enrollmentId);
   const body = await readBody(req);
   exact(body, ["remoteDeviceId"]);
@@ -368,6 +449,7 @@ export const attestPairing = (req: NextRequest, enrollmentId: string) => handle(
 /** DELETE /hosts/self/pairings/{enrollmentId} — the owner revoked that device on the PC. Idempotent. */
 export const withdrawPairing = (req: NextRequest, enrollmentId: string) => handle(async () => {
   const { device } = await deviceContext(req, "appbridge.host.relay");
+  if (device.role !== "host") fail(403, "scope");
   id(enrollmentId);
   const existing = await prisma.appBridgePairing.findUnique({ where: { hostDeviceId_enrollmentId: { hostDeviceId: device.id, enrollmentId } } });
   if (!existing) fail(404, "not_found");
@@ -408,13 +490,31 @@ export const issueSessionPass = (req: NextRequest) => handle(() => issuePass(req
 
 // ── Relay-facing routes ─────────────────────────────────────────────────────
 
-/** POST /relay/redeem — consume a pass (always, whatever follows) and open a 2-minute lease. */
+/**
+ * POST /relay/redeem — consume a pass (always, whatever follows) and open a 2-minute lease.
+ * Budgets (H1), all apart from renew/release: every attempt counts against the presented key
+ * (REDEEMS_PER_KEY); refusals also spend a per-key and a global failure budget. Anyone can make the
+ * relay sign a redeem (a client connect with a throwaway key and a junk pass), so once the global
+ * failure budget is spent, only keys registered to a live device get through to the transaction —
+ * the flood is shed with one indexed read, and real devices keep connecting.
+ */
 export const redeemPass = (req: NextRequest) => handle(async () => {
   const body = await relayRequest(req);
-  exact(body, ["pass", "purpose", "connectorSpkiSha256"]);
-  if (typeof body.pass !== "string" || !HEX64.test(body.pass) || (body.purpose !== "session" && body.purpose !== "presence") ||
-    typeof body.connectorSpkiSha256 !== "string" || !HEX64.test(body.connectorSpkiSha256)) fail(400, "invalid_request");
+  const flood = rateLimitPeek("appbridge:redeem-failed", "all", REDEEM_FAILURES);
+  const names = Object.keys(body);
+  if (names.length !== 3 || typeof body.pass !== "string" || !HEX64.test(body.pass) || (body.purpose !== "session" && body.purpose !== "presence") ||
+    typeof body.connectorSpkiSha256 !== "string" || !HEX64.test(body.connectorSpkiSha256)) {
+    spend("appbridge:redeem-failed", "all", REDEEM_FAILURES);
+    return fail(400, "invalid_request");
+  }
   const passHash = sha256Hex(body.pass); const purpose = body.purpose; const presented = body.connectorSpkiSha256;
+  budget("appbridge:redeem-failed", presented, REDEEM_FAILURES_PER_KEY);
+  if (!flood.ok && !(await prisma.appBridgeDevice.findFirst({ where: { connectorSpkiSha256: presented, revokedAt: null }, select: { id: true } }))) fail(429, "rate_limited", flood.retryAfterSec);
+  limit("appbridge:redeem", presented, REDEEMS_PER_KEY, 60_000);
+  const refused = (): NextResponse => {
+    spend("appbridge:redeem-failed", "all", REDEEM_FAILURES); spend("appbridge:redeem-failed", presented, REDEEM_FAILURES_PER_KEY);
+    return json({ error: "refused" }, 403);
+  };
   const now = new Date();
   // Refusals are returned as values, never thrown, so the pass's consumption always commits.
   const grant = await prisma.$transaction(async tx => {
@@ -435,8 +535,15 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
       const remotes = new Set(live.map(l => l.remoteDeviceId));
       if (live.filter(l => l.remoteDeviceId === binding.remoteDeviceId).length >= MAX_PAIRS_PER_REMOTE ||
         (!remotes.has(binding.remoteDeviceId) && remotes.size >= MAX_REMOTES_PER_ACCOUNT)) return "capacity" as const;
+    } else {
+      // Presence cap: each PC keeps one waiting connection; the spares cover a PC reconnecting before
+      // the relay has released its old lease. Nothing else bounds presence leases per account.
+      const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "presence", expiresAt: { gt: now } }, select: { id: true } });
+      if (live.length >= MAX_PRESENCE_PER_ACCOUNT) return "capacity" as const;
     }
     const lease = await tx.appBridgeLease.create({ data: { id: newId(), purpose, ...binding, expiresAt: new Date(now.getTime() + LEASE_TTL_MS) } });
+    // The log records an admitted attempt: it is written here, so a pair the relay then fails to
+    // join still appears (the page and docs call these "connection attempts").
     if (purpose === "session") await tx.appBridgeConnectionEvent.create({ data: { accountId: binding.accountId, hostDeviceId: binding.hostDeviceId, remoteDeviceId: binding.remoteDeviceId!, at: now } });
     return {
       leaseId: lease.id, accountId: binding.accountId, hostDeviceId: binding.hostDeviceId,
@@ -444,7 +551,7 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
       hostConnectorSpkiSha256: g.host.connectorSpkiSha256, clientConnectorSpkiSha256: g.remote?.connectorSpkiSha256 ?? null,
     };
   }, serializable);
-  if (!grant) return json({ error: "refused" }, 403);
+  if (!grant) return refused();
   if (grant === "capacity") return json({ error: "refused" }, 409);
   void sweep();
   return json(grant);
@@ -454,7 +561,9 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
 export const releaseLease = (req: NextRequest) => handle(async () => {
   const body = await relayRequest(req);
   exact(body, ["leaseId"]);
-  await prisma.appBridgeLease.deleteMany({ where: { id: id(body.leaseId) } });
+  const leaseId = id(body.leaseId);
+  limit("appbridge:lease", leaseId, LEASE_CALLS_PER_LEASE, 60_000);
+  await prisma.appBridgeLease.deleteMany({ where: { id: leaseId } });
   return new NextResponse(null, { status: 204, headers: { "Cache-Control": "no-store" } });
 });
 
@@ -463,6 +572,9 @@ export const renewLease = (req: NextRequest) => handle(async () => {
   const body = await relayRequest(req);
   exact(body, ["leaseId"]);
   const leaseId = id(body.leaseId);
+  // Per lease only: renewals touch leases the broker granted, which the caps already bound, and no
+  // other route's traffic (least of all a redeem flood) can ever spend this budget.
+  limit("appbridge:lease", leaseId, LEASE_CALLS_PER_LEASE, 60_000);
   const now = new Date();
   const result = await prisma.$transaction(async tx => {
     const lease = await tx.appBridgeLease.findUnique({ where: { id: leaseId } });
@@ -515,7 +627,19 @@ export const listDevices = (req: NextRequest) => handle(async () => {
   });
 });
 
-/** DELETE /account/devices/{id} — revoke a device: its credentials stop, its pairings are withdrawn, live leases end at renewal. */
+/**
+ * Revoke a device inside the caller's transaction: the device, every credential, its pairings, and its
+ * live leases (as host or remote). Deleting the leases makes the relay's next renewal a 404, so a live
+ * session ends within one renewal interval (about a minute) instead of riding out a refused renewal.
+ */
+async function revokeInTx(tx: Prisma.TransactionClient, deviceId: string, now: Date): Promise<void> {
+  await tx.appBridgeDevice.update({ where: { id: deviceId }, data: { revokedAt: now, enabled: false, relayEnabled: false } });
+  await tx.appBridgeCredential.updateMany({ where: { deviceId, revokedAt: null }, data: { revokedAt: now } });
+  await tx.appBridgePairing.updateMany({ where: { OR: [{ hostDeviceId: deviceId }, { remoteDeviceId: deviceId }], withdrawnAt: null }, data: { withdrawnAt: now } });
+  await tx.appBridgeLease.deleteMany({ where: { OR: [{ hostDeviceId: deviceId }, { remoteDeviceId: deviceId }] } });
+}
+
+/** DELETE /account/devices/{id} — revoke a device: its credentials stop, its pairings are withdrawn, its live leases are deleted. */
 export const revokeDevice = (req: NextRequest, deviceId: string) => handle(async () => {
   const account = await accountContext(req, true);
   id(deviceId);
@@ -524,9 +648,7 @@ export const revokeDevice = (req: NextRequest, deviceId: string) => handle(async
     const device = await tx.appBridgeDevice.findUnique({ where: { id: deviceId } });
     if (!device || device.accountId !== account.id) fail(404, "not_found");
     if (device.revokedAt) return;
-    await tx.appBridgeDevice.update({ where: { id: deviceId }, data: { revokedAt: now, enabled: false, relayEnabled: false } });
-    await tx.appBridgeCredential.updateMany({ where: { deviceId, revokedAt: null }, data: { revokedAt: now } });
-    await tx.appBridgePairing.updateMany({ where: { OR: [{ hostDeviceId: deviceId }, { remoteDeviceId: deviceId }], withdrawnAt: null }, data: { withdrawnAt: now } });
+    await revokeInTx(tx, deviceId, now);
   }, serializable);
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "appbridge.device_revoked", detail: { deviceId } } }).catch(() => {});
   return new NextResponse(null, { status: 204, headers: { "Cache-Control": "no-store" } });

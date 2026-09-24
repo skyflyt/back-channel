@@ -4,7 +4,7 @@
  * Back Channel Remote — the owner's relay page (docs/appbridge-remote-access.md).
  *
  * Mint a one-use code to register a PC or a phone, see and revoke your registered
- * devices, and read the 7-day connection log. Everything goes through the
+ * devices, and read the 7-day log of connection attempts. Everything goes through the
  * cookie-authenticated /api/appbridge/v1/account/* routes (mutations echo the
  * bc_csrf cookie). No device credential, pass or key is ever shown here: a code is
  * the only secret, it works once and expires in 10 minutes.
@@ -89,7 +89,7 @@ export default function RemotePage() {
   }
 
   async function revoke(d: RemoteDevice) {
-    if (!window.confirm(`Revoke ${deviceName(d, "this device")}? It stops reaching your PCs through the relay at once. Pairings on your network are not changed.`)) return;
+    if (!window.confirm(`Revoke ${deviceName(d, "this device")}? It stops reaching your PCs through the relay within a minute. Pairings on your network are not changed.`)) return;
     setBusy(d.id);
     const r = await mutate(`/api/appbridge/v1/account/devices/${encodeURIComponent(d.id)}`, "DELETE");
     setBusy("");
@@ -168,9 +168,9 @@ export default function RemotePage() {
             </div>
 
             <div className="ds-card">
-              <div className="ds-cardh">Connections in the last 7 days</div>
-              <p className="ds-cardsub">Which device reached which PC through the relay, and when. Nothing else is recorded, and entries are deleted after 7 days.</p>
-              {connections.length === 0 && <p className="ds-fine" style={{ margin: 0 }}>No relayed connections in the last 7 days.</p>}
+              <div className="ds-cardh">Connection attempts in the last 7 days</div>
+              <p className="ds-cardsub">Which device was let through the relay to which PC, and when. Each entry is an attempt: it is recorded when the connection is allowed, so one that then failed to connect still appears. Nothing else is recorded, and entries are deleted after 7 days.</p>
+              {connections.length === 0 && <p className="ds-fine" style={{ margin: 0 }}>No relayed connection attempts in the last 7 days.</p>}
               {connections.map((c, i) => (
                 <div key={`${c.at}-${i}`} className="ds-item">
                   <div className="ds-iname">{deviceName(byId.get(c.remoteDeviceId), "A removed phone")} → {deviceName(byId.get(c.hostDeviceId), "a removed PC")}</div>

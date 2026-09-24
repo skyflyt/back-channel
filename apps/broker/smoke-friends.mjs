@@ -9,7 +9,7 @@ const tag = Math.random().toString(36).slice(2, 8);
 let pass = 0, fail = 0;
 const ok = (c, m) => { (c ? pass++ : fail++); console.log(`${c ? "PASS" : "FAIL"}: ${m}`); };
 function cookies(res) { const o = {}; for (const c of res.headers.getSetCookie?.() ?? []) { const [kv] = c.split(";"); const i = kv.indexOf("="); o[kv.slice(0,i)] = kv.slice(i+1); } return o; }
-async function seed(h) { const key = rk(); const a = await prisma.account.create({ data: { email:`${h}-${tag}@bc`, handle:`${h}-${tag}@bc`, apiKey: key, emailVerifiedAt: new Date() } }); await prisma.agentToken.create({ data: { accountId: a.id, keyHash: hash(key), name:"t", runtimeType:"other" } }); return { ...a, key }; }
+async function seed(h) { const key = rk(); const a = await prisma.account.create({ data: { email:`${h}-${tag}@bc`, handle:`${h}-${tag}@bc`, emailVerifiedAt: new Date() } }); await prisma.agentToken.create({ data: { accountId: a.id, keyHash: hash(key), name:"t", runtimeType:"other" } }); return { ...a, key }; }
 async function ck(key) { const vt = await fetch(`${BASE}/api/account/view-token-self`, { method:"POST", headers:{ authorization:`Bearer ${key}`, "content-type":"application/json" }, body:"{}" }).then(r=>r.json()); return cookies(await fetch(`${BASE}/api/auth/view-token-consume`, { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ token: vt.view_token }) })); }
 
 async function main() {

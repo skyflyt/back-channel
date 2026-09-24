@@ -274,3 +274,18 @@ test("getAuthContext: a key with an AgentToken hash authenticates via that token
   assert.ok(ctx);
   assert.equal(ctx!.agentTokenId, "agt_manual", "hash lookup must be tried first and win");
 });
+
+test("GET /api/account/me never reads Account.apiKey", async () => {
+  // A stale plaintext value must not surface, even masked: the route must not touch the column at all.
+  let reads = 0;
+  Object.defineProperty(accounts[ACCOUNT_ID], "apiKey", { enumerable: true, get() { reads++; return "bc_legacy-plaintext-key-1234567890"; } });
+  accounts[ACCOUNT_ID].createdAt = new Date();
+  (prismaMock as any).session = { count: async () => 0 };
+  const { GET } = await import("@/app/api/account/me/route");
+  const res = await GET(new NextRequest("https://back-channel.app/api/account/me", { headers: { cookie: `bc_session=${RAW_COOKIE}` } }));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.api_key_masked, null);
+  assert.equal(reads, 0, "Account.apiKey was read");
+  assert.ok(!JSON.stringify(body).includes("1234567890"));
+});

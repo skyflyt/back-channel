@@ -122,7 +122,7 @@ const db: any = new Proxy({}, {
 let analyticsCache: { at: number; payload: unknown } | undefined;
 before(() => {
   mock.module("@/lib/db", { namedExports: { prisma: db } });
-  mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: true, retryAfterSec: 0 }) } });
+  mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: true, retryAfterSec: 0 }), rateLimitPeek: () => ({ ok: true, retryAfterSec: 0 }) } });
 });
 
 const OWNER = "Owner@Example.com"; // mixed case on purpose: the allowlist match is case-insensitive

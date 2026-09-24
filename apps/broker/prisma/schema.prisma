@@ -545,6 +545,9 @@ model AppBridgeCredential {
   createdAt DateTime        @default(now())
   expiresAt DateTime
   revokedAt DateTime?
+  // Rotation grace: the keyHash of the credential this one replaced. That credential stays valid until
+  // this one is first used (then it is revoked and this is cleared) or for 24 h at most.
+  replacesKeyHash String?
   device    AppBridgeDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@index([deviceId])

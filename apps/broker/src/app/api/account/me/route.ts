@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromCookie, maskApiKey, SESSION_COOKIE_NAME } from "@/lib/auth";
+import { getAccountFromCookie, SESSION_COOKIE_NAME } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -30,7 +30,9 @@ export async function GET(req: NextRequest) {
     mirror_pub_version: account.mirrorPubVersion ?? 0,
     created_at: account.createdAt.toISOString(),
     email_verified: !!account.emailVerifiedAt,
-    api_key_masked: maskApiKey(account.apiKey),
+    // SEC H1: Account.apiKey is never read (null in prod; dropping the column is a follow-up). Keys
+    // exist only as AgentToken hashes, so there is nothing to mask; the member stays for the UI.
+    api_key_masked: null,
     api_key_last_used_at: account.apiKeyLastUsedAt?.toISOString() ?? null,
     notify_idle_frames: account.notifyIdleFrames,
     favor_per_peer_daily: account.favorPerPeerDaily,

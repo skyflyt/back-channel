@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rateLimit, clientIp, _reset } from "./rate-limit.mjs";
+import { rateLimit, rateLimitPeek, clientIp, _reset } from "./rate-limit.mjs";
 
 test("allows up to the limit, then denies", () => {
   _reset();
@@ -48,4 +48,16 @@ test("clientIp takes the RIGHTMOST X-Forwarded-For hop (Google-appended, trustwo
   assert.equal(clientIp(null), "unknown");
   assert.equal(clientIp(undefined), "unknown");
   assert.equal(clientIp(""), "unknown");
+});
+
+test("rateLimitPeek reports exhaustion without recording an event", () => {
+  _reset();
+  assert.equal(rateLimitPeek("p", "k", 2).ok, true, "an unseen key is open");
+  for (let i = 0; i < 5; i++) rateLimitPeek("p", "k", 2);
+  assert.equal(rateLimit("p", "k", 2, 60_000).ok, true, "peeks spent nothing");
+  assert.equal(rateLimitPeek("p", "k", 2).ok, true, "one of two spent");
+  rateLimit("p", "k", 2, 60_000);
+  const shut = rateLimitPeek("p", "k", 2);
+  assert.equal(shut.ok, false); assert.ok(shut.retryAfterSec > 0);
+  assert.equal(rateLimitPeek("p", "other", 2).ok, true, "keys stay isolated");
 });
