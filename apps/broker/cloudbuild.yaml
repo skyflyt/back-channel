@@ -50,7 +50,10 @@ steps:
       # APPBRIDGE_*: Back Channel Remote relay (docs/appbridge-remote-access.md). REMOTE_ACCESS=on is the
       # relay-wide switch (only admin-entitled accounts get passes); RELAY_PUBLIC_KEY is the public half of
       # the Cloudflare relay's Ed25519 signing key (not secret; the private half is a Worker secret).
-      - "--set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production,EMAIL_FROM=Back Channel <noreply@back-channel.app>,APPBRIDGE_REMOTE_ACCESS=on,APPBRIDGE_RELAY_PUBLIC_KEY=MCowBQYDK2VwAyEAtClOBnMMcWUwQca1P5kz8QkdovbAgl7OxL3old1j2uU="
+      # ADMIN_EMAILS: the only account(s) allowed into /admin and the admin APIs (src/lib/admin.ts).
+      # Unset = admin closed to everyone. For more than one email, separate them with ';' here, because
+      # this list is comma-delimited.
+      - "--set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production,EMAIL_FROM=Back Channel <noreply@back-channel.app>,APPBRIDGE_REMOTE_ACCESS=on,APPBRIDGE_RELAY_PUBLIC_KEY=MCowBQYDK2VwAyEAtClOBnMMcWUwQca1P5kz8QkdovbAgl7OxL3old1j2uU=,ADMIN_EMAILS=skyflyt86@gmail.com"
       - --set-secrets=DATABASE_URL=DATABASE_URL:latest,RESEND_API_KEY=RESEND_API_KEY:latest
 
 images:
