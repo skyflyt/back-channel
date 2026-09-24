@@ -68,7 +68,9 @@ substitutions:
   _CLOUDSQL_INSTANCE: ""  # set in trigger UI: <project>:us-west1:backchannel-db
   # The Remote tier's Stripe price id (price_...), not a secret. Commit the real id here once it
   # exists so a plain deploy keeps billing on; "" leaves billing off (fail closed).
-  _STRIPE_REMOTE_PRICE_ID: ""
+  # Sandbox (test-mode) price in acct_1UJLYdGf5aFTGoME, $5.00/month. Replace with the live price id
+  # together with the live STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET when switching to live mode.
+  _STRIPE_REMOTE_PRICE_ID: "price_1UJLhoGf5aFTGoME6oyIleQ1"
 
 options:
   logging: CLOUD_LOGGING_ONLY
