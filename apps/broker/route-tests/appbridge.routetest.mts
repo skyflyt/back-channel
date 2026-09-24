@@ -1,6 +1,6 @@
 import { test, before, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, sign, type KeyObject } from "node:crypto";
 import { NextRequest } from "next/server";
 
 // ── In-memory Prisma: enough of the query surface for src/lib/appbridge.ts ──
@@ -61,8 +61,6 @@ let limited = false;
 before(() => {
   mock.module("@/lib/db", { namedExports: { prisma: db } });
   mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: !limited, retryAfterSec: 7 }) } });
-  mock.module("@/lib/google-id-token", { namedExports: { verifyGoogleIdToken: async (token: string, expect: any) =>
-    token === "relay-id-token" && expect.audience === "https://back-channel.app" && expect.email === "backchannel-relay@proj.iam.gserviceaccount.com" } });
   mock.module("@/lib/auth", { namedExports: {
     SESSION_COOKIE_NAME: "bc_session", CSRF_COOKIE_NAME: "bc_csrf", CSRF_HEADER: "x-bc-csrf",
     csrfValid: (h: string | null, c: string | null) => !!h && !!c && h === c,
@@ -73,8 +71,8 @@ beforeEach(() => {
   for (const k of Object.keys(tables)) tables[k] = [];
   limited = false;
   process.env.APPBRIDGE_REMOTE_ACCESS = "on";
-  process.env.APPBRIDGE_RELAY_SERVICE_ACCOUNT = "backchannel-relay@proj.iam.gserviceaccount.com";
-  delete process.env.APPBRIDGE_RELAY_URL; delete process.env.APPBRIDGE_BROKER_AUDIENCE;
+  process.env.APPBRIDGE_RELAY_PUBLIC_KEY = RELAY_PUBLIC_KEY;
+  delete process.env.APPBRIDGE_RELAY_URL;
   tables.account.push(
     { id: "acct-a", handle: "skylar", admin: true, emailVerifiedAt: new Date(), cookie: "cs_a" },
     { id: "acct-b", handle: "other", admin: false, emailVerifiedAt: new Date(), cookie: "cs_b" },
@@ -93,6 +91,7 @@ const routes = {
   passes: () => import("@/app/api/appbridge/v1/relay/passes/route"),
   redeem: () => import("@/app/api/appbridge/v1/relay/redeem/route"),
   renew: () => import("@/app/api/appbridge/v1/relay/renew/route"),
+  release: () => import("@/app/api/appbridge/v1/relay/release/route"),
   codes: () => import("@/app/api/appbridge/v1/account/device-codes/route"),
   devices: () => import("@/app/api/appbridge/v1/account/devices/route"),
   device: () => import("@/app/api/appbridge/v1/account/devices/[id]/route"),
@@ -104,7 +103,24 @@ function req(method: string, body?: unknown, headers: Record<string, string> = {
     ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }) });
 }
 const bearer = (credential: string) => ({ authorization: `Bearer ${credential}` });
-const relay = { authorization: "Bearer relay-id-token", "x-forwarded-for": "203.0.113.77", "user-agent": "relay-ua-marker" };
+// The relay's Ed25519 identity: it signs, the broker verifies with the public half.
+const relayKeys = generateKeyPairSync("ed25519");
+const RELAY_PUBLIC_KEY = relayKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+const relayMarkers = { "x-forwarded-for": "203.0.113.77", "user-agent": "relay-ua-marker" };
+type SignOpts = { seconds?: number; nonce?: string; key?: KeyObject; signedBody?: string };
+function relaySignature(path: string, raw: string, o: SignOpts = {}) {
+  const seconds = String(o.seconds ?? Math.floor(Date.now() / 1000));
+  const nonce = o.nonce ?? randomBytes(16).toString("base64url");
+  const hash = createHash("sha256").update(o.signedBody ?? raw).digest("hex");
+  const sig = sign(null, Buffer.from(`appbridge-relay-broker-v1\nPOST\n${path}\n${seconds}\n${nonce}\n${hash}`), o.key ?? relayKeys.privateKey).toString("base64url");
+  return `AppBridge-Relay v1.${seconds}.${nonce}.${sig}`;
+}
+function relayReq(route: "redeem" | "renew" | "release", body: unknown, o: SignOpts = {}, headers?: Record<string, string>) {
+  const path = `/api/appbridge/v1/relay/${route}`;
+  const raw = JSON.stringify(body);
+  return new NextRequest(`https://back-channel.app${path}`, { method: "POST", body: raw,
+    headers: { "content-type": "application/json", ...relayMarkers, ...(headers ?? { authorization: relaySignature(path, raw, o) }) } });
+}
 const cookie = (acct = "a", csrf = true) => ({ cookie: `bc_session=cs_${acct}; bc_csrf=tok`, ...(csrf ? { "x-bc-csrf": "tok" } : {}) });
 const params = <T,>(p: T) => ({ params: Promise.resolve(p) });
 function newKey() {
@@ -142,10 +158,11 @@ async function ready() {
 async function sessionPass(remote: { credential: string }, hostDeviceId: string, enrollmentId = "enr-1") {
   return (await routes.passes()).POST(req("POST", { hostDeviceId, enrollmentId }, bearer(remote.credential)));
 }
-async function redeem(pass: string, purpose: string, connectorSpkiSha256: string, headers: Record<string, string> = relay) {
-  return (await routes.redeem()).POST(req("POST", { pass, purpose, connectorSpkiSha256 }, headers));
+async function redeem(pass: string, purpose: string, connectorSpkiSha256: string, headers?: Record<string, string>) {
+  return (await routes.redeem()).POST(relayReq("redeem", { pass, purpose, connectorSpkiSha256 }, {}, headers));
 }
-async function renew(leaseId: string) { return (await routes.renew()).POST(req("POST", { leaseId }, relay)); }
+async function renew(leaseId: string, o: SignOpts = {}) { return (await routes.renew()).POST(relayReq("renew", { leaseId }, o)); }
+async function release(leaseId: string) { return (await routes.release()).POST(relayReq("release", { leaseId })); }
 
 // ── Tests ──
 test("device routes accept only an ab_ credential: bc_ keys, cookies, garbage and revoked credentials are 401", async () => {
@@ -296,18 +313,68 @@ test("presence: a host's pass redeems with the host key, and the client members 
   assert.equal(tables.connection.length, 0, "presence is not a connection");
 });
 
-test("relay routes accept only the relay's service identity", async () => {
+test("relay routes accept only a request signed with the relay's Ed25519 key", async () => {
   const { host, remote } = await ready();
   const { pass } = await (await sessionPass(remote, host.deviceId)).json();
   for (const headers of [{}, bearer(remote.credential), bearer("bc_" + "x".repeat(32)), cookie("a"), { authorization: "Bearer someone-elses-token" }]) {
     assert.equal((await redeem(pass, "session", remote.key.fp, headers)).status, 401);
   }
+  const body = { pass, purpose: "session", connectorSpkiSha256: remote.key.fp };
+  const redeemWith = async (o: SignOpts) => (await routes.redeem()).POST(relayReq("redeem", body, o));
+  assert.equal((await redeemWith({ key: generateKeyPairSync("ed25519").privateKey })).status, 401, "another key");
+  assert.equal((await redeemWith({ signedBody: JSON.stringify({ ...body, pass: "0".repeat(64) }) })).status, 401, "a signature over a different body");
+  assert.equal((await redeemWith({ seconds: Math.floor(Date.now() / 1000) - 120 })).status, 401, "stale");
+  assert.equal((await redeemWith({ seconds: Math.floor(Date.now() / 1000) + 120 })).status, 401, "future");
   assert.equal(tables.pass[0].consumedAt, null, "an unauthenticated call never touches a pass");
-  delete process.env.APPBRIDGE_RELAY_SERVICE_ACCOUNT;
+  delete process.env.APPBRIDGE_RELAY_PUBLIC_KEY;
   assert.equal((await redeem(pass, "session", remote.key.fp)).status, 503, "unconfigured is an outage, never an open door");
-  process.env.APPBRIDGE_RELAY_SERVICE_ACCOUNT = "backchannel-relay@proj.iam.gserviceaccount.com";
-  assert.equal((await (await routes.redeem()).POST(req("POST", { pass, purpose: "session", connectorSpkiSha256: remote.key.fp, extra: true }, relay))).status, 400, "exact members");
+  process.env.APPBRIDGE_RELAY_PUBLIC_KEY = generateKeyPairSync("x25519").publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  assert.equal((await redeem(pass, "session", remote.key.fp)).status, 503, "a non-Ed25519 key is refused as configuration");
+  process.env.APPBRIDGE_RELAY_PUBLIC_KEY = RELAY_PUBLIC_KEY;
+  assert.equal((await (await routes.redeem()).POST(relayReq("redeem", { ...body, extra: true }))).status, 400, "exact members");
   assert.equal((await redeem(pass, "session", remote.key.fp.toLowerCase())).status, 400, "uppercase hex only");
+});
+
+test("a replayed relay request is refused", async () => {
+  const { host, remote } = await ready();
+  const grant = await (await redeem((await (await sessionPass(remote, host.deviceId)).json()).pass, "session", remote.key.fp)).json();
+  const nonce = randomBytes(16).toString("base64url");
+  assert.equal((await renew(grant.leaseId, { nonce })).status, 200);
+  assert.equal((await renew(grant.leaseId, { nonce })).status, 401, "same nonce");
+  assert.equal((await renew(grant.leaseId)).status, 200, "a fresh nonce works");
+});
+
+test("release frees a lease at once and is idempotent", async () => {
+  const { host, remote } = await ready();
+  const grant = await (await redeem((await (await sessionPass(remote, host.deviceId)).json()).pass, "session", remote.key.fp)).json();
+  assert.equal((await release(grant.leaseId)).status, 204);
+  assert.equal(tables.lease.length, 0);
+  assert.equal((await release(grant.leaseId)).status, 204);
+  assert.equal((await renew(grant.leaseId)).status, 404);
+  assert.equal((await (await routes.release()).POST(relayReq("release", { leaseId: grant.leaseId }, {}, bearer(remote.credential)))).status, 401, "devices cannot release");
+});
+
+test("cost guard: at most 3 phones per account relayed at once, each with at most 4 connections", async () => {
+  const { host } = await ready();
+  const remotes = [];
+  for (let i = 0; i < 4; i++) {
+    const r = await register("remote");
+    assert.equal((await attest(host, r.deviceId, `enr-cap-${i}`)).status, 204);
+    remotes.push(r);
+  }
+  const connect = async (r: typeof remotes[number], i: number) => {
+    const { pass } = await (await sessionPass(r, host.deviceId, `enr-cap-${i}`)).json();
+    return { pass, res: await redeem(pass, "session", r.key.fp) };
+  };
+  const leases: string[] = [];
+  for (let i = 0; i < 3; i++) { const { res } = await connect(remotes[i], i); assert.equal(res.status, 200); leases.push((await res.json()).leaseId); }
+  const fourth = await connect(remotes[3], 3);
+  assert.equal(fourth.res.status, 409, "a fourth phone is over the cap");
+  assert.equal((await redeem(fourth.pass, "session", remotes[3].key.fp)).status, 403, "the refused pass was still consumed");
+  for (let k = 0; k < 3; k++) assert.equal((await connect(remotes[0], 0)).res.status, 200, "one phone may hold up to 4 connections");
+  assert.equal((await connect(remotes[0], 0)).res.status, 409, "a fifth connection from one phone is over the cap");
+  assert.equal((await release(leases[1])).status, 204);
+  assert.equal((await connect(remotes[3], 3)).res.status, 200, "a released slot is free at once");
 });
 
 test("revoking a device from the dashboard ends its credentials, pairings and live leases", async () => {

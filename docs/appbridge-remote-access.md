@@ -2,7 +2,7 @@
 
 Back Channel Remote (developed as AppBridge, repo `skyflyt/appbridge`) lets your phone reach your
 PC's apps. At home it connects directly. Away from home, both ends connect **out** to a small relay
-(`backchannel-relay`, a separate Cloud Run service), which passes the bytes along. This broker does
+(`backchannel-relay`, a Cloudflare Worker with one Durable Object per PC), which passes the bytes along. This broker does
 not relay anything. It decides whether a phone may reach a PC through the relay right now, and it
 issues and renews the passes that say so.
 
@@ -11,9 +11,8 @@ own pinned certificates and device grants. The broker and the relay never see sc
 clipboard, app names or commands.
 
 The relay's half of this contract is `docs/REMOTE_ACCESS_BROKER_API.md` in the AppBridge repo
-(`BrokerRelayAuthority`). Code: `apps/broker/src/lib/appbridge.ts` and
-`src/app/api/appbridge/v1/**`. Tests: `route-tests/appbridge.routetest.mts` and
-`route-tests/google-id-token.routetest.mts`.
+(its `src/relay-cloudflare`). Code: `apps/broker/src/lib/appbridge.ts` and
+`src/app/api/appbridge/v1/**`. Tests: `route-tests/appbridge.routetest.mts`.
 
 ## Rules
 
@@ -91,27 +90,40 @@ Details:
 - A refused gate is `403` with one of `rollout_off`, `not_entitled`, `relay_off`, `device_revoked` or
   `not_paired`. A PC outside the caller's account is `404`.
 
-### Relay (the relay's Cloud Run identity only)
+### Relay (requests signed with the relay's Ed25519 key only)
 
-The relay authenticates with a Google-signed ID token:
-- audience `APPBRIDGE_BROKER_AUDIENCE`, default `https://back-channel.app`;
-- email `APPBRIDGE_RELAY_SERVICE_ACCOUNT`.
+The relay runs on Cloudflare, where no Google identity exists, so it signs every request with its
+own Ed25519 key. The private half is the Worker secret `RELAY_SIGNING_KEY`. The broker holds only the
+public half, `APPBRIDGE_RELAY_PUBLIC_KEY`, as base64 DER SubjectPublicKeyInfo.
 
-`verifyGoogleIdToken` (`src/lib/google-id-token.ts`) checks the RS256 signature against Google's
-published keys, plus the issuer, audience, email, `email_verified`, expiry and lifetime. It checks the
-claims before fetching any key, and fetches Google's key set at most once a minute.
+```
+Authorization: AppBridge-Relay v1.<unix seconds>.<22-char base64url nonce>.<base64url signature>
+signed: "appbridge-relay-broker-v1\n" METHOD "\n" PATH "\n" seconds "\n" nonce "\n" hex(SHA-256(raw body))
+```
+
+`relayRequest()` verifies the signature over the exact bytes received, then:
+- refuses a timestamp more than 60 s from now;
+- refuses a nonce already seen in the last 2 minutes. The cache is in memory, because the broker runs
+  as exactly one instance.
+
+No device or agent credential is accepted here. A device's `ab_` credential, a `bc_` key or the
+dashboard cookie all get `401`.
 
 | Route | Request | Response |
 |---|---|---|
 | `POST /relay/redeem` | `{ pass, purpose, connectorSpkiSha256 }` | `{ leaseId, accountId, hostDeviceId, clientDeviceId, enrollmentId, hostConnectorSpkiSha256, clientConnectorSpkiSha256 }`. The `client*` and `enrollmentId` members are `null` for presence. |
 | `POST /relay/renew` | `{ leaseId }` | `{ hostConnectorSpkiSha256, clientConnectorSpkiSha256 }`; extends the lease by 120 s |
+| `POST /relay/release` | `{ leaseId }` | `204`, idempotent. The relay ended the pair or presence, so the lease and the account's slot are freed at once rather than when the lease runs out. |
 
 - **Redeem** always consumes the pass first, whatever follows. It returns its refusals as values
   inside the transaction, so the consumption commits.
 - It then checks the purpose, that the presented key is the one registered for the device the pass
   was issued to (the remote for a session, the host for presence), and the gate.
+- **Cost guard** (Skylar, 2026-09-24): a session is refused with `409` when the account already has
+  3 phones relayed, or when this phone already holds 4 live connections: its workspace socket plus
+  pooled HTTPS connections. The pass is still consumed. The relay answers the phone `429`.
 - A session redemption writes one connection-log row.
-- Any refusal is `403 { "error": "refused" }`, with no detail.
+- Any other refusal is `403 { "error": "refused" }`, with no detail.
 - **Renew** rechecks the gate. A refusal deletes the lease (`403`); an expired lease is `410`, an
   unknown one `404`.
 - The relay compares the keys that renew returns and ends the pair if either changed.
@@ -121,8 +133,7 @@ claims before fetching any key, and fetches Google's key set at most once a minu
 | Variable | Meaning |
 |---|---|
 | `APPBRIDGE_REMOTE_ACCESS` | `on` enables relay access. Anything else is the relay-wide kill switch (`rollout_off`). |
-| `APPBRIDGE_RELAY_SERVICE_ACCOUNT` | The relay's service-account email. When unset, the relay routes answer `503`, which the relay treats as an outage and a refusal. |
-| `APPBRIDGE_BROKER_AUDIENCE` | Optional; defaults to `https://back-channel.app`. |
+| `APPBRIDGE_RELAY_PUBLIC_KEY` | The relay's Ed25519 public key, as base64 DER SubjectPublicKeyInfo. When it is unset or not Ed25519, the relay routes answer `503`, which the relay treats as an outage and a refusal. |
 | `APPBRIDGE_RELAY_URL` | Optional; the informational `relay` member; defaults to `wss://relay.back-channel.app/v1/connect`. |
 
 `cloudbuild.yaml` uses `--set-env-vars`, which **replaces the whole list**. Add these to that list
