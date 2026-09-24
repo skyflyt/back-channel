@@ -12,8 +12,8 @@
  * Rules this file keeps (see the spec):
  * - Separate credentials. Devices authenticate with an `ab_` bearer, resolved
  *   only by deviceContext(). A `bc_` agent key or the dashboard cookie can never
- *   obtain a pass; the relay-facing routes accept only the relay's Google-signed
- *   service identity.
+ *   obtain a pass; the relay-facing routes accept only requests signed with the
+ *   relay's Ed25519 key (relayRequest()).
  * - The gate is read fresh, inside the same serializable transaction, on every
  *   pass, redemption and renewal: rollout flag, entitlement, host relay switch,
  *   device state and the host's enrollment attestation, all in one account.
@@ -26,7 +26,6 @@ import type { AppBridgeDevice, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { rateLimit } from "@/lib/rate-limit";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
-import { verifyGoogleIdToken } from "@/lib/google-id-token";
 
 export const FEATURE = "appbridge.remote_access";
 const CREDENTIAL_PREFIX = "ab_";
@@ -35,6 +34,8 @@ const CODE_TTL_MS = 10 * 60_000;
 const PASS_TTL_MS = 60_000;
 const LEASE_TTL_MS = 120_000;
 const CONNECTION_LOG_MS = 7 * 86_400_000;
+const MAX_REMOTES_PER_ACCOUNT = 3;
+const MAX_PAIRS_PER_REMOTE = 4;
 const MAX_BODY = 4096;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HEX64 = /^[0-9A-F]{64}$/;
@@ -82,24 +83,30 @@ async function handle(fn: () => Promise<NextResponse>): Promise<NextResponse> {
   }
 }
 
-async function readBody(req: NextRequest): Promise<Body> {
+/** The raw request body, at most 4 KiB. */
+async function readRaw(req: NextRequest): Promise<string> {
   if (Number(req.headers.get("content-length")) > MAX_BODY) fail(413, "too_large");
   const reader = req.body?.getReader();
-  if (!reader) return {};
+  if (!reader) return "";
   const chunks: Uint8Array[] = []; let size = 0;
-  try {
-    while (true) {
-      const { value, done } = await reader.read(); if (done) break;
-      size += value.byteLength;
-      if (size > MAX_BODY) { await reader.cancel(); fail(413, "too_large"); }
-      chunks.push(value);
-    }
-    if (!size) return {};
-    const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    if (!body || typeof body !== "object" || Array.isArray(body)) fail(400, "invalid_request");
-    return body as Body;
-  } catch (e) { if (e instanceof AppBridgeError) throw e; return fail(400, "invalid_request"); }
+  while (true) {
+    const { value, done } = await reader.read(); if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY) { await reader.cancel(); fail(413, "too_large"); }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
+
+function parseBody(raw: string): Body {
+  if (!raw) return {};
+  let body: unknown;
+  try { body = JSON.parse(raw); } catch { return fail(400, "invalid_request"); }
+  if (!body || typeof body !== "object" || Array.isArray(body)) fail(400, "invalid_request");
+  return body as Body;
+}
+
+async function readBody(req: NextRequest): Promise<Body> { return parseBody(await readRaw(req)); }
 
 /** The body must have exactly the required members, plus any of the optional ones. */
 function exact(body: Body, required: string[], optional: string[] = []): void {
@@ -143,7 +150,6 @@ function sameFingerprint(a: string, b: string): boolean {
 /** The relay-wide kill switch: remote access works only while this is exactly "on". */
 export const rolloutOn = () => process.env.APPBRIDGE_REMOTE_ACCESS === "on";
 const relayUrl = () => process.env.APPBRIDGE_RELAY_URL || "wss://relay.back-channel.app/v1/connect";
-const brokerAudience = () => process.env.APPBRIDGE_BROKER_AUDIENCE || "https://back-channel.app";
 
 // ── Housekeeping ────────────────────────────────────────────────────────────
 
@@ -177,13 +183,49 @@ async function deviceContext(req: NextRequest, scope: Scope): Promise<{ device: 
   return { device: cred.device, keyHash, scopes: cred.scopes };
 }
 
-/** The relay's Cloud Run identity: a Google ID token for the broker's audience, from the configured service account. */
-async function relayIdentity(req: NextRequest): Promise<void> {
-  const email = process.env.APPBRIDGE_RELAY_SERVICE_ACCOUNT;
-  if (!email) fail(503, "unavailable");
-  const m = /^Bearer (\S+)$/.exec(req.headers.get("authorization") ?? "");
-  if (!m || !(await verifyGoogleIdToken(m[1], { audience: brokerAudience(), email }))) fail(401, "unauthorized");
-  limit("appbridge:relay", email, 1200, 60_000);
+// The relay (a Cloudflare Worker) signs every request with its Ed25519 key; the broker holds only the
+// public half (APPBRIDGE_RELAY_PUBLIC_KEY, base64 DER SubjectPublicKeyInfo). Header:
+//   Authorization: AppBridge-Relay v1.<unix seconds>.<22-char nonce>.<base64url signature>
+// over "appbridge-relay-broker-v1\n" METHOD "\n" PATH "\n" seconds "\n" nonce "\n" hex(SHA-256(body)).
+// A request more than 60 s from now, or a nonce seen in the last 2 minutes, is refused. The nonce
+// cache is in memory: the broker runs as exactly one Cloud Run instance.
+const RELAY_SIGNATURE = /^AppBridge-Relay v1\.(\d{1,12})\.([A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{86})$/;
+const RELAY_SKEW_SEC = 60;
+const NONCE_TTL_MS = 120_000;
+const MAX_NONCES = 20_000;
+const seenNonces = new Map<string, number>();
+let relayKey: { source: string; key: KeyObject } | null = null;
+
+function relayPublicKey(): KeyObject {
+  const source = process.env.APPBRIDGE_RELAY_PUBLIC_KEY ?? "";
+  if (!source) fail(503, "unavailable");
+  if (relayKey?.source !== source) {
+    let key: KeyObject;
+    try { key = createPublicKey({ key: Buffer.from(source, "base64"), format: "der", type: "spki" }); } catch { return fail(503, "unavailable"); }
+    if (key.asymmetricKeyType !== "ed25519") fail(503, "unavailable");
+    relayKey = { source, key };
+  }
+  return relayKey.key;
+}
+
+/** The relay's signed request: verifies the signature over the exact body, then parses it. */
+async function relayRequest(req: NextRequest): Promise<Body> {
+  const key = relayPublicKey();
+  const m = RELAY_SIGNATURE.exec(req.headers.get("authorization") ?? "");
+  if (!m) fail(401, "unauthorized");
+  const [, seconds, nonce, signature] = m;
+  const now = Date.now();
+  if (Math.abs(now / 1000 - Number(seconds)) > RELAY_SKEW_SEC) fail(401, "unauthorized");
+  const raw = await readRaw(req);
+  const signed = `appbridge-relay-broker-v1\n${req.method}\n${req.nextUrl.pathname}\n${seconds}\n${nonce}\n${sha256Hex(raw)}`;
+  let valid = false;
+  try { valid = verifySignature(null, Buffer.from(signed, "utf8"), key, Buffer.from(signature, "base64url")); } catch { valid = false; }
+  if (!valid) fail(401, "unauthorized");
+  for (const [n, expires] of seenNonces) { if (expires > now && seenNonces.size < MAX_NONCES) break; seenNonces.delete(n); }
+  if (seenNonces.has(nonce)) fail(401, "unauthorized");
+  seenNonces.set(nonce, now + NONCE_TTL_MS);
+  limit("appbridge:relay", "relay", 1200, 60_000);
+  return parseBody(raw);
 }
 
 /** Dashboard session (cookie); mutations also need the double-submit CSRF header. */
@@ -367,8 +409,7 @@ export const issueSessionPass = (req: NextRequest) => handle(() => issuePass(req
 
 /** POST /relay/redeem — consume a pass (always, whatever follows) and open a 2-minute lease. */
 export const redeemPass = (req: NextRequest) => handle(async () => {
-  await relayIdentity(req);
-  const body = await readBody(req);
+  const body = await relayRequest(req);
   exact(body, ["pass", "purpose", "connectorSpkiSha256"]);
   if (typeof body.pass !== "string" || !HEX64.test(body.pass) || (body.purpose !== "session" && body.purpose !== "presence") ||
     typeof body.connectorSpkiSha256 !== "string" || !HEX64.test(body.connectorSpkiSha256)) fail(400, "invalid_request");
@@ -386,6 +427,14 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
     if ("refused" in g) return null;
     const presenter = purpose === "session" ? g.remote! : g.host;
     if (!sameFingerprint(presenter.connectorSpkiSha256, presented)) return null;
+    if (purpose === "session") {
+      // Cost guard: at most MAX_REMOTES_PER_ACCOUNT phones relayed at once, each with at most
+      // MAX_PAIRS_PER_REMOTE connections (its workspace socket plus pooled HTTPS connections).
+      const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "session", expiresAt: { gt: now } }, select: { remoteDeviceId: true } });
+      const remotes = new Set(live.map(l => l.remoteDeviceId));
+      if (live.filter(l => l.remoteDeviceId === binding.remoteDeviceId).length >= MAX_PAIRS_PER_REMOTE ||
+        (!remotes.has(binding.remoteDeviceId) && remotes.size >= MAX_REMOTES_PER_ACCOUNT)) return "capacity" as const;
+    }
     const lease = await tx.appBridgeLease.create({ data: { id: newId(), purpose, ...binding, expiresAt: new Date(now.getTime() + LEASE_TTL_MS) } });
     if (purpose === "session") await tx.appBridgeConnectionEvent.create({ data: { accountId: binding.accountId, hostDeviceId: binding.hostDeviceId, remoteDeviceId: binding.remoteDeviceId!, at: now } });
     return {
@@ -395,14 +444,22 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
     };
   }, serializable);
   if (!grant) return json({ error: "refused" }, 403);
+  if (grant === "capacity") return json({ error: "refused" }, 409);
   void sweep();
   return json(grant);
 });
 
+/** POST /relay/release — the relay ended a pair or presence: free its lease (and the account's slot) now. Idempotent. */
+export const releaseLease = (req: NextRequest) => handle(async () => {
+  const body = await relayRequest(req);
+  exact(body, ["leaseId"]);
+  await prisma.appBridgeLease.deleteMany({ where: { id: id(body.leaseId) } });
+  return new NextResponse(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+});
+
 /** POST /relay/renew — recheck the gate for a live lease and extend it by 120 s; a refusal deletes the lease. */
 export const renewLease = (req: NextRequest) => handle(async () => {
-  await relayIdentity(req);
-  const body = await readBody(req);
+  const body = await relayRequest(req);
   exact(body, ["leaseId"]);
   const leaseId = id(body.leaseId);
   const now = new Date();
