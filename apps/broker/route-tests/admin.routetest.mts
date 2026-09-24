@@ -10,6 +10,7 @@ import { NextRequest } from "next/server";
 type Row = Record<string, any>;
 const tables: Record<string, Row[]> = {};
 const calls: string[] = [];
+const queryLog: { name: string; op: string; args: any }[] = [];
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 function cond(row: Row, k: string, v: any): boolean {
@@ -45,13 +46,14 @@ function pick(row: Row, select?: Row, include?: Row): Row {
 function model(name: string) {
   tables[name] ??= [];
   const rows = () => (tables[name] ??= []);
-  const log = (op: string) => calls.push(`${name}.${op}`);
+  const log = (op: string, args?: any) => { calls.push(`${name}.${op}`); queryLog.push({ name, op, args: args ?? {} }); };
   return {
     count: async ({ where }: any = {}) => { log("count"); return rows().filter(r => matches(r, where)).length; },
-    findUnique: async ({ where, select, include }: any) => { log("findUnique"); const r = rows().find(x => matches(x, where)); return r ? pick(r, select, include) : null; },
-    findFirst: async ({ where, select }: any = {}) => { log("findFirst"); const r = rows().find(x => matches(x, where)); return r ? pick(r, select) : null; },
-    findMany: async ({ where, select, include, orderBy, skip, take }: any = {}) => {
-      log("findMany");
+    findUnique: async (args: any) => { const { where, select, include } = args; log("findUnique", args); const r = rows().find(x => matches(x, where)); return r ? pick(r, select, include) : null; },
+    findFirst: async (args: any = {}) => { const { where, select } = args; log("findFirst", args); const r = rows().find(x => matches(x, where)); return r ? pick(r, select) : null; },
+    findMany: async (args: any = {}) => {
+      const { where, select, include, orderBy, skip, take } = args;
+      log("findMany", args);
       let list = rows().filter(r => matches(r, where));
       const order = Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : [];
       if (order.length) list = [...list].sort((a, b) => {
@@ -60,8 +62,9 @@ function model(name: string) {
       });
       return list.slice(skip ?? 0, (skip ?? 0) + (take ?? Infinity)).map(r => pick(r, select, include));
     },
-    groupBy: async ({ by, where, _count, _max }: any) => {
-      log("groupBy");
+    groupBy: async (args: any) => {
+      const { by, where, _count, _max } = args;
+      log("groupBy", args);
       const groups = new Map<string, Row[]>();
       for (const r of rows().filter(x => matches(x, where))) {
         const key = JSON.stringify(by.map((k: string) => r[k]));
@@ -84,11 +87,31 @@ function model(name: string) {
 const models: Record<string, any> = {};
 const db: any = new Proxy({}, {
   get(_t, prop: string) {
-    if (prop === "$queryRaw") return async (_s: TemplateStringsArray, since: Date) => {
-      calls.push("$queryRaw");
-      const byDay = new Map<string, number>();
-      for (const e of tables.appBridgeConnectionEvent ?? []) if (e.at >= since) { const d = e.at.toISOString().slice(0, 10); byDay.set(d, (byDay.get(d) ?? 0) + 1); }
-      return [...byDay].map(([d, n]) => ({ day: new Date(`${d}T00:00:00Z`), n }));
+    if (prop === "$queryRaw") return async (strings: TemplateStringsArray, ...values: any[]) => {
+      const sql = strings.join("?");
+      calls.push("$queryRaw"); queryLog.push({ name: "$queryRaw", op: "sql", args: { sql } });
+      if (sql.includes('"AppBridgeConnectionEvent"')) {
+        const byDay = new Map<string, number>();
+        for (const e of tables.appBridgeConnectionEvent ?? []) if (e.at >= values[0]) { const d = e.at.toISOString().slice(0, 10); byDay.set(d, (byDay.get(d) ?? 0) + 1); }
+        return [...byDay].map(([d, n]) => ({ day: new Date(`${d}T00:00:00Z`), n }));
+      }
+      if (sql.includes("percentile_cont")) {
+        const secs = (tables.session ?? []).filter(s => s.endedAt && s.endedAt >= values[0]).map(s => (s.endedAt - s.startedAt) / 1000).sort((a, b) => a - b);
+        const mid = secs.length / 2; // percentile_cont(0.5): interpolates between the middle two
+        return [{ secs: secs.length === 0 ? null : secs.length % 2 ? secs[Math.floor(mid)] : (secs[mid - 1] + secs[mid]) / 2 }];
+      }
+      if (sql.includes('JOIN "TrustedPeer"')) {
+        const t = tables.trustedPeer ?? [];
+        return [{ n: t.filter(a => a.accountId < a.trustedAccountId && t.some(b => b.accountId === a.trustedAccountId && b.trustedAccountId === a.accountId)).length }];
+      }
+      if (sql.includes("UNION")) {
+        const ids = new Set([
+          ...(tables.session ?? []).filter(s => !s.endedAt && s.liveExpiresAt > values[0]).map(s => s.id),
+          ...(tables.frame ?? []).filter(f => f.createdAt >= values[1]).map(f => f.sessionId),
+        ]);
+        return [{ n: ids.size }];
+      }
+      throw new Error(`mock: unexpected SQL ${sql}`);
     };
     if (prop === "$transaction") return async (fn: any) => fn(db);
     if (prop === "then") return undefined;
@@ -96,6 +119,7 @@ const db: any = new Proxy({}, {
   },
 });
 
+let analyticsCache: { at: number; payload: unknown } | undefined;
 before(() => {
   mock.module("@/lib/db", { namedExports: { prisma: db } });
   mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: true, retryAfterSec: 0 }) } });
@@ -104,10 +128,12 @@ before(() => {
 const OWNER = "Owner@Example.com"; // mixed case on purpose: the allowlist match is case-insensitive
 const DAY = 86_400_000;
 const ago = (ms: number) => new Date(Date.now() - ms);
-beforeEach(() => {
+beforeEach(async () => {
   for (const k of Object.keys(tables)) delete tables[k];
   for (const k of ["account", "sessionCookie", "agentToken", "appBridgeDevice", "appBridgeCredential", "appBridgeEntitlement", "appBridgeConnectionEvent"]) tables[k] = [];
-  calls.length = 0;
+  calls.length = 0; queryLog.length = 0;
+  analyticsCache ??= (await import("@/lib/admin-analytics")).analyticsCache;
+  analyticsCache.at = 0; analyticsCache.payload = null;
   process.env.ADMIN_EMAILS = " owner@example.com , ";
   delete process.env.RESEND_API_KEY; delete process.env.RESEND_READ_API_KEY;
   const account = (id: string, handle: string, email: string, extra: Row = {}) =>
@@ -142,7 +168,22 @@ beforeEach(() => {
     { id: "c2", accountId: "acct-user", hostDeviceId: "dev-pc", remoteDeviceId: "dev-ph", at: ago(2 * DAY) },
     { id: "c3", accountId: "acct-user", hostDeviceId: "dev-pc", remoteDeviceId: "dev-ph", at: ago(2 * DAY + 3600_000) },
   );
-  tables.frame = [{ id: "f1", sessionId: "s1", body: JSON.stringify({ type: "msg", sealed: "SECRET-sealed-body" }), createdAt: ago(10 * DAY) }];
+  tables.frame = [
+    { id: 1n, sessionId: "s1", roleDest: "host", seq: 1, body: JSON.stringify({ type: "msg", sealed: "SECRET-sealed-body" }), createdAt: ago(10 * 60_000) },
+    { id: 2n, sessionId: "s1", roleDest: "visitor", seq: 1, body: "SECRET-sealed-body-2", createdAt: ago(5 * 60_000) },
+  ];
+  // Sessions: s1 live (and framed), s2 ended after 10 min, s3 ended after 30 min.
+  tables.session = [
+    { id: "s1", startedAt: ago(3600_000), endedAt: null, liveExpiresAt: new Date(Date.now() + 600_000), scopesGranted: ["chat"] },
+    { id: "s2", startedAt: ago(DAY), endedAt: new Date(Date.now() - DAY + 10 * 60_000), liveExpiresAt: null, scopesGranted: [] },
+    { id: "s3", startedAt: ago(2 * DAY), endedAt: new Date(Date.now() - 2 * DAY + 30 * 60_000), liveExpiresAt: null, scopesGranted: [] },
+  ];
+  // Trust: owner<->user mutual, user->idle one-way.
+  tables.trustedPeer = [
+    { id: "t1", accountId: "acct-owner", trustedAccountId: "acct-user" },
+    { id: "t2", accountId: "acct-user", trustedAccountId: "acct-owner" },
+    { id: "t3", accountId: "acct-user", trustedAccountId: "acct-idle" },
+  ];
   tables.agentPayload = [{ id: "p1", accountId: "acct-user", body: "SECRET-payload" }];
 });
 
@@ -156,7 +197,8 @@ const routes = {
 };
 type Who = "none" | "owner" | "admin" | "user" | "unverified";
 const COOKIES: Record<Who, string | null> = { none: null, owner: "cs_owner", admin: "cs_admin", user: "cs_user", unverified: "cs_unverified" };
-function req(method: string, who: Who, o: { csrf?: "ok" | "missing" | "mismatch"; bearer?: string; body?: unknown; query?: string } = {}) {
+type Csrf = "ok" | "missing" | "mismatch" | "same-length" | "shorter" | "prefix-longer" | "empty";
+function req(method: string, who: Who, o: { csrf?: Csrf; bearer?: string; body?: unknown; query?: string } = {}) {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const cookies: string[] = [];
   if (COOKIES[who]) cookies.push(`bc_session=${COOKIES[who]}`);
@@ -165,6 +207,10 @@ function req(method: string, who: Who, o: { csrf?: "ok" | "missing" | "mismatch"
   const csrf = o.csrf ?? (method === "GET" ? undefined : "ok");
   if (csrf === "ok") headers["x-bc-csrf"] = "tok";
   if (csrf === "mismatch") headers["x-bc-csrf"] = "other";
+  if (csrf === "same-length") headers["x-bc-csrf"] = "tak";   // cookie is "tok"
+  if (csrf === "shorter") headers["x-bc-csrf"] = "to";
+  if (csrf === "prefix-longer") headers["x-bc-csrf"] = "toke";
+  if (csrf === "empty") headers["x-bc-csrf"] = "";
   if (o.bearer) headers.authorization = `Bearer ${o.bearer}`;
   return new NextRequest(`https://back-channel.app/api/admin/x${o.query ?? ""}`, { method, headers, ...(o.body === undefined ? {} : { body: JSON.stringify(o.body) }) });
 }
@@ -223,6 +269,45 @@ test("the owner gets analytics: counts, DAU/WAU/MAU, Remote aggregates, and no s
   assert.equal(body.remote.connections_per_day_7d.length, 7);
   assert.equal(body.remote.connections_per_day_7d.reduce((n: number, d: { count: number }) => n + d.count, 0), 3);
   assert.match(body.privacy_note, /Owner-only/);
+  // Engagement / features now come from aggregates, not row dumps.
+  assert.equal(body.engagement.active_sessions_now, 1, "s1 is live and framed: counted once");
+  assert.equal(body.engagement.median_session_minutes_30d, 20, "median of 10 and 30 minutes");
+  assert.deepEqual(body.engagement.frames_buffered_by_role, { host: 1, visitor: 1 });
+  assert.equal(body.engagement.frames_buffered_total, 2);
+  assert.equal(body.features.trust_rows, 3);
+  assert.equal(body.features.trust_pairs_mutual, 1);
+});
+
+/** Every row read has an explicit take within the cap; Frame.body is never selected or referenced. */
+function assertBoundedReads(label: string) {
+  assert.ok(queryLog.length > 0, `${label}: queries were observed`);
+  for (const q of queryLog) {
+    const where = `${label}: ${q.name}.${q.op}`;
+    if (q.op === "findMany") {
+      assert.ok(Number.isInteger(q.args.take) && q.args.take > 0 && q.args.take <= 5000, `${where} has an explicit take ≤ 5000 (got ${q.args.take})`);
+      assert.ok(q.args.select, `${where} selects explicit columns`);
+    }
+    if (q.name === "frame") {
+      assert.ok(q.op === "count" || q.op === "groupBy", `${where}: frames are only counted or grouped`);
+      if (q.op === "groupBy") assert.ok(!q.args.by.includes("body"), `${where}: not grouped by body`);
+      assert.ok(!q.args.select?.body, `${where}: body not selected`);
+    }
+    if (q.name === "trustedPeer") assert.equal(q.op, "count", `${where}: trust rows are only counted`);
+    if (q.name === "session") assert.ok(q.op === "count" || (q.op === "findMany" && q.args.take <= 20), `${where}: sessions only counted or the latest 20`);
+    if (q.op === "sql") assert.ok(!/"body"/i.test(q.args.sql), `${where}: SQL never references Frame.body`);
+  }
+}
+
+test("analytics reads are bounded: counts/groupBy/one-row SQL or an explicit take; no Frame body is read", async () => {
+  assert.equal((await call.analytics(req("GET", "owner"))).status, 200);
+  assertBoundedReads("analytics");
+  const frameOps = queryLog.filter(q => q.name === "frame").map(q => q.op).sort();
+  assert.deepEqual(frameOps, ["count", "groupBy"]);
+});
+
+test("users reads are bounded too", async () => {
+  assert.equal((await call.users(req("GET", "owner"))).status, 200);
+  assertBoundedReads("users");
 });
 
 test("the owner gets the users page: identity, status, agents, Remote per user; no secrets; bounded", async () => {
@@ -315,11 +400,28 @@ test("ADMIN_EMAILS unset or empty → everyone refused (fail closed)", async () 
 
 test("mutations without a matching CSRF header → 403, even for the owner", async () => {
   for (const [name, method, body] of writes) {
-    for (const csrf of ["missing", "mismatch"] as const) {
+    for (const csrf of ["missing", "mismatch", "same-length", "shorter", "prefix-longer", "empty"] as const) {
       const before = ownerMutation();
       await expectRefused(await call[name](req(method, "owner", { csrf, body })), 403, "csrf", `${name} csrf ${csrf}`);
       assert.deepEqual(ownerMutation(), before);
     }
+  }
+  // Positive control: the same request with the matching token goes through.
+  assert.equal((await call.entitlements(req("PUT", "owner", { csrf: "ok", body: { handle: "user@bc", active: false } }))).status, 200);
+});
+
+test("csrfValid (real src/lib/auth.ts) is an exact, constant-time compare", async () => {
+  const { csrfValid } = await import("@/lib/auth");
+  const tok = "AbCdEfGhIjKlMnOpQrStUvWx";
+  assert.equal(csrfValid(tok, tok), true);
+  assert.equal(csrfValid(tok, `${tok}`.slice(0)), true, "equal content, different string objects");
+  assert.equal(csrfValid(`${tok.slice(0, -1)}y`, tok), false, "same length, last char differs");
+  assert.equal(csrfValid(`z${tok.slice(1)}`, tok), false, "same length, first char differs");
+  assert.equal(csrfValid(tok.slice(0, -1), tok), false, "shorter");
+  assert.equal(csrfValid(`${tok}x`, tok), false, "longer (cookie is a prefix)");
+  assert.equal(csrfValid("é", "ab"), false, "same UTF-16 length, different byte length: no throw");
+  for (const [h, c] of [[null, tok], [tok, null], [undefined, tok], [tok, undefined], ["", ""], ["", tok], [tok, ""]] as const) {
+    assert.equal(csrfValid(h, c), false, `missing/empty: ${JSON.stringify([h, c])}`);
   }
 });
 

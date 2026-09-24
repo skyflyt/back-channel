@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/db";
 import { adminJson, requireOwnerAdmin } from "@/lib/admin";
-import { activitySignals, activityStatus, connectionsPerDay, REMOTE_FEATURE } from "@/lib/admin-analytics";
+import { activeSessionsNow, activitySignals, analyticsCache, activityStatus, connectionsPerDay, MAX_SCAN, medianSessionMinutes, mutualTrustPairs, REMOTE_FEATURE } from "@/lib/admin-analytics";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,8 +10,8 @@ const DAY = 864e5;
 const H24 = DAY, D7 = 7 * DAY, D30 = 30 * DAY;
 
 // 60s in-memory cache (this page isn't realtime; heavy aggregation shouldn't run
-// per request). Single-instance Cloud Run, so a module-level cache is fine.
-let CACHE: { at: number; payload: unknown } | null = null;
+// per request). Single-instance Cloud Run, so a module-level cache is fine. It lives
+// in src/lib/admin-analytics.ts so tests can clear it between cases.
 const CACHE_TTL_MS = 60_000;
 
 // Email delivery (last 7d) from Resend's API. Resend has no aggregate-stats
@@ -76,29 +76,38 @@ export async function GET(req: NextRequest) {
 
   // Audit every view (who looked, when) — but serve a cached payload if fresh.
   await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "admin.analytics_viewed", detail: {} } }).catch(() => {});
-  if (CACHE && Date.now() - CACHE.at < CACHE_TTL_MS) {
-    return adminJson({ ...(CACHE.payload as object), cached: true });
+  if (analyticsCache.payload && Date.now() - analyticsCache.at < CACHE_TTL_MS) {
+    return adminJson({ ...(analyticsCache.payload as object), cached: true });
   }
 
   const now = Date.now();
   const since = (ms: number) => new Date(now - ms);
-  const inWin = (d: Date | null | undefined, ms: number) => !!d && now - d.getTime() <= ms;
 
   const population = { reserved: false };
+  // Every read here is a count, a groupBy, a one-row SQL aggregate, or a findMany
+  // with an explicit take. Nothing reads Frame.body (sealed content).
   const [
-    accountsTotal, accountsVerified, accountsReserved, recentAccounts, agentGroups, newAgentRows, signals,
+    accountsTotal, accountsVerified, accountsReserved, newAcc24, newAcc7, newAcc30, pendingSignups24, signupDays,
+    agentGroups, newAg24, newAg7, newAg30, signals,
     liveDevices, revokedDevices, entitledCount, connections7d, perDay, sessionsTotal, sessions24, sessions7, sessions30,
-    endedRecent, liveNow, recentFrames, framesTotal,
-    trustRows, mutualPairs, inbox7, sharesTotal, topShares,
+    median, activeNow, framesByRole, framesTotal,
+    trustRows, mutual, inbox7, sharesTotal, topShares,
     sched7, magicAll, magicRedeemed, ex7, exRedeemed7,
-    recentSignups, recentSessions, liveSessionIds, framedSessionIds, rlHits,
+    recentSignups, recentSessions, rlHits,
   ] = await Promise.all([
     prisma.account.count({ where: population }),
     prisma.account.count({ where: { ...population, emailVerifiedAt: { not: null } } }),
     prisma.account.count({ where: { reserved: true } }),
-    prisma.account.findMany({ where: { ...population, createdAt: { gte: since(D30) } }, select: { createdAt: true, emailVerifiedAt: true } }),
+    prisma.account.count({ where: { ...population, createdAt: { gte: since(H24) } } }),
+    prisma.account.count({ where: { ...population, createdAt: { gte: since(D7) } } }),
+    prisma.account.count({ where: { ...population, createdAt: { gte: since(D30) } } }),
+    prisma.account.count({ where: { ...population, emailVerifiedAt: null, createdAt: { gte: since(H24) } } }),
+    // Sparkline only: one timestamp column, newest first, capped.
+    prisma.account.findMany({ where: { ...population, createdAt: { gte: since(D30) } }, select: { createdAt: true }, orderBy: { createdAt: "desc" }, take: MAX_SCAN }),
     prisma.agentToken.groupBy({ by: ["accountId"], where: { revokedAt: null, account: population }, _count: { _all: true } }),
-    prisma.agentToken.findMany({ where: { revokedAt: null, createdAt: { gte: since(D30) } }, select: { createdAt: true } }),
+    prisma.agentToken.count({ where: { revokedAt: null, createdAt: { gte: since(H24) } } }),
+    prisma.agentToken.count({ where: { revokedAt: null, createdAt: { gte: since(D7) } } }),
+    prisma.agentToken.count({ where: { revokedAt: null, createdAt: { gte: since(D30) } } }),
     activitySignals(),
     prisma.appBridgeDevice.groupBy({ by: ["accountId", "role"], where: { revokedAt: null }, _count: { _all: true } }),
     prisma.appBridgeDevice.count({ where: { revokedAt: { not: null } } }),
@@ -109,12 +118,12 @@ export async function GET(req: NextRequest) {
     prisma.session.count({ where: { startedAt: { gte: since(H24) } } }),
     prisma.session.count({ where: { startedAt: { gte: since(D7) } } }),
     prisma.session.count({ where: { startedAt: { gte: since(D30) } } }),
-    prisma.session.findMany({ where: { endedAt: { gte: since(D30) } }, select: { startedAt: true, endedAt: true } }),
-    prisma.session.count({ where: { endedAt: null, liveExpiresAt: { gt: new Date() } } }),
-    prisma.frame.findMany({ take: 5000, select: { body: true } }),
+    medianSessionMinutes(since(D30)),
+    activeSessionsNow(new Date(now), since(36e5)),
+    prisma.frame.groupBy({ by: ["roleDest"], _count: { _all: true } }),
     prisma.frame.count(),
     prisma.trustedPeer.count(),
-    prisma.trustedPeer.findMany({ select: { accountId: true, trustedAccountId: true } }),
+    mutualTrustPairs(),
     prisma.inboxRequest.count({ where: { createdAt: { gte: since(D7) } } }),
     prisma.skillShare.count(),
     prisma.skillShare.groupBy({ by: ["skillId"], _count: true, orderBy: { _count: { skillId: "desc" } }, take: 5 }),
@@ -125,28 +134,18 @@ export async function GET(req: NextRequest) {
     prisma.exchangeCode.count({ where: { createdAt: { gte: since(D7) }, usedAt: { not: null } } }),
     prisma.account.findMany({ orderBy: { createdAt: "desc" }, take: 20, select: { handle: true, email: true, createdAt: true, emailVerifiedAt: true } }),
     prisma.session.findMany({ orderBy: { startedAt: "desc" }, take: 20, select: { startedAt: true, endedAt: true, scopesGranted: true } }),
-    prisma.session.findMany({ where: { endedAt: null, liveExpiresAt: { gt: new Date() } }, select: { id: true } }),
-    prisma.frame.findMany({ where: { createdAt: { gte: since(36e5) } }, distinct: ["sessionId"], select: { sessionId: true } }),
-    prisma.dailyMetric.findMany({ where: { key: "rate_limit_hits", day: { in: [new Date(now).toISOString().slice(0, 10), new Date(now - DAY).toISOString().slice(0, 10)] } } }),
+    prisma.dailyMetric.findMany({ where: { key: "rate_limit_hits", day: { in: [new Date(now).toISOString().slice(0, 10), new Date(now - DAY).toISOString().slice(0, 10)] } }, select: { count: true }, take: 10 }),
   ]);
 
   // ── Adoption ──
   const accountsPending = accountsTotal - accountsVerified;
-  const newAccounts = { "24h": 0, "7d": 0, "30d": 0 };
+  const newAccounts = { "24h": newAcc24, "7d": newAcc7, "30d": newAcc30 };
   const daily = new Array(30).fill(0); // sparkline: new accounts per day, oldest→newest
-  for (const a of recentAccounts) {
-    if (inWin(a.createdAt, H24)) newAccounts["24h"]++;
-    if (inWin(a.createdAt, D7)) newAccounts["7d"]++;
-    if (inWin(a.createdAt, D30)) newAccounts["30d"]++;
+  for (const a of signupDays) {
     const ageDays = Math.floor((now - a.createdAt.getTime()) / DAY);
     if (ageDays >= 0 && ageDays < 30) daily[29 - ageDays]++;
   }
-  const newAgents = { "24h": 0, "7d": 0, "30d": 0 };
-  for (const t of newAgentRows) {
-    if (inWin(t.createdAt, H24)) newAgents["24h"]++;
-    if (inWin(t.createdAt, D7)) newAgents["7d"]++;
-    if (inWin(t.createdAt, D30)) newAgents["30d"]++;
-  }
+  const newAgents = { "24h": newAg24, "7d": newAg7, "30d": newAg30 };
   const agentsTotal = agentGroups.reduce((n, g) => n + g._count._all, 0);
   const accountsWithAgent = agentGroups.length;
   const agentsPerAccount = { none: Math.max(0, accountsTotal - accountsWithAgent), one: 0, two: 0, three_plus: 0 };
@@ -187,27 +186,13 @@ export async function GET(req: NextRequest) {
   }
 
   // ── Engagement ──
-  const liveIds = new Set(liveSessionIds.map((s) => s.id));
-  const framed = new Set(framedSessionIds.map((s) => s.sessionId));
-  const activeNow = new Set<string>([...liveIds, ...framed]).size;
-  const durations = endedRecent.filter((s) => s.endedAt).map((s) => (s.endedAt!.getTime() - s.startedAt.getTime()) / 60000).sort((a, b) => a - b);
-  const median = durations.length ? Math.round(durations[Math.floor(durations.length / 2)]) : null;
-  // Frame types — point-in-time snapshot of what's buffered RIGHT NOW (frames are
-  // transient: purged when a session ends, so there's no historical throughput
-  // counter yet). type is plaintext in the envelope; content stays sealed.
-  const framesByType: Record<string, number> = {};
-  for (const f of recentFrames) {
-    let t = "unparsed";
-    try { t = (JSON.parse(f.body)?.type as string) || "untyped"; } catch { /* leave */ }
-    framesByType[t] = (framesByType[t] ?? 0) + 1;
-  }
+  // Frames buffered right now, by addressee role. Frames are transient (purged
+  // when a session ends) and their bodies are sealed; the body is never read.
+  const framesByRoleMap: Record<string, number> = {};
+  for (const g of framesByRole) framesByRoleMap[g.roleDest] = g._count._all;
 
   // ── Features ──
-  const directed = new Set(mutualPairs.map((r) => `${r.accountId}|${r.trustedAccountId}`));
-  let mutual = 0;
-  for (const r of mutualPairs) if (directed.has(`${r.trustedAccountId}|${r.accountId}`)) mutual++;
-  mutual = Math.floor(mutual / 2); // each mutual pair counted from both sides
-  const skillNameById = new Map((await prisma.userSkill.findMany({ where: { id: { in: topShares.map((s) => s.skillId) } }, select: { id: true, name: true } })).map((s) => [s.id, s.name]));
+  const skillNameById = new Map((await prisma.userSkill.findMany({ where: { id: { in: topShares.map((s) => s.skillId) } }, select: { id: true, name: true }, take: 5 })).map((s) => [s.id, s.name]));
   const schedMap = Object.fromEntries(sched7.map((g) => [g.eventType, g._count]));
 
   // ── Recent activity (owner view — full handle + email; owner-only endpoint) ──
@@ -249,8 +234,8 @@ export async function GET(req: NextRequest) {
       sessions: { "24h": sessions24, "7d": sessions7, "30d": sessions30 },
       active_sessions_now: activeNow,
       frames_buffered_total: framesTotal,
-      frames_buffered_by_type: framesByType,
-      frames_note: "Point-in-time snapshot of frames buffered right now; frames are transient (purged on session end), so this isn't cumulative throughput. Type only — content stays sealed.",
+      frames_buffered_by_role: framesByRoleMap,
+      frames_note: "Point-in-time count of frames buffered right now, by addressee role. Frames are transient (purged on session end), so this isn't cumulative throughput. Frame bodies are sealed and never read here.",
       median_session_minutes_30d: median,
     },
     features: {
@@ -268,13 +253,13 @@ export async function GET(req: NextRequest) {
       inbox_check_adoption_pct: accountsWithAgent ? Math.round((agentActive24h / accountsWithAgent) * 100) : 0,
       accounts_with_active_agent_24h: agentActive24h,
       accounts_with_agent: accountsWithAgent,
-      pending_signups_24h: recentAccounts.filter((a) => !a.emailVerifiedAt && inWin(a.createdAt, H24)).length,
+      pending_signups_24h: pendingSignups24,
       rate_limit_hits_24h: rlHits.reduce((sum, m) => sum + m.count, 0), // today + yesterday UTC buckets (~24h)
       email_delivery: emailDelivery, // pulled from Resend's /emails list, tallied over 7d
     },
     recent: { signups: recentSignupRows, sessions: recentSessionRows },
     privacy_note: "Owner-only. Metadata only: counts, timestamps, handles and emails. Message content is end-to-end encrypted and unreadable here. No key hashes, credentials, cookies, connector keys, payloads or artifacts are returned, and peer pairs are never listed.",
   };
-  CACHE = { at: Date.now(), payload };
+  analyticsCache.at = Date.now(); analyticsCache.payload = payload;
   return adminJson(payload);
 }

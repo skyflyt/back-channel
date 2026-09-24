@@ -30,7 +30,7 @@ type Analytics = {
   };
   engagement: {
     sessions_total: number; sessions: Win; active_sessions_now: number;
-    frames_buffered_total: number; frames_buffered_by_type: Record<string, number>;
+    frames_buffered_total: number; frames_buffered_by_role: Record<string, number>;
     frames_note: string; median_session_minutes_30d: number | null;
   };
   features: {

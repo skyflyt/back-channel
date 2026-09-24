@@ -18,6 +18,11 @@
 import { prisma } from "@/lib/db";
 
 export const DAY_MS = 86_400_000;
+/** Hard cap on any row list read for analytics. Anything bigger must be an aggregate. */
+export const MAX_SCAN = 5000;
+
+/** The analytics route's 60 s payload cache (owner-only data; served only after the gate). */
+export const analyticsCache: { at: number; payload: unknown } = { at: 0, payload: null };
 export const REMOTE_FEATURE = "appbridge.remote_access"; // same value as FEATURE in src/lib/appbridge.ts
 
 export type ActivityStatus = "active_7d" | "active_30d" | "dormant" | "never";
@@ -51,7 +56,7 @@ export async function activitySignals(ids?: string[]): Promise<Map<string, Activ
     prisma.agentToken.groupBy({ by: ["accountId"], where: { ...scope, lastUsedAt: { not: null } }, _max: { lastUsedAt: true } }),
     prisma.sessionCookie.groupBy({ by: ["accountId"], where: scope, _max: { lastUsedAt: true, createdAt: true } }),
     prisma.appBridgeConnectionEvent.groupBy({ by: ["accountId"], where: scope, _max: { at: true } }),
-    prisma.account.findMany({ where: { ...(ids ? { id: { in: ids } } : {}), apiKeyLastUsedAt: { not: null } }, select: { id: true, apiKeyLastUsedAt: true } }),
+    prisma.account.findMany({ where: { ...(ids ? { id: { in: ids } } : {}), apiKeyLastUsedAt: { not: null } }, select: { id: true, apiKeyLastUsedAt: true }, orderBy: { apiKeyLastUsedAt: "desc" }, take: ids ? ids.length : MAX_SCAN }),
   ]);
   const out = new Map<string, ActivitySignals>();
   const get = (id: string) => {
@@ -78,7 +83,7 @@ export async function remoteByAccount(ids: string[], now = Date.now()): Promise<
   const [live, revoked, ents, conns7, connsAll] = await Promise.all([
     prisma.appBridgeDevice.groupBy({ by: ["accountId", "role"], where: { ...scope, revokedAt: null }, _count: { _all: true } }),
     prisma.appBridgeDevice.groupBy({ by: ["accountId", "role"], where: { ...scope, revokedAt: { not: null } }, _count: { _all: true } }),
-    prisma.appBridgeEntitlement.findMany({ where: { ...scope, feature: REMOTE_FEATURE }, select: { accountId: true, active: true } }),
+    prisma.appBridgeEntitlement.findMany({ where: { ...scope, feature: REMOTE_FEATURE }, select: { accountId: true, active: true }, take: ids.length }),
     prisma.appBridgeConnectionEvent.groupBy({ by: ["accountId"], where: { ...scope, at: { gte: new Date(now - 7 * DAY_MS) } }, _count: { _all: true } }),
     prisma.appBridgeConnectionEvent.groupBy({ by: ["accountId"], where: scope, _max: { at: true } }),
   ]);
@@ -109,4 +114,37 @@ export async function connectionsPerDay(now = Date.now()): Promise<{ day: string
   const byDay = new Map<string, number>();
   for (const r of rows) byDay.set(new Date(r.day).toISOString().slice(0, 10), Number(r.n));
   return days.map(day => ({ day, count: byDay.get(day) ?? 0 }));
+}
+
+// ── Aggregates computed in the database (one row back each) ──
+// These replace reads that used to load every trust row, every session ended in
+// the last 30 days, and encrypted frame bodies. None of them reads Frame.body.
+
+/** Median minutes of sessions that ended since `since`; null when none did. */
+export async function medianSessionMinutes(since: Date): Promise<number | null> {
+  const [row] = await prisma.$queryRaw<{ secs: number | null }[]>`
+    SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM ("endedAt" - "startedAt"))) AS secs
+    FROM "Session" WHERE "endedAt" >= ${since}`;
+  const secs = row?.secs == null ? null : Number(row.secs);
+  return secs == null || !Number.isFinite(secs) ? null : Math.round(secs / 60);
+}
+
+/** Pairs of accounts that trust each other (both directed rows present), each pair counted once. */
+export async function mutualTrustPairs(): Promise<number> {
+  const [row] = await prisma.$queryRaw<{ n: number | bigint }[]>`
+    SELECT COUNT(*)::int AS n FROM "TrustedPeer" a
+    JOIN "TrustedPeer" b ON b."accountId" = a."trustedAccountId" AND b."trustedAccountId" = a."accountId"
+    WHERE a."accountId" < a."trustedAccountId"`;
+  return Number(row?.n ?? 0);
+}
+
+/** Sessions that are live now or had a frame in the last hour (distinct). */
+export async function activeSessionsNow(now: Date, frameSince: Date): Promise<number> {
+  const [row] = await prisma.$queryRaw<{ n: number | bigint }[]>`
+    SELECT COUNT(*)::int AS n FROM (
+      SELECT "id" AS sid FROM "Session" WHERE "endedAt" IS NULL AND "liveExpiresAt" > ${now}
+      UNION
+      SELECT "sessionId" AS sid FROM "Frame" WHERE "createdAt" >= ${frameSince}
+    ) s`;
+  return Number(row?.n ?? 0);
 }
