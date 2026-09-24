@@ -69,6 +69,22 @@ try{
  await prisma.agentToken.update({where:{id:b.config.agentId},data:{revokedAt:new Date()}});
  await assert.rejects(b.client.request('/agents'));
  console.log('PASS: policy rejection reported to broker and token revocation enforced');
+ // Contention on the same rows. A fresh token's first request fires getAuthContext's
+ // throttled lastUsedAt touch OUTSIDE the transaction, and identical enrolls/submits
+ // race each other's UPDATE/INSERT of one row: Postgres aborts the losers with 40001
+ // (this is exactly how the first enroll above flaked on 2026-09-24). Serializable
+ // aborts are expected; none may reach a caller as a 503 while the retry bound holds.
+ const racers=await Promise.all(Array.from({length:4},async(_,i)=>{
+  const token='bc_'+randomBytes(24).toString('base64url'),keys=identity(),name='racer-'+i;
+  const row=await prisma.agentToken.create({data:{accountId:account.id,name,keyHash:createHash('sha256').update(token).digest('hex')}});
+  return {client:new Client({broker,token}),id:row.id,body:{name,encryptionKey:keys.encryptionKey,signingKey:keys.signingKey}};
+ }));
+ const failures=(all:PromiseSettledResult<unknown>[])=>all.flatMap(r=>r.status==='rejected'?[(r.reason as {status?:number}).status??String(r.reason)]:[]);
+ assert.deepEqual(failures(await Promise.allSettled(racers.flatMap(r=>Array.from({length:4},()=>r.client.request('/agents',r.body))))),[]);
+ const race={id:randomUUID(),targetAgentId:racers[1].id,expiresAt:new Date(Date.now()+600_000).toISOString(),sealed:'opaque-contention-envelope'};
+ assert.deepEqual(failures(await Promise.allSettled(Array.from({length:6},()=>racers[0].client.request('/tasks',race)))),[]);
+ assert.equal(await prisma.dispatchTask.count({where:{id:race.id}}),1);
+ console.log('PASS: concurrent enrolls and identical submits against the same rows never surface a 503');
  console.log(actual?'REAL CODEX ROUNDTRIP PASSED':'FIXTURE ROUNDTRIP PASSED');
 }finally{
  await new Promise<void>(r=>server.close(()=>r()));await prisma.$disconnect();

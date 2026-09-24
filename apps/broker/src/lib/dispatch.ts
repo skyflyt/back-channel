@@ -4,6 +4,7 @@ import type { AgentToken, DispatchTask, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getAuthContext } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
 
 type Operation = "agents" | "enroll" | "tasks" | "submit" | "claim" | "heartbeat" | "result" | "cancel" | "reject";
 type Body = Record<string, unknown>;
@@ -61,6 +62,15 @@ async function readBody(req: NextRequest): Promise<Body> {
 
 // Every operation reads live enrollment and revocation in the same serializable
 // transaction as its state change. Races abort, never silently replay execution.
+// An aborted attempt rolled back entirely, so the whole transaction is re-run under
+// a small bounded budget (see serializable.ts). A concurrent writer to the caller's
+// row is routine, not exotic: getAuthContext's throttled lastUsedAt touch runs
+// outside this transaction, so an agent's first request (or first after a minute
+// idle) races its own UPDATE, and before this retry that surfaced as a 503 (CI
+// postgres-roundtrip flake, 2026-09-24: 40001 on the enroll UPDATE of AgentToken).
+// Unique races (P2002: two identical submits inserting one id) retry too; the re-run
+// finds the committed row and takes the exact-idempotency path.
+const conflict = (e: unknown) => isSerializationFailure(e) || (!!e && typeof e === "object" && "code" in e && e.code === "P2002");
 export async function dispatch(req: NextRequest, operation: Operation, id?: string) {
   try {
     const auth = await getAuthContext(req.headers.get("authorization"));
@@ -73,7 +83,7 @@ export async function dispatch(req: NextRequest, operation: Operation, id?: stri
     }
     if (id !== undefined && !UUID.test(id)) fail(400, "Invalid task id");
     const body = req.method === "POST" ? await readBody(req) : {};
-    const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const result = await withSerializableRetry(() => prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const caller = await tx.agentToken.findFirst({ where: { id: agentId, accountId: auth.account.id, revokedAt: null } });
       if (!caller) fail(401, "Agent revoked");
       if (operation === "enroll") {
@@ -169,12 +179,13 @@ export async function dispatch(req: NextRequest, operation: Operation, id?: stri
       const updated = await tx.dispatchTask.updateMany({ where: { id, status: "running", leaseHash, leaseExpiresAt: { gt: now }, expiresAt: { gt: now } }, data });
       if (updated.count !== 1) return { error: "Lease conflict" };
       return { task: taskView((await tx.dispatchTask.findUnique({ where: { id } }))!) };
-    }, { isolationLevel: "Serializable" });
+    }, { isolationLevel: "Serializable" }), { retryable: conflict });
     return response(result, "error" in result ? 409 : 200);
   } catch (e) {
     if (e instanceof DispatchError) return response({ error: e.message }, e.status);
-    // Unique/serialization conflicts are safe to retry with the same task/result ID.
-    if (e && typeof e === "object" && "code" in e && (e.code === "P2002" || e.code === "P2034")) {
+    // Still conflicting after the retry budget: safe for the client to retry with the
+    // same task/result ID, so say so, whichever shape Prisma used for the abort.
+    if (conflict(e)) {
       const res = response({ error: "Concurrent operation; retry request", retryable: true }, 503);
       res.headers.set("Retry-After", "1"); return res;
     }

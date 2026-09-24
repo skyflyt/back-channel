@@ -2,12 +2,16 @@ import { test, before, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { NextRequest } from "next/server";
+import { PrismaClientKnownRequestError, PrismaClientUnknownRequestError } from "@prisma/client/runtime/library";
 
 const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"];
 const taskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const encryptionKey = generateKeyPairSync("x25519").publicKey.export({ type: "spki", format: "pem" }).toString();
 const signingKey = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
 let agents: any[]; let tasks: any[]; let limited = false; let transactionError: string | null = null;
+// transactionFaults: one per attempt, raised at COMMIT after the callback ran, with its
+// writes rolled back, the way Postgres aborts a serializable transaction.
+let transactionFaults: unknown[] = []; let transactionCalls = 0;
 function matches(row: any, where: any): boolean {
   return Object.entries(where ?? {}).every(([k, v]: [string, any]) => {
     if (v === undefined) return true;
@@ -47,8 +51,13 @@ const db: any = {
   },
 };
 db.$transaction = async (fn: any, options: any) => {
+  transactionCalls++;
   if (transactionError) throw { code: transactionError };
-  assert.equal(options.isolationLevel, "Serializable"); return fn(db);
+  assert.equal(options.isolationLevel, "Serializable");
+  const snapshot = structuredClone({ agents, tasks });
+  const result = await fn(db); const fault = transactionFaults.shift();
+  if (fault) { ({ agents, tasks } = snapshot); throw fault; }
+  return result;
 };
 before(() => {
   mock.module("@/lib/db", { namedExports: { prisma: db } });
@@ -61,7 +70,7 @@ before(() => {
   mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: !limited, retryAfterSec: 42 }) } });
 });
 beforeEach(() => {
-  limited = false; tasks = []; transactionError = null;
+  limited = false; tasks = []; transactionError = null; transactionFaults = []; transactionCalls = 0;
   agents = ids.map(id => ({ id, accountId: "account", revokedAt: null, dispatchName: "Worker", dispatchEncryptionKey: encryptionKey, dispatchSigningKey: signingKey, createdAt: new Date() }));
 });
 function req(body?: any, agent = ids[0], cursor = "") {
@@ -178,10 +187,64 @@ test("account-wide active quota caps new jobs but preserves idempotent retries",
 });
 test("serialization and unique races are retryable, distinguishable from a lost lease", async () => {
   for (const code of ["P2034", "P2002"]) {
-    transactionError = code;
+    transactionError = code; transactionCalls = 0; const started = Date.now();
     const r = await run("submit", input()); assert.equal(r.status, 503);
-    assert.equal(r.headers.get("retry-after"), "1"); assert.equal((await r.json()).retryable, true);
+    assert.equal(r.headers.get("retry-after"), "1"); assert.deepEqual(await r.json(), { error: "Concurrent operation; retry request", retryable: true });
+    assert.equal(transactionCalls, 5, "bounded: gives up after five attempts"); assert.ok(Date.now() - started < 1000, "bounded total latency");
   }
+});
+// Every shape Prisma 5 uses for a Postgres serialization abort (40001) or deadlock
+// victim (40P01). CI flake 2026-09-24: 40001 on the enroll UPDATE of AgentToken,
+// racing getAuthContext's out-of-transaction lastUsedAt touch, returned 503.
+const clientVersion = "5.22.0";
+const commitAbort = "Error occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"40001\", message: \"could not serialize access due to read/write dependencies among transactions\", severity: \"ERROR\", detail: Some(\"Reason code: Canceled on identification as a pivot, during commit attempt.\"), column: None, hint: Some(\"The transaction might succeed if retried.\") }), transient: false })";
+const aborts: [string, () => unknown][] = [
+  ["P2034 write conflict", () => new PrismaClientKnownRequestError("Transaction failed due to a write conflict or a deadlock. Please retry your transaction", { code: "P2034", clientVersion })],
+  ["P2010 raw 40001", () => new PrismaClientKnownRequestError("Raw query failed. Code: 40001. Message: could not serialize access due to concurrent update", { code: "P2010", clientVersion, meta: { code: "40001", message: "could not serialize access due to concurrent update" } })],
+  ["unknown commit-time 40001", () => new PrismaClientUnknownRequestError(commitAbort, { clientVersion })],
+  ["P2028 deadlock", () => new PrismaClientKnownRequestError("Transaction API error: deadlock detected", { code: "P2028", clientVersion })],
+  ["driver 40P01", () => Object.assign(new Error("deadlock detected"), { code: "40P01" })],
+  ["P2002 unique race", () => new PrismaClientKnownRequestError("Unique constraint failed on the fields: (id)", { code: "P2002", clientVersion })],
+];
+test("serialization aborts re-run the whole transaction until it commits, in every error shape", async () => {
+  for (const [name, abort] of aborts) {
+    Object.assign(agents[0], { dispatchEncryptionKey: null, dispatchSigningKey: null, dispatchName: null }); tasks = [];
+    transactionFaults = [abort(), abort()]; transactionCalls = 0;
+    const enroll = await run("enroll", { name: "Worker", encryptionKey, signingKey });
+    assert.equal(enroll.status, 200, name); assert.equal(transactionCalls, 3, name);
+    assert.equal(enroll.headers.get("cache-control"), "no-store"); assert.equal(agents[0].dispatchSigningKey, signingKey, name);
+    transactionFaults = [abort()]; transactionCalls = 0;
+    const submit = await run("submit", input());
+    assert.equal(submit.status, 200, name); assert.equal(transactionCalls, 2, name); assert.equal(tasks.length, 1, `${name}: exactly one committed row`);
+  }
+});
+test("retry budget exhausted by any abort shape returns the fixed retryable 503", async () => {
+  for (const [name, abort] of aborts) {
+    transactionFaults = Array.from({ length: 5 }, abort); transactionCalls = 0;
+    const r = await run("submit", input());
+    assert.equal(r.status, 503, name); assert.equal(transactionCalls, 5, name); assert.equal(r.headers.get("retry-after"), "1", name);
+    assert.deepEqual(await r.json(), { error: "Concurrent operation; retry request", retryable: true }, name); assert.equal(tasks.length, 0, name);
+  }
+});
+test("non-conflict failures are never retried", async () => {
+  transactionFaults = [new Error("connection refused")];
+  const r = await run("submit", input());
+  assert.equal(r.status, 503); assert.deepEqual(await r.json(), { error: "Dispatch unavailable" }); assert.equal(transactionCalls, 1);
+  transactionCalls = 0; assert.equal((await run("enroll", { name: "Changed", encryptionKey, signingKey })).status, 409); assert.equal(transactionCalls, 1);
+});
+test("retry helper: bounded attempts, jittered exponential backoff, strict predicate", async () => {
+  const { isSerializationFailure, withSerializableRetry } = await import("@/lib/serializable");
+  for (const [name, abort] of aborts.slice(0, 5)) assert.equal(isSerializationFailure(abort()), true, name);
+  for (const e of [null, "40001", new Error("boom"), { code: "P2025" }, { code: "P2002" }, { message: "listening on port 40001" }]) assert.equal(isSerializationFailure(e), false, String(e));
+  for (const [random, expected] of [[() => 0, [5, 10, 20, 40]], [() => 0.999999, [10, 20, 40, 80]]] as const) {
+    const slept: number[] = []; let calls = 0; const abort = aborts[0][1]();
+    await assert.rejects(withSerializableRetry(async () => { calls++; throw abort; }, { sleep: async ms => { slept.push(ms); }, random }), (e: unknown) => e === abort);
+    assert.equal(calls, 5); assert.deepEqual(slept.map(Math.round), expected);
+  }
+  let calls = 0; const slept: number[] = [];
+  assert.equal(await withSerializableRetry(async () => { if (++calls < 3) throw aborts[0][1](); return "ok"; }, { sleep: async ms => { slept.push(ms); } }), "ok");
+  assert.equal(calls, 3); assert.equal(slept.length, 2);
+  calls = 0; await assert.rejects(withSerializableRetry(async () => { calls++; throw new Error("boom"); }), /boom/); assert.equal(calls, 1);
 });
 test("GET paginates oldest-first and reconciles expiry without leaking private fields", async () => {
   await run("submit", input()); const first = tasks[0]; first.expiresAt = new Date(Date.now() - 1);
