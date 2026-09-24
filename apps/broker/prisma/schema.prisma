@@ -19,7 +19,7 @@ model Account {
   displayName     String?
   agentPubkey     String?
   agentEndpoint   String?
-  apiKey         String?   @unique
+  apiKey         String?   @unique        // SEC H1: never read or written; nulled in prod 2026-09-24 (migration 20260924150000); drop later
   apiKeyLastUsedAt DateTime?              // dashboard "last used"; touched (throttled) by getAccountFromAuth
   createdAt       DateTime @default(now())
   emailVerifiedAt DateTime?

@@ -12,11 +12,13 @@
  * per-account AgentToken named "Original" via upsertOriginalAgentToken() below —
  * same keyHash-only storage every other AgentToken uses. The raw key is still
  * generated and returned to the caller exactly once; only its hash is ever
- * persisted. Account.apiKey is written by nothing anymore; it is read only as a
- * fallback in getAuthContext() for accounts minted before this fix and not yet
- * covered by the H1 backfill migration (prisma/migrations/20260703221500_h1_apikey_hash_backfill).
- * Once Skylar confirms that backfill has run in prod, the fallback read (and
- * eventually the column itself) can be dropped in a follow-up.
+ * persisted. Account.apiKey is written and read by nothing anymore.
+ *
+ * H1 completed 2026-09-24: every plaintext key in prod was confirmed to have its
+ * hashed AgentToken (the backfill covered 15; the remaining 5 were hashed by hand
+ * after a Cloud SQL backup), so the plaintext fallback in getAuthContext() was
+ * removed, and migration 20260924150000_h1_clear_plaintext_apikey nulls the
+ * column. Dropping the column itself is a later migration.
  */
 
 import { randomBytes, randomInt, createHash } from "node:crypto";
@@ -129,25 +131,20 @@ export function exchangeCodeExpiry(): Date {
 
 /**
  * Resolve a bearer key to its account AND the agent token it came from.
- * Per-agent-tokens: a bc_ key is first looked up as a live AgentToken (revoked
- * tokens 401). Falls back to the legacy plaintext Account.apiKey ONLY for
- * accounts minted before SEC H1 that the backfill migration hasn't reached yet
- * in prod — see prisma/migrations/20260703221500_h1_apikey_hash_backfill and
- * the loud note in that migration's header. Nothing writes Account.apiKey
- * anymore (verify/rotate/recover-key all mint an "Original" AgentToken via
- * upsertOriginalAgentToken instead), so this fallback strictly shrinks over
- * time and can be deleted once the backfill is confirmed complete.
+ * A bc_ key authenticates only as a live AgentToken, looked up by its SHA-256
+ * (revoked tokens 401). There is no plaintext path: SEC H1's legacy
+ * Account.apiKey fallback was removed once every prod key was hashed.
  * Touches lastUsedAt (throttled ~1/min) so the dashboard shows per-agent "last
  * active" without a write per request.
  */
-export async function getAuthContext(authHeader: string | null): Promise<{ account: Account; agentTokenId: string | null } | null> {
+export async function getAuthContext(authHeader: string | null): Promise<{ account: Account; agentTokenId: string } | null> {
   if (!authHeader) return null;
   const m = authHeader.match(/^Bearer\s+(\S+)$/);
   if (!m) return null;
   const key = m[1];
   if (!key.startsWith(KEY_PREFIX)) return null;
 
-  // 1. Per-agent token (the canonical path). Revoked tokens do not authenticate.
+  // Revoked tokens do not authenticate.
   const tok = await prisma.agentToken.findUnique({ where: { keyHash: hashToken(key) }, include: { account: true } });
   if (tok && !tok.revokedAt) {
     const last = tok.lastUsedAt?.getTime() ?? 0;
@@ -155,19 +152,6 @@ export async function getAuthContext(authHeader: string | null): Promise<{ accou
       void prisma.agentToken.update({ where: { id: tok.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
     }
     return { account: tok.account, agentTokenId: tok.id };
-  }
-  if (tok && tok.revokedAt) return null; // explicitly revoked → no fallback
-
-  // 2. Legacy fallback: pre-H1 plaintext Account.apiKey, for accounts the
-  // backfill migration hasn't reached yet. READ-ONLY — nothing writes this
-  // column anymore. Safe to delete once the backfill is confirmed done.
-  const account = await prisma.account.findUnique({ where: { apiKey: key } });
-  if (account) {
-    const last = account.apiKeyLastUsedAt?.getTime() ?? 0;
-    if (Date.now() - last > 60_000) {
-      void prisma.account.update({ where: { id: account.id }, data: { apiKeyLastUsedAt: new Date() } }).catch(() => {});
-    }
-    return { account, agentTokenId: null };
   }
   return null;
 }
