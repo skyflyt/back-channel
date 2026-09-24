@@ -83,7 +83,7 @@ let limited = false;
 let warnings: string[] = [];
 before(() => {
   mock.module("@/lib/db", { namedExports: { prisma: db } });
-  mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: !limited, retryAfterSec: 7 }) } });
+  mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: !limited, retryAfterSec: 7 }), rateLimitPeek: () => ({ ok: !limited, retryAfterSec: 7 }) } });
   mock.module("@/lib/auth", { namedExports: {
     SESSION_COOKIE_NAME: "bc_session", CSRF_COOKIE_NAME: "bc_csrf", CSRF_HEADER: "x-bc-csrf",
     csrfValid: (h: string | null, c: string | null) => !!h && !!c && h === c,
@@ -107,10 +107,12 @@ beforeEach(() => {
   process.env.STRIPE_WEBHOOK_SECRET = WHSEC;
   process.env.STRIPE_REMOTE_PRICE_ID = PRICE;
   process.env.PUBLIC_APP_URL = "https://back-channel.app";
+  // The owner is whoever ADMIN_EMAILS names (src/lib/admin.ts); Account.admin grants nothing.
+  process.env.ADMIN_EMAILS = "owner@example.com";
   tables.account.push(
-    { id: "acct-a", handle: "skylar", admin: true, emailVerifiedAt: new Date(), cookie: "cs_a" },
-    { id: "acct-b", handle: "other", admin: false, emailVerifiedAt: new Date(), cookie: "cs_b" },
-    { id: "acct-c", handle: "payer", admin: false, emailVerifiedAt: new Date(), cookie: "cs_c" },
+    { id: "acct-a", handle: "skylar", email: "owner@example.com", admin: false, emailVerifiedAt: new Date(), cookie: "cs_a" },
+    { id: "acct-b", handle: "other", email: "other@example.com", admin: false, emailVerifiedAt: new Date(), cookie: "cs_b" },
+    { id: "acct-c", handle: "payer", email: "payer@example.com", admin: false, emailVerifiedAt: new Date(), cookie: "cs_c" },
   );
 });
 void realFetch;
