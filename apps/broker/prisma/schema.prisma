@@ -65,6 +65,11 @@ model Account {
   exchangeCodes    ExchangeCode[]
   agentTokens      AgentToken[]
   friendInvites    FriendInvite[]
+  // Back Channel Remote (AppBridge) remote access: relation fields only, no Account columns.
+  appBridgeDevices      AppBridgeDevice[]
+  appBridgeDeviceCodes  AppBridgeDeviceCode[]
+  appBridgeEntitlements AppBridgeEntitlement[]
+  appBridgeConnections  AppBridgeConnectionEvent[]
 }
 
 // Invite-a-friend (Phase 3). An existing user invites someone by email; the
@@ -503,4 +508,127 @@ model Frame {
   @@index([sessionId, roleDest, seq])
 }
 
+// ── Back Channel Remote (AppBridge) remote access ───────────────────────────
+// docs/appbridge-remote-access.md. Everything here is additive and separate
+// from agent credentials: an AppBridge device authenticates with its own ab_
+// credential, and no bc_ key or dashboard cookie can obtain a relay pass.
+// Nothing here stores an IP, a user agent or session content.
 
+// A PC (host) or phone/PC client (remote) registered to an account. The
+// connector key is the device's own P-256 key; its private half never leaves it.
+model AppBridgeDevice {
+  id                  String                @id // 22-char base64url
+  accountId           String
+  role                String // "host" | "remote"
+  label               String? // owner-chosen name, shown on the dashboard only
+  connectorSpki       String // base64 DER SubjectPublicKeyInfo (P-256)
+  connectorSpkiSha256 String // uppercase hex SHA-256 of the DER
+  enabled             Boolean               @default(true)
+  relayEnabled        Boolean               @default(false) // hosts: the owner's "allow internet access" switch
+  createdAt           DateTime              @default(now())
+  revokedAt           DateTime?
+  account             Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  credentials         AppBridgeCredential[]
+  hostPairings        AppBridgePairing[]    @relation("AppBridgePairingHost")
+  remotePairings      AppBridgePairing[]    @relation("AppBridgePairingRemote")
+
+  @@index([accountId])
+  @@index([connectorSpkiSha256])
+}
+
+// A device's bearer credential (ab_ prefix). Only its SHA-256 is stored.
+model AppBridgeCredential {
+  keyHash   String          @id
+  deviceId  String
+  accountId String
+  scopes    String[]
+  createdAt DateTime        @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  device    AppBridgeDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+}
+
+// One-use code the signed-in dashboard mints so a device can register itself.
+model AppBridgeDeviceCode {
+  codeHash  String    @id // sha256(raw); raw is never stored
+  accountId String
+  role      String // the role the device must register as
+  label     String?
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+  account   Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([expiresAt])
+}
+
+// A host's attestation that its owner approved this remote on the LAN.
+model AppBridgePairing {
+  hostDeviceId   String
+  enrollmentId   String
+  remoteDeviceId String
+  attestedAt     DateTime        @default(now())
+  withdrawnAt    DateTime?
+  host           AppBridgeDevice @relation("AppBridgePairingHost", fields: [hostDeviceId], references: [id], onDelete: Cascade)
+  remote         AppBridgeDevice @relation("AppBridgePairingRemote", fields: [remoteDeviceId], references: [id], onDelete: Cascade)
+
+  @@id([hostDeviceId, enrollmentId])
+  @@index([remoteDeviceId])
+}
+
+// feature = "appbridge.remote_access". Set by an admin.
+model AppBridgeEntitlement {
+  accountId String
+  feature   String
+  active    Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@id([accountId, feature])
+}
+
+// A one-use relay pass (about 60 s). Only its hash is stored; swept minutes after expiry.
+model AppBridgePass {
+  passHash       String    @id
+  purpose        String // "session" | "presence"
+  accountId      String
+  hostDeviceId   String
+  remoteDeviceId String?
+  enrollmentId   String?
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime
+  consumedAt     DateTime?
+
+  @@index([expiresAt])
+}
+
+// A live relay pair's lease, renewed by the relay every ~60 s for 120 s at a time.
+model AppBridgeLease {
+  id             String   @id
+  purpose        String
+  accountId      String
+  hostDeviceId   String
+  remoteDeviceId String?
+  enrollmentId   String?
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@index([expiresAt])
+}
+
+// "Device A connected to PC B at time T" — the owner's 7-day connection log.
+// No IP, no duration, no byte count. Rows older than 7 days are deleted.
+model AppBridgeConnectionEvent {
+  id             String   @id @default(uuid())
+  accountId      String
+  hostDeviceId   String
+  remoteDeviceId String
+  at             DateTime @default(now())
+  account        Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, at])
+  @@index([at])
+}

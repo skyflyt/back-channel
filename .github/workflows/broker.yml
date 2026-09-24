@@ -1,4 +1,4 @@
-# Broker CI — type-check + unit tests for apps/broker.
+# Broker CI — type-check, unit tests and route tests for apps/broker.
 # (The e2e-*.mjs scripts need a live server + Postgres and stay manual/local;
 # unit tests are hermetic by design — see AGENTS.md "CI green before merge".)
 name: broker
@@ -38,3 +38,5 @@ jobs:
         run: npx tsc -p tsconfig.check.json
       - name: unit tests
         run: npm test
+      - name: route tests (hermetic: mocked db/auth, see route-tests/)
+        run: npm run test:routes
