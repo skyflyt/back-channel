@@ -38,5 +38,5 @@ jobs:
         run: npx tsc -p tsconfig.check.json
       - name: unit tests
         run: npm test
-      - name: route tests (hermetic: mocked db/auth, see route-tests/)
+      - name: route tests (hermetic, mocked db and auth; see route-tests/)
         run: npm run test:routes
