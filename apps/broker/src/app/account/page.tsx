@@ -633,11 +633,11 @@ export default function AccountPage() {
   // Default reading-pane selection: first item that needs the user, else first thread.
   const effectiveSel: InboxSel = inboxSel ?? (vInbox[0] ? { kind: "req", id: vInbox[0].id } : vActive[0] ? { kind: "thread", id: vActive[0].session_id } : null);
 
-  const shellTabs: ShellTab[] = NAV.map((n) => ({
+  const shellTabs: ShellTab[] = [...NAV.map((n): ShellTab => ({
     key: n.key, label: n.label,
     count: n.key === "messages" ? needsYou || undefined : undefined,
     onSelect: () => { setNav(n.key); if (n.key !== "friends") setFriendView(null); },
-  }));
+  })), { key: "remote", label: "Remote", href: "/account/remote" }];
 
   const paletteItems: PaletteItem[] = useMemo(() => {
     const items: PaletteItem[] = [];

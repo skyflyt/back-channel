@@ -250,9 +250,45 @@ export default function AdminPage() {
           ))}
         </section>
 
+        <RemoteEntitlementCard />
+
         <div className="ds-call ok">🔒 {data.privacy_note}</div>
         <p className="ds-fine" style={{ textAlign: "center", margin: 0 }}>generated {ago(data.generated_at)}{data.cached ? " · cached" : ""} · <button className="ds-link" onClick={load}>refresh</button></p>
       </div>
     </Frame>
+  );
+}
+
+/**
+ * Back Channel Remote: turn the appbridge.remote_access entitlement on or off for one account
+ * (PUT /api/appbridge/v1/admin/entitlements, admin + dashboard session + CSRF only).
+ */
+function RemoteEntitlementCard() {
+  const [handle, setHandle] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const csrf = () => (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "");
+  async function set(active: boolean) {
+    const h = handle.trim();
+    if (!h) { setMessage("Enter a handle first."); return; }
+    setBusy(true); setMessage("");
+    try {
+      const r = await fetch("/api/appbridge/v1/admin/entitlements", { method: "PUT", credentials: "include",
+        headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ handle: h, active }) });
+      setMessage(r.ok ? `Remote access ${active ? "enabled" : "disabled"} for ${h}.` : r.status === 404 ? `No account ${h}.` : "Couldn't change it. Try again.");
+    } catch { setMessage("Couldn't change it. Try again."); }
+    finally { setBusy(false); }
+  }
+  return (
+    <section className="ds-card">
+      <h2 className="ds-cardh">Back Channel Remote access</h2>
+      <p className="ds-fine">Lets an account's registered devices connect through the relay. Registering devices works without it. The relay-wide switch is the APPBRIDGE_REMOTE_ACCESS setting.</p>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <input className="ds-input" value={handle} placeholder="handle, e.g. skylar@bc" maxLength={128} onChange={(e) => setHandle(e.target.value)} style={{ maxWidth: 260 }} />
+        <button className="ds-btn" disabled={busy} onClick={() => set(true)}>Enable</button>
+        <button className="ds-btn ghost" disabled={busy} onClick={() => set(false)}>Disable</button>
+      </div>
+      {message && <p className="ds-fine" style={{ marginTop: 8 }} aria-live="polite">{message}</p>}
+    </section>
   );
 }
