@@ -20,7 +20,7 @@ const rk = () => "bc_" + randomBytes(16).toString("hex");
 
 async function seedAccount(h) {
   const key = rk();
-  const a = await prisma.account.create({ data: { email: `${h}-${tag}@bc`, handle: `${h}-${tag}@bc`, apiKey: key, emailVerifiedAt: new Date() } });
+  const a = await prisma.account.create({ data: { email: `${h}-${tag}@bc`, handle: `${h}-${tag}@bc`, emailVerifiedAt: new Date() } });
   await prisma.agentToken.create({ data: { accountId: a.id, keyHash: hash(key), name: "t", runtimeType: "other" } });
   const raw = "cs_" + randomBytes(24).toString("base64url");
   const csrf = randomBytes(8).toString("hex");

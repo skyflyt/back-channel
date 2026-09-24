@@ -81,6 +81,25 @@ export function rateLimit(bucket, key, limit, windowMs) {
 }
 
 /**
+ * Report whether `bucket:key` has already used up `limit` events in its current
+ * window, WITHOUT recording one. For budgets that only failures spend: peek
+ * before the work, call rateLimit() only when the work fails, so a caller who
+ * succeeds never spends (or is charged for) an attacker's failures.
+ *
+ * @param {string} bucket
+ * @param {string} key
+ * @param {number} limit
+ * @returns {{ ok: boolean, remaining: number, retryAfterSec: number }}
+ */
+export function rateLimitPeek(bucket, key, limit) {
+  const now = Date.now();
+  const w = windows.get(`${bucket}:${key}`);
+  if (!w || w.resetAt <= now) return { ok: limit > 0, remaining: limit, retryAfterSec: 0 };
+  if (w.count < limit) return { ok: true, remaining: limit - w.count, retryAfterSec: 0 };
+  return { ok: false, remaining: 0, retryAfterSec: Math.max(1, Math.ceil((w.resetAt - now) / 1000)) };
+}
+
+/**
  * Extract the real client IP from the X-Forwarded-For header.
  *
  * Take the RIGHTMOST entry, not the leftmost. On Cloud Run a client can prepend
