@@ -45,6 +45,8 @@ const db: any = {
   appBridgePass: table("pass", () => ({ createdAt: new Date(), consumedAt: null, remoteDeviceId: null, enrollmentId: null })),
   appBridgeLease: table("lease", () => ({ createdAt: new Date() })),
   appBridgeConnectionEvent: table("connection", () => ({ id: crypto.randomUUID(), at: new Date() })),
+  // The gate also reads Remote subscriptions (remote-entitlement.ts); billing.routetest.mts covers them.
+  remoteSubscription: table("remoteSubscription"),
 };
 const credentialFind = db.appBridgeCredential.findUnique;
 db.appBridgeCredential.findUnique = async (args: any) => {

@@ -24,7 +24,8 @@ The relay's half of this contract is `docs/REMOTE_ACCESS_BROKER_API.md` in the A
 2. **The gate** is read fresh inside one serializable transaction every time a pass is issued,
    redeemed or renewed. All of these must hold:
    - the rollout flag is on;
-   - the account's `appbridge.remote_access` entitlement is active;
+   - the account's `appbridge.remote_access` entitlement is active: an admin grant **or** an
+     entitling Remote subscription, both read in the same transaction (docs/remote-paid-tier.md);
    - the host exists, is enabled and not revoked, and its relay switch is on;
    - for a session: the remote is enabled and not revoked, and that host attested this enrollment for
      that remote and has not withdrawn it;
@@ -71,6 +72,7 @@ All routes are under `/api/appbridge/v1`.
 | `DELETE /account/devices/{id}` | — | `204`. In one transaction: revokes the device and its credentials, withdraws its pairings and deletes its live leases (as host or remote), so the relay's next renewal is `404` and a live session ends within about a minute. |
 | `GET /account/connections` | — | `{ connections: [{ hostDeviceId, remoteDeviceId, at }] }`, connection attempts in the last 7 days |
 | `PUT /admin/entitlements` | `{ handle, active }` | Admin only, dashboard session only. |
+| `/billing/*` | — | The paid tier: checkout, portal, status and the Stripe webhook. See docs/remote-paid-tier.md. |
 
 ### Device (`Authorization: Bearer ab_…`)
 

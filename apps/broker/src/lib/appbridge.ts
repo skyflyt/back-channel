@@ -27,8 +27,9 @@ import { prisma } from "@/lib/db";
 import { rateLimit, rateLimitPeek } from "@/lib/rate-limit";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 import { checkOwnerAdmin, ownerGateInput } from "@/lib/admin";
+import { REMOTE_ACCESS_FEATURE, remoteAccessSource } from "@/lib/remote-entitlement";
 
-export const FEATURE = "appbridge.remote_access";
+export const FEATURE = REMOTE_ACCESS_FEATURE;
 const CREDENTIAL_PREFIX = "ab_";
 const CREDENTIAL_TTL_MS = 365 * 86_400_000;
 const CODE_TTL_MS = 10 * 60_000;
@@ -61,15 +62,15 @@ type Scope = "appbridge.device" | "appbridge.host.relay" | "appbridge.relay.pres
 type Body = Record<string, unknown>;
 type Refusal = "rollout_off" | "not_entitled" | "relay_off" | "device_revoked" | "not_paired" | "not_found";
 
-class AppBridgeError extends Error {
+export class AppBridgeError extends Error {
   status: number; retryAfter?: number;
   constructor(status: number, code: string, retryAfter?: number) { super(code); this.status = status; this.retryAfter = retryAfter; }
 }
-function fail(status: number, code: string, retryAfter?: number): never { throw new AppBridgeError(status, code, retryAfter); }
-function json(data: unknown, status = 200): NextResponse {
+export function fail(status: number, code: string, retryAfter?: number): never { throw new AppBridgeError(status, code, retryAfter); }
+export function json(data: unknown, status = 200): NextResponse {
   return NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
 }
-function limit(bucket: string, key: string, max: number, windowMs: number): void {
+export function limit(bucket: string, key: string, max: number, windowMs: number): void {
   const r = rateLimit(bucket, key, max, windowMs);
   if (!r.ok) fail(429, "rate_limited", r.retryAfterSec);
 }
@@ -85,7 +86,7 @@ const sha256Hex = (raw: string) => createHash("sha256").update(raw).digest("hex"
 const newId = () => randomBytes(16).toString("base64url");
 
 /** Every AppBridge route runs inside this: fixed error shape, no-store, nothing logged. */
-async function handle(fn: () => Promise<NextResponse>): Promise<NextResponse> {
+export async function handle(fn: () => Promise<NextResponse>): Promise<NextResponse> {
   try { return await fn(); }
   catch (e) {
     if (e instanceof AppBridgeError) {
@@ -265,7 +266,7 @@ async function relayRequest(req: NextRequest): Promise<Body> {
 }
 
 /** Dashboard session (cookie); mutations also need the double-submit CSRF header. */
-async function accountContext(req: NextRequest, mutate: boolean) {
+export async function accountContext(req: NextRequest, mutate: boolean) {
   const account = await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value);
   if (!account) fail(401, "unauthorized");
   if (mutate && !csrfValid(req.headers.get(CSRF_HEADER), req.cookies.get(CSRF_COOKIE_NAME)?.value)) fail(403, "csrf");
@@ -280,8 +281,8 @@ type Admitted = { host: AppBridgeDevice; remote: AppBridgeDevice | null };
 /** Every condition for relay access, read fresh in the caller's transaction. */
 async function gate(tx: Prisma.TransactionClient, b: Binding): Promise<Admitted | { refused: Refusal }> {
   if (!rolloutOn()) return { refused: "rollout_off" };
-  const ent = await tx.appBridgeEntitlement.findUnique({ where: { accountId_feature: { accountId: b.accountId, feature: FEATURE } } });
-  if (!ent?.active) return { refused: "not_entitled" };
+  // An active admin grant OR an entitling Remote subscription, both read in this transaction.
+  if (!(await remoteAccessSource(tx, b.accountId))) return { refused: "not_entitled" };
   const host = await tx.appBridgeDevice.findUnique({ where: { id: b.hostDeviceId } });
   if (!host || host.accountId !== b.accountId || host.role !== "host") return { refused: "not_found" };
   if (host.revokedAt || !host.enabled) return { refused: "device_revoked" };
@@ -345,9 +346,9 @@ async function exchange(req: NextRequest): Promise<NextResponse> {
 /** GET /devices/self — the device's own record and whether remote access is available to it. */
 export const getSelf = (req: NextRequest) => handle(async () => {
   const { device } = await deviceContext(req, "appbridge.device");
-  const ent = await prisma.appBridgeEntitlement.findUnique({ where: { accountId_feature: { accountId: device.accountId, feature: FEATURE } } });
+  const source = await remoteAccessSource(prisma, device.accountId);
   return json({ deviceId: device.id, role: device.role, label: device.label, relayEnabled: device.relayEnabled, connectorSpkiSha256: device.connectorSpkiSha256,
-    remoteAccess: !rolloutOn() ? "rollout_off" : !ent?.active ? "not_entitled" : "available" });
+    remoteAccess: !rolloutOn() ? "rollout_off" : !source ? "not_entitled" : "available" });
 });
 
 /**
@@ -616,12 +617,12 @@ export const mintDeviceCode = (req: NextRequest) => handle(async () => {
 /** GET /account/devices — the account's AppBridge devices and remote-access state. */
 export const listDevices = (req: NextRequest) => handle(async () => {
   const account = await accountContext(req, false);
-  const [devices, ent] = await Promise.all([
+  const [devices, source] = await Promise.all([
     prisma.appBridgeDevice.findMany({ where: { accountId: account.id }, orderBy: { createdAt: "asc" }, take: 200 }),
-    prisma.appBridgeEntitlement.findUnique({ where: { accountId_feature: { accountId: account.id, feature: FEATURE } } }),
+    remoteAccessSource(prisma, account.id),
   ]);
   return json({
-    rollout: rolloutOn(), entitled: !!ent?.active,
+    rollout: rolloutOn(), entitled: !!source,
     devices: devices.map(d => ({ id: d.id, role: d.role, label: d.label, relayEnabled: d.relayEnabled, enabled: d.enabled,
       connectorSpkiSha256: d.connectorSpkiSha256, createdAt: d.createdAt, revokedAt: d.revokedAt })),
   });
