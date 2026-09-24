@@ -53,8 +53,12 @@ steps:
       # ADMIN_EMAILS: the only account(s) allowed into /admin and the admin APIs (src/lib/admin.ts).
       # Unset = admin closed to everyone. For more than one email, separate them with ';' here, because
       # this list is comma-delimited.
-      - "--set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production,EMAIL_FROM=Back Channel <noreply@back-channel.app>,APPBRIDGE_REMOTE_ACCESS=on,APPBRIDGE_RELAY_PUBLIC_KEY=MCowBQYDK2VwAyEAtClOBnMMcWUwQca1P5kz8QkdovbAgl7OxL3old1j2uU=,ADMIN_EMAILS=skyflyt86@gmail.com"
-      - --set-secrets=DATABASE_URL=DATABASE_URL:latest,RESEND_API_KEY=RESEND_API_KEY:latest
+      # STRIPE_REMOTE_PRICE_ID: the Remote tier's recurring Stripe price (not secret), from the
+      # _STRIPE_REMOTE_PRICE_ID substitution below. Empty = billing off: the billing routes answer 503.
+      - "--set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production,EMAIL_FROM=Back Channel <noreply@back-channel.app>,APPBRIDGE_REMOTE_ACCESS=on,APPBRIDGE_RELAY_PUBLIC_KEY=MCowBQYDK2VwAyEAtClOBnMMcWUwQca1P5kz8QkdovbAgl7OxL3old1j2uU=,ADMIN_EMAILS=skyflyt86@gmail.com,STRIPE_REMOTE_PRICE_ID=${_STRIPE_REMOTE_PRICE_ID}"
+      # Stripe secrets come from Secret Manager, never from --set-env-vars. Both secrets MUST exist
+      # before a deploy with this line (a placeholder value is fine: an invalid key keeps billing off).
+      - --set-secrets=DATABASE_URL=DATABASE_URL:latest,RESEND_API_KEY=RESEND_API_KEY:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest
 
 images:
   - gcr.io/$PROJECT_ID/backchannel-broker:${_TAG}
@@ -62,6 +66,11 @@ images:
 
 substitutions:
   _CLOUDSQL_INSTANCE: ""  # set in trigger UI: <project>:us-west1:backchannel-db
+  # The Remote tier's Stripe price id (price_...), not a secret. Commit the real id here once it
+  # exists so a plain deploy keeps billing on; "" leaves billing off (fail closed).
+  # Sandbox (test-mode) price in acct_1UJLYdGf5aFTGoME, $5.00/month. Replace with the live price id
+  # together with the live STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET when switching to live mode.
+  _STRIPE_REMOTE_PRICE_ID: "price_1UJLhoGf5aFTGoME6oyIleQ1"
 
 options:
   logging: CLOUD_LOGGING_ONLY

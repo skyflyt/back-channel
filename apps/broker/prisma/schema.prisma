@@ -70,6 +70,9 @@ model Account {
   appBridgeDeviceCodes  AppBridgeDeviceCode[]
   appBridgeEntitlements AppBridgeEntitlement[]
   appBridgeConnections  AppBridgeConnectionEvent[]
+  // Back Channel Remote paid tier (Stripe): relation fields only, no Account columns.
+  billingCustomer       BillingCustomer?
+  remoteSubscriptions   RemoteSubscription[]
 }
 
 // Invite-a-friend (Phase 3). An existing user invites someone by email; the
@@ -582,7 +585,9 @@ model AppBridgePairing {
   @@index([remoteDeviceId])
 }
 
-// feature = "appbridge.remote_access". Set by an admin.
+// feature = "appbridge.remote_access". Set by an admin (the owner's accounts and comps).
+// A paid Remote subscription (RemoteSubscription) entitles independently; the relay gate
+// reads both, fresh, in its own transaction (src/lib/remote-entitlement.ts).
 model AppBridgeEntitlement {
   accountId String
   feature   String
@@ -634,4 +639,46 @@ model AppBridgeConnectionEvent {
 
   @@index([accountId, at])
   @@index([at])
+}
+
+// ── Back Channel Remote paid tier (Stripe) ──────────────────────────────────
+// docs/remote-paid-tier.md. Additive only. No card data, email or address is
+// stored here: Stripe holds those. These rows only say which Stripe customer is
+// which account, and what state that customer's Remote subscription is in.
+
+// One Stripe customer per account, created by the broker before the first
+// Checkout. A webhook maps a subscription to an account ONLY through this row.
+model BillingCustomer {
+  accountId        String   @id
+  stripeCustomerId String   @unique
+  createdAt        DateTime @default(now())
+  account          Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+// The latest state of a Remote subscription, mirrored from signed Stripe events.
+// Entitlement is derived from this row at read time (src/lib/remote-entitlement.ts),
+// never copied into AppBridgeEntitlement.
+model RemoteSubscription {
+  stripeSubscriptionId String    @id
+  accountId            String
+  status               String // Stripe's status: active | trialing | past_due | canceled | unpaid | incomplete | incomplete_expired | paused
+  priceId              String
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean   @default(false)
+  pastDueSince         DateTime? // start of the past_due grace clock; null unless past_due
+  lastEventAt          DateTime // Stripe event.created of the snapshot applied; older snapshots are ignored
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  account              Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+}
+
+// Stripe event ids already processed (idempotency). Pruned after 30 days;
+// Stripe stops retrying an event after 3.
+model StripeEvent {
+  eventId     String   @id
+  processedAt DateTime @default(now())
+
+  @@index([processedAt])
 }

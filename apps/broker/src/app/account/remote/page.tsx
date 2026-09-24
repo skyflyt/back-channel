@@ -8,6 +8,10 @@
  * cookie-authenticated /api/appbridge/v1/account/* routes (mutations echo the
  * bc_csrf cookie). No device credential, pass or key is ever shown here: a code is
  * the only secret, it works once and expires in 10 minutes.
+ *
+ * The Plan card (docs/remote-paid-tier.md) reads /api/appbridge/v1/billing/status and hands off to
+ * Stripe-hosted Checkout or the Billing Portal via the cookie + CSRF billing routes. It is hidden
+ * when billing isn't configured (the status route answers 503).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -17,6 +21,11 @@ interface RemoteDevice { id: string; role: "host" | "remote"; label: string | nu
 interface DevicesReply { rollout: boolean; entitled: boolean; devices: RemoteDevice[]; }
 interface Connection { hostDeviceId: string; remoteDeviceId: string; at: string; }
 interface MintedCode { code: string; expiresAt: string; role: "host" | "remote"; }
+// GET /api/appbridge/v1/billing/status (docs/remote-paid-tier.md). null = billing isn't offered here.
+interface BillingStatus { plan: "none" | "remote"; status: string | null; currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean; source: "admin" | "subscription" | null; }
+// A subscription the owner can still manage in Stripe's portal (fix a card, cancel, see invoices).
+const MANAGEABLE = new Set(["active", "trialing", "past_due", "unpaid", "paused"]);
+const STRIPE_PAGE = /^https:\/\/(checkout|billing)\.stripe\.com\//;
 
 const TABS: ShellTab[] = [
   { key: "overview", label: "Overview", href: "/account?tab=overview" },
@@ -37,6 +46,7 @@ const DEMO: { devices: DevicesReply; connections: Connection[] } = {
   ] },
   connections: [{ hostDeviceId: "demo-pc-1", remoteDeviceId: "demo-phone-1", at: new Date(Date.now() - 40 * 60_000).toISOString() }],
 };
+const DEMO_BILLING: BillingStatus = { plan: "remote", status: "active", currentPeriodEnd: new Date(Date.now() + 20 * 86400_000).toISOString(), cancelAtPeriodEnd: false, source: "subscription" };
 
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
 const mutate = (path: string, method: "POST" | "DELETE", body?: unknown) =>
@@ -49,6 +59,40 @@ function ago(iso: string): string {
   if (secs < 86400) return `${Math.round(secs / 3600)} h ago`;
   return new Date(iso).toLocaleString();
 }
+const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "");
+
+/** The plan: what the account has, and the one Stripe action that fits (subscribe or manage). */
+function PlanCard({ billing, busy, message, onOpen }: { billing: BillingStatus; busy: string; message: string; onOpen: (kind: "checkout" | "portal") => void }) {
+  const manageable = !!billing.status && MANAGEABLE.has(billing.status);
+  const troubled = billing.status === "past_due" || billing.status === "unpaid";
+  let line: string;
+  if (billing.source === "admin") line = "Remote is included with your account.";
+  else if (billing.source === "subscription") {
+    line = billing.cancelAtPeriodEnd ? `Back Channel Remote subscription. Cancelled; access ends ${day(billing.currentPeriodEnd)}.`
+      : billing.status === "trialing" ? `Back Channel Remote subscription. Trial ends ${day(billing.currentPeriodEnd)}.`
+      : `Back Channel Remote subscription. Renews ${day(billing.currentPeriodEnd)}.`;
+  } else if (troubled) line = "Your last payment didn't go through, so remote access is paused. Update your payment method to turn it back on.";
+  else line = "Subscribe to Back Channel Remote to reach your PCs through the relay when you're away from home. Cancel any time.";
+  return (
+    <div className="ds-card">
+      <div className="ds-cardh">Plan</div>
+      <p className="ds-cardsub" style={{ margin: 0 }}>{line}</p>
+      {billing.source === "subscription" && troubled && (
+        <p className="ds-fine" style={{ margin: "8px 0 0" }}>Your last payment didn&apos;t go through. Update your payment method within a few days to keep remote access.</p>
+      )}
+      {(billing.plan === "none" || manageable) && <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
+        {billing.plan === "none" && !manageable && (
+          <button className="ds-btn" disabled={busy === "checkout"} onClick={() => onOpen("checkout")}>Subscribe to Remote</button>
+        )}
+        {manageable && (
+          <button className={billing.plan === "none" ? "ds-btn" : "ds-btn ghost"} disabled={busy === "portal"} onClick={() => onOpen("portal")}>Manage subscription</button>
+        )}
+      </div>}
+      {message && <p className="ds-fine" style={{ marginTop: 12 }} aria-live="polite">{message}</p>}
+    </div>
+  );
+}
+
 const deviceName = (d: RemoteDevice | undefined, fallback: string) => d?.label || (d ? `${d.role === "host" ? "PC" : "Phone"} ${d.id.slice(0, 6)}` : fallback);
 
 export default function RemotePage() {
@@ -60,23 +104,71 @@ export default function RemotePage() {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const [billing, setBilling] = useState<BillingStatus | null>(null);
+  const [billingMessage, setBillingMessage] = useState("");
+
+  // Billing is optional: when it isn't configured the status route answers 503 and the plan card hides.
+  const loadBilling = useCallback(async (): Promise<BillingStatus | null> => {
+    try {
+      const r = await fetch("/api/appbridge/v1/billing/status", { credentials: "include" });
+      const b: BillingStatus | null = r.ok ? await r.json() : null;
+      setBilling(b); return b;
+    } catch { setBilling(null); return null; }
+  }, []);
 
   const load = useCallback(async () => {
     try {
       const r = await fetch("/api/appbridge/v1/account/devices", { credentials: "include" });
       if (r.status === 401) {
-        if (process.env.NODE_ENV !== "production") { setData(DEMO.devices); setConnections(DEMO.connections); setState("ready"); return; }
+        if (process.env.NODE_ENV !== "production") { setData(DEMO.devices); setConnections(DEMO.connections); setBilling(DEMO_BILLING); setState("ready"); return; }
         setState("unauth"); return;
       }
       if (!r.ok) { setState("error"); return; }
       setData(await r.json());
       const c = await fetch("/api/appbridge/v1/account/connections", { credentials: "include" });
       if (c.ok) setConnections((await c.json()).connections ?? []);
+      await loadBilling();
       setState("ready");
     } catch { setState("error"); }
-  }, []);
+  }, [loadBilling]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Back from Stripe Checkout: the subscription arrives by webhook, usually within seconds.
+  useEffect(() => {
+    const result = new URLSearchParams(window.location.search).get("billing");
+    if (!result) return;
+    window.history.replaceState(null, "", window.location.pathname);
+    if (result === "cancel") { setBillingMessage("Checkout cancelled. You haven't been charged."); return; }
+    if (result !== "success") return;
+    setBillingMessage("Thanks! Your subscription is being confirmed…");
+    let tries = 0; let stopped = false;
+    const poll = async () => {
+      if (stopped) return;
+      const b = await loadBilling();
+      if (b?.source === "subscription") { setBillingMessage("You're subscribed. Remote access is on."); load(); return; }
+      if (++tries < 10) setTimeout(poll, 2000);
+      else setBillingMessage("Payment received. It can take a minute to show here; refresh if it doesn't.");
+    };
+    poll();
+    return () => { stopped = true; };
+  }, [loadBilling, load]);
+
+  async function openStripe(kind: "checkout" | "portal") {
+    setBusy(kind); setBillingMessage("");
+    try {
+      const r = await mutate(`/api/appbridge/v1/billing/${kind}`, "POST");
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && typeof j.url === "string" && STRIPE_PAGE.test(j.url)) { window.location.assign(j.url); return; }
+      setBillingMessage(
+        j.error === "already_subscribed" ? "You already have a subscription. Use Manage subscription."
+          : j.error === "email_unverified" ? "Verify your email first."
+          : j.error === "rate_limited" ? "Too many attempts. Try again later."
+          : j.error === "billing_unavailable" ? "Subscriptions aren't available right now."
+          : "Couldn't reach the payment page. Try again.");
+    } catch { setBillingMessage("Couldn't reach the payment page. Try again."); }
+    setBusy("");
+  }
   useEffect(() => { if (!minted) return; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [minted]);
 
   async function mint(role: "host" | "remote") {
@@ -123,10 +215,14 @@ export default function RemotePage() {
               <div className="ds-cardh">Status</div>
               <p className="ds-cardsub" style={{ margin: 0 }}>
                 {!data.rollout ? "Remote access through the relay is switched off for now."
-                  : !data.entitled ? "Your account isn't enabled for remote access yet. Registering devices works; connecting starts once it is enabled."
+                  : !data.entitled ? (billing
+                    ? "Remote access needs a Back Channel Remote subscription. Registering devices works now; connecting starts once you subscribe."
+                    : "Your account isn't enabled for remote access yet. Registering devices works; connecting starts once it is enabled.")
                   : "Remote access is enabled for your account."}
               </p>
             </div>
+
+            {billing && <PlanCard billing={billing} busy={busy} message={billingMessage} onOpen={openStripe} />}
 
             <div className="ds-card">
               <div className="ds-cardh">Add a device</div>
