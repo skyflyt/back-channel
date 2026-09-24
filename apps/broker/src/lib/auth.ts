@@ -21,7 +21,7 @@
  * column. Dropping the column itself is a later migration.
  */
 
-import { randomBytes, randomInt, createHash } from "node:crypto";
+import { randomBytes, randomInt, createHash, timingSafeEqual } from "node:crypto";
 import { prisma } from "@/lib/db";
 import type { Account } from "@prisma/client";
 
@@ -195,8 +195,15 @@ export function generateCsrfToken(): string {
   return randomBytes(18).toString("base64url");
 }
 /** True if the header token matches the cookie token (both present, equal). */
+// Constant-time: timingSafeEqual over equal-length UTF-8 buffers. Missing or empty
+// values and a length mismatch are refused up front (the token length is fixed and
+// public, so the early length check reveals nothing an attacker doesn't already know).
 export function csrfValid(headerToken: string | null | undefined, cookieToken: string | null | undefined): boolean {
-  return !!headerToken && !!cookieToken && headerToken === cookieToken;
+  if (typeof headerToken !== "string" || typeof cookieToken !== "string" || !headerToken || !cookieToken) return false;
+  const a = Buffer.from(headerToken, "utf8");
+  const b = Buffer.from(cookieToken, "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 /**

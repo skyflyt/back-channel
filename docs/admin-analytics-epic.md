@@ -84,6 +84,14 @@ These are written into the admin UI footer and the public privacy statement (§5
 
 ## 3. Admin auth model
 
+> **Superseded (2026-09-24).** Admin is now owner-only and is not a grantable role.
+> `src/lib/admin.ts` (`checkOwnerAdmin` / `requireOwnerAdmin`) lets a request through only
+> with a live dashboard session cookie (no bearer key of any kind), an email in the
+> `ADMIN_EMAILS` env allowlist (unset = closed to everyone), a verified email, and, for
+> mutations, the CSRF double-submit. `Account.admin` is kept for schema compatibility but
+> grants nothing; `/api/admin/grant` and `/api/admin/revoke` answer 410 to the owner and
+> 401/403 to everyone else. The design notes below are kept as history.
+
 - **`Account.admin Boolean @default(false)`** — designates admin accounts. Seed **`skylar@bc` as the first admin** (a one-off migration/manual set). The first admin is the "admin-of-admins."
 - **`GET /api/admin/analytics?period=24h|7d|30d|all`** — returns the aggregates above as JSON. Requires the bearer-authed (or cookie-authed, §4) account to have `admin = true`; 403 (opaque) otherwise.
 - **`POST /api/admin/grant {handle}`** / **`POST /api/admin/revoke {handle}`** — only the admin-of-admins (or any admin, TBD — open question) may grant/revoke `admin`. Cannot revoke the last admin.

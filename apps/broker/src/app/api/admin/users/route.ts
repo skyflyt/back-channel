@@ -1,116 +1,87 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { getAccountDual, SESSION_COOKIE_NAME } from "@/lib/auth";
+import { adminJson, requireOwnerAdmin } from "@/lib/admin";
+import { activitySignals, activityStatus, remoteByAccount, type RemoteSummary } from "@/lib/admin-analytics";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-const DAY = 864e5;
+const MAX_LIMIT = 200;
+const MAX_QUERY = 100;
 
 /**
- * GET /api/admin/users?limit=&offset=&sort=&filter= — operator users table.
- * Admin only (403 opaque). Full handle + email + per-account metadata for
- * spotting test vs real accounts and abuse patterns.
+ * GET /api/admin/users?q=&page=&limit=&sort=created|handle — the owner's users table.
+ * Owner only (src/lib/admin.ts). One page (at most 200 accounts), found by
+ * handle or email substring, then a fixed handful of aggregate queries keyed
+ * by that page's ids: no per-user queries, no unbounded scans.
  *
- * METADATA ONLY: counts + timestamps. NEVER message content, inbox-request
- * message bodies, skill bodies, or trust-pair enumeration — none of those are
- * fetched or returned here. 60s in-memory cache.
+ * Returns identity (handle, email), timestamps, counts and Back Channel Remote
+ * state. Never returns a key hash, credential, cookie, connector key, message,
+ * payload or artifact: none is selected.
  */
-let CACHE: { at: number; rows: UserRow[] } | null = null;
-const CACHE_TTL_MS = 60_000;
-
-type UserRow = {
-  handle: string; email: string; created_at: string; last_active_at: string | null;
-  agent_count: number; session_count: number; session_count_7d: number;
-  trusted_peer_count: number; invites_sent_lifetime: number; inbox_requests_sent_lifetime: number;
-  inbox_check_installed: boolean; status_label: string;
+export type AdminUserRow = {
+  handle: string; email: string; created_at: string; email_verified_at: string | null; reserved: boolean;
+  last_active_at: string | null; status: ReturnType<typeof activityStatus> | "reserved";
+  active_via: string[];
+  agents: number;
+  plan: string | null; // paid "Remote" tier: filled in once the billing model exists
+  remote: RemoteSummary;
 };
 
 export async function GET(req: NextRequest) {
-  const account = await getAccountDual(req.headers.get("authorization"), req.cookies.get(SESSION_COOKIE_NAME)?.value);
-  if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  if (!account.admin) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const gate = await requireOwnerAdmin(req, { mutate: false });
+  if (!gate.ok) return gate.response;
 
   const u = new URL(req.url);
-  const limit = Math.min(Math.max(Number(u.searchParams.get("limit")) || 50, 1), 200);
-  const offset = Math.max(Number(u.searchParams.get("offset")) || 0, 0);
-  const sort = u.searchParams.get("sort") ?? "last_active";
-  const filter = u.searchParams.get("filter") ?? "";
+  const limit = Math.min(Math.max(Math.trunc(Number(u.searchParams.get("limit"))) || MAX_LIMIT, 1), MAX_LIMIT);
+  const page = Math.min(Math.max(Math.trunc(Number(u.searchParams.get("page"))) || 1, 1), 10_000);
+  const sort = u.searchParams.get("sort") === "handle" ? "handle" : "created";
+  const q = (u.searchParams.get("q") ?? "").trim().slice(0, MAX_QUERY);
 
-  let rows: UserRow[];
-  if (CACHE && Date.now() - CACHE.at < CACHE_TTL_MS) {
-    rows = CACHE.rows;
-  } else {
-    const now = Date.now();
-    const [accounts, agents, invites, sessions, inboxGroups, trustGroups] = await Promise.all([
-      prisma.account.findMany({ select: { id: true, handle: true, email: true, createdAt: true, apiKeyLastUsedAt: true } }),
-      prisma.agentToken.findMany({ where: { revokedAt: null }, select: { accountId: true, lastUsedAt: true } }),
-      prisma.invite.findMany({ select: { id: true, hostAccountId: true, visitorAccountId: true } }),
-      prisma.session.findMany({ select: { inviteId: true, startedAt: true } }),
-      prisma.inboxRequest.groupBy({ by: ["requesterAccountId"], _count: true }),
-      prisma.trustedPeer.groupBy({ by: ["accountId"], _count: true }),
-    ]);
+  const where: Prisma.AccountWhereInput = q
+    ? { OR: [{ handle: { contains: q, mode: "insensitive" } }, { email: { contains: q, mode: "insensitive" } }] }
+    : {};
+  const orderBy: Prisma.AccountOrderByWithRelationInput[] = sort === "handle" ? [{ handle: "asc" }] : [{ createdAt: "desc" }, { handle: "asc" }];
 
-    const inviteById = new Map(invites.map((i) => [i.id, i]));
-    const agentCount = new Map<string, number>();
-    const lastAgentUse = new Map<string, number>();
-    const recentlyPolled = new Set<string>();
-    for (const a of agents) {
-      agentCount.set(a.accountId, (agentCount.get(a.accountId) ?? 0) + 1);
-      const t = a.lastUsedAt?.getTime() ?? 0;
-      if (t > (lastAgentUse.get(a.accountId) ?? 0)) lastAgentUse.set(a.accountId, t);
-      if (a.lastUsedAt && now - a.lastUsedAt.getTime() <= DAY) recentlyPolled.add(a.accountId);
-    }
-    const sessLifetime = new Map<string, number>();
-    const sess7d = new Map<string, number>();
-    for (const s of sessions) {
-      const inv = inviteById.get(s.inviteId);
-      if (!inv) continue;
-      for (const acc of new Set([inv.hostAccountId, inv.visitorAccountId])) {
-        sessLifetime.set(acc, (sessLifetime.get(acc) ?? 0) + 1);
-        if (now - s.startedAt.getTime() <= 7 * DAY) sess7d.set(acc, (sess7d.get(acc) ?? 0) + 1);
-      }
-    }
-    const invitesSent = new Map<string, number>();
-    for (const i of invites) invitesSent.set(i.visitorAccountId, (invitesSent.get(i.visitorAccountId) ?? 0) + 1);
-    const inboxSent = new Map(inboxGroups.map((g) => [g.requesterAccountId, g._count]));
-    const trustOut = new Map(trustGroups.map((g) => [g.accountId, g._count]));
+  const [total, accounts] = await Promise.all([
+    prisma.account.count({ where }),
+    prisma.account.findMany({
+      where, orderBy, skip: (page - 1) * limit, take: limit,
+      select: { id: true, handle: true, email: true, createdAt: true, emailVerifiedAt: true, reserved: true },
+    }),
+  ]);
+  const ids = accounts.map(a => a.id);
 
-    rows = accounts.map((a) => {
-      const lastActiveMs = Math.max(lastAgentUse.get(a.id) ?? 0, a.apiKeyLastUsedAt?.getTime() ?? 0);
-      const sessions_lifetime = sessLifetime.get(a.id) ?? 0;
-      let status = "active";
-      if (lastActiveMs === 0) status = sessions_lifetime === 0 ? "test? (no activity since signup)" : "no recent activity";
-      else if (now - lastActiveMs > 30 * DAY) status = "dormant (>30d idle)";
-      return {
-        handle: a.handle, email: a.email, created_at: a.createdAt.toISOString(),
-        last_active_at: lastActiveMs ? new Date(lastActiveMs).toISOString() : null,
-        agent_count: agentCount.get(a.id) ?? 0,
-        session_count: sessions_lifetime,
-        session_count_7d: sess7d.get(a.id) ?? 0,
-        trusted_peer_count: trustOut.get(a.id) ?? 0,
-        invites_sent_lifetime: invitesSent.get(a.id) ?? 0,
-        inbox_requests_sent_lifetime: inboxSent.get(a.id) ?? 0,
-        inbox_check_installed: recentlyPolled.has(a.id),
-        status_label: status,
-      };
-    });
-    CACHE = { at: Date.now(), rows };
-  }
+  const now = Date.now();
+  const [signals, remote, agentGroups] = ids.length
+    ? await Promise.all([
+      activitySignals(ids),
+      remoteByAccount(ids, now),
+      prisma.agentToken.groupBy({ by: ["accountId"], where: { accountId: { in: ids }, revokedAt: null }, _count: { _all: true } }),
+    ])
+    : [new Map(), new Map(), []];
+  const agents = new Map(agentGroups.map(g => [g.accountId, g._count._all]));
 
-  let view = rows;
-  if (filter === "zero_activity") view = view.filter((r) => !r.last_active_at && r.session_count === 0);
-  else if (filter === "new_7d") view = view.filter((r) => Date.now() - new Date(r.created_at).getTime() <= 7 * DAY);
-  else if (filter === "heavy") view = view.filter((r) => r.session_count > 10);
+  const users: AdminUserRow[] = accounts.map(a => {
+    const s = signals.get(a.id);
+    const last = s?.lastActive ?? null;
+    const via = s ? (["agent", "dashboard", "remote", "legacyKey"] as const).filter(k => s[k]) : [];
+    return {
+      handle: a.handle,
+      email: a.email,
+      created_at: a.createdAt.toISOString(),
+      email_verified_at: a.emailVerifiedAt ? a.emailVerifiedAt.toISOString() : null,
+      reserved: a.reserved,
+      last_active_at: last ? last.toISOString() : null,
+      status: a.reserved ? "reserved" : activityStatus(last, now),
+      active_via: [...via],
+      agents: agents.get(a.id) ?? 0,
+      plan: null,
+      remote: remote.get(a.id)!,
+    };
+  });
 
-  const cmp: Record<string, (a: UserRow, b: UserRow) => number> = {
-    last_active: (a, b) => (new Date(b.last_active_at ?? 0).getTime()) - (new Date(a.last_active_at ?? 0).getTime()),
-    created: (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-    sessions: (a, b) => b.session_count - a.session_count,
-  };
-  view = [...view].sort(cmp[sort] ?? cmp.last_active);
-
-  const total = view.length;
-  const page = view.slice(offset, offset + limit);
-  await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "admin.users_viewed", detail: { count: page.length } } }).catch(() => {});
-  return NextResponse.json({ total, limit, offset, sort, filter: filter || null, users: page });
+  await prisma.accountAudit.create({ data: { accountId: gate.account.id, eventType: "admin.users_viewed", detail: { count: users.length, page } } }).catch(() => {});
+  return adminJson({ total, page, limit, sort, q: q || null, users });
 }

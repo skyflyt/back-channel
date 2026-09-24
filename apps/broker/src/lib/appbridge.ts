@@ -26,6 +26,7 @@ import type { AppBridgeDevice, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { rateLimit } from "@/lib/rate-limit";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { checkOwnerAdmin, ownerGateInput } from "@/lib/admin";
 
 export const FEATURE = "appbridge.remote_access";
 const CREDENTIAL_PREFIX = "ab_";
@@ -543,10 +544,15 @@ export const listConnections = (req: NextRequest) => handle(async () => {
 
 // ── Admin ───────────────────────────────────────────────────────────────────
 
-/** PUT /admin/entitlements { handle, active } — admin only, dashboard session only (never a bearer key). */
+/**
+ * PUT /admin/entitlements { handle, active } — the owner only (src/lib/admin.ts
+ * checkOwnerAdmin: dashboard session + ADMIN_EMAILS + verified email + CSRF).
+ * Account.admin grants nothing, and any bearer key is refused before lookup.
+ */
 export const setEntitlement = (req: NextRequest) => handle(async () => {
-  const me = await accountContext(req, true);
-  if (!me.admin) fail(403, "forbidden");
+  const gate = await checkOwnerAdmin(ownerGateInput(req), true);
+  if (!gate.ok) fail(gate.status, gate.error);
+  const me = gate.account;
   const body = await readBody(req);
   exact(body, ["handle", "active"]);
   if (typeof body.handle !== "string" || !body.handle || body.handle.length > 128 || typeof body.active !== "boolean") fail(400, "invalid_request");

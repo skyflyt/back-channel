@@ -73,9 +73,10 @@ beforeEach(() => {
   process.env.APPBRIDGE_REMOTE_ACCESS = "on";
   process.env.APPBRIDGE_RELAY_PUBLIC_KEY = RELAY_PUBLIC_KEY;
   delete process.env.APPBRIDGE_RELAY_URL;
+  process.env.ADMIN_EMAILS = "owner@example.com";
   tables.account.push(
-    { id: "acct-a", handle: "skylar", admin: true, emailVerifiedAt: new Date(), cookie: "cs_a" },
-    { id: "acct-b", handle: "other", admin: false, emailVerifiedAt: new Date(), cookie: "cs_b" },
+    { id: "acct-a", handle: "skylar", email: "owner@example.com", admin: false, emailVerifiedAt: new Date(), cookie: "cs_a" },
+    { id: "acct-b", handle: "other", email: "other@example.com", admin: true, emailVerifiedAt: new Date(), cookie: "cs_b" },
   );
 });
 
@@ -231,10 +232,19 @@ test("account routes: dashboard cookie only, CSRF on mutations, verified email t
   assert.equal(rl.status, 429); assert.equal(rl.headers.get("retry-after"), "7");
 });
 
-test("entitlements: admin only, cookie only", async () => {
+test("entitlements: owner only (ADMIN_EMAILS, verified), cookie only", async () => {
   const put = (await routes.entitlements()).PUT;
-  assert.equal((await put(req("PUT", { handle: "other", active: true }, cookie("b")))).status, 403, "not an admin");
+  assert.equal((await put(req("PUT", { handle: "other", active: true }, cookie("b")))).status, 403, "admin=true but not the owner");
   assert.equal((await put(req("PUT", { handle: "other", active: true }, cookie("a", false)))).status, 403, "csrf");
+  assert.equal((await put(req("PUT", { handle: "other", active: true }, { ...cookie("a"), ...bearer("bc_anything") }))).status, 403, "a bearer key is refused");
+  assert.equal((await put(req("PUT", { handle: "other", active: true }, bearer("bc_anything")))).status, 403, "bearer alone");
+  delete process.env.ADMIN_EMAILS;
+  assert.equal((await put(req("PUT", { handle: "other", active: true }, cookie("a")))).status, 403, "ADMIN_EMAILS unset: closed");
+  process.env.ADMIN_EMAILS = "owner@example.com";
+  tables.account[0].emailVerifiedAt = null;
+  assert.equal((await put(req("PUT", { handle: "other", active: true }, cookie("a")))).status, 403, "owner email not verified");
+  tables.account[0].emailVerifiedAt = new Date();
+  assert.equal(tables.entitlement.length, 0);
   assert.equal((await put(req("PUT", { handle: "nobody", active: true }, cookie("a")))).status, 404);
   assert.equal((await put(req("PUT", { handle: "other", active: true }, cookie("a")))).status, 200);
   assert.deepEqual(tables.entitlement.map(e => [e.accountId, e.feature, e.active]), [["acct-b", "appbridge.remote_access", true]]);
