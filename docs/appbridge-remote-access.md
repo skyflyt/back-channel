@@ -189,6 +189,6 @@ The migration `20260924030000_appbridge_remote_access` is purely additive: it cr
 read its header: it covers the Cloud SQL backup, checking migration tracking, and applying it by
 hand.
 
-`20260924200000_appbridge_credential_rotation_grace` adds one nullable column,
+`20260924210000_appbridge_credential_rotation_grace` adds one nullable column,
 `AppBridgeCredential.replacesKeyHash` (the credential a rotated one replaced; cleared at first use).
 Apply it before deploying the code that uses it.
