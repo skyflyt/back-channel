@@ -8,9 +8,9 @@
  *   (b) the freshly-minted raw key authenticates via getAuthContext's
  *       canonical AgentToken.keyHash lookup (the hash path), not the legacy
  *       plaintext-compare fallback.
- *   (c) the legacy plaintext-compare fallback still works for pre-H1 accounts
- *       (needed until the H1 backfill migration runs in prod), but the hash
- *       path always wins when both exist.
+ *   (c) a plaintext Account.apiKey no longer authenticates at all: the
+ *       legacy fallback was removed on 2026-09-24 once every prod key was
+ *       hashed. Only the AgentToken.keyHash path remains.
  *
  * Mocks only @/lib/db (an in-memory fake covering Account/AgentToken/MagicLink/
  * SessionCookie/AccountAudit/Invite) so the REAL @/lib/auth code — including
@@ -250,19 +250,21 @@ test("verify: a freshly verified account gets a working key and Account.apiKey s
   assert.ok(ctx, "the freshly minted key must authenticate via the hash path");
 });
 
-test("getAuthContext: legacy plaintext Account.apiKey still authenticates (pre-H1 / not-yet-backfilled accounts) via the fallback path only", async () => {
-  // Simulate an account that predates this fix and hasn't been touched by the
-  // backfill migration yet: apiKey is set in plaintext, no AgentToken exists.
+test("getAuthContext: a plaintext Account.apiKey with no AgentToken row no longer authenticates (fallback removed)", async () => {
+  // A leftover plaintext key with no hashed row: the pre-H1 shape. It must not authenticate,
+  // and the lookup must never touch Account.apiKey.
   accounts[ACCOUNT_ID].apiKey = "bc_legacy-plaintext-key-1234567890";
-
-  const { getAuthContext } = await import("@/lib/auth");
-  const ctx = await getAuthContext(`Bearer ${accounts[ACCOUNT_ID].apiKey}`);
-  assert.ok(ctx, "the legacy fallback must still authenticate un-backfilled accounts");
-  assert.equal(ctx!.account.id, ACCOUNT_ID);
-  assert.equal(ctx!.agentTokenId, null, "the fallback path carries no agentTokenId -- distinguishes it from the hash path");
+  const original = prismaMock.account.findUnique;
+  let plaintextLookups = 0;
+  prismaMock.account.findUnique = async (args: any) => { if (args?.where?.apiKey) plaintextLookups++; return original(args); };
+  try {
+    const { getAuthContext } = await import("@/lib/auth");
+    assert.equal(await getAuthContext(`Bearer ${accounts[ACCOUNT_ID].apiKey}`), null);
+    assert.equal(plaintextLookups, 0, "getAuthContext must never look an account up by plaintext apiKey");
+  } finally { prismaMock.account.findUnique = original; }
 });
 
-test("getAuthContext: once an AgentToken hash exists for a key, the hash path wins over any stale plaintext match", async () => {
+test("getAuthContext: a key with an AgentToken hash authenticates via that token even if a stale plaintext copy exists", async () => {
   const raw = "bc_both-paths-key-abcdef";
   accounts[ACCOUNT_ID].apiKey = raw; // stale plaintext (pretend pre-backfill state)
   agentTokens["agt_manual"] = { id: "agt_manual", accountId: ACCOUNT_ID, keyHash: sha256hex(raw), name: "Original", runtimeType: "other", createdAt: new Date(), lastUsedAt: null, revokedAt: null };
