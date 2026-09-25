@@ -140,9 +140,15 @@ dashboard cookie all get `401`.
   inside the transaction, so the consumption commits.
 - It then checks the purpose, that the presented key is the one registered for the device the pass
   was issued to (the remote for a session, the host for presence), and the gate.
-- **Cost guard** (Skylar, 2026-09-24): a session is refused with `409` when the account already has
-  3 phones relayed, or when this phone already holds 4 live connections: its workspace socket plus
-  pooled HTTPS connections. The pass is still consumed. The relay answers the phone `429`.
+- **Cost guard** (Skylar, 2026-09-24): a session is refused with `409` when
+  - the account already has 3 remotes (phones or laptops) relayed, and this is a fourth;
+  - this remote already holds 4 live connections to this PC: its workspace socket plus pooled HTTPS
+    connections; or
+  - this remote already holds 8 live connections across all PCs, so a laptop can use two PCs at once.
+
+  The pass is still consumed. The relay answers the device `429`. All three limits are counted from the
+  account's live leases in the redeem's serializable transaction; racing redeems conflict and are re-run,
+  so they cannot overshoot a limit.
 - **Presence cap:** a presence redemption is refused with `409` when the account already holds 4 live
   presence leases (one per PC, plus spares for a PC that reconnects before the relay has released its
   old lease). Checked in the same serializable transaction as the other caps; the pass is still

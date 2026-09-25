@@ -3,7 +3,7 @@
 /**
  * Back Channel Remote — the owner's relay page (docs/appbridge-remote-access.md).
  *
- * Mint a one-use code to register a PC or a phone, see and revoke your registered
+ * Mint a one-use code to register a PC, or a phone or laptop, see and revoke your registered
  * devices, and read the 7-day log of connection attempts. Everything goes through the
  * cookie-authenticated /api/appbridge/v1/account/* routes (mutations echo the
  * bc_csrf cookie). No device credential, pass or key is ever shown here: a code is
@@ -93,7 +93,7 @@ function PlanCard({ billing, busy, message, onOpen }: { billing: BillingStatus; 
   );
 }
 
-const deviceName = (d: RemoteDevice | undefined, fallback: string) => d?.label || (d ? `${d.role === "host" ? "PC" : "Phone"} ${d.id.slice(0, 6)}` : fallback);
+const deviceName = (d: RemoteDevice | undefined, fallback: string) => d?.label || (d ? `${d.role === "host" ? "PC" : "Device"} ${d.id.slice(0, 6)}` : fallback);
 
 export default function RemotePage() {
   const [state, setState] = useState<"loading" | "unauth" | "ready" | "error">("loading");
@@ -231,14 +231,14 @@ export default function RemotePage() {
               <input id="remote-label" className="ds-input" value={label} maxLength={80} placeholder="e.g. Office PC" onChange={(e) => setLabel(e.target.value)} style={{ maxWidth: 280, display: "block", marginBottom: 12 }} />
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button className="ds-btn" disabled={busy === "mint"} onClick={() => mint("host")}>Get a code for a PC</button>
-                <button className="ds-btn ghost" disabled={busy === "mint"} onClick={() => mint("remote")}>Get a code for a phone</button>
+                <button className="ds-btn ghost" disabled={busy === "mint"} onClick={() => mint("remote")}>Get a code for a phone or laptop</button>
               </div>
               {minted && (
                 <div style={{ marginTop: 16 }} aria-live="polite">
                   <div className="ds-mono" style={{ fontSize: 28, letterSpacing: 2, userSelect: "all" }}>{minted.code}</div>
                   <p className="ds-fine" style={{ margin: "6px 0 0" }}>
                     {secondsLeft > 0
-                      ? `For a ${minted.role === "host" ? "PC" : "phone"}. Expires in ${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, "0")}.`
+                      ? `For a ${minted.role === "host" ? "PC" : "phone or laptop"}. Expires in ${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, "0")}.`
                       : "This code has expired. Get a new one."}
                   </p>
                 </div>
@@ -254,7 +254,7 @@ export default function RemotePage() {
                   <div style={{ flex: 1 }}>
                     <div className="ds-iname">{deviceName(d, "")}</div>
                     <div className="ds-imeta">
-                      {d.role === "host" ? (d.relayEnabled ? "PC · Internet access on" : "PC · Internet access off") : "Phone"} · registered {ago(d.createdAt)}
+                      {d.role === "host" ? (d.relayEnabled ? "PC · Internet access on" : "PC · Internet access off") : "Phone or laptop"} · registered {ago(d.createdAt)}
                     </div>
                   </div>
                   <button className="ds-btn danger" disabled={busy === d.id} onClick={() => revoke(d)}>Revoke</button>
@@ -269,7 +269,7 @@ export default function RemotePage() {
               {connections.length === 0 && <p className="ds-fine" style={{ margin: 0 }}>No relayed connection attempts in the last 7 days.</p>}
               {connections.map((c, i) => (
                 <div key={`${c.at}-${i}`} className="ds-item">
-                  <div className="ds-iname">{deviceName(byId.get(c.remoteDeviceId), "A removed phone")} → {deviceName(byId.get(c.hostDeviceId), "a removed PC")}</div>
+                  <div className="ds-iname">{deviceName(byId.get(c.remoteDeviceId), "A removed device")} → {deviceName(byId.get(c.hostDeviceId), "a removed PC")}</div>
                   <div className="ds-imeta">{ago(c.at)}</div>
                 </div>
               ))}

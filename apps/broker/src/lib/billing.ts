@@ -10,7 +10,8 @@
  * - A Stripe object is mapped to an account ONLY through the BillingCustomer row the broker wrote
  *   when it created that customer. Metadata we set (accountId) is a cross-check: if it disagrees,
  *   the event does nothing. Nothing else in a payload is trusted for identity.
- * - Each event is processed once (StripeEvent), in one serializable transaction.
+ * - Each event is processed once (StripeEvent), in one serializable transaction, re-run whole on a
+ *   conflict (serializableTx): a duplicate delivery racing the first finds its id on the re-run.
  * - No body, id or payload content is logged or echoed. Stripe is called with plain HTTPS; there is
  *   no SDK dependency.
  * - Unconfigured is closed: without the Stripe settings every billing route answers 503.
@@ -19,14 +20,13 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { accountContext, fail, handle, json, limit } from "@/lib/appbridge";
+import { accountContext, fail, handle, json, limit, serializableTx } from "@/lib/appbridge";
 import { REMOTE_ACCESS_FEATURE, remoteSubscriptions, subscriptionEntitles } from "@/lib/remote-entitlement";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 export const SIGNATURE_TOLERANCE_SEC = 300;
 const WEBHOOK_MAX_BODY = 1024 * 1024;
 const EVENT_RETENTION_MS = 30 * 86_400_000;
-const serializable = { isolationLevel: "Serializable" as const };
 /** Not entitling, but still a live subscription the owner should fix or cancel in the portal. */
 const OPEN = new Set(["past_due", "unpaid", "paused"]);
 
@@ -351,13 +351,13 @@ export const stripeWebhook = (req: NextRequest) => handle(async () => {
   if (!event || !eventId || !created || !object) fail(400, "invalid_request");
   if (!HANDLED.has(type)) return json({ received: true }); // unknown types: acknowledged, no action
 
-  const outcome = await prisma.$transaction(async (tx): Promise<Outcome | "duplicate"> => {
+  const outcome = await serializableTx(async (tx): Promise<Outcome | "duplicate"> => {
     if (await tx.stripeEvent.findUnique({ where: { eventId } })) return "duplicate";
     await tx.stripeEvent.create({ data: { eventId } });
     if (type === "checkout.session.completed") return applyCheckoutCompleted(tx, object);
     if (type === "invoice.payment_failed") return applyPaymentFailed(tx, object, created);
     return applySubscription(tx, type, object, created);
-  }, serializable);
+  });
   // A code only: never an id or anything from the payload.
   if (outcome === "unmapped" || outcome === "conflict") console.warn(`billing webhook: ${outcome}`);
   void pruneEvents();

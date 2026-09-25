@@ -2,6 +2,7 @@ import { test, before, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomBytes, sign, type KeyObject } from "node:crypto";
 import { NextRequest } from "next/server";
+import { PrismaClientKnownRequestError, PrismaClientUnknownRequestError } from "@prisma/client/runtime/library";
 
 // ── In-memory Prisma: enough of the query surface for src/lib/appbridge.ts ──
 // $transaction snapshots every table and restores it if the callback throws,
@@ -53,10 +54,21 @@ db.appBridgeCredential.findUnique = async (args: any) => {
   const c = await credentialFind(args);
   return c && args.include?.device ? { ...c, device: tables.device.find(d => d.id === c.deviceId) } : c;
 };
+// transactionFaults: one per attempt, raised at COMMIT after the callback ran, with its writes
+// rolled back, the way Postgres aborts a serializable transaction. A fault's `winner` then runs as
+// the concurrent transaction that won the conflict and committed.
+let transactionFaults: unknown[] = []; let transactionCalls = 0;
 db.$transaction = async (fn: any, options: any) => {
+  transactionCalls++;
   assert.equal(options?.isolationLevel, "Serializable");
   const snapshot = structuredClone(tables);
-  try { return await fn(db); } catch (e) { Object.assign(tables, snapshot); throw e; }
+  let result: unknown;
+  try { result = await fn(db); } catch (e) { Object.assign(tables, snapshot); throw e; }
+  const fault = transactionFaults.shift();
+  if (!fault) return result;
+  Object.assign(tables, snapshot);
+  if (typeof fault === "object" && "winner" in fault) { (fault as { winner: () => void }).winner(); throw (fault as { abort: unknown }).abort; }
+  throw fault;
 };
 
 // A real counter (one window per test), so budgets and their separation are exercised, not assumed.
@@ -75,9 +87,9 @@ before(() => {
     getAccountFromCookie: async (v: string | undefined) => tables.account.find(a => a.cookie === v) ?? null,
   } });
 });
-beforeEach(() => {
+function reset() {
   for (const k of Object.keys(tables)) tables[k] = [];
-  limited = false; hits.clear();
+  limited = false; hits.clear(); transactionFaults = []; transactionCalls = 0;
   process.env.APPBRIDGE_REMOTE_ACCESS = "on";
   process.env.APPBRIDGE_RELAY_PUBLIC_KEY = RELAY_PUBLIC_KEY;
   delete process.env.APPBRIDGE_RELAY_URL;
@@ -86,7 +98,8 @@ beforeEach(() => {
     { id: "acct-a", handle: "skylar", email: "owner@example.com", admin: false, emailVerifiedAt: new Date(), cookie: "cs_a" },
     { id: "acct-b", handle: "other", email: "other@example.com", admin: true, emailVerifiedAt: new Date(), cookie: "cs_b" },
   );
-});
+}
+beforeEach(reset);
 
 // ── Helpers ──
 const routes = {
@@ -372,7 +385,7 @@ test("release frees a lease at once and is idempotent", async () => {
   assert.equal((await (await routes.release()).POST(relayReq("release", { leaseId: grant.leaseId }, {}, bearer(remote.credential)))).status, 401, "devices cannot release");
 });
 
-test("cost guard: at most 3 phones per account relayed at once, each with at most 4 connections", async () => {
+test("cost guard: at most 3 remotes per account relayed at once, each with at most 4 connections to one PC", async () => {
   const { host } = await ready();
   const remotes = [];
   for (let i = 0; i < 4; i++) {
@@ -389,8 +402,8 @@ test("cost guard: at most 3 phones per account relayed at once, each with at mos
   const fourth = await connect(remotes[3], 3);
   assert.equal(fourth.res.status, 409, "a fourth phone is over the cap");
   assert.equal((await redeem(fourth.pass, "session", remotes[3].key.fp)).status, 403, "the refused pass was still consumed");
-  for (let k = 0; k < 3; k++) assert.equal((await connect(remotes[0], 0)).res.status, 200, "one phone may hold up to 4 connections");
-  assert.equal((await connect(remotes[0], 0)).res.status, 409, "a fifth connection from one phone is over the cap");
+  for (let k = 0; k < 3; k++) assert.equal((await connect(remotes[0], 0)).res.status, 200, "one remote may hold up to 4 connections to one PC");
+  assert.equal((await connect(remotes[0], 0)).res.status, 409, "a fifth connection from one remote to the same PC is over the cap");
   assert.equal((await release(leases[1])).status, 204);
   assert.equal((await connect(remotes[3], 3)).res.status, 200, "a released slot is free at once");
 });
@@ -649,4 +662,279 @@ test("credential rotation is crash-safe: the old credential lives until the new 
   for (const raw of [host.credential, b, c, d]) assert.ok(!stored.includes(raw), "only hashes are stored");
   noContent(await (await routes.device()).DELETE(req("DELETE", undefined, cookie("a")), params({ id: host.deviceId })));
   assert.ok(tables.credential.every(k => k.revokedAt), "revoking the device ends every credential, grace or not");
+});
+
+// ── Serializable retry (the dispatch fix of #47, applied to every AppBridge transaction) ──
+// Every shape Prisma 5 uses for a Postgres serialization abort (40001) or deadlock victim (40P01),
+// plus a unique race (P2002). Same fixtures as dispatch.routetest.mts.
+const clientVersion = "5.22.0";
+const commitAbort = "Error occurred during query execution:\nConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"40001\", message: \"could not serialize access due to read/write dependencies among transactions\", severity: \"ERROR\", detail: Some(\"Reason code: Canceled on identification as a pivot, during commit attempt.\"), column: None, hint: Some(\"The transaction might succeed if retried.\") }), transient: false })";
+const aborts: [string, () => unknown][] = [
+  ["P2034 write conflict", () => new PrismaClientKnownRequestError("Transaction failed due to a write conflict or a deadlock. Please retry your transaction", { code: "P2034", clientVersion })],
+  ["P2010 raw 40001", () => new PrismaClientKnownRequestError("Raw query failed. Code: 40001. Message: could not serialize access due to concurrent update", { code: "P2010", clientVersion, meta: { code: "40001", message: "could not serialize access due to concurrent update" } })],
+  ["unknown commit-time 40001", () => new PrismaClientUnknownRequestError(commitAbort, { clientVersion })],
+  ["P2028 deadlock", () => new PrismaClientKnownRequestError("Transaction API error: deadlock detected", { code: "P2028", clientVersion })],
+  ["driver 40P01", () => Object.assign(new Error("deadlock detected"), { code: "40P01" })],
+  ["P2002 unique race", () => new PrismaClientKnownRequestError("Unique constraint failed on the fields: (id)", { code: "P2002", clientVersion })],
+];
+const audits = (eventType: string) => tables.accountAudit.filter(a => a.eventType === eventType).length;
+const failureBudgets = () => [...hits].filter(([k]) => k.includes("-failed:"));
+
+// One entry per serializable transaction in src/lib/appbridge.ts: arrange (outside any fault), the one
+// request under test, its status once committed, and what exactly-once commit looks like.
+type Ctx = Record<string, any>;
+type Case = { name: string; arrange: () => Promise<Ctx>; act: (c: Ctx) => Promise<Response>; status: number; committed: (c: Ctx, r: Response) => Promise<void> };
+const cases: Case[] = [
+  { name: "device exchange", status: 200,
+    arrange: async () => { const key = newKey(); return { key, code: await mint("host") }; },
+    act: async ({ key, code }) => (await routes.exchange()).POST(req("POST", { code, role: "host", connectorSpki: key.spki, proof: key.sign(`appbridge-device-exchange-v1:${code}`) })),
+    committed: async (_, r) => {
+      const { credential } = await r.json();
+      assert.ok(tables.code[0].usedAt, "the code is consumed"); assert.equal(tables.device.length, 1); assert.equal(tables.credential.length, 1);
+      assert.equal(tables.credential[0].keyHash, sha(credential), "the stored credential is the one returned");
+      assert.equal(audits("appbridge.device_registered"), 1);
+    } },
+  { name: "session pass issue", status: 200, arrange: ready,
+    act: ({ host, remote }) => sessionPass(remote, host.deviceId),
+    committed: async (_, r) => { assert.deepEqual(tables.pass.map(p => [p.passHash, p.purpose]), [[sha((await r.json()).pass), "session"]]); } },
+  { name: "presence pass issue", status: 200, arrange: ready,
+    act: async ({ host }) => (await routes.presence()).POST(req("POST", {}, bearer(host.credential))),
+    committed: async (_, r) => { assert.deepEqual(tables.pass.map(p => [p.passHash, p.purpose]), [[sha((await r.json()).pass), "presence"]]); } },
+  { name: "session redeem", status: 200,
+    arrange: async () => { const c = await ready(); return { ...c, pass: (await (await sessionPass(c.remote, c.host.deviceId)).json()).pass }; },
+    act: ({ remote, pass }) => redeem(pass, "session", remote.key.fp),
+    committed: async ({ pass }, r) => {
+      assert.ok(tables.pass.find(p => p.passHash === sha(pass))!.consumedAt, "consumed");
+      assert.deepEqual(tables.lease.map(l => l.id), [(await r.json()).leaseId], "exactly one lease");
+      assert.equal(tables.connection.length, 1, "exactly one connection logged");
+    } },
+  { name: "presence redeem", status: 200,
+    arrange: async () => { const c = await ready(); return { ...c, pass: (await (await (await routes.presence()).POST(req("POST", {}, bearer(c.host.credential)))).json()).pass }; },
+    act: ({ host, pass }) => redeem(pass, "presence", host.key.fp),
+    committed: async ({ pass }, r) => {
+      assert.ok(tables.pass.find(p => p.passHash === sha(pass))!.consumedAt);
+      assert.deepEqual(tables.lease.map(l => l.id), [(await r.json()).leaseId]); assert.equal(tables.connection.length, 0);
+    } },
+  { name: "lease renewal", status: 200,
+    arrange: async () => {
+      const c = await ready();
+      const { leaseId } = await (await redeem((await (await sessionPass(c.remote, c.host.deviceId)).json()).pass, "session", c.remote.key.fp)).json();
+      tables.lease[0].expiresAt = new Date(Date.now() + 5_000); return { ...c, leaseId };
+    },
+    act: ({ leaseId }) => renew(leaseId),
+    committed: async () => { assert.equal(tables.lease.length, 1); assert.ok(tables.lease[0].expiresAt.getTime() > Date.now() + 100_000, "extended"); } },
+  { name: "credential rotation", status: 200, arrange: () => register("host"),
+    act: async ({ credential }) => (await routes.credential()).POST(req("POST", undefined, bearer(credential))),
+    committed: async ({ credential }, r) => {
+      const next = (await r.json()).credential;
+      assert.deepEqual(tables.credential.filter(k => k.replacesKeyHash).map(k => [k.keyHash, k.replacesKeyHash]), [[sha(next), sha(credential)]], "exactly one successor");
+      assert.equal(tables.credential.length, 2);
+    } },
+  { name: "rotated credential's first use", status: 200,
+    arrange: async () => { const host = await register("host"); return { host, next: (await (await (await routes.credential()).POST(req("POST", undefined, bearer(host.credential)))).json()).credential }; },
+    act: async ({ next }) => (await routes.self()).GET(req("GET", undefined, bearer(next))),
+    committed: async ({ host, next }) => {
+      assert.ok(tables.credential.find(k => k.keyHash === sha(host.credential))!.revokedAt, "the predecessor ends");
+      assert.equal(tables.credential.find(k => k.keyHash === sha(next))!.replacesKeyHash, null);
+    } },
+  { name: "connector rotation", status: 200,
+    arrange: async () => ({ ...(await ready()), next: newKey() }),
+    act: async ({ remote, next }) => { const msg = `appbridge-connector-rotate-v1:${remote.deviceId}:${next.fp}`;
+      return (await routes.connector()).PUT(req("PUT", { connectorSpki: next.spki, proofOld: remote.key.sign(msg), proofNew: next.sign(msg) }, bearer(remote.credential))); },
+    committed: async ({ remote, next }) => { assert.equal(tables.device.find(d => d.id === remote.deviceId)!.connectorSpkiSha256, next.fp); } },
+  { name: "pairing attestation", status: 204,
+    arrange: async () => ({ host: await register("host"), remote: await register("remote") }),
+    act: ({ host, remote }) => attest(host, remote.deviceId),
+    committed: async ({ remote }) => { assert.deepEqual(tables.pairing.map(p => [p.enrollmentId, p.remoteDeviceId]), [["enr-1", remote.deviceId]]); } },
+  { name: "self-unregister", status: 204,
+    arrange: async () => { const c = await ready(); await redeem((await (await (await routes.presence()).POST(req("POST", {}, bearer(c.host.credential)))).json()).pass, "presence", c.host.key.fp); return c; },
+    act: async ({ host }) => (await routes.self()).DELETE(req("DELETE", undefined, bearer(host.credential))),
+    committed: async ({ host }) => {
+      assert.ok(tables.device.find(d => d.id === host.deviceId)!.revokedAt); assert.equal(tables.lease.length, 0);
+      assert.equal(audits("appbridge.device_unregistered"), 1);
+    } },
+  { name: "dashboard revoke", status: 204, arrange: ready,
+    act: async ({ remote }) => (await routes.device()).DELETE(req("DELETE", undefined, cookie("a")), params({ id: remote.deviceId })),
+    committed: async ({ remote }) => { assert.ok(tables.device.find(d => d.id === remote.deviceId)!.revokedAt); assert.equal(audits("appbridge.device_revoked"), 1); } },
+];
+
+test("every AppBridge transaction re-runs whole on a conflict, in every abort shape, and commits exactly once", async () => {
+  for (const c of cases) for (const [shape, abort] of aborts) {
+    const name = `${c.name} / ${shape}`;
+    reset(); const ctx = await c.arrange();
+    const before = new Map(hits);
+    transactionFaults = [abort(), abort()]; transactionCalls = 0;
+    const r = await c.act(ctx);
+    assert.equal(r.status, c.status, name); assert.equal(transactionCalls, 3, `${name}: two rolled-back attempts, then the commit`);
+    assert.equal(r.headers.get("cache-control"), "no-store", name);
+    await c.committed(ctx, r);
+    // Rate limits are counted per request, outside the retried transaction: never once per attempt.
+    for (const [k, n] of hits) assert.ok(n - (before.get(k) ?? 0) <= 1, `${name}: ${k} counted once`);
+    assert.deepEqual(failureBudgets(), [...before].filter(([k]) => k.includes("-failed:")), `${name}: a success spends no failure budget`);
+  }
+});
+
+test("retry budget exhausted: the fixed retryable 503 after exactly five attempts, with nothing written", async () => {
+  for (const c of cases) for (const [shape, abort] of aborts) {
+    const name = `${c.name} / ${shape}`;
+    reset(); const ctx = await c.arrange();
+    const tablesBefore = structuredClone(tables); const before = new Map(hits);
+    transactionFaults = Array.from({ length: 5 }, abort); transactionCalls = 0;
+    const started = Date.now();
+    const r = await c.act(ctx);
+    assert.equal(r.status, 503, name); assert.equal(transactionCalls, 5, `${name}: bounded`);
+    assert.deepEqual(await r.json(), { error: "retry" }, name);
+    assert.equal(r.headers.get("retry-after"), "1", name); assert.equal(r.headers.get("cache-control"), "no-store", name);
+    assert.ok(Date.now() - started < 1000, `${name}: bounded latency`);
+    assert.deepEqual(tables, tablesBefore, `${name}: every attempt rolled back, no audit row, no consumed pass or code`);
+    for (const [k, n] of hits) assert.ok(n - (before.get(k) ?? 0) <= 1, `${name}: ${k} counted once`);
+    assert.deepEqual(failureBudgets(), [...before].filter(([k]) => k.includes("-failed:")), `${name}: an outage is not a refusal`);
+  }
+});
+
+test("one-use pass: consumed by exactly the attempt that commits, never twice, never by a rolled-back attempt", async () => {
+  const { host, remote } = await ready();
+  const issue = async () => (await (await sessionPass(remote, host.deviceId)).json()).pass as string;
+  const pass = await issue();
+  // Aborted at commit twice: each attempt's consumption rolled back with it; the third commits it.
+  transactionFaults = [aborts[0][1](), aborts[2][1]()]; transactionCalls = 0;
+  const ok = await redeem(pass, "session", remote.key.fp);
+  assert.equal(ok.status, 200); assert.equal(transactionCalls, 3);
+  assert.equal(tables.lease.length, 1); assert.equal(tables.connection.length, 1);
+  assert.equal((await redeem(pass, "session", remote.key.fp)).status, 403, "and it is spent");
+  assert.equal(tables.lease.length, 1); assert.equal(tables.connection.length, 1);
+  // A concurrent redeem of the same pass wins the conflict: the loser's re-run finds it consumed and is
+  // refused, once: no second lease, and the failure budgets are spent once, after the commit.
+  hits.clear();
+  const raced = await issue(); const leasesBefore = tables.lease.length;
+  transactionFaults = [{ abort: aborts[0][1](), winner: () => {
+    tables.pass.find(p => p.passHash === sha(raced))!.consumedAt = new Date();
+    tables.lease.push({ id: "winner", purpose: "session", accountId: "acct-a", hostDeviceId: host.deviceId, remoteDeviceId: remote.deviceId, enrollmentId: "enr-1", createdAt: new Date(), expiresAt: new Date(Date.now() + 120_000) });
+  } }]; transactionCalls = 0;
+  const lost = await redeem(raced, "session", remote.key.fp);
+  assert.equal(lost.status, 403); assert.deepEqual(await lost.json(), { error: "refused" }); assert.equal(transactionCalls, 2);
+  assert.equal(tables.lease.length, leasesBefore + 1, "only the winner's lease");
+  assert.equal(hits.get("appbridge:redeem-failed:all"), 1); assert.equal(hits.get(`appbridge:redeem-failed:${remote.key.fp}`), 1);
+  assert.equal(hits.get(`appbridge:redeem:${remote.key.fp}`), 1);
+  // Retries exhausted: nothing committed, so the pass is still unconsumed and the relay's retry redeems it once.
+  const outage = await issue();
+  transactionFaults = Array.from({ length: 5 }, aborts[0][1]);
+  assert.equal((await redeem(outage, "session", remote.key.fp)).status, 503);
+  assert.equal(tables.pass.find(p => p.passHash === sha(outage))!.consumedAt, null);
+  assert.equal((await redeem(outage, "session", remote.key.fp)).status, 200);
+  assert.equal((await redeem(outage, "session", remote.key.fp)).status, 403);
+});
+
+test("caps are counted again by every attempt: a slot the conflict's winner took is refused 409 on the re-run", async () => {
+  const { host } = await ready();
+  const presencePass = async () => (await (await (await routes.presence()).POST(req("POST", {}, bearer(host.credential)))).json()).pass as string;
+  for (let i = 0; i < 3; i++) assert.equal((await redeem(await presencePass(), "presence", host.key.fp)).status, 200);
+  const pass = await presencePass();
+  // The first attempt saw 3 of 4 slots used and admitted; it aborts because a PC reconnecting took the 4th.
+  transactionFaults = [{ abort: aborts[0][1](), winner: () => {
+    tables.lease.push({ id: "winner", purpose: "presence", accountId: "acct-a", hostDeviceId: host.deviceId, remoteDeviceId: null, enrollmentId: null, createdAt: new Date(), expiresAt: new Date(Date.now() + 120_000) });
+  } }]; transactionCalls = 0;
+  const r = await redeem(pass, "presence", host.key.fp);
+  assert.equal(r.status, 409); assert.deepEqual(await r.json(), { error: "refused" }); assert.equal(transactionCalls, 2);
+  assert.equal(tables.lease.length, 4, "the cap holds: the rolled-back admission left nothing behind");
+  assert.ok(tables.pass.find(p => p.passHash === sha(pass))!.consumedAt, "the refusal consumed the pass");
+});
+
+test("non-conflict failures are never retried", async () => {
+  const { host, remote } = await ready();
+  const pass = (await (await sessionPass(remote, host.deviceId)).json()).pass;
+  for (const e of [new Error("connection refused"), new PrismaClientKnownRequestError("Record not found", { code: "P2025", clientVersion }), { message: "listening on port 40001" }]) {
+    transactionFaults = [e]; transactionCalls = 0;
+    const r = await redeem(pass, "session", remote.key.fp);
+    assert.equal(r.status, 503); assert.deepEqual(await r.json(), { error: "unavailable" }); assert.equal(r.headers.get("retry-after"), null);
+    assert.equal(transactionCalls, 1); assert.equal(tables.pass.find(p => p.passHash === sha(pass))!.consumedAt, null);
+  }
+  // A refusal thrown inside the transaction is an answer, not a conflict.
+  const other = await register("host"); const next = newKey();
+  tables.device.find(d => d.id === other.deviceId)!.connectorSpkiSha256 = next.fp;
+  const msg = `appbridge-connector-rotate-v1:${remote.deviceId}:${next.fp}`;
+  transactionCalls = 0;
+  const inUse = await (await routes.connector()).PUT(req("PUT", { connectorSpki: next.spki, proofOld: remote.key.sign(msg), proofNew: next.sign(msg) }, bearer(remote.credential)));
+  assert.equal(inUse.status, 409); assert.equal(transactionCalls, 1);
+  // Refusals returned from a transaction that conflicted first spend each failure budget once.
+  hits.clear(); transactionFaults = [aborts[1][1](), aborts[4][1]()]; transactionCalls = 0;
+  const junk = randomBytes(32).toString("hex").toUpperCase();
+  assert.equal((await redeem(junk, "session", remote.key.fp)).status, 403); assert.equal(transactionCalls, 3);
+  assert.equal(hits.get("appbridge:redeem-failed:all"), 1); assert.equal(hits.get(`appbridge:redeem-failed:${remote.key.fp}`), 1);
+  const code = await mint("host"); const key = newKey();
+  hits.clear(); transactionFaults = [aborts[3][1]()]; transactionCalls = 0;
+  assert.equal((await (await routes.exchange()).POST(req("POST", { code, role: "remote", connectorSpki: key.spki, proof: key.sign(`appbridge-device-exchange-v1:${code}`) }))).status, 409);
+  assert.equal(transactionCalls, 2); assert.equal(hits.get("appbridge:exchange-failed:all"), 1);
+  assert.equal(tables.code.find(c => c.codeHash === sha(code))!.usedAt, null, "a wrong role still never burns the code");
+});
+// ── Per-PC connection caps (2026-09-24): 4 per (remote, PC), 8 per remote across PCs ──
+/** One remote (a laptop) paired with three PCs, each with its relay switch on. */
+async function laptopAndPcs() {
+  const laptop = await register("remote"); const pcs = [];
+  for (let i = 0; i < 3; i++) {
+    const pc = await register("host"); await setRelay(pc, true);
+    assert.equal((await attest(pc, laptop.deviceId, `enr-pc-${i}`)).status, 204);
+    pcs.push(pc);
+  }
+  await entitle();
+  const connect = async (pc: number) => {
+    const { pass } = await (await sessionPass(laptop, pcs[pc].deviceId, `enr-pc-${pc}`)).json();
+    return { pass, res: await redeem(pass, "session", laptop.key.fp) };
+  };
+  return { laptop, pcs, connect };
+}
+const leaseTo = (remoteDeviceId: string, hostDeviceId: string, id = randomBytes(8).toString("hex")) =>
+  ({ id, purpose: "session", accountId: "acct-a", hostDeviceId, remoteDeviceId, enrollmentId: "enr-x", createdAt: new Date(), expiresAt: new Date(Date.now() + 120_000) });
+
+test("connection caps: 4 to one PC, 8 across PCs; a released lease frees its slot at once", async () => {
+  const { laptop, pcs, connect } = await laptopAndPcs();
+  const leases: string[][] = [[], [], []];
+  for (let k = 0; k < 4; k++) { const { res } = await connect(0); assert.equal(res.status, 200); leases[0].push((await res.json()).leaseId); }
+  const fifth = await connect(0);
+  assert.equal(fifth.res.status, 409, "a 5th connection to the same PC is refused");
+  assert.deepEqual(await fifth.res.json(), { error: "refused" });
+  assert.equal((await redeem(fifth.pass, "session", laptop.key.fp)).status, 403, "the refused pass was still consumed");
+  for (let k = 0; k < 4; k++) { const { res } = await connect(1); assert.equal(res.status, 200, "4 + 4 across two PCs"); leases[1].push((await res.json()).leaseId); }
+  const ninth = await connect(2);
+  assert.equal(ninth.res.status, 409, "a 9th connection, to a third PC, is over the 8 per remote");
+  assert.equal(tables.lease.length, 8);
+  assert.equal(tables.connection.length, 8, "refusals are not logged");
+  noContent(await release(leases[1][0]));
+  assert.equal((await connect(2)).res.status, 200, "a released lease frees a slot at once, for any PC");
+  assert.equal((await connect(2)).res.status, 409, "and only that one");
+  noContent(await release(leases[0][0]));
+  assert.equal((await connect(0)).res.status, 200, "a slot freed on the PC at its own limit is usable there");
+  // Expired leases hold no slot; other remotes of the account are unaffected (up to 3 remotes).
+  for (const l of tables.lease) if (l.remoteDeviceId === laptop.deviceId && l.hostDeviceId === pcs[1].deviceId) l.expiresAt = new Date(Date.now() - 1);
+  assert.equal((await connect(1)).res.status, 200, "an expired lease does not count");
+  const phone = await register("remote");
+  assert.equal((await attest(pcs[0], phone.deviceId, "enr-phone")).status, 204);
+  const { pass } = await (await sessionPass(phone, pcs[0].deviceId, "enr-phone")).json();
+  assert.equal((await redeem(pass, "session", phone.key.fp)).status, 200, "another remote has its own limits, even on a PC this laptop has filled");
+});
+
+test("connection caps under contention: a slot taken by the conflict's winner is refused on the re-run", async () => {
+  const { laptop, pcs } = await laptopAndPcs();
+  // Issue the pass first, then inject the conflict into the redeem's transaction alone.
+  const passFor = async (pc: number) => (await (await sessionPass(laptop, pcs[pc].deviceId, `enr-pc-${pc}`)).json()).pass as string;
+  const connect = async (pc: number) => { const pass = await passFor(pc); transactionFaults = pending; transactionCalls = 0; return { res: await redeem(pass, "session", laptop.key.fp) }; };
+  let pending: unknown[] = [];
+  // Per PC: 3 live to PC 0; this attempt would be the 4th, but the winner of the conflict took it.
+  for (let k = 0; k < 3; k++) tables.lease.push(leaseTo(laptop.deviceId, pcs[0].deviceId));
+  pending = [{ abort: aborts[0][1](), winner: () => { tables.lease.push(leaseTo(laptop.deviceId, pcs[0].deviceId, "winner-0")); } }];
+  const perPc = await connect(0);
+  assert.equal(perPc.res.status, 409); assert.equal(transactionCalls, 2);
+  assert.equal(tables.lease.filter(l => l.hostDeviceId === pcs[0].deviceId).length, 4, "never 5 to one PC");
+  // Across PCs: 4 + 3 live; an attempt to PC 2 would be the 8th, but the winner took it on PC 1.
+  for (let k = 0; k < 3; k++) tables.lease.push(leaseTo(laptop.deviceId, pcs[1].deviceId));
+  pending = [{ abort: aborts[4][1](), winner: () => { tables.lease.push(leaseTo(laptop.deviceId, pcs[1].deviceId, "winner-1")); } }];
+  const total = await connect(2);
+  assert.equal(total.res.status, 409); assert.equal(transactionCalls, 2);
+  assert.equal(tables.lease.length, 8, "never 9 across PCs");
+  assert.equal(tables.lease.filter(l => l.hostDeviceId === pcs[2].deviceId).length, 0, "the rolled-back admission left nothing");
+  // And a conflict without a winner taking the slot still admits once, on the re-run.
+  tables.lease = tables.lease.filter(l => l.id !== "winner-1");
+  pending = [aborts[2][1](), aborts[3][1]()];
+  const admitted = await connect(2);
+  assert.equal(admitted.res.status, 200); assert.equal(transactionCalls, 3); assert.equal(tables.lease.length, 8);
 });
