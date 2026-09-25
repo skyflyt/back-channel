@@ -385,7 +385,7 @@ test("release frees a lease at once and is idempotent", async () => {
   assert.equal((await (await routes.release()).POST(relayReq("release", { leaseId: grant.leaseId }, {}, bearer(remote.credential)))).status, 401, "devices cannot release");
 });
 
-test("cost guard: at most 3 phones per account relayed at once, each with at most 4 connections", async () => {
+test("cost guard: at most 3 remotes per account relayed at once, each with at most 4 connections to one PC", async () => {
   const { host } = await ready();
   const remotes = [];
   for (let i = 0; i < 4; i++) {
@@ -402,8 +402,8 @@ test("cost guard: at most 3 phones per account relayed at once, each with at mos
   const fourth = await connect(remotes[3], 3);
   assert.equal(fourth.res.status, 409, "a fourth phone is over the cap");
   assert.equal((await redeem(fourth.pass, "session", remotes[3].key.fp)).status, 403, "the refused pass was still consumed");
-  for (let k = 0; k < 3; k++) assert.equal((await connect(remotes[0], 0)).res.status, 200, "one phone may hold up to 4 connections");
-  assert.equal((await connect(remotes[0], 0)).res.status, 409, "a fifth connection from one phone is over the cap");
+  for (let k = 0; k < 3; k++) assert.equal((await connect(remotes[0], 0)).res.status, 200, "one remote may hold up to 4 connections to one PC");
+  assert.equal((await connect(remotes[0], 0)).res.status, 409, "a fifth connection from one remote to the same PC is over the cap");
   assert.equal((await release(leases[1])).status, 204);
   assert.equal((await connect(remotes[3], 3)).res.status, 200, "a released slot is free at once");
 });
@@ -866,4 +866,75 @@ test("non-conflict failures are never retried", async () => {
   assert.equal((await (await routes.exchange()).POST(req("POST", { code, role: "remote", connectorSpki: key.spki, proof: key.sign(`appbridge-device-exchange-v1:${code}`) }))).status, 409);
   assert.equal(transactionCalls, 2); assert.equal(hits.get("appbridge:exchange-failed:all"), 1);
   assert.equal(tables.code.find(c => c.codeHash === sha(code))!.usedAt, null, "a wrong role still never burns the code");
+});
+// ── Per-PC connection caps (2026-09-24): 4 per (remote, PC), 8 per remote across PCs ──
+/** One remote (a laptop) paired with three PCs, each with its relay switch on. */
+async function laptopAndPcs() {
+  const laptop = await register("remote"); const pcs = [];
+  for (let i = 0; i < 3; i++) {
+    const pc = await register("host"); await setRelay(pc, true);
+    assert.equal((await attest(pc, laptop.deviceId, `enr-pc-${i}`)).status, 204);
+    pcs.push(pc);
+  }
+  await entitle();
+  const connect = async (pc: number) => {
+    const { pass } = await (await sessionPass(laptop, pcs[pc].deviceId, `enr-pc-${pc}`)).json();
+    return { pass, res: await redeem(pass, "session", laptop.key.fp) };
+  };
+  return { laptop, pcs, connect };
+}
+const leaseTo = (remoteDeviceId: string, hostDeviceId: string, id = randomBytes(8).toString("hex")) =>
+  ({ id, purpose: "session", accountId: "acct-a", hostDeviceId, remoteDeviceId, enrollmentId: "enr-x", createdAt: new Date(), expiresAt: new Date(Date.now() + 120_000) });
+
+test("connection caps: 4 to one PC, 8 across PCs; a released lease frees its slot at once", async () => {
+  const { laptop, pcs, connect } = await laptopAndPcs();
+  const leases: string[][] = [[], [], []];
+  for (let k = 0; k < 4; k++) { const { res } = await connect(0); assert.equal(res.status, 200); leases[0].push((await res.json()).leaseId); }
+  const fifth = await connect(0);
+  assert.equal(fifth.res.status, 409, "a 5th connection to the same PC is refused");
+  assert.deepEqual(await fifth.res.json(), { error: "refused" });
+  assert.equal((await redeem(fifth.pass, "session", laptop.key.fp)).status, 403, "the refused pass was still consumed");
+  for (let k = 0; k < 4; k++) { const { res } = await connect(1); assert.equal(res.status, 200, "4 + 4 across two PCs"); leases[1].push((await res.json()).leaseId); }
+  const ninth = await connect(2);
+  assert.equal(ninth.res.status, 409, "a 9th connection, to a third PC, is over the 8 per remote");
+  assert.equal(tables.lease.length, 8);
+  assert.equal(tables.connection.length, 8, "refusals are not logged");
+  noContent(await release(leases[1][0]));
+  assert.equal((await connect(2)).res.status, 200, "a released lease frees a slot at once, for any PC");
+  assert.equal((await connect(2)).res.status, 409, "and only that one");
+  noContent(await release(leases[0][0]));
+  assert.equal((await connect(0)).res.status, 200, "a slot freed on the PC at its own limit is usable there");
+  // Expired leases hold no slot; other remotes of the account are unaffected (up to 3 remotes).
+  for (const l of tables.lease) if (l.remoteDeviceId === laptop.deviceId && l.hostDeviceId === pcs[1].deviceId) l.expiresAt = new Date(Date.now() - 1);
+  assert.equal((await connect(1)).res.status, 200, "an expired lease does not count");
+  const phone = await register("remote");
+  assert.equal((await attest(pcs[0], phone.deviceId, "enr-phone")).status, 204);
+  const { pass } = await (await sessionPass(phone, pcs[0].deviceId, "enr-phone")).json();
+  assert.equal((await redeem(pass, "session", phone.key.fp)).status, 200, "another remote has its own limits, even on a PC this laptop has filled");
+});
+
+test("connection caps under contention: a slot taken by the conflict's winner is refused on the re-run", async () => {
+  const { laptop, pcs } = await laptopAndPcs();
+  // Issue the pass first, then inject the conflict into the redeem's transaction alone.
+  const passFor = async (pc: number) => (await (await sessionPass(laptop, pcs[pc].deviceId, `enr-pc-${pc}`)).json()).pass as string;
+  const connect = async (pc: number) => { const pass = await passFor(pc); transactionFaults = pending; transactionCalls = 0; return { res: await redeem(pass, "session", laptop.key.fp) }; };
+  let pending: unknown[] = [];
+  // Per PC: 3 live to PC 0; this attempt would be the 4th, but the winner of the conflict took it.
+  for (let k = 0; k < 3; k++) tables.lease.push(leaseTo(laptop.deviceId, pcs[0].deviceId));
+  pending = [{ abort: aborts[0][1](), winner: () => { tables.lease.push(leaseTo(laptop.deviceId, pcs[0].deviceId, "winner-0")); } }];
+  const perPc = await connect(0);
+  assert.equal(perPc.res.status, 409); assert.equal(transactionCalls, 2);
+  assert.equal(tables.lease.filter(l => l.hostDeviceId === pcs[0].deviceId).length, 4, "never 5 to one PC");
+  // Across PCs: 4 + 3 live; an attempt to PC 2 would be the 8th, but the winner took it on PC 1.
+  for (let k = 0; k < 3; k++) tables.lease.push(leaseTo(laptop.deviceId, pcs[1].deviceId));
+  pending = [{ abort: aborts[4][1](), winner: () => { tables.lease.push(leaseTo(laptop.deviceId, pcs[1].deviceId, "winner-1")); } }];
+  const total = await connect(2);
+  assert.equal(total.res.status, 409); assert.equal(transactionCalls, 2);
+  assert.equal(tables.lease.length, 8, "never 9 across PCs");
+  assert.equal(tables.lease.filter(l => l.hostDeviceId === pcs[2].deviceId).length, 0, "the rolled-back admission left nothing");
+  // And a conflict without a winner taking the slot still admits once, on the re-run.
+  tables.lease = tables.lease.filter(l => l.id !== "winner-1");
+  pending = [aborts[2][1](), aborts[3][1]()];
+  const admitted = await connect(2);
+  assert.equal(admitted.res.status, 200); assert.equal(transactionCalls, 3); assert.equal(tables.lease.length, 8);
 });

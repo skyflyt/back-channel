@@ -68,8 +68,8 @@ try{
  const redeem=(pass:string,purpose:string,fp:string)=>ab.redeemPass(relayCall('redeem',{pass,purpose,connectorSpkiSha256:fp}));
  const leases=(purpose:string)=>prisma.appBridgeLease.count({where:{accountId:account.id,purpose,expiresAt:{gt:new Date()}}});
 
- // A phone opens its pooled connections at once (at most 4: MAX_PAIRS_PER_REMOTE): four redeems, each
- // reading the account's live leases for the caps and inserting one. All four are admitted, none 503.
+ // A phone opens its pooled connections at once (at most 4 to one PC): four redeems, each reading the
+ // account's live leases for the caps and inserting one. All four are admitted, none 503.
  const pool=await together(4,()=>sessionPass());
  const opened=await Promise.all(pool.map(p=>redeem(p,'session',remote.key.fp)));
  assert.deepEqual(statuses(opened),[200,200,200,200]);
@@ -94,6 +94,27 @@ try{
  assert.deepEqual(statuses(redeemed),[200,403,403,403]);
  assert.equal(await leases('session'),2,'the one pass opened one lease');
  console.log('PASS: a pass redeemed four times at once is admitted exactly once; renewals ride through');
+
+ // A laptop on more than one PC: 4 connections per PC, 8 in total. It holds 2 to the first PC; four
+ // racing redeems to a second PC are all admitted (6 in total), then four racing for the last 2 slots
+ // (two to the first PC, two to a third) admit exactly two.
+ const pcs=[];
+ for(let i=0;i<2;i++){
+  const key=p256(),res=await exchange(await deviceCode('host'),'host',key);assert.equal(res.status,200);
+  const pc={...(await res.json()) as {deviceId:string;credential:string},key};
+  assert.equal((await ab.setRelay(call('PUT','/hosts/self/relay',pc.credential,{enabled:true}))).status,200);
+  assert.equal((await ab.attestPairing(call('PUT',`/hosts/self/pairings/enr-pc-${i}`,pc.credential,{remoteDeviceId:remote.deviceId}),`enr-pc-${i}`)).status,204);
+  pcs.push(pc);
+ }
+ const passTo=async(hostDeviceId:string,enrollmentId:string)=>{const r=await ab.issueSessionPass(call('POST','/relay/passes',remote.credential,{hostDeviceId,enrollmentId}));assert.equal(r.status,200);return (await r.json()).pass as string;};
+ const second=await together(4,()=>passTo(pcs[0].deviceId,'enr-pc-0'));
+ assert.deepEqual(statuses(await Promise.all(second.map(p=>redeem(p,'session',remote.key.fp)))),[200,200,200,200]);
+ const last=[...await together(2,()=>sessionPass()),...await together(2,()=>passTo(pcs[1].deviceId,'enr-pc-1'))];
+ assert.deepEqual(statuses(await Promise.all(last.map(p=>redeem(p,'session',remote.key.fp)))),[200,200,409,409]);
+ assert.equal(await leases('session'),8,'8 per remote across PCs holds under contention');
+ const perPc=await prisma.appBridgeLease.groupBy({by:['hostDeviceId'],where:{accountId:account.id,purpose:'session',expiresAt:{gt:new Date()}},_count:true});
+ assert.ok(perPc.every(g=>g._count<=4),'4 per PC holds under contention');
+ console.log('PASS: a laptop on several PCs: 4 per PC and 8 in total hold under concurrent redeems, no 503');
 
  // A PC reconnecting its waiting connection: the per-account presence cap (4) holds under contention too.
  for(let i=0;i<2;i++)assert.equal((await redeem(await presencePass(),'presence',host.key.fp)).status,200);

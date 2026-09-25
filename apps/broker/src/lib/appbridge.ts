@@ -37,8 +37,10 @@ const CODE_TTL_MS = 10 * 60_000;
 const PASS_TTL_MS = 60_000;
 const LEASE_TTL_MS = 120_000;
 const CONNECTION_LOG_MS = 7 * 86_400_000;
-const MAX_REMOTES_PER_ACCOUNT = 3;
-const MAX_PAIRS_PER_REMOTE = 4;
+// Session (pair) cost guard, checked at redeem (Skylar, 2026-09-24):
+const MAX_REMOTES_PER_ACCOUNT = 3;   // phones or laptops relayed at once, per account
+const MAX_PAIRS_PER_REMOTE_HOST = 4; // one remote's live pairs to one PC: its workspace socket plus pooled HTTPS connections
+const MAX_PAIRS_PER_REMOTE = 8;      // one remote's live pairs across all its PCs (a laptop on two PCs at once)
 const MAX_PRESENCE_PER_ACCOUNT = 4;
 // A rotated credential's predecessor stays valid until the new one is first used, or this long at most.
 const CREDENTIAL_GRACE_MS = 86_400_000;
@@ -563,11 +565,14 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
     const presenter = purpose === "session" ? g.remote! : g.host;
     if (!sameFingerprint(presenter.connectorSpkiSha256, presented)) return null;
     if (purpose === "session") {
-      // Cost guard: at most MAX_REMOTES_PER_ACCOUNT phones relayed at once, each with at most
-      // MAX_PAIRS_PER_REMOTE connections (its workspace socket plus pooled HTTPS connections).
-      const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "session", expiresAt: { gt: now } }, select: { remoteDeviceId: true } });
+      // Cost guard: at most MAX_REMOTES_PER_ACCOUNT remotes relayed at once; each holds at most
+      // MAX_PAIRS_PER_REMOTE_HOST connections to one PC and MAX_PAIRS_PER_REMOTE across all its PCs.
+      // Counted from the account's live leases in this transaction, so racing redeems cannot overshoot:
+      // they conflict, and the re-run counts again.
+      const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "session", expiresAt: { gt: now } }, select: { remoteDeviceId: true, hostDeviceId: true } });
       const remotes = new Set(live.map(l => l.remoteDeviceId));
-      if (live.filter(l => l.remoteDeviceId === binding.remoteDeviceId).length >= MAX_PAIRS_PER_REMOTE ||
+      const mine = live.filter(l => l.remoteDeviceId === binding.remoteDeviceId);
+      if (mine.filter(l => l.hostDeviceId === binding.hostDeviceId).length >= MAX_PAIRS_PER_REMOTE_HOST || mine.length >= MAX_PAIRS_PER_REMOTE ||
         (!remotes.has(binding.remoteDeviceId) && remotes.size >= MAX_REMOTES_PER_ACCOUNT)) return "capacity" as const;
     } else {
       // Presence cap: each PC keeps one waiting connection; the spares cover a PC reconnecting before
