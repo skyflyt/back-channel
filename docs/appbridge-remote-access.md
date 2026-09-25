@@ -141,14 +141,19 @@ dashboard cookie all get `401`.
 - It then checks the purpose, that the presented key is the one registered for the device the pass
   was issued to (the remote for a session, the host for presence), and the gate.
 - **Cost guard** (Skylar, 2026-09-24): a session is refused with `409` when
-  - the account already has 3 remotes (phones or laptops) relayed, and this is a fourth;
-  - this remote already holds 4 live connections to this PC: its workspace socket plus pooled HTTPS
-    connections; or
+  - the account already has 3 remotes (phones or laptops) relayed, and this is a fourth; or
   - this remote already holds 8 live connections across all PCs, so a laptop can use two PCs at once.
 
-  The pass is still consumed. The relay answers the device `429`. All three limits are counted from the
-  account's live leases in the redeem's serializable transaction; racing redeems conflict and are re-run,
-  so they cannot overshoot a limit.
+  The pass is still consumed. The relay answers the device `429`.
+- **Per-PC limit, newest wins** (Skylar, 2026-09-25): one remote holds at most 4 live connections to one PC
+  (its workspace socket plus pooled HTTPS connections). A fifth from the *same* remote to the *same* PC is
+  admitted, and that remote's oldest leases to that PC are deleted so it still holds 4.
+  - Only the presenting device's own connections to that PC are ever displaced. Those are typically legs
+    orphaned by a network switch whose leases have not lapsed yet. Another device, another PC, and the
+    8-per-remote and 3-remote limits are never superseded; those still refuse.
+  - The relay ends a superseded leg at its next renewal (`404`, within a minute).
+- All the limits are counted from the account's live leases in the redeem's serializable transaction.
+  Racing redeems conflict and are re-run, so they cannot overshoot a limit.
 - **Presence cap:** a presence redemption is refused with `409` when the account already holds 4 live
   presence leases (one per PC, plus spares for a PC that reconnects before the relay has released its
   old lease). Checked in the same serializable transaction as the other caps; the pass is still

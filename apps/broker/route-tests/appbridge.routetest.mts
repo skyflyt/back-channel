@@ -16,7 +16,7 @@ function matches(row: Row | undefined, where: Row | undefined): boolean {
     if (k === "hostDeviceId_enrollmentId" || k === "accountId_feature") return matches(row, v);
     if (v instanceof Date) return row[k]?.getTime() === v.getTime();
     if (v && typeof v === "object") return Object.entries(v).every(([op, x]: [string, any]) =>
-      op === "gt" ? row[k] > x : op === "gte" ? row[k] >= x : op === "lt" ? row[k] < x : op === "not" ? row[k] !== x : false);
+      op === "gt" ? row[k] > x : op === "gte" ? row[k] >= x : op === "lt" ? row[k] < x : op === "not" ? row[k] !== x : op === "in" ? (x as unknown[]).includes(row[k]) : false);
     return row[k] === v;
   });
 }
@@ -403,7 +403,12 @@ test("cost guard: at most 3 remotes per account relayed at once, each with at mo
   assert.equal(fourth.res.status, 409, "a fourth phone is over the cap");
   assert.equal((await redeem(fourth.pass, "session", remotes[3].key.fp)).status, 403, "the refused pass was still consumed");
   for (let k = 0; k < 3; k++) assert.equal((await connect(remotes[0], 0)).res.status, 200, "one remote may hold up to 4 connections to one PC");
-  assert.equal((await connect(remotes[0], 0)).res.status, 409, "a fifth connection from one remote to the same PC is over the cap");
+  const toHost = () => tables.lease.filter(l => l.purpose === "session" && l.remoteDeviceId === remotes[0].deviceId && l.hostDeviceId === host.deviceId);
+  assert.equal(toHost().length, 4);
+  assert.equal((await connect(remotes[0], 0)).res.status, 200, "a fifth connection from the same remote to the same PC is admitted: the newest wins its own slots");
+  assert.equal(toHost().length, 4, "still at most 4 to one PC");
+  assert.ok(!tables.lease.some(l => l.id === leases[0]), "its oldest lease to that PC was superseded");
+  assert.equal(tables.lease.filter(l => l.purpose === "session" && l.remoteDeviceId !== remotes[0].deviceId).length, 2, "no other phone's slots were touched");
   assert.equal((await release(leases[1])).status, 204);
   assert.equal((await connect(remotes[3], 3)).res.status, 200, "a released slot is free at once");
 });
@@ -886,19 +891,24 @@ async function laptopAndPcs() {
 const leaseTo = (remoteDeviceId: string, hostDeviceId: string, id = randomBytes(8).toString("hex")) =>
   ({ id, purpose: "session", accountId: "acct-a", hostDeviceId, remoteDeviceId, enrollmentId: "enr-x", createdAt: new Date(), expiresAt: new Date(Date.now() + 120_000) });
 
-test("connection caps: 4 to one PC, 8 across PCs; a released lease frees its slot at once", async () => {
+test("connection caps: 4 to one PC (the newest supersedes the oldest), 8 across PCs; a released lease frees its slot at once", async () => {
   const { laptop, pcs, connect } = await laptopAndPcs();
   const leases: string[][] = [[], [], []];
   for (let k = 0; k < 4; k++) { const { res } = await connect(0); assert.equal(res.status, 200); leases[0].push((await res.json()).leaseId); }
   const fifth = await connect(0);
-  assert.equal(fifth.res.status, 409, "a 5th connection to the same PC is refused");
-  assert.deepEqual(await fifth.res.json(), { error: "refused" });
-  assert.equal((await redeem(fifth.pass, "session", laptop.key.fp)).status, 403, "the refused pass was still consumed");
+  assert.equal(fifth.res.status, 200, "a 5th connection to the same PC supersedes this device's oldest one to it");
+  const fifthLease = (await fifth.res.json()).leaseId;
+  assert.ok(!tables.lease.some(l => l.id === leases[0][0]), "the oldest lease to that PC is gone");
+  assert.equal(tables.lease.filter(l => l.hostDeviceId === pcs[0].deviceId).length, 4, "still 4 to that PC");
+  assert.equal((await renew(leases[0][0])).status, 404, "the relay's next renewal of the superseded leg ends it");
+  leases[0] = [...leases[0].slice(1), fifthLease];
   for (let k = 0; k < 4; k++) { const { res } = await connect(1); assert.equal(res.status, 200, "4 + 4 across two PCs"); leases[1].push((await res.json()).leaseId); }
   const ninth = await connect(2);
-  assert.equal(ninth.res.status, 409, "a 9th connection, to a third PC, is over the 8 per remote");
+  assert.equal(ninth.res.status, 409, "a 9th connection, to a third PC, is over the 8 per remote: never superseded across PCs");
+  assert.deepEqual(await ninth.res.json(), { error: "refused" });
+  assert.equal((await redeem(ninth.pass, "session", laptop.key.fp)).status, 403, "the refused pass was still consumed");
   assert.equal(tables.lease.length, 8);
-  assert.equal(tables.connection.length, 8, "refusals are not logged");
+  assert.equal(tables.connection.length, 9, "admissions are logged, refusals are not");
   noContent(await release(leases[1][0]));
   assert.equal((await connect(2)).res.status, 200, "a released lease frees a slot at once, for any PC");
   assert.equal((await connect(2)).res.status, 409, "and only that one");
@@ -919,12 +929,14 @@ test("connection caps under contention: a slot taken by the conflict's winner is
   const passFor = async (pc: number) => (await (await sessionPass(laptop, pcs[pc].deviceId, `enr-pc-${pc}`)).json()).pass as string;
   const connect = async (pc: number) => { const pass = await passFor(pc); transactionFaults = pending; transactionCalls = 0; return { res: await redeem(pass, "session", laptop.key.fp) }; };
   let pending: unknown[] = [];
-  // Per PC: 3 live to PC 0; this attempt would be the 4th, but the winner of the conflict took it.
-  for (let k = 0; k < 3; k++) tables.lease.push(leaseTo(laptop.deviceId, pcs[0].deviceId));
+  // Per PC: 3 live to PC 0; this attempt would be the 4th, but the winner of the conflict took it. The
+  // re-run counts again, finds 4, and supersedes this device's oldest to that PC: still never 5.
+  for (let k = 0; k < 3; k++) tables.lease.push({ ...leaseTo(laptop.deviceId, pcs[0].deviceId, `old-${k}`), createdAt: new Date(Date.now() - 60_000 + k) });
   pending = [{ abort: aborts[0][1](), winner: () => { tables.lease.push(leaseTo(laptop.deviceId, pcs[0].deviceId, "winner-0")); } }];
   const perPc = await connect(0);
-  assert.equal(perPc.res.status, 409); assert.equal(transactionCalls, 2);
+  assert.equal(perPc.res.status, 200); assert.equal(transactionCalls, 2);
   assert.equal(tables.lease.filter(l => l.hostDeviceId === pcs[0].deviceId).length, 4, "never 5 to one PC");
+  assert.ok(!tables.lease.some(l => l.id === "old-0") && tables.lease.some(l => l.id === "winner-0"), "the oldest was superseded, the winner kept");
   // Across PCs: 4 + 3 live; an attempt to PC 2 would be the 8th, but the winner took it on PC 1.
   for (let k = 0; k < 3; k++) tables.lease.push(leaseTo(laptop.deviceId, pcs[1].deviceId));
   pending = [{ abort: aborts[4][1](), winner: () => { tables.lease.push(leaseTo(laptop.deviceId, pcs[1].deviceId, "winner-1")); } }];
