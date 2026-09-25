@@ -569,11 +569,22 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
       // MAX_PAIRS_PER_REMOTE_HOST connections to one PC and MAX_PAIRS_PER_REMOTE across all its PCs.
       // Counted from the account's live leases in this transaction, so racing redeems cannot overshoot:
       // they conflict, and the re-run counts again.
-      const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "session", expiresAt: { gt: now } }, select: { remoteDeviceId: true, hostDeviceId: true } });
+      const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "session", expiresAt: { gt: now } }, select: { id: true, remoteDeviceId: true, hostDeviceId: true, createdAt: true } });
       const remotes = new Set(live.map(l => l.remoteDeviceId));
-      const mine = live.filter(l => l.remoteDeviceId === binding.remoteDeviceId);
-      if (mine.filter(l => l.hostDeviceId === binding.hostDeviceId).length >= MAX_PAIRS_PER_REMOTE_HOST || mine.length >= MAX_PAIRS_PER_REMOTE ||
-        (!remotes.has(binding.remoteDeviceId) && remotes.size >= MAX_REMOTES_PER_ACCOUNT)) return "capacity" as const;
+      let mine = live.filter(l => l.remoteDeviceId === binding.remoteDeviceId);
+      // The newest connection wins its own slots. At the per-PC limit, the device presenting this pass
+      // (same account, same connector key, same PC) is the one holding every one of those slots: most
+      // often legs orphaned by a network switch whose leases have not lapsed yet. Its oldest leases to
+      // this PC are dropped so this one fits; the relay ends those legs at their next renewal (404). The
+      // limits themselves are unchanged, and no other device or PC is ever displaced.
+      const toThisPc = mine.filter(l => l.hostDeviceId === binding.hostDeviceId).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      const excess = toThisPc.length - (MAX_PAIRS_PER_REMOTE_HOST - 1);
+      if (excess > 0) {
+        const superseded = toThisPc.slice(0, excess).map(l => l.id);
+        await tx.appBridgeLease.deleteMany({ where: { id: { in: superseded } } });
+        mine = mine.filter(l => !superseded.includes(l.id));
+      }
+      if (mine.length >= MAX_PAIRS_PER_REMOTE || (!remotes.has(binding.remoteDeviceId) && remotes.size >= MAX_REMOTES_PER_ACCOUNT)) return "capacity" as const;
     } else {
       // Presence cap: each PC keeps one waiting connection; the spares cover a PC reconnecting before
       // the relay has released its old lease. Nothing else bounds presence leases per account.
