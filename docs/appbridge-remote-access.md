@@ -41,7 +41,8 @@ The relay's half of this contract is `docs/REMOTE_ACCESS_BROKER_API.md` in the A
      deleted.
 4. **Conventions.**
    - JSON bodies with exactly the specified members, at most 4 KiB.
-   - `Cache-Control: no-store`, errors as `{ "error": "<code>" }`.
+   - `Cache-Control: no-store`, errors as `{ "error": "<code>" }`. The one refusal with more is
+     `devices_busy`, which also lists the busy devices (see **Device limit and takeover**).
    - The broker keys its rate limits by device, account, lease, presented connector key or a global
      budget, never by IP, and stores no IP. The relay Worker additionally rate-limits client connects
      by client IP, in memory only, before it signs anything for the broker (see **Rate limits**).
@@ -87,7 +88,7 @@ All routes are under `/api/appbridge/v1`.
 | `PUT /hosts/self/pairings/{enrollmentId}` | `appbridge.host.relay` | `{ remoteDeviceId }` | `204`. Idempotent; a withdrawn enrollment is never revived (`409`). Host devices only (`403 scope` otherwise, whatever the credential's scopes). |
 | `DELETE /hosts/self/pairings/{enrollmentId}` | `appbridge.host.relay` | — | `204`. Host devices only. |
 | `POST /relay/presence-passes` | `appbridge.relay.presence` | `{}` | `{ pass, expiresAt, relay }` |
-| `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId }` | `{ pass, expiresAt, relay }` |
+| `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId, takeover? }` | `{ pass, expiresAt, relay }`, or `409 devices_busy` with the busy devices: see **Device limit and takeover** below. |
 
 Scopes:
 - **host:** `appbridge.device`, `appbridge.host.relay`, `appbridge.relay.presence`.
@@ -110,6 +111,49 @@ Details:
   ends every credential, including one in its grace period.
 - A refused gate is `403` with one of `rollout_off`, `not_entitled`, `relay_off`, `device_revoked` or
   `not_paired`. A PC outside the caller's account is `404`.
+
+#### Device limit and takeover (Skylar, 2026-09-25)
+
+An account relays at most 3 remotes (phones or laptops) at once. The relay turns redeem's `409` into
+a bare `429`, so the device could never learn why. The limit is therefore answered at pass issue, where
+the device talks to the broker directly, and the newest device gets a choice: kick off one of the busy
+devices, or cancel.
+
+- **Refusal.** `POST /relay/passes` answers `409` when **both** of these hold (after the gate, in the same
+  serializable transaction):
+  - the calling remote holds no live session lease (a device already connected always gets its pass);
+  - the account's *other* remotes holding live session leases already number 3 or more.
+
+  ```json
+  { "error": "devices_busy",
+    "devices": [ { "deviceId": "<22-char id>", "label": "Phone", "since": "2026-09-25T17:02:11.000Z" } ] }
+  ```
+
+  `devices` lists exactly those other devices, oldest first. `since` is each device's earliest live
+  session lease. `label` is the owner's own name for the device (same account only), else `null`. No
+  host, lease id, key or anything else is exposed. No pass is issued.
+- **Takeover.** The body may carry `"takeover": "<deviceId>"`. It must be a well-formed device id
+  (`[A-Za-z0-9_-]{22}`), else `400 { "error": "invalid" }`.
+  - When the check above would refuse and `takeover` names one of the devices it would list, then in
+    the **same** serializable, retried transaction the broker deletes every live session lease of that
+    device in this account and issues the pass as normal. The relay ends those legs at their next
+    renewal (`404`, within about a minute).
+  - A `takeover` naming a device that is not in that busy set (it already disconnected, it is idle, it
+    is the caller, or it is not in this account) is ignored: the request is answered on the normal
+    rules. When the check would not refuse at all, `takeover` is ignored too.
+  - Only session leases of a device in the caller's account are ever deleted. Presence (PC) leases are
+    never read or touched.
+  - Under a serializable conflict the whole transaction is re-run and reads the busy set again, so two
+    devices taking over the same device at once take it over once: the re-run finds it gone and issues
+    the pass without a takeover.
+  - **At most 6 takeovers per taking device per hour**, so two devices cannot ping-pong. Only a
+    takeover that happens counts; over the budget a takeover is `429 { "error": "rate_limited" }` with
+    `Retry-After`, and nothing is displaced.
+  - Each takeover writes one `AccountAudit` row, `appbridge.device_takeover`, with
+    `{ takerDeviceId, takenDeviceId }` and its time. No IP.
+- **Redeem is unchanged.** It still enforces the 3-remote limit, as the backstop for passes issued
+  concurrently (two waiting devices each issued a pass while two devices were busy: the second to
+  redeem is refused).
 
 ### Relay (requests signed with the relay's Ed25519 key only)
 
@@ -144,7 +188,9 @@ dashboard cookie all get `401`.
   - the account already has 3 remotes (phones or laptops) relayed, and this is a fourth; or
   - this remote already holds 8 live connections across all PCs, so a laptop can use two PCs at once.
 
-  The pass is still consumed. The relay answers the device `429`.
+  The pass is still consumed. The relay answers the device `429`. Pass issue answers the 3-remote
+  limit first (`devices_busy`, with an optional takeover: see **Device limit and takeover**); this check
+  remains as the backstop for passes issued concurrently.
 - **Per-PC limit, newest wins** (Skylar, 2026-09-25): one remote holds at most 4 live connections to one PC
   (its workspace socket plus pooled HTTPS connections). A fifth from the *same* remote to the *same* PC is
   admitted, and that remote's oldest leases to that PC are deleted so it still holds 4.
@@ -167,7 +213,7 @@ dashboard cookie all get `401`.
 
 ### Rate limits
 
-All limits are in memory (one broker instance), per minute, and answer `429 { "error": "rate_limited" }`
+All limits are in memory (one broker instance), per minute unless stated, and answer `429 { "error": "rate_limited" }`
 with `Retry-After`. Redeem, renew and release have **separate** budgets: anyone can make the relay
 sign a redeem (a client connect with a throwaway key and a junk pass), and when all three shared one
 bucket such a flood made renewals fail and tore down every live session.
@@ -179,6 +225,7 @@ bucket such a flood made renewals fail and tore down every live session.
 | `POST /relay/redeem`, refusals (`403`, malformed `400`) | 10 per presented key and 600 globally, checked before any database work; a success spends neither. Once the global budget is spent, a redemption gets through only if its presented key belongs to a live registered device (one indexed read), so a flood is shed while real devices keep connecting. The relay checks that the client holds the presented key, so only its holder can spend a key's budget. |
 | `POST /devices/exchange` | Only failed exchanges count: 1000 globally. Registrations are never blocked by others' failures until that whole budget is spent, and a shed request never burns its code. Codes are one of 31^8, one-use and live 10 minutes; minting stays limited to 15 per account per hour. |
 | Device routes | 60 per device; passes 30 per device. |
+| `POST /relay/passes` with a `takeover` that happens | 6 per taking device per **hour**; only a takeover that happens counts. |
 
 The relay Worker also limits client connects per client IP, in memory, before it signs a redeem. The
 broker never sees or stores that IP.

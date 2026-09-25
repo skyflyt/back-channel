@@ -42,6 +42,11 @@ const MAX_REMOTES_PER_ACCOUNT = 3;   // phones or laptops relayed at once, per a
 const MAX_PAIRS_PER_REMOTE_HOST = 4; // one remote's live pairs to one PC: its workspace socket plus pooled HTTPS connections
 const MAX_PAIRS_PER_REMOTE = 8;      // one remote's live pairs across all its PCs (a laptop on two PCs at once)
 const MAX_PRESENCE_PER_ACCOUNT = 4;
+// Device takeover at pass issue (Skylar, 2026-09-25): a remote refused as a fourth device may displace
+// one of the busy ones, at most this often per taking device, so two devices cannot ping-pong forever.
+const TAKEOVERS_PER_DEVICE = 6;
+const TAKEOVER_WINDOW_MS = 60 * 60_000;
+const DEVICE_ID = /^[A-Za-z0-9_-]{22}$/;
 // A rotated credential's predecessor stays valid until the new one is first used, or this long at most.
 const CREDENTIAL_GRACE_MS = 86_400_000;
 // Rate budgets, per minute. The "failed" budgets are spent only by refusals (see budget()/spend()).
@@ -490,29 +495,91 @@ export const withdrawPairing = (req: NextRequest, enrollmentId: string) => handl
   return new NextResponse(null, { status: 204, headers: { "Cache-Control": "no-store" } });
 });
 
+type BusyDevice = { deviceId: string; label: string | null; since: string };
+type Issued =
+  | { refused: Refusal }
+  | { busy: BusyDevice[] }
+  | { takeoverLimited: number }
+  | { ok: true; taken: string | null };
+
+/**
+ * The 3-remote limit, answered at pass issue where the device can see the answer (the relay turns a
+ * redeem's 409 into a bare 429). A remote holding no live session lease, in an account whose OTHER
+ * remotes already hold live session leases for MAX_REMOTES_PER_ACCOUNT or more devices, is told which
+ * devices those are (409 devices_busy), unless it asked to take one of them over. A takeover deletes
+ * every live session lease of that one device, in this account only, and the pass is issued as normal;
+ * the relay ends those legs at their next renewal (404). Presence leases are never read or touched.
+ * Pure database work through `tx` (the takeover budget is only peeked here), so a re-run is exact.
+ */
+async function sessionCapacity(tx: Prisma.TransactionClient, accountId: string, remoteDeviceId: string, takeover: string | null): Promise<{ busy: BusyDevice[] } | { takeoverLimited: number } | { taken: string | null }> {
+  const now = new Date();
+  const live = await tx.appBridgeLease.findMany({ where: { accountId, purpose: "session", expiresAt: { gt: now } }, select: { remoteDeviceId: true, createdAt: true } });
+  if (live.some(l => l.remoteDeviceId === remoteDeviceId)) return { taken: null };
+  // Each other busy device, with its earliest live session lease.
+  const since = new Map<string, Date>();
+  for (const l of live) {
+    if (!l.remoteDeviceId) continue;
+    const first = since.get(l.remoteDeviceId);
+    if (!first || l.createdAt < first) since.set(l.remoteDeviceId, l.createdAt);
+  }
+  if (since.size < MAX_REMOTES_PER_ACCOUNT) return { taken: null };
+  if (takeover !== null && since.has(takeover)) {
+    const budget = rateLimitPeek("appbridge:takeover", remoteDeviceId, TAKEOVERS_PER_DEVICE);
+    if (!budget.ok) return { takeoverLimited: budget.retryAfterSec };
+    await tx.appBridgeLease.deleteMany({ where: { accountId, purpose: "session", remoteDeviceId: takeover, expiresAt: { gt: now } } });
+    return { taken: takeover };
+  }
+  // Labels are the owner's own names for devices in this account; nothing else is exposed.
+  const devices = await tx.appBridgeDevice.findMany({ where: { id: { in: [...since.keys()] }, accountId }, select: { id: true, label: true } });
+  const labels = new Map(devices.map(d => [d.id, d.label]));
+  return {
+    busy: [...since]
+      .sort(([a, x], [b, y]) => x.getTime() - y.getTime() || (a < b ? -1 : a > b ? 1 : 0))
+      .map(([deviceId, first]) => ({ deviceId, label: labels.get(deviceId) ?? null, since: first.toISOString() })),
+  };
+}
+
 async function issuePass(req: NextRequest, purpose: "session" | "presence"): Promise<NextResponse> {
   const { device } = await deviceContext(req, purpose === "presence" ? "appbridge.relay.presence" : "appbridge.relay.pass");
   limit("appbridge:pass", device.id, 30, 60_000);
   const body = await readBody(req);
   let binding: Binding;
+  let takeover: string | null = null;
   if (purpose === "presence") {
     exact(body, []);
     if (device.role !== "host") fail(400, "invalid_request");
     binding = { accountId: device.accountId, hostDeviceId: device.id, remoteDeviceId: null, enrollmentId: null };
   } else {
-    exact(body, ["hostDeviceId", "enrollmentId"]);
+    exact(body, ["hostDeviceId", "enrollmentId"], ["takeover"]);
     if (device.role !== "remote") fail(400, "invalid_request");
     binding = { accountId: device.accountId, hostDeviceId: id(body.hostDeviceId), remoteDeviceId: device.id, enrollmentId: id(body.enrollmentId) };
+    if ("takeover" in body) {
+      if (typeof body.takeover !== "string" || !DEVICE_ID.test(body.takeover)) fail(400, "invalid");
+      takeover = body.takeover;
+    }
   }
   const pass = randomBytes(32).toString("hex").toUpperCase();
   const expiresAt = new Date(Date.now() + PASS_TTL_MS);
-  const result = await serializableTx(async tx => {
+  const result = await serializableTx(async (tx): Promise<Issued> => {
     const g = await gate(tx, binding);
     if ("refused" in g) return g;
+    let taken: string | null = null;
+    if (purpose === "session") {
+      const capacity = await sessionCapacity(tx, binding.accountId, device.id, takeover);
+      if (!("taken" in capacity)) return capacity;
+      taken = capacity.taken;
+    }
     await tx.appBridgePass.create({ data: { passHash: sha256Hex(pass), purpose, ...binding, expiresAt } });
-    return { ok: true } as const;
+    return { ok: true, taken };
   });
   if ("refused" in result) refuse(result.refused);
+  if ("busy" in result) return json({ error: "devices_busy", devices: result.busy }, 409);
+  if ("takeoverLimited" in result) fail(429, "rate_limited", result.takeoverLimited);
+  if (result.taken) {
+    // Counted once, after the commit: only a takeover that happened spends the budget.
+    rateLimit("appbridge:takeover", device.id, TAKEOVERS_PER_DEVICE, TAKEOVER_WINDOW_MS);
+    await prisma.accountAudit.create({ data: { accountId: device.accountId, eventType: "appbridge.device_takeover", detail: { takerDeviceId: device.id, takenDeviceId: result.taken } } }).catch(() => {});
+  }
   void sweep();
   return json({ pass, expiresAt: expiresAt.toISOString(), relay: relayUrl() });
 }
@@ -568,7 +635,9 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
       // Cost guard: at most MAX_REMOTES_PER_ACCOUNT remotes relayed at once; each holds at most
       // MAX_PAIRS_PER_REMOTE_HOST connections to one PC and MAX_PAIRS_PER_REMOTE across all its PCs.
       // Counted from the account's live leases in this transaction, so racing redeems cannot overshoot:
-      // they conflict, and the re-run counts again.
+      // they conflict, and the re-run counts again. Pass issue answers the 3-remote limit first, with
+      // devices_busy and an optional takeover (sessionCapacity); this stays as the backstop for passes
+      // issued concurrently, which the relay turns into a 429.
       const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "session", expiresAt: { gt: now } }, select: { id: true, remoteDeviceId: true, hostDeviceId: true, createdAt: true } });
       const remotes = new Set(live.map(l => l.remoteDeviceId));
       let mine = live.filter(l => l.remoteDeviceId === binding.remoteDeviceId);

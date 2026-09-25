@@ -126,6 +126,45 @@ try{
  assert.equal(await leases('presence'),4);
  console.log('PASS: concurrent presence redeems never surface a 503, and the presence cap holds');
 
+ // Device takeover (Skylar, 2026-09-25). Three remotes relayed at once: a fourth is told at pass issue
+ // which devices are busy (409 devices_busy), takes over the oldest, and its pass redeems; every one of
+ // the taken device's legs gets 404 at its next renewal. Then two waiting devices take over the same
+ // device at once: exactly one takeover happens, neither sees a 503, and redeem's 3-remote limit, the
+ // backstop, admits only one of them.
+ const takenLeases=await prisma.appBridgeLease.findMany({where:{accountId:account.id,purpose:'session',remoteDeviceId:remote.deviceId,expiresAt:{gt:new Date()}},select:{id:true}});
+ assert.ok(takenLeases.length>0);
+ const phones=[];
+ for(let i=0;i<5;i++){
+  const key=p256(),res=await exchange(await deviceCode('remote'),'remote',key);assert.equal(res.status,200);
+  const phone={...(await res.json()) as {deviceId:string;credential:string},key,enr:`enr-phone-${i}`};
+  assert.equal((await ab.attestPairing(call('PUT',`/hosts/self/pairings/${phone.enr}`,host.credential,{remoteDeviceId:phone.deviceId}),phone.enr)).status,204);
+  phones.push(phone);
+ }
+ const passFor=(p:typeof phones[number],takeover?:string)=>ab.issueSessionPass(call('POST','/relay/passes',p.credential,{hostDeviceId:host.deviceId,enrollmentId:p.enr,...(takeover?{takeover}:{})}));
+ for(const p of phones.slice(0,2)){const r=await passFor(p);assert.equal(r.status,200);assert.equal((await redeem((await r.json()).pass,'session',p.key.fp)).status,200);}
+ const busy=await passFor(phones[2]);
+ assert.equal(busy.status,409);assert.equal(busy.headers.get('cache-control'),'no-store');
+ const refusal=await busy.json() as {error:string;devices:{deviceId:string;label:string|null;since:string}[]};
+ assert.equal(refusal.error,'devices_busy');
+ assert.deepEqual(refusal.devices.map(d=>d.deviceId),[remote.deviceId,phones[0].deviceId,phones[1].deviceId],'the other busy devices, oldest first');
+ assert.ok(refusal.devices.every(d=>Object.keys(d).sort().join()==='deviceId,label,since'),'nothing but id, label and since');
+ const took=await passFor(phones[2],refusal.devices[0].deviceId);assert.equal(took.status,200);
+ assert.equal((await redeem((await took.json()).pass,'session',phones[2].key.fp)).status,200,"the taker's pass redeems");
+ for(const {id} of takenLeases)assert.equal((await ab.renewLease(relayCall('renew',{leaseId:id}))).status,404,"the taken device's next renewal is 404");
+ const takeovers=()=>prisma.accountAudit.count({where:{accountId:account.id,eventType:'appbridge.device_takeover'}});
+ assert.equal(await takeovers(),1);
+ console.log('PASS: a fourth device is told who is busy, takes over the oldest, redeems; the taken legs end at renewal');
+ const takers=await Promise.all(phones.slice(3).map(p=>passFor(p,phones[0].deviceId)));
+ assert.deepEqual(statuses(takers),[200,200],'two takeovers of one device at once: no 503');
+ assert.equal(await prisma.appBridgeLease.count({where:{accountId:account.id,purpose:'session',remoteDeviceId:phones[0].deviceId}}),0);
+ assert.equal(await takeovers(),2,'the device was taken over once: the re-run found it no longer busy');
+ const racedPasses=await Promise.all(takers.map(async r=>(await r.json()).pass as string));
+ assert.deepEqual(statuses(await Promise.all(racedPasses.map((p,i)=>redeem(p,'session',phones[3+i].key.fp)))),[200,409],"redeem's 3-remote limit is the backstop");
+ const relayed=await prisma.appBridgeLease.findMany({where:{accountId:account.id,purpose:'session',expiresAt:{gt:new Date()}},select:{remoteDeviceId:true},distinct:['remoteDeviceId']});
+ assert.equal(relayed.length,3,'never a fourth remote');
+ assert.equal(await leases('presence'),4,'presence leases are never displaced');
+ console.log('PASS: concurrent takeovers of one device take it over once, never 503, and never admit a fourth remote');
+
  // A rotated credential's first requests arrive together: each ends the predecessor, once.
  const rotated=await ab.rotateCredential(call('POST','/devices/self/credential',host.credential));assert.equal(rotated.status,200);
  const next=(await rotated.json()).credential as string;

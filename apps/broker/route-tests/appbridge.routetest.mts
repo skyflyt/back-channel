@@ -155,8 +155,8 @@ async function mint(role: "host" | "remote", acct = "a", label?: string) {
   const r = await (await routes.codes()).POST(req("POST", { role, ...(label ? { label } : {}) }, cookie(acct)));
   assert.equal(r.status, 200); return (await r.json()).code as string;
 }
-async function register(role: "host" | "remote", acct = "a") {
-  const key = newKey(); const code = await mint(role, acct);
+async function register(role: "host" | "remote", acct = "a", label?: string) {
+  const key = newKey(); const code = await mint(role, acct, label);
   const r = await (await routes.exchange()).POST(req("POST", { code, role, connectorSpki: key.spki, proof: key.sign(`appbridge-device-exchange-v1:${code}`) }));
   assert.equal(r.status, 200);
   const body = await r.json();
@@ -398,8 +398,11 @@ test("cost guard: at most 3 remotes per account relayed at once, each with at mo
     return { pass, res: await redeem(pass, "session", r.key.fp) };
   };
   const leases: string[] = [];
+  // The fourth phone's pass is issued before the cap fills (pass issue answers devices_busy once it
+  // has: see the takeover tests), so its redemption meets redeem's own 3-remote check, the backstop.
+  const early = (await (await sessionPass(remotes[3], host.deviceId, "enr-cap-3")).json()).pass as string;
   for (let i = 0; i < 3; i++) { const { res } = await connect(remotes[i], i); assert.equal(res.status, 200); leases.push((await res.json()).leaseId); }
-  const fourth = await connect(remotes[3], 3);
+  const fourth = { pass: early, res: await redeem(early, "session", remotes[3].key.fp) };
   assert.equal(fourth.res.status, 409, "a fourth phone is over the cap");
   assert.equal((await redeem(fourth.pass, "session", remotes[3].key.fp)).status, 403, "the refused pass was still consumed");
   for (let k = 0; k < 3; k++) assert.equal((await connect(remotes[0], 0)).res.status, 200, "one remote may hold up to 4 connections to one PC");
@@ -702,6 +705,14 @@ const cases: Case[] = [
   { name: "session pass issue", status: 200, arrange: ready,
     act: ({ host, remote }) => sessionPass(remote, host.deviceId),
     committed: async (_, r) => { assert.deepEqual(tables.pass.map(p => [p.passHash, p.purpose]), [[sha((await r.json()).pass), "session"]]); } },
+  { name: "session pass issue with a device takeover", status: 200, arrange: busyAccount,
+    act: ({ host, remotes, taker }) => takeoverPass(taker, host.deviceId, remotes[1].deviceId),
+    committed: async ({ remotes, taker, leases }, r) => {
+      assert.deepEqual(tables.pass.filter(p => !p.consumedAt).map(p => [p.passHash, p.remoteDeviceId]), [[sha((await r.json()).pass), taker.deviceId]], "exactly one pass");
+      assert.deepEqual(tables.lease.map(l => l.id), [leases[0], leases[2]], "exactly the taken device's lease is gone");
+      assert.equal(tables.lease.some(l => l.remoteDeviceId === remotes[1].deviceId), false);
+      assert.equal(audits("appbridge.device_takeover"), 1, "one audit row");
+    } },
   { name: "presence pass issue", status: 200, arrange: ready,
     act: async ({ host }) => (await routes.presence()).POST(req("POST", {}, bearer(host.credential))),
     committed: async (_, r) => { assert.deepEqual(tables.pass.map(p => [p.passHash, p.purpose]), [[sha((await r.json()).pass), "presence"]]); } },
@@ -949,4 +960,209 @@ test("connection caps under contention: a slot taken by the conflict's winner is
   pending = [aborts[2][1](), aborts[3][1]()];
   const admitted = await connect(2);
   assert.equal(admitted.res.status, 200); assert.equal(transactionCalls, 3); assert.equal(tables.lease.length, 8);
+});
+
+// ── Device takeover at pass issue (Skylar, 2026-09-25): the newest device may kick off a busy one ──
+/** One PC; remotes A ("Phone A"), B (no label) and C ("Laptop C") relayed at once, in that order; D ("Tablet D", the taker) paired and idle. */
+async function busyAccount() {
+  const host = await register("host"); await entitle(); await setRelay(host, true);
+  const all = [];
+  for (const [i, label] of ["Phone A", undefined, "Laptop C", "Tablet D"].entries()) {
+    const r = await register("remote", "a", label);
+    assert.equal((await attest(host, r.deviceId, `enr-busy-${i}`)).status, 204);
+    all.push(r);
+  }
+  const leases: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const { pass } = await (await sessionPass(all[i], host.deviceId, `enr-busy-${i}`)).json();
+    const res = await redeem(pass, "session", all[i].key.fp); assert.equal(res.status, 200);
+    leases.push((await res.json()).leaseId);
+  }
+  return { host, remotes: all.slice(0, 3), taker: all[3], leases };
+}
+async function takeoverPass(remote: { credential: string }, hostDeviceId: string, takeover: unknown, enrollmentId = "enr-busy-3", headers: Record<string, string> = {}) {
+  return (await routes.passes()).POST(req("POST", { hostDeviceId, enrollmentId, takeover }, { ...bearer(remote.credential), ...headers }));
+}
+function sessionLease(remoteDeviceId: string, hostDeviceId: string, minutesAgo = 0, accountId = "acct-a") {
+  return { id: randomBytes(8).toString("hex"), purpose: "session", accountId, hostDeviceId, remoteDeviceId, enrollmentId: "enr-x",
+    createdAt: new Date(Date.now() - minutesAgo * 60_000), expiresAt: new Date(Date.now() + 120_000) };
+}
+const takeoverHits = () => [...hits.keys()].filter(k => k.startsWith("appbridge:takeover:"));
+const unconsumedPasses = (deviceId: string) => tables.pass.filter(p => p.remoteDeviceId === deviceId && !p.consumedAt).length;
+
+test("takeover: devices_busy lists exactly the account's other busy remotes, oldest first, labels only", async () => {
+  const { host, remotes: [a, b, c], taker, leases } = await busyAccount();
+  const set = (leaseId: string, minutesAgo: number) => { const l = tables.lease.find(x => x.id === leaseId)!; l.createdAt = new Date(Date.now() - minutesAgo * 60_000); return l.createdAt as Date; };
+  set(leases[0], 1); const bSince = set(leases[1], 5); const cSince = set(leases[2], 3);
+  // A also holds an older connection to another PC: `since` is a device's earliest LIVE session lease.
+  const aOlder = sessionLease(a.deviceId, "pc-elsewhere", 4); tables.lease.push(aOlder);
+  tables.lease.push({ ...sessionLease(a.deviceId, host.deviceId, 30), expiresAt: new Date(Date.now() - 1) });
+  // None of these count: a live presence lease, a remote holding only an expired lease, another account's busy remote.
+  tables.lease.push({ ...sessionLease("", host.deviceId, 60), purpose: "presence", remoteDeviceId: null, enrollmentId: null });
+  const idle = await register("remote", "a", "Idle");
+  tables.lease.push({ ...sessionLease(idle.deviceId, host.deviceId, 50), expiresAt: new Date(Date.now() - 1) });
+  const foreign = await register("remote", "b", "Foreign");
+  tables.lease.push(sessionLease(foreign.deviceId, "pc-b", 90, "acct-b"));
+  const leasesBefore = structuredClone(tables.lease);
+
+  const r = await sessionPass(taker, host.deviceId, "enr-busy-3");
+  assert.equal(r.status, 409); assert.equal(r.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await r.json(), { error: "devices_busy", devices: [
+    { deviceId: b.deviceId, label: null, since: bSince.toISOString() },
+    { deviceId: a.deviceId, label: "Phone A", since: aOlder.createdAt.toISOString() },
+    { deviceId: c.deviceId, label: "Laptop C", since: cSince.toISOString() },
+  ] }, "exactly the other busy devices, oldest first: no hosts, lease ids or keys");
+  assert.equal(unconsumedPasses(taker.deviceId), 0, "no pass issued");
+  assert.deepEqual(tables.lease, leasesBefore, "nothing displaced");
+  assert.equal(audits("appbridge.device_takeover"), 0);
+
+  // A label is only ever the owner's own: a (forged) lease row naming another account's device lists it without one.
+  tables.lease.push(sessionLease(foreign.deviceId, host.deviceId, 0));
+  const forged = await (await sessionPass(taker, host.deviceId, "enr-busy-3")).json();
+  assert.deepEqual(forged.devices.map((d: any) => [d.deviceId, d.label]), [[b.deviceId, null], [a.deviceId, "Phone A"], [c.deviceId, "Laptop C"], [foreign.deviceId, null]]);
+  tables.lease.pop();
+
+  // Two busy devices is under the limit: the pass is issued.
+  tables.lease.find(l => l.id === leases[2])!.expiresAt = new Date(Date.now() - 1);
+  assert.equal((await sessionPass(taker, host.deviceId, "enr-busy-3")).status, 200);
+});
+
+test("takeover: a device already holding a live session lease never gets devices_busy, and its takeover is ignored", async () => {
+  const { host, remotes: [a, b], taker } = await busyAccount();
+  // Past the limit from A's point of view (B, C and D), the way a redeem race could leave it.
+  tables.lease.push(sessionLease(taker.deviceId, host.deviceId));
+  const before = structuredClone(tables.lease);
+  assert.equal((await sessionPass(a, host.deviceId, "enr-busy-0")).status, 200, "A holds a lease: its own reconnects always get a pass");
+  assert.equal((await takeoverPass(a, host.deviceId, b.deviceId, "enr-busy-0")).status, 200);
+  assert.deepEqual(tables.lease, before, "nothing displaced");
+  assert.equal(audits("appbridge.device_takeover"), 0); assert.deepEqual(takeoverHits(), []);
+  // Once its lease has lapsed, A is a waiting device like any other.
+  for (const l of tables.lease) if (l.remoteDeviceId === a.deviceId) l.expiresAt = new Date(Date.now() - 1);
+  assert.equal((await (await sessionPass(a, host.deviceId, "enr-busy-0")).json()).error, "devices_busy");
+});
+
+test("takeover: deletes every live session lease of exactly the named device, in this account only, and the pass redeems", async () => {
+  const { host, remotes: [a, b, c], taker, leases } = await busyAccount();
+  const bElsewhere = sessionLease(b.deviceId, "pc-elsewhere"); tables.lease.push(bElsewhere);
+  const bLapsed = { ...sessionLease(b.deviceId, host.deviceId, 10), expiresAt: new Date(Date.now() - 1) }; tables.lease.push(bLapsed);
+  const p = await (await routes.presence()).POST(req("POST", {}, bearer(host.credential)));
+  const presence = await (await redeem((await p.json()).pass, "presence", host.key.fp)).json();
+  // A forged row in another account naming B: a takeover never reaches outside the caller's account.
+  const foreignRow = sessionLease(b.deviceId, "pc-b", 0, "acct-b"); tables.lease.push(foreignRow);
+
+  const r = await takeoverPass(taker, host.deviceId, b.deviceId, "enr-busy-3", { "x-forwarded-for": "198.51.100.99", "user-agent": "taker-ua-marker" });
+  assert.equal(r.status, 200); assert.equal(r.headers.get("cache-control"), "no-store");
+  const { pass } = await r.json();
+  assert.deepEqual(tables.lease.filter(l => l.remoteDeviceId === b.deviceId).map(l => l.id).sort(), [bLapsed.id, foreignRow.id].sort(),
+    "B's live session leases here are gone; a lapsed one is left to the sweep and another account's row is untouched");
+  assert.ok([leases[0], leases[2], presence.leaseId].every(id => tables.lease.some(l => l.id === id)), "A, C and the PC's presence are untouched");
+  assert.equal((await renew(leases[1])).status, 404, "the relay's next renewal ends B's leg");
+  assert.equal((await renew(bElsewhere.id)).status, 404, "on every PC");
+  assert.equal((await renew(leases[0])).status, 200);
+  assert.equal((await renew(presence.leaseId)).status, 200);
+  const grant = await redeem(pass, "session", taker.key.fp);
+  assert.equal(grant.status, 200, "the taker's pass redeems under the 3-remote limit");
+  assert.equal(new Set(tables.lease.filter(l => l.purpose === "session" && l.accountId === "acct-a" && l.expiresAt > new Date()).map(l => l.remoteDeviceId)).size, 3);
+
+  const rows = tables.accountAudit.filter(x => x.eventType === "appbridge.device_takeover");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].accountId, "acct-a"); assert.ok(rows[0].createdAt instanceof Date);
+  assert.deepEqual(rows[0].detail, { takerDeviceId: taker.deviceId, takenDeviceId: b.deviceId });
+  const stored = JSON.stringify(tables);
+  for (const marker of ["198.51.100.99", "taker-ua-marker", pass]) assert.ok(!stored.includes(marker), marker);
+  // B, now the one waiting, sees the taker among the busy devices.
+  const back = await (await sessionPass(b, host.deviceId, "enr-busy-1")).json();
+  assert.deepEqual(back.devices.map((d: any) => d.deviceId), [a.deviceId, c.deviceId, taker.deviceId]);
+});
+
+test("takeover: naming a device that is not busy, or not in this account, is ignored; so is any takeover under the limit", async () => {
+  const { host, remotes: [a], taker, leases } = await busyAccount();
+  const idle = await register("remote", "a", "Idle");
+  const foreign = await register("remote", "b", "Foreign");
+  tables.lease.push(sessionLease(foreign.deviceId, "pc-b", 0, "acct-b"));
+  const before = structuredClone(tables.lease);
+  for (const target of [idle.deviceId, foreign.deviceId, taker.deviceId, "A".repeat(22)]) {
+    const r = await takeoverPass(taker, host.deviceId, target);
+    assert.equal(r.status, 409, target); assert.equal((await r.json()).error, "devices_busy", target);
+  }
+  assert.deepEqual(tables.lease, before, "nothing displaced, in either account");
+  assert.equal(unconsumedPasses(taker.deviceId), 0);
+  assert.equal(audits("appbridge.device_takeover"), 0); assert.deepEqual(takeoverHits(), [], "an ignored takeover spends no budget");
+  // Under the limit the check does not refuse, so the takeover is ignored and the pass issued.
+  noContent(await release(leases[2]));
+  const r = await takeoverPass(taker, host.deviceId, a.deviceId);
+  assert.equal(r.status, 200);
+  assert.ok(tables.lease.some(l => l.id === leases[0]), "A keeps its connection");
+  assert.equal(audits("appbridge.device_takeover"), 0); assert.deepEqual(takeoverHits(), []);
+});
+
+test("takeover: a malformed takeover is 400 invalid; the rest of the body is still exact", async () => {
+  const { host, remotes: [a], taker } = await busyAccount();
+  for (const bad of ["", "short", "A".repeat(21), "A".repeat(23), "A".repeat(21) + "!", "A".repeat(21) + "=", 12345, null, true, {}, [a.deviceId], { deviceId: a.deviceId }]) {
+    const r = await takeoverPass(taker, host.deviceId, bad);
+    assert.equal(r.status, 400, JSON.stringify(bad)); assert.equal(r.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await r.json(), { error: "invalid" }, JSON.stringify(bad));
+  }
+  const passes = (await routes.passes()).POST;
+  const extra = await passes(req("POST", { hostDeviceId: host.deviceId, enrollmentId: "enr-busy-3", takeover: a.deviceId, extra: 1 }, bearer(taker.credential)));
+  assert.equal(extra.status, 400); assert.deepEqual(await extra.json(), { error: "invalid_request" }, "unknown members keep their existing refusal");
+  const presence = await (await routes.presence()).POST(req("POST", { takeover: a.deviceId }, bearer(host.credential)));
+  assert.equal(presence.status, 400); assert.deepEqual(await presence.json(), { error: "invalid_request" }, "presence passes are unchanged");
+  assert.equal(unconsumedPasses(taker.deviceId), 0); assert.equal(tables.lease.length, 3);
+});
+
+test("takeover: at most 6 per device per hour, then 429 rate_limited with Retry-After", async () => {
+  const { host, remotes: [a, b], taker } = await busyAccount();
+  for (let i = 0; i < 6; i++) {
+    if (!tables.lease.some(l => l.remoteDeviceId === b.deviceId)) tables.lease.push(sessionLease(b.deviceId, host.deviceId)); // B reconnects
+    assert.equal((await takeoverPass(taker, host.deviceId, b.deviceId)).status, 200, `takeover ${i + 1}`);
+  }
+  assert.equal(hits.get(`appbridge:takeover:${taker.deviceId}`), 6);
+  tables.lease.push(sessionLease(b.deviceId, host.deviceId));
+  const leasesBefore = structuredClone(tables.lease); const passesBefore = tables.pass.length;
+  const over = await takeoverPass(taker, host.deviceId, b.deviceId);
+  assert.equal(over.status, 429); assert.equal(over.headers.get("retry-after"), "7"); assert.equal(over.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await over.json(), { error: "rate_limited" });
+  assert.deepEqual(tables.lease, leasesBefore, "B is not displaced a seventh time");
+  assert.equal(tables.pass.length, passesBefore, "and no pass is issued");
+  assert.equal(audits("appbridge.device_takeover"), 6);
+  assert.equal((await (await sessionPass(taker, host.deviceId, "enr-busy-3")).json()).error, "devices_busy", "without a takeover it is told who is busy");
+  // The budget is the taking device's own: B, displaced in turn, may still take over.
+  tables.lease = tables.lease.filter(l => l.remoteDeviceId !== b.deviceId);
+  tables.lease.push(sessionLease(taker.deviceId, host.deviceId));
+  assert.equal((await takeoverPass(b, host.deviceId, a.deviceId, "enr-busy-1")).status, 200);
+  assert.equal(hits.get(`appbridge:takeover:${b.deviceId}`), 1);
+});
+
+test("takeover under contention: the re-run reads the busy set again and never displaces twice", async () => {
+  const { host, remotes: [, b], taker, leases } = await busyAccount();
+  // The first attempt takes B over and aborts: a concurrent takeover of B by another device committed first.
+  transactionFaults = [{ abort: aborts[0][1](), winner: () => { tables.lease = tables.lease.filter(l => l.remoteDeviceId !== b.deviceId); } }]; transactionCalls = 0;
+  const r = await takeoverPass(taker, host.deviceId, b.deviceId);
+  assert.equal(r.status, 200); assert.equal(transactionCalls, 2);
+  assert.deepEqual(tables.lease.map(l => l.id), [leases[0], leases[2]], "only the winner's displacement");
+  assert.equal(unconsumedPasses(taker.deviceId), 1, "one pass");
+  assert.equal(audits("appbridge.device_takeover"), 0, "the re-run found B no longer busy: this request took nothing over");
+  assert.deepEqual(takeoverHits(), [], "so it spends no takeover budget");
+});
+
+test("redeem's 3-remote limit still holds as the backstop for passes issued concurrently", async () => {
+  const { host, remotes: [a], taker, leases } = await busyAccount();
+  const fifth = await register("remote"); assert.equal((await attest(host, fifth.deviceId, "enr-busy-4")).status, 204);
+  noContent(await release(leases[2]));
+  // Two waiting devices are each issued a pass while only two are busy; the first to redeem takes the slot.
+  const d = (await (await sessionPass(taker, host.deviceId, "enr-busy-3")).json()).pass as string;
+  const e = (await (await sessionPass(fifth, host.deviceId, "enr-busy-4")).json()).pass as string;
+  assert.equal((await redeem(d, "session", taker.key.fp)).status, 200);
+  const over = await redeem(e, "session", fifth.key.fp);
+  assert.equal(over.status, 409); assert.deepEqual(await over.json(), { error: "refused" });
+  assert.equal((await (await sessionPass(fifth, host.deviceId, "enr-busy-4")).json()).error, "devices_busy");
+  // A taken device that reconnects before the taker redeems: whichever redeems second meets the backstop.
+  const taken = await takeoverPass(fifth, host.deviceId, a.deviceId, "enr-busy-4");
+  assert.equal(taken.status, 200);
+  const back = await sessionPass(a, host.deviceId, "enr-busy-0");
+  assert.equal(back.status, 200, "only two devices are busy while the taker has not redeemed: A gets a pass");
+  assert.equal((await redeem((await back.json()).pass, "session", a.key.fp)).status, 200);
+  assert.equal((await redeem((await taken.json()).pass, "session", fifth.key.fp)).status, 409, "never a fourth remote");
+  assert.equal(new Set(tables.lease.filter(l => l.purpose === "session").map(l => l.remoteDeviceId)).size, 3);
 });
