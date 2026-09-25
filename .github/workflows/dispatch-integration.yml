@@ -54,3 +54,5 @@ jobs:
         run: npx prisma db push
       - name: Exercise broker and worker against PostgreSQL over HTTP
         run: node --experimental-strip-types --import ./route-tests/register-hooks.mjs scripts/dispatch-integration.mts
+      - name: AppBridge relay gate under SERIALIZABLE contention (no 503s, caps and one-use hold)
+        run: node --experimental-strip-types --import ./route-tests/register-hooks.mjs scripts/appbridge-integration.mts

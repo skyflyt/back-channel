@@ -2,6 +2,7 @@ import { test, before, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createHmac, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { NextRequest } from "next/server";
+import { PrismaClientKnownRequestError, PrismaClientUnknownRequestError } from "@prisma/client/runtime/library";
 
 // Back Channel Remote paid tier (docs/remote-paid-tier.md): Stripe webhook, checkout, portal,
 // status, and the relay gate reading subscriptions. Stripe's HTTP API is mocked via fetch; no
@@ -58,10 +59,21 @@ db.appBridgeCredential.findUnique = async (args: any) => {
   const c = await credentialFind(args);
   return c && args.include?.device ? { ...c, device: tables.device.find(d => d.id === c.deviceId) } : c;
 };
+// transactionFaults: one per attempt, raised at COMMIT after the callback ran, with its writes rolled
+// back (as Postgres aborts a serializable transaction); a fault's `winner` then commits as the
+// concurrent transaction that won the conflict.
+let transactionFaults: unknown[] = []; let transactionCalls = 0;
 db.$transaction = async (fn: any, options: any) => {
+  transactionCalls++;
   assert.equal(options?.isolationLevel, "Serializable");
   const snapshot = structuredClone(tables);
-  try { return await fn(db); } catch (e) { Object.assign(tables, snapshot); throw e; }
+  let result: unknown;
+  try { result = await fn(db); } catch (e) { Object.assign(tables, snapshot); throw e; }
+  const fault = transactionFaults.shift();
+  if (!fault) return result;
+  Object.assign(tables, snapshot);
+  if (typeof fault === "object" && "winner" in fault) { (fault as { winner: () => void }).winner(); throw (fault as { abort: unknown }).abort; }
+  throw fault;
 };
 
 // ── Stripe's HTTP API, mocked ──
@@ -100,7 +112,7 @@ before(() => {
 });
 beforeEach(() => {
   for (const k of Object.keys(tables)) tables[k] = [];
-  limited = false; calls = []; warnings = []; stripeReply = defaultStripe;
+  limited = false; calls = []; warnings = []; stripeReply = defaultStripe; transactionFaults = []; transactionCalls = 0;
   process.env.APPBRIDGE_REMOTE_ACCESS = "on";
   process.env.APPBRIDGE_RELAY_PUBLIC_KEY = RELAY_PUBLIC_KEY;
   process.env.STRIPE_SECRET_KEY = SECRET_KEY;
@@ -555,4 +567,75 @@ test("webhook: unknown event types are acknowledged and do nothing; a valid sign
   const big = JSON.stringify({ pad: "x".repeat(1024 * 1024) });
   assert.equal((await post(webhookReq(big, stripeSignature(big)))).status, 413);
   assert.equal(tables.remoteSubscription.length, 0);
+});
+
+// ── Serializable retry: the webhook's event transaction is re-run whole on a conflict ──
+const clientVersion = "5.22.0";
+const aborts: [string, () => unknown][] = [
+  ["P2034 write conflict", () => new PrismaClientKnownRequestError("Transaction failed due to a write conflict or a deadlock. Please retry your transaction", { code: "P2034", clientVersion })],
+  ["P2010 raw 40001", () => new PrismaClientKnownRequestError("Raw query failed. Code: 40001. Message: could not serialize access due to concurrent update", { code: "P2010", clientVersion, meta: { code: "40001" } })],
+  ["unknown commit-time 40001", () => new PrismaClientUnknownRequestError("QueryError(PostgresError { code: \"40001\", message: \"could not serialize access due to read/write dependencies among transactions\" })", { clientVersion })],
+  ["P2028 deadlock", () => new PrismaClientKnownRequestError("Transaction API error: deadlock detected", { code: "P2028", clientVersion })],
+  ["driver 40P01", () => Object.assign(new Error("deadlock detected"), { code: "40P01" })],
+  ["P2002 unique race", () => new PrismaClientKnownRequestError("Unique constraint failed on the fields: (eventId)", { code: "P2002", clientVersion })],
+];
+const subscriptionAudits = () => tables.accountAudit.filter(a => a.eventType === "billing.remote_subscription").length;
+
+test("webhook: a conflict re-runs the whole event transaction, in every abort shape; the event is applied once", async () => {
+  customerOf("acct-c", "cus_C");
+  for (const [name, abort] of aborts) {
+    tables.stripeEvent = []; tables.remoteSubscription = []; tables.accountAudit = [];
+    const event = stripeEvent("customer.subscription.created", subscription());
+    transactionFaults = [abort(), abort()]; transactionCalls = 0;
+    const r = await deliver(event);
+    assert.equal(r.status, 200, name); assert.deepEqual(await r.json(), { received: true }, name); assert.equal(transactionCalls, 3, name);
+    assert.deepEqual(tables.stripeEvent.map(e => e.eventId), [event.id], name);
+    assert.deepEqual(tables.remoteSubscription.map(s => [s.stripeSubscriptionId, s.status]), [["sub_C1", "active"]], name);
+    assert.equal(subscriptionAudits(), 1, `${name}: the audit row of a rolled-back attempt is gone with it`);
+    transactionCalls = 0;
+    assert.equal((await deliver(event)).status, 200, name); assert.equal(transactionCalls, 1, name);
+    assert.equal(tables.stripeEvent.length, 1, name); assert.equal(subscriptionAudits(), 1, `${name}: a replay applies nothing`);
+  }
+});
+
+test("webhook: retry budget exhausted is the fixed retryable 503 with nothing recorded, so Stripe's redelivery applies it once", async () => {
+  customerOf("acct-c", "cus_C");
+  for (const [name, abort] of aborts) {
+    tables.stripeEvent = []; tables.remoteSubscription = []; tables.accountAudit = [];
+    const event = stripeEvent("customer.subscription.created", subscription());
+    transactionFaults = Array.from({ length: 5 }, abort); transactionCalls = 0;
+    const r = await deliver(event);
+    assert.equal(r.status, 503, name); assert.deepEqual(await r.json(), { error: "retry" }, name); assert.equal(transactionCalls, 5, name);
+    assert.equal(r.headers.get("retry-after"), "1", name); assert.equal(r.headers.get("cache-control"), "no-store", name);
+    assert.equal(tables.stripeEvent.length, 0, name); assert.equal(tables.remoteSubscription.length, 0, name); assert.equal(subscriptionAudits(), 0, name);
+    assert.equal((await deliver(event)).status, 200, name);
+    assert.equal(tables.stripeEvent.length, 1, name); assert.equal(tables.remoteSubscription.length, 1, name); assert.equal(subscriptionAudits(), 1, name);
+  }
+  assert.deepEqual(warnings, [], "nothing logged");
+});
+
+test("webhook: two deliveries of one event racing: the loser's re-run finds the id and applies nothing", async () => {
+  customerOf("acct-c", "cus_C");
+  const event = stripeEvent("customer.subscription.created", subscription());
+  // The winner is the first delivery, committing the event (and its effect) while this one was in flight.
+  transactionFaults = [{ abort: aborts[5][1](), winner: () => {
+    tables.stripeEvent.push({ eventId: event.id, processedAt: new Date() });
+    tables.remoteSubscription.push({ stripeSubscriptionId: "sub_C1", accountId: "acct-c", status: "active", priceId: PRICE, currentPeriodEnd: new Date(Date.now() + 30 * DAY * 1000), cancelAtPeriodEnd: false, pastDueSince: null, lastEventAt: new Date(event.created * 1000), createdAt: new Date(), updatedAt: new Date() });
+  } }]; transactionCalls = 0;
+  const r = await deliver(event);
+  assert.equal(r.status, 200); assert.equal(transactionCalls, 2);
+  assert.equal(tables.stripeEvent.length, 1); assert.equal(tables.remoteSubscription.length, 1);
+  assert.equal(subscriptionAudits(), 0, "the loser's audit row rolled back with its attempt");
+});
+
+test("webhook: non-conflict failures are never retried", async () => {
+  customerOf("acct-c", "cus_C");
+  transactionFaults = [new Error("connection refused")]; transactionCalls = 0;
+  const r = await deliver(stripeEvent("customer.subscription.created", subscription()));
+  assert.equal(r.status, 503); assert.deepEqual(await r.json(), { error: "unavailable" }); assert.equal(transactionCalls, 1);
+  assert.equal(tables.stripeEvent.length, 0);
+  // The unconfigured-price refusal thrown inside the transaction is an answer, not a conflict.
+  delete process.env.STRIPE_REMOTE_PRICE_ID; transactionCalls = 0;
+  const refused = await deliver(stripeEvent("customer.subscription.created", subscription({ id: "sub_C2" })));
+  assert.equal(refused.status, 503); assert.deepEqual(await refused.json(), { error: "billing_unavailable" }); assert.equal(transactionCalls, 1);
 });
