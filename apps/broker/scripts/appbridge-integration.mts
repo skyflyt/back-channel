@@ -74,22 +74,25 @@ try{
  const opened=await Promise.all(pool.map(p=>redeem(p,'session',remote.key.fp)));
  assert.deepEqual(statuses(opened),[200,200,200,200]);
  assert.equal(await leases('session'),4);
- // The cap under contention: with two slots freed, four more racing for them: exactly two are admitted.
+ // The per-PC cap under contention: with two slots freed, four more race for them. The newest connection
+ // wins this phone's own slots to this PC, so all four are admitted and its oldest are superseded: still 4.
  const live=await Promise.all(opened.map(async r=>(await r.json()).leaseId as string));
  for(const leaseId of live.slice(2))assert.equal((await ab.releaseLease(relayCall('release',{leaseId}))).status,204);
  const racing=await together(4,()=>sessionPass());
  const raced=await Promise.all(racing.map(p=>redeem(p,'session',remote.key.fp)));
- assert.deepEqual(statuses(raced),[200,200,409,409]);
- assert.equal(await leases('session'),4,'the per-phone cap holds under contention');
- assert.equal(await prisma.appBridgeConnectionEvent.count({where:{accountId:account.id}}),6);
- assert.equal(await prisma.appBridgePass.count({where:{passHash:{in:[...pool,...racing].map(sha)},consumedAt:null}}),0,'every pass consumed once, admitted or refused');
- console.log('PASS: concurrent session redeems for one phone never surface a 503, and the cap holds');
+ assert.deepEqual(statuses(raced),[200,200,200,200]);
+ assert.equal(await leases('session'),4,'the per-phone cap holds under contention: never 5 to one PC');
+ const admitted=await Promise.all(raced.map(async r=>(await r.json()).leaseId as string));
+ assert.equal(await prisma.appBridgeLease.count({where:{id:{in:live.slice(0,2)}}}),0,'the two oldest were superseded');
+ assert.equal(await prisma.appBridgeLease.count({where:{id:{in:admitted}}}),4,'the four newest hold the slots');
+ assert.equal(await prisma.appBridgeConnectionEvent.count({where:{accountId:account.id}}),8);
+ assert.equal(await prisma.appBridgePass.count({where:{passHash:{in:[...pool,...racing].map(sha)},consumedAt:null}}),0,'every pass consumed once');
+ console.log('PASS: concurrent session redeems for one phone never surface a 503; the newest supersede the oldest, never 5 to one PC');
 
  // One pass redeemed four times at once while the relay renews a live lease four times at once.
- const admitted=await Promise.all(raced.filter(r=>r.status===200).map(async r=>(await r.json()).leaseId as string));
- for(const leaseId of [live[1],...admitted])assert.equal((await ab.releaseLease(relayCall('release',{leaseId}))).status,204);
+ for(const leaseId of admitted.slice(1))assert.equal((await ab.releaseLease(relayCall('release',{leaseId}))).status,204);
  const once=await sessionPass();
- const [renewed,redeemed]=await Promise.all([together(4,()=>ab.renewLease(relayCall('renew',{leaseId:live[0]}))),together(4,()=>redeem(once,'session',remote.key.fp))]);
+ const [renewed,redeemed]=await Promise.all([together(4,()=>ab.renewLease(relayCall('renew',{leaseId:admitted[0]}))),together(4,()=>redeem(once,'session',remote.key.fp))]);
  assert.deepEqual(statuses(renewed),[200,200,200,200]);
  assert.deepEqual(statuses(redeemed),[200,403,403,403]);
  assert.equal(await leases('session'),2,'the one pass opened one lease');
