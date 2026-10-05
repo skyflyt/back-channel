@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { AgentToken, DispatchTask, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getAuthContext } from "@/lib/auth";
+import { hasFullScope } from "@/lib/agent-scope";
 import { rateLimit } from "@/lib/rate-limit";
 import { isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
 
@@ -75,6 +76,9 @@ export async function dispatch(req: NextRequest, operation: Operation, id?: stri
   try {
     const auth = await getAuthContext(req.headers.get("authorization"));
     if (!auth?.agentTokenId) fail(401, "Per-agent bearer token required");
+    // Dispatch hands tasks to the user's own machines. A "connector" key lives on
+    // a hosted app's servers and has no business doing that (src/lib/agent-scope.ts).
+    if (!hasFullScope(auth)) fail(403, "Dispatch is not available to connector keys");
     const agentId = auth.agentTokenId;
     const limit = rateLimit("dispatch", agentId, 120, 60_000);
     if (!limit.ok) {

@@ -1,0 +1,26 @@
+-- OAuth for /api/mcp: a scope on agent keys, so a key minted through the OAuth consent flow can be
+-- held to less than a key the user handed to an agent they run themselves.
+--
+-- PURELY ADDITIVE: one new NOT NULL column on AgentToken with a default. No existing column, index or
+-- row is changed; every existing key reads as 'full', which is exactly today's behaviour.
+--
+-- scope = 'full'      every key minted before this, and every key minted by the dashboard, a BCX
+--                     exchange code or bc_connect.
+-- scope = 'connector' keys minted by POST /api/oauth/token. They cannot mint a dashboard sign-in link
+--                     (/api/account/view-token-self, the bc_dashboard_link tool) and cannot use
+--                     dispatch. Enforcement is fail-closed: anything other than 'full' is refused.
+--
+-- Order: apply this migration BEFORE deploying the app change that reads/writes the column (Prisma
+-- selects every scalar column, so the new code fails against a database without it — and for this
+-- table that means every bearer-authenticated request). The old code ignores the column and its
+-- inserts take the default, so applying it first is safe.
+--
+-- Rollback. Code from before this column has no scope check, so the ORDER matters:
+--   1. UPDATE "AgentToken" SET "revokedAt" = now() WHERE "scope" <> 'full' AND "revokedAt" IS NULL;
+--   2. roll the app back;
+--   3. only then, if at all: ALTER TABLE "AgentToken" DROP COLUMN "scope";
+-- Skipping step 1 would leave connector keys alive under code that treats every key as full.
+-- (Belt and braces: connector keys are minted with a "bco_" prefix that the old code rejects,
+-- and new code never treats a "bco_" key as full even if this column says so.)
+
+ALTER TABLE "AgentToken" ADD COLUMN "scope" TEXT NOT NULL DEFAULT 'full';

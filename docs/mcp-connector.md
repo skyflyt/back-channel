@@ -265,6 +265,90 @@ Each JSON-RPC method it handles:
 | `tools/list` | Returns the tool catalog (below) |
 | `tools/call` | Dispatches to the named tool |
 
+## OAuth: connecting without pasting a key
+
+`/api/mcp` is also an OAuth 2.1 protected resource, so a client that speaks
+MCP authorization (claude.ai and ChatGPT connectors, `claude mcp add`,
+`codex mcp login`) can connect by sending the person to a consent screen
+instead of asking for a `bc_…` key. Design notes live at the top of
+[`src/lib/oauth.mjs`](../apps/broker/src/lib/oauth.mjs).
+
+| Step | Endpoint |
+|---|---|
+| A 401 from `/api/mcp` says where to look | `WWW-Authenticate: Bearer resource_metadata="…"` |
+| Protected-resource metadata (RFC 9728) | `GET /.well-known/oauth-protected-resource` (also `…/api/mcp`) |
+| Authorization-server metadata (RFC 8414) | `GET /.well-known/oauth-authorization-server` |
+| Dynamic client registration (RFC 7591) | `POST /api/oauth/register` |
+| Consent screen | `GET /oauth/authorize` |
+| Code → token (PKCE S256, public clients) | `POST /api/oauth/token` |
+
+What it is and is not:
+
+- **The access token is an ordinary agent key.** The token endpoint mints a
+  per-agent `bc_…` key (an `AgentToken`, hashed at rest) named after the
+  client. It appears under Account → Registered agents and is revoked there.
+  It does not expire and there is no refresh token. `/api/mcp`'s own auth
+  path is unchanged, and a pasted key keeps working exactly as before.
+- **No new tables.** Registration is stateless — the `client_id` *is* the
+  registration (name + redirect URIs). Authorization codes live in
+  `ExchangeCode` with purpose `oauth`, keyed by a hash over the code **and**
+  the client, redirect and PKCE challenge they were issued for.
+- **Only what is needed:** authorization-code grant, S256, public clients. No
+  implicit, no `plain`, no client secrets, no client-ID metadata documents.
+- **Redirects:** `https` to any host, or `http` on loopback (port ignored on
+  loopback only, per RFC 8252). Matching is exact. A request whose client or
+  redirect is bad is shown an error page and never redirected anywhere. A
+  *malformed* request is reported back to its redirect only when that is a
+  known app callback or loopback; for any other site the error is shown on our
+  page instead. (A `client_id` is self-asserted, so without that rule a link
+  to `/oauth/authorize` would be an open redirect to anywhere.)
+- **`resource` is required** (RFC 8707) and must be this server's MCP
+  endpoint. An MCP client learns its authorization server from the MCP server
+  it is connecting to, and a hostile MCP server can name this one. The flow
+  that follows is valid in every other respect, and the client would then
+  carry the key to the hostile server. Which resource the client says the
+  token is for is the only thing that tells the two apart, so a request that
+  does not say is refused.
+- **Approving needs a human.** The consent endpoint takes the dashboard
+  session cookie plus the CSRF header, never a bearer key, and has no CORS
+  headers — an agent cannot approve its own connection. The account must be
+  verified.
+- **The app's name is the app's claim.** It is reduced to plain ASCII (no
+  look-alike letters, no parentheses to badge itself with) and shown as a
+  label next to the address the approval is sent to. Only the exact MCP
+  callback URLs of Claude and ChatGPT are named as known apps — not every URL
+  on those sites. Any other destination gets an explicit warning. The agent
+  this creates is listed as `<name> (via <host>)`.
+- **Approval is for the account the screen named.** The page sends the handle
+  it displayed, and the server refuses if the session now belongs to a
+  different account.
+
+Two limits to know before leaning on this:
+
+- **An OAuth-issued key is a `connector` key, not a full one**
+  (`AgentToken.scope`, [`src/lib/agent-scope.ts`](../apps/broker/src/lib/agent-scope.ts)).
+  **Closed by default:** `getAccountFromAuth`, which nearly every bearer route
+  uses, accepts full keys only. A connector key reaches just the routes the
+  MCP tools wrap — list threads, read and send on a thread, create and claim
+  invites, request and end a session — through `getAccountFromAnyAgent`.
+  Everything else answers it as if it had no key: skills and the library,
+  public share links, the self-inbox, favors, the inbox doorbell, dispatch,
+  and the dashboard sign-in link (`bc_dashboard_link` is left out of its tool
+  list). Opening another route to connectors is a decision about what a hosted
+  third-party app may do with an account, and the helper's name makes it one.
+  Every other key — dashboard-minted, BCX exchange, `bc_connect` — is `full`,
+  as before.
+- **Connector keys start with `bco_`**, not `bc_`. Code from before scopes
+  existed accepts only `bc_`, so a rollback rejects connector keys instead of
+  treating them as full ones; and current code never treats a `bco_` key as
+  full even if its row says so. The scope column arrives in migration
+  `20261005160000_agent_token_scope`, which must be applied **before** this
+  code is deployed (Prisma selects every column, and on this table a missing
+  one fails every bearer request). Its header gives the rollback order.
+- **No bridge, no decryption.** A remote connector sees sealed frames as
+  `{"type":"enc",…}`. It can see threads, invites and counts, and exchange
+  plaintext frames.
+
 ## Tool list
 
 All ten tools are thin wrappers over the already-bearer-authed REST routes —
@@ -370,9 +454,10 @@ polling on a timer:
 - **One exchange code = one redemption.** Codes are single-use and short-lived
   (15 minutes); if you paste an old one, you'll get the same friendly 410
   error whether it was already used, expired, or never existed.
-- **claude.ai's built-in "Connectors" directory** needs OAuth and won't take a
-  bearer token — use Claude Desktop with the `.mcpb` extension, or another
-  remote-HTTP-capable MCP client, instead.
+- **Connecting from claude.ai or ChatGPT uses OAuth** (below) and reaches
+  `/api/mcp` directly, with no local bridge — so the sealed-frame limitation
+  above applies in full. For decrypted conversations, use a host that runs the
+  bridge.
 - **Phase-B encryption enforcement** is not yet live — the broker currently
   accepts plaintext content frames (and logs them) rather than rejecting
   anything that isn't a sealed `enc` envelope.

@@ -24,8 +24,17 @@
 import { randomBytes, randomInt, createHash, timingSafeEqual } from "node:crypto";
 import { prisma } from "@/lib/db";
 import type { Account } from "@prisma/client";
+import { AGENT_SCOPE_FULL, AGENT_SCOPE_CONNECTOR } from "@/lib/agent-scope";
 
 const KEY_PREFIX = "bc_";
+// Keys minted by the OAuth flow carry their own prefix. Two reasons, both about
+// what happens when the scope column cannot be trusted:
+//  - Code from before scopes existed accepts only "bc_" and has no scope check.
+//    If the app is ever rolled back, those revisions must REJECT connector keys,
+//    not treat them as full ones. "bco_" does not start with "bc_", so they do.
+//  - If the column is dropped and re-added, every row reads "full" again. The
+//    prefix is part of the key itself and survives that (see getAuthContext).
+const CONNECTOR_KEY_PREFIX = "bco_";
 const TOKEN_TTL_HOURS = 24;
 const ORIGINAL_AGENT_TOKEN_NAME = "Original";
 
@@ -43,6 +52,11 @@ export function hashToken(raw: string): string {
 
 export function generateApiKey(): string {
   return KEY_PREFIX + randomBytes(24).toString("base64url");
+}
+
+/** A key for an OAuth-connected app. Store it with scope "connector" (src/lib/agent-scope.ts). */
+export function generateConnectorKey(): string {
+  return CONNECTOR_KEY_PREFIX + randomBytes(24).toString("base64url");
 }
 
 /**
@@ -137,12 +151,13 @@ export function exchangeCodeExpiry(): Date {
  * Touches lastUsedAt (throttled ~1/min) so the dashboard shows per-agent "last
  * active" without a write per request.
  */
-export async function getAuthContext(authHeader: string | null): Promise<{ account: Account; agentTokenId: string } | null> {
+export async function getAuthContext(authHeader: string | null): Promise<{ account: Account; agentTokenId: string; scope: string } | null> {
   if (!authHeader) return null;
   const m = authHeader.match(/^Bearer\s+(\S+)$/);
   if (!m) return null;
   const key = m[1];
-  if (!key.startsWith(KEY_PREFIX)) return null;
+  const connectorKey = key.startsWith(CONNECTOR_KEY_PREFIX);
+  if (!connectorKey && !key.startsWith(KEY_PREFIX)) return null;
 
   // Revoked tokens do not authenticate.
   const tok = await prisma.agentToken.findUnique({ where: { keyHash: hashToken(key) }, include: { account: true } });
@@ -151,13 +166,33 @@ export async function getAuthContext(authHeader: string | null): Promise<{ accou
     if (Date.now() - last > 60_000) {
       void prisma.agentToken.update({ where: { id: tok.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
     }
-    return { account: tok.account, agentTokenId: tok.id };
+    // scope: what this key may reach (src/lib/agent-scope.ts). A key with the
+    // connector prefix is never full, whatever its row says.
+    const scope = connectorKey && tok.scope === AGENT_SCOPE_FULL ? AGENT_SCOPE_CONNECTOR : tok.scope;
+    return { account: tok.account, agentTokenId: tok.id, scope };
   }
   return null;
 }
 
-/** Pull the bearer token from an incoming request and return the account, or null. */
+/**
+ * The account behind a bearer key — FULL-SCOPE KEYS ONLY. This is the default
+ * on purpose: a route written with it is closed to connector keys (the ones a
+ * hosted app holds after OAuth) until someone decides otherwise. A connector
+ * key gets null here, exactly like no key at all.
+ */
 export async function getAccountFromAuth(authHeader: string | null): Promise<Account | null> {
+  const ctx = await getAuthContext(authHeader);
+  return ctx && ctx.scope === AGENT_SCOPE_FULL ? ctx.account : null;
+}
+
+/**
+ * The account behind ANY live agent key, connector keys included. Only for the
+ * routes a connector is meant to use — the ones the MCP tools wrap: listing
+ * threads, reading and sending on a thread, creating and claiming invites,
+ * requesting and ending a session. Adding a route to that set is a decision
+ * about what a hosted third-party app may do with the account; make it one.
+ */
+export async function getAccountFromAnyAgent(authHeader: string | null): Promise<Account | null> {
   return (await getAuthContext(authHeader))?.account ?? null;
 }
 
@@ -213,6 +248,11 @@ export function csrfValid(headerToken: string | null | undefined, cookieToken: s
  */
 export async function getAccountDual(authHeader: string | null, cookieToken: string | null | undefined): Promise<Account | null> {
   return (await getAccountFromAuth(authHeader)) ?? (await getAccountFromCookie(cookieToken));
+}
+
+/** getAccountDual, but the bearer side also accepts connector keys (see getAccountFromAnyAgent). */
+export async function getAccountDualAnyAgent(authHeader: string | null, cookieToken: string | null | undefined): Promise<Account | null> {
+  return (await getAccountFromAnyAgent(authHeader)) ?? (await getAccountFromCookie(cookieToken));
 }
 
 /** Mask an API key for display: bc_••••••••G7Yx (never reveal the full key). */

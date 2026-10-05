@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountDual, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { getAccountDualAnyAgent, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 import { kickSession } from "@/lib/relay";
 
 export const runtime = "nodejs";
@@ -11,7 +11,7 @@ export async function POST(
 ) {
   // Dual-auth: the agent (bearer) OR the human dashboard (bc_session cookie) may
   // end a session — both are legitimate kick surfaces.
-  const account = await getAccountDual(req.headers.get("authorization"), req.cookies.get(SESSION_COOKIE_NAME)?.value);
+  const account = await getAccountDualAnyAgent(req.headers.get("authorization"), req.cookies.get(SESSION_COOKIE_NAME)?.value);
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   // CSRF only matters for the browser/cookie path; bearer (agent) calls skip it.
   const hasCookie = !!req.cookies.get(SESSION_COOKIE_NAME)?.value;

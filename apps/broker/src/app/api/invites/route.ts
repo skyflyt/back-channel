@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromAuth, getAccountFromCookie, generateInviteCode, generateHandle, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { getAccountFromAnyAgent, getAccountFromCookie, generateInviteCode, generateHandle, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 import { validateScopes } from "@/lib/scopes";
 import { sendInviteEmail } from "@/lib/email";
 import { rateLimit } from "@/lib/rate-limit";
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   // the cookie tier beyond §3 deliberately, for the dashboard "Start a session"
   // button; a stolen view-link can at worst create rate-limited pending invites
   // (it still can't DRIVE a session — that needs the bearer key).
-  const bearer = await getAccountFromAuth(req.headers.get("authorization"));
+  const bearer = await getAccountFromAnyAgent(req.headers.get("authorization"));
   const visitor = bearer ?? (await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value));
   if (!visitor) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!bearer && !csrfValid(req.headers.get(CSRF_HEADER), req.cookies.get(CSRF_COOKIE_NAME)?.value)) {

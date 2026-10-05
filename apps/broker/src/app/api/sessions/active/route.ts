@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromAuth } from "@/lib/auth";
+import { getAccountFromAnyAgent } from "@/lib/auth";
 import { sessionUnread } from "@/lib/relay";
 
 export const runtime = "nodejs";
@@ -21,7 +21,7 @@ export const runtime = "nodejs";
  * POST /api/poll with the returned next_cursor.
  */
 export async function GET(req: NextRequest) {
-  const account = await getAccountFromAuth(req.headers.get("authorization"));
+  const account = await getAccountFromAnyAgent(req.headers.get("authorization"));
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   // The agent's bc-inbox-check reads its own marching orders here each cycle:

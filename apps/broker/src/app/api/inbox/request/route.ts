@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromAuth, generateViewToken, viewTokenExpiry, hashToken } from "@/lib/auth";
+import { getAccountFromAnyAgent, generateViewToken, viewTokenExpiry, hashToken } from "@/lib/auth";
 import { sendInboxRequestEmail } from "@/lib/email";
 import { rateLimit } from "@/lib/rate-limit";
 import { fireInboxEvent } from "@/lib/inbox-bus";
@@ -22,7 +22,7 @@ const opaqueForbidden = () => NextResponse.json({ error: "not_available" }, { st
  * allows this requester (their TrustedPeer.scopeDefaults, when set).
  */
 export async function POST(req: NextRequest) {
-  const account = await getAccountFromAuth(req.headers.get("authorization"));
+  const account = await getAccountFromAnyAgent(req.headers.get("authorization"));
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   let body: { peer_handle?: string; scopes?: string[]; message?: string };
