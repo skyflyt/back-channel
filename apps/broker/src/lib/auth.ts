@@ -137,7 +137,7 @@ export function exchangeCodeExpiry(): Date {
  * Touches lastUsedAt (throttled ~1/min) so the dashboard shows per-agent "last
  * active" without a write per request.
  */
-export async function getAuthContext(authHeader: string | null): Promise<{ account: Account; agentTokenId: string } | null> {
+export async function getAuthContext(authHeader: string | null): Promise<{ account: Account; agentTokenId: string; scope: string } | null> {
   if (!authHeader) return null;
   const m = authHeader.match(/^Bearer\s+(\S+)$/);
   if (!m) return null;
@@ -151,7 +151,9 @@ export async function getAuthContext(authHeader: string | null): Promise<{ accou
     if (Date.now() - last > 60_000) {
       void prisma.agentToken.update({ where: { id: tok.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
     }
-    return { account: tok.account, agentTokenId: tok.id };
+    // scope: what this key may reach (src/lib/agent-scope.ts). Most routes are
+    // open to every agent and ignore it; the few that are not must check it.
+    return { account: tok.account, agentTokenId: tok.id, scope: tok.scope };
   }
   return null;
 }

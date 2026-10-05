@@ -62,10 +62,11 @@ db.$transaction = async (fn: any, options: any) => {
 before(() => {
   mock.module("@/lib/db", { namedExports: { prisma: db } });
   mock.module("@/lib/auth", { namedExports: { getAuthContext: async (header: string) => {
+    // scope "full": dispatch is refused for anything else (src/lib/agent-scope.ts); see the connector test below.
     if (header === "Bearer legacy") return { account: { id: "account" }, agentTokenId: null };
     const id = header?.replace("Bearer ", "");
     const a = agents.find(a => a.id === id);
-    return a ? { account: { id: a.accountId }, agentTokenId: a.id } : null;
+    return a ? { account: { id: a.accountId }, agentTokenId: a.id, scope: (a as { scope?: string }).scope ?? "full" } : null;
   } } });
   mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: !limited, retryAfterSec: 42 }) } });
 });
@@ -92,6 +93,18 @@ test("per-agent auth and active enrollment are mandatory; every response is no-s
   assert.equal((await run("tasks")).status, 403);
   agents[0].revokedAt = new Date();
   assert.equal((await run("agents")).status, 401);
+});
+test("a connector-scoped key (minted by OAuth) is refused every dispatch operation, enrolled or not; anything but 'full' is refused", async () => {
+  for (const scope of ["connector", "something-new", ""]) {
+    agents[0].scope = scope;
+    for (const op of ["tasks", "agents"]) {
+      const r = await run(op); assert.equal(r.status, 403, `${scope} ${op}`); assert.equal(r.headers.get("cache-control"), "no-store");
+    }
+    assert.equal((await run("submit", input())).status, 403, `${scope} submit`);
+  }
+  assert.equal(tasks.length, 0, "nothing was queued");
+  // The other agents on the account, with full keys, are unaffected.
+  assert.equal((await run("tasks", undefined, ids[1])).status, 200);
 });
 test("enrollment validates algorithms, is idempotent and cannot rotate keys", async () => {
   Object.assign(agents[0], { dispatchEncryptionKey: null, dispatchSigningKey: null, dispatchName: null });

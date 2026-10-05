@@ -10,7 +10,9 @@
  * The access token this server issues is an ordinary per-agent bc_ key — an
  * AgentToken row, hashed at rest, listed and revocable on the dashboard like
  * every other agent. So /api/mcp's auth path does not change at all, there is
- * nothing to refresh, and "revoke" already exists.
+ * nothing to refresh, and "revoke" already exists. The one difference is its
+ * scope: "connector" (src/lib/agent-scope.ts), which keeps a key that lives on
+ * a hosted app's servers away from the dashboard and from dispatch.
  *
  * No new tables:
  *  - Clients are stateless. Dynamic registration (RFC 7591) returns a

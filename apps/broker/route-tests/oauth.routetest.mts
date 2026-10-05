@@ -36,6 +36,7 @@ let sessionCookies: Record<string, any> = {};
 let exchangeCodes: Record<string, any> = {};
 let agentTokens: any[] = [];
 let audits: any[] = [];
+let viewTokens: any[] = [];
 let limited = false;
 let welcomeSeeded: unknown[] = [];
 
@@ -63,7 +64,7 @@ const prismaMock = {
   },
   agentToken: {
     count: async ({ where }: any) => agentTokens.filter((t) => t.accountId === where.accountId).length,
-    create: async ({ data }: any) => { const row = { id: `agt_${agentTokens.length + 1}`, revokedAt: null, lastUsedAt: null, ...data }; agentTokens.push(row); return row; },
+    create: async ({ data }: any) => { const row = { id: `agt_${agentTokens.length + 1}`, revokedAt: null, lastUsedAt: null, scope: "full", ...data }; agentTokens.push(row); return row; },
     findUnique: async ({ where }: any) => {
       const row = agentTokens.find((t) => t.keyHash === where.keyHash);
       return row ? { ...row, account: accounts[row.accountId] } : null;
@@ -71,6 +72,7 @@ const prismaMock = {
     update: async () => ({}),
   },
   accountAudit: { create: async ({ data }: any) => { audits.push(data); return data; } },
+  viewToken: { create: async ({ data }: any) => { viewTokens.push(data); return data; } },
 };
 
 before(() => {
@@ -92,6 +94,7 @@ beforeEach(() => {
   exchangeCodes = {};
   agentTokens = [];
   audits = [];
+  viewTokens = [];
   limited = false;
   welcomeSeeded = [];
 });
@@ -104,6 +107,7 @@ const routes = {
   consent: () => import("@/app/api/oauth/consent/route"),
   token: () => import("@/app/api/oauth/token/route"),
   exchange: () => import("@/app/api/auth/exchange/route"),
+  viewTokenSelf: () => import("@/app/api/account/view-token-self/route"),
 };
 
 const get = (path: string, headers: Record<string, string> = {}) => new NextRequest(`${ORIGIN}${path}`, { headers });
@@ -284,7 +288,8 @@ test("token: the full flow issues a bc_ agent key that authenticates, named afte
   const { getAuthContext } = await import("@/lib/auth");
   const ctx = await getAuthContext(`Bearer ${body.access_token}`);
   assert.equal(ctx?.account.id, "a1");
-  assert.deepEqual(agentTokens.map((t) => [t.name, t.runtimeType, t.accountId]), [["Claude", "other", "a1"]]);
+  assert.deepEqual(agentTokens.map((t) => [t.name, t.runtimeType, t.accountId, t.scope]), [["Claude", "other", "a1", "connector"]]);
+  assert.equal(ctx?.scope, "connector");
   assert.equal(agentTokens[0].keyHash, sha(body.access_token), "hash at rest, like every other agent key");
   assert.equal(JSON.stringify([agentTokens, audits, exchangeCodes]).includes(body.access_token), false, "the raw key is stored and logged nowhere");
   assert.deepEqual(audits.map((a) => a.eventType), ["oauth.approved", "oauth.token_issued"]);
@@ -381,4 +386,39 @@ test("OAuth codes and BCX exchange codes share a table but cannot be redeemed at
   const ok = await (await routes.exchange()).POST(postJson("/api/auth/exchange", { code: "BCX-AAAA-BBBB" }));
   assert.equal(ok.status, 200);
   assert.match((await ok.json()).api_key, /^bc_/);
+});
+
+// ── What an OAuth-issued key cannot do ──────────────────────────────────────
+
+test("a connector key cannot mint a dashboard sign-in link; a full key still can; anything but 'full' fails closed", async () => {
+  const params = await authParams();
+  const code = await obtainCode(params);
+  const { body } = await redeem({ code, client_id: params.client_id, redirect_uri: CLAUDE_CB, code_verifier: VERIFIER });
+  const link = async (key: string) => (await routes.viewTokenSelf()).POST(postJson("/api/account/view-token-self", {}, { authorization: `Bearer ${key}` }));
+
+  const refused = await link(body.access_token);
+  assert.equal(refused.status, 403);
+  const refusedBody = await refused.json();
+  assert.equal(refusedBody.error, "not_available_to_connectors");
+  assert.match(refusedBody.message, /sign in themselves at https:\/\/back-channel\.app\/login/);
+  assert.equal(refusedBody.view_url, undefined);
+  assert.equal(viewTokens.length, 0, "no sign-in token was created");
+
+  // An unknown or blank scope is not "full" either.
+  for (const scope of ["read-only", "", null]) {
+    agentTokens[0].scope = scope;
+    assert.equal((await link(body.access_token)).status, 403, String(scope));
+  }
+  assert.equal(viewTokens.length, 0);
+
+  // A key the user minted for their own agent (BCX exchange) is "full" and unaffected.
+  exchangeCodes[sha("BCX-AAAA-BBBB")] = { codeHash: sha("BCX-AAAA-BBBB"), accountId: "a1", purpose: "exchange", agentName: "My laptop", runtimeType: "claude_code", usedAt: null, expiresAt: new Date(Date.now() + 60_000) };
+  const full = await (await (await routes.exchange()).POST(postJson("/api/auth/exchange", { code: "BCX-AAAA-BBBB" }))).json();
+  assert.equal(agentTokens.find((t) => t.name === "My laptop").scope, "full");
+  const ok = await link(full.api_key);
+  assert.equal(ok.status, 200);
+  assert.match((await ok.json()).view_url, /^https:\/\/back-channel\.app\/account\?vt=vt_/);
+  assert.equal(viewTokens.length, 1);
+
+  assert.equal((await link("bc_not_a_key")).status, 401);
 });

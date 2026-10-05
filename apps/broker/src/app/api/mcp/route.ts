@@ -15,6 +15,7 @@ import {
 } from "@/lib/mcp/protocol.mjs";
 import { TOOLS, getTool, normalizeToolArgs, validateToolArgs } from "@/lib/mcp/tools.mjs";
 import { wwwAuthenticate } from "@/lib/oauth.mjs";
+import { hasFullScope } from "@/lib/agent-scope";
 
 // The wrapped route handlers — tools dispatch to these IN-PROCESS (no HTTP
 // round-trip, no duplicated logic). Each keeps enforcing its own participant/
@@ -321,7 +322,10 @@ export async function POST(req: NextRequest) {
       // ping is a REQUEST — it needs an empty result, not a 202 (clients poll it for liveness).
       return json(rpcResult(msg.id, {}));
     case "tools/list":
-      return json(rpcResult(msg.id, { tools: TOOLS }));
+      // A connector key is refused by the dashboard-link route itself
+      // (view-token-self); leaving the tool out of its catalog just keeps the
+      // model from offering something that will not work.
+      return json(rpcResult(msg.id, { tools: hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link") }));
     case "tools/call": {
       const name = msg.params?.name;
       const tool = typeof name === "string" ? getTool(name) : null;

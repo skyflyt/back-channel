@@ -5,6 +5,7 @@ import { rateLimit, clientIp } from "@/lib/rate-limit";
 import { seedWelcomeIfFirstConnect } from "@/lib/onboarding";
 import { OAUTH_CODE_PURPOSE, OAUTH_SCOPE, oauthCodeKey, readClient, redirectUriRegistered, s256, validCodeVerifier } from "@/lib/oauth.mjs";
 import { oauthJson, oauthPreflight } from "@/lib/oauth-http";
+import { AGENT_SCOPE_CONNECTOR } from "@/lib/agent-scope";
 
 export const runtime = "nodejs";
 
@@ -15,7 +16,9 @@ export const runtime = "nodejs";
  * The access token is a freshly minted per-agent bc_ key — the same AgentToken
  * every other connect path creates — so it shows up on the dashboard under the
  * client's name and is revoked there like any other agent. It does not expire
- * and there is no refresh token; revocation is the off switch.
+ * and there is no refresh token; revocation is the off switch. The one
+ * difference from other keys is its scope, "connector": it cannot mint a
+ * dashboard sign-in link or use dispatch.
  *
  * Every reason a code might be bad (unknown, used, expired, issued to a
  * different client or redirect, wrong verifier) is the same `invalid_grant`.
@@ -67,7 +70,9 @@ export async function POST(req: NextRequest) {
   const priorAgentCount = await prisma.agentToken.count({ where: { accountId: row.accountId } });
   const accessToken = generateApiKey();
   const agent = await prisma.agentToken.create({
-    data: { accountId: row.accountId, keyHash: hashToken(accessToken), name: row.agentName ?? client.name, runtimeType: row.runtimeType },
+    // "connector": this key goes to a hosted app, not to an agent the user runs,
+    // so it is held below a full key (src/lib/agent-scope.ts).
+    data: { accountId: row.accountId, keyHash: hashToken(accessToken), name: row.agentName ?? client.name, runtimeType: row.runtimeType, scope: AGENT_SCOPE_CONNECTOR },
   });
   await prisma.accountAudit
     .create({ data: { accountId: row.accountId, eventType: "oauth.token_issued", detail: { ip, agent_token_id: agent.id, agent_name: agent.name } } })

@@ -154,3 +154,13 @@ test("unauthenticated: 401 carries WWW-Authenticate pointing at the OAuth protec
   assert.equal(json.error.code, -32001);
   assert.match(json.error.message, /Bearer <bc_ token>/);
 });
+
+test("tools/list: bc_dashboard_link is offered to a full-scope key and left out for anything else", async () => {
+  // This file's auth mock returns no scope at all, which is not "full".
+  const { POST } = await import("@/app/api/mcp/route");
+  const list = async () => (await (await POST(new Request("https://back-channel.app/api/mcp", { method: "POST", headers: { authorization: "Bearer good", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }) as never)).json()).result.tools.map((t: { name: string }) => t.name);
+  const names = await list();
+  assert.equal(names.includes("bc_dashboard_link"), false);
+  assert.ok(names.includes("bc_check_inbox") && names.includes("bc_send_message"), "everything else is still there");
+  assert.equal(names.length, 9);
+});

@@ -116,6 +116,7 @@ model AgentToken {
   createdAt   DateTime    @default(now())
   lastUsedAt  DateTime?                        // touched (throttled) on each authed request
   revokedAt   DateTime?                        // set on revoke; auth requires revokedAt IS NULL
+  scope       String      @default("full")     // "full" | "connector" (minted by OAuth: no dashboard sign-in, no dispatch) — src/lib/agent-scope.ts
   dispatchName String?
   dispatchEncryptionKey String?
   dispatchSigningKey String?

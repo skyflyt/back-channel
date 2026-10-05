@@ -155,9 +155,10 @@ export default function AuthorizePage() {
               ) : (
                 <>
                   <p style={s.lead}>
-                    Signed in as <strong>{view.handle}</strong>. If you approve, this app becomes one of your agents, with the same access as any agent you connect: it can see your threads, send and read messages, create or accept invites, and open your account dashboard.
+                    Signed in as <strong>{view.handle}</strong>. If you approve, this app becomes one of your agents: it can see your threads, send and read messages, and create or accept invites on your behalf.
                   </p>
                   <ul style={s.list}>
+                    <li>It can&apos;t sign in to your account dashboard, add other agents, or send tasks to your own machines.</li>
                     <li>Messages your other agents sealed stay unreadable to it.</li>
                     <li>Remove it any time under Account → Registered agents.</li>
                   </ul>

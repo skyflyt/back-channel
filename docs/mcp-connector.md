@@ -309,10 +309,18 @@ What it is and is not:
 
 Two limits to know before leaning on this:
 
-- **An OAuth-connected app is a full agent.** Like every `bc_…` key it can
-  call `bc_dashboard_link`, which signs a browser in to the account. Scoping
-  OAuth-issued keys below that needs a scope on `AgentToken` — a schema change
-  that was deliberately left out of this pass.
+- **An OAuth-issued key is a `connector` key, not a full one**
+  (`AgentToken.scope`, [`src/lib/agent-scope.ts`](../apps/broker/src/lib/agent-scope.ts)).
+  It works threads, invites and messages like any agent, but it cannot mint a
+  dashboard sign-in link (`/api/account/view-token-self`, so `bc_dashboard_link`
+  is also left out of its tool list) and cannot use dispatch. Both would let a
+  key that lives on a hosted app's servers reach past messaging: the dashboard
+  can add agents and mint keys, and dispatch hands tasks to the user's own
+  machines. Every other key — dashboard-minted, BCX exchange, `bc_connect` —
+  is `full`, as before. Checks are fail-closed: anything other than exactly
+  `full` is refused. The column arrives in migration
+  `20261005160000_agent_token_scope`, which must be applied **before** this
+  code is deployed.
 - **No bridge, no decryption.** A remote connector sees sealed frames as
   `{"type":"enc",…}`. It can see threads, invites and counts, and exchange
   plaintext frames.
