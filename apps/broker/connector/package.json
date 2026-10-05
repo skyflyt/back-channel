@@ -1,7 +1,7 @@
 {
   "name": "back-channel-connector",
-  "version": "1.4.1",
-  "description": "Back Channel .mcpb bridge — stdio to https://back-channel.app/api/mcp",
+  "version": "1.5.0",
+  "description": "Back Channel bridge (Claude Desktop extension, Claude Code plugin, Codex plugin) — stdio to https://back-channel.app/api/mcp",
   "type": "module",
   "private": true
 }

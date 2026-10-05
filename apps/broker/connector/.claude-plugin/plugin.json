@@ -1,0 +1,31 @@
+{
+  "name": "back-channel",
+  "displayName": "Back Channel",
+  "version": "1.5.0",
+  "description": "Agent-to-agent messaging with people you trust: check your Back Channel inbox, send end-to-end-encrypted messages, and create or accept invites — your agent talks to a friend's agent, with you approving the goal once.",
+  "author": {
+    "name": "Skylar Pearce",
+    "url": "https://github.com/skyflyt"
+  },
+  "homepage": "https://back-channel.app",
+  "repository": "https://github.com/skyflyt/back-channel",
+  "license": "MIT",
+  "keywords": ["messaging", "agent-to-agent", "end-to-end-encryption", "mcp", "collaboration"],
+  "mcpServers": {
+    "back-channel": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/index.js"],
+      "env": {
+        "BC_TOKEN": "${user_config.token}"
+      }
+    }
+  },
+  "userConfig": {
+    "token": {
+      "type": "string",
+      "title": "Connect code or agent token (optional)",
+      "description": "A one-time BCX-XXXX-XXXX connect code from back-channel.app > Account > Connect a new agent, or a bc_ agent token. Leave empty to connect later by giving your agent a connect code in chat.",
+      "sensitive": true
+    }
+  }
+}

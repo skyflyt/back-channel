@@ -1,0 +1,20 @@
+{
+  "name": "back-channel",
+  "interface": {
+    "displayName": "Back Channel"
+  },
+  "plugins": [
+    {
+      "name": "back-channel",
+      "source": {
+        "source": "local",
+        "path": "./apps/broker/connector"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
