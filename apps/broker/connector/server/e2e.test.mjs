@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createKeyStore } from "./keystore.js";
-import { prepareOutgoing, processIncoming, afterSessionEstablished } from "./e2e.js";
+import { prepareOutgoing, processIncoming, afterSessionEstablished, canonicalizeThreadCall, MISSING_THREAD_ID } from "./e2e.js";
 import { newEphemeralKeypair, deriveSessionKey, seal, open } from "./crypto.js";
 
 function memoryFs() {
@@ -62,13 +62,13 @@ test("prepareOutgoing: peer's handshake arrives mid-wait -> derives key and seal
   assert.deepEqual(open(sealedFrame, peerDerivedKey), { type: "msg", text: "hi" });
 });
 
-test("prepareOutgoing: session key already established -> seals immediately, no extra posts", async () => {
+test("prepareOutgoing: session key established and our pubkey already published -> seals immediately, no extra posts", async () => {
   const store = freshStore();
   const state = store.load();
   const peer = newEphemeralKeypair();
   const ours = newEphemeralKeypair();
   const key = deriveSessionKey(ours.handle, peer.publicKey);
-  state.s1 = { role: "visitor", privateKey: ours.privateKey, publicKey: ours.publicKey, peerPublicKey: peer.publicKey, sessionKey: Buffer.from(key).toString("base64"), updatedAt: Date.now() };
+  state.s1 = { role: "visitor", privateKey: ours.privateKey, publicKey: ours.publicKey, peerPublicKey: peer.publicKey, sessionKey: Buffer.from(key).toString("base64"), pubkeySentAt: Date.now(), updatedAt: Date.now() };
   store.save(state);
 
   let postCount = 0;
@@ -77,6 +77,116 @@ test("prepareOutgoing: session key already established -> seals immediately, no 
   assert.equal(postCount, 0, "should not need any handshake posts — key already derived");
   const sealedFrame = JSON.parse(out.line).params.arguments.frame;
   assert.deepEqual(open(sealedFrame, key), { type: "msg", text: "fast path" });
+});
+
+// ── Field report 2026-10-05: reads failed "session_id missing" on every call,
+// and the send that depended on them reported "handshake pending — retry".
+
+test("prepareOutgoing: a thread first seen via a READ still publishes our pubkey before sealing", async () => {
+  // bc_request_session / dashboard-opened threads never pass through
+  // create/claim, so the keypair is minted by processIncoming — which derives
+  // the session key without ever sending ours. Sealing then would produce a
+  // frame the peer cannot open.
+  const store = freshStore();
+  const peer = newEphemeralKeypair();
+  const posted = [];
+  const ctx = { keystore: store, post: async (m) => { posted.push(m); return toolResp({ sent_seq: 1 }); }, log: () => {} };
+  await processIncoming(readMsg("s1", "host"), toolResp({ frames: [JSON.stringify({ type: "handshake.pubkey", pubkey: peer.publicKey })], next_cursor: 1 }), ctx);
+  assert.ok(store.load().s1.sessionKey, "read alone derives the key");
+  assert.equal(posted.length, 0);
+
+  const out = await prepareOutgoing(sendMsg("s1", "host", { type: "msg", text: "hi" }), ctx);
+  assert.equal(posted.length, 1, "exactly one post: our handshake.pubkey — no wait polls, the peer key is already held");
+  assert.deepEqual(posted[0].params.arguments.frame, { type: "handshake.pubkey", pubkey: store.load().s1.publicKey });
+  assert.ok(store.load().s1.pubkeySentAt);
+  const sealedFrame = JSON.parse(out.line).params.arguments.frame;
+  assert.deepEqual(open(sealedFrame, deriveSessionKey(peer.handle, store.load().s1.publicKey)), { type: "msg", text: "hi" });
+
+  await prepareOutgoing(sendMsg("s1", "host", { type: "msg", text: "again" }), ctx);
+  assert.equal(posted.length, 1, "published once, not on every send");
+});
+
+test("prepareOutgoing: handshake send REJECTED -> real error, not handshake_pending, and no wait polls", async () => {
+  const posted = [];
+  const ctx = {
+    keystore: freshStore(),
+    post: async (m) => { posted.push(m); return toolResp("HTTP 404: {\"error\":\"session_not_found\"}", true); },
+    log: () => {}, handshakeWaitIntervalMs: 5,
+  };
+  const out = await prepareOutgoing(sendMsg("nope", "visitor", { type: "msg", text: "hi" }), ctx);
+  const res = out.shortCircuitResponse.result;
+  assert.equal(res.isError, true);
+  const body = JSON.parse(res.content[0].text);
+  assert.equal(body.handshake_pending, undefined, "a rejected thread must never be reported as a pending handshake");
+  assert.equal(body.sent, false);
+  assert.match(body.message, /NOT sent/);
+  assert.match(body.message, /session_not_found/);
+  assert.equal(posted.length, 1, "no point polling a thread the broker just refused");
+  assert.equal(ctx.keystore.load().nope.pubkeySentAt, undefined);
+});
+
+test("prepareOutgoing: wait-poll read REJECTED (JSON-RPC error) -> surfaces that error instead of handshake_pending", async () => {
+  const ctx = {
+    keystore: freshStore(),
+    post: async (m) => (m.params.name === "bc_send_message"
+      ? toolResp({ sent_seq: 1 })
+      : { jsonrpc: "2.0", id: m.id, error: { code: -32602, message: "missing required argument: session_id" } }),
+    log: () => {}, handshakeWaitIntervalMs: 5,
+  };
+  const out = await prepareOutgoing(sendMsg("s1", "visitor", { type: "msg", text: "hi" }), ctx);
+  const res = out.shortCircuitResponse.result;
+  assert.equal(res.isError, true);
+  assert.match(JSON.parse(res.content[0].text).message, /couldn't read this thread.*missing required argument: session_id/);
+});
+
+test("prepareOutgoing: thread already ended -> says so, isError", async () => {
+  const ctx = {
+    keystore: freshStore(),
+    post: async () => toolResp({ ended: true, end_reason: "kicked" }),
+    log: () => {}, handshakeWaitIntervalMs: 5,
+  };
+  const out = await prepareOutgoing(sendMsg("s1", "visitor", { type: "msg", text: "hi" }), ctx);
+  assert.equal(out.shortCircuitResponse.result.isError, true);
+  assert.match(JSON.parse(out.shortCircuitResponse.result.content[0].text).message, /thread has ended \(kicked\)/);
+});
+
+test("prepareOutgoing: missing id or bad role -> local error, nothing posted, keystore untouched", async () => {
+  const store = freshStore();
+  const ctx = { keystore: store, post: async () => { throw new Error("should not be called"); }, log: () => {} };
+  const noId = await prepareOutgoing(sendMsg(undefined, "visitor", { type: "msg", text: "hi" }), ctx);
+  assert.equal(noId.shortCircuitResponse.result.isError, true);
+  assert.match(noId.shortCircuitResponse.result.content[0].text, /missing thread id/);
+  const badRole = await prepareOutgoing(sendMsg("s1", "spectator", { type: "msg", text: "hi" }), ctx);
+  assert.match(badRole.shortCircuitResponse.result.content[0].text, /role must be/);
+  assert.deepEqual(store.load(), {}, "no junk 'undefined' session entry");
+});
+
+test("canonicalizeThreadCall: session_id untouched (same object); aliases fold into session_id; other tools ignored", () => {
+  const plain = readMsg("s1", "host");
+  assert.equal(canonicalizeThreadCall(plain).msg, plain, "an already-canonical call is forwarded byte-for-byte");
+
+  for (const alias of ["thread_id", "conversation_id", "sessionId", "threadId", "conversationId", "id"]) {
+    const msg = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_read_messages", arguments: { [alias]: "s1", role: "host", cursor: 2 } } };
+    assert.deepEqual(canonicalizeThreadCall(msg).msg.params.arguments, { role: "host", cursor: 2, session_id: "s1" }, alias);
+  }
+  // session_id wins over an alias; a blank session_id falls back to the alias.
+  const both = canonicalizeThreadCall({ method: "tools/call", params: { name: "bc_send_message", arguments: { session_id: "real", thread_id: "other", role: "host", frame: "x" } } });
+  assert.equal(both.msg.params.arguments.session_id, "real");
+  assert.equal("thread_id" in both.msg.params.arguments, false);
+  const blank = canonicalizeThreadCall({ method: "tools/call", params: { name: "bc_end_session", arguments: { session_id: "  ", thread_id: "t9" } } });
+  assert.deepEqual(blank.msg.params.arguments, { session_id: "t9" });
+
+  const other = { method: "tools/call", params: { name: "bc_claim_invite", arguments: { code: "BC-AAAA-BBBB" } } };
+  assert.equal(canonicalizeThreadCall(other).msg, other);
+  assert.equal(canonicalizeThreadCall({ method: "tools/list" }).error, undefined);
+});
+
+test("canonicalizeThreadCall: no usable id -> the actionable error", () => {
+  for (const args of [{ role: "host" }, { session_id: "", role: "host" }, { session_id: null, role: "host" }, undefined, "s1"]) {
+    const out = canonicalizeThreadCall({ method: "tools/call", params: { name: "bc_read_messages", arguments: args } });
+    assert.equal(out.error, MISSING_THREAD_ID);
+    assert.match(out.error, /thread_id/);
+  }
 });
 
 test("processIncoming: absorbs peer handshake.pubkey, derives session key, redacts raw pubkey from output", async () => {
@@ -154,6 +264,15 @@ test("afterSessionEstablished: bc_create_invite success sends our handshake.pubk
   assert.equal(posted[0].params.arguments.role, "visitor");
   assert.equal(posted[0].params.arguments.frame.type, "handshake.pubkey");
   assert.equal(store.load().s99.role, "visitor");
+  assert.ok(store.load().s99.pubkeySentAt, "a delivered pubkey is recorded so the first send doesn't repeat it");
+});
+
+test("afterSessionEstablished: a handshake send that fails is NOT recorded as sent (first send retries it)", async () => {
+  const store = freshStore();
+  const ctx = { keystore: store, post: async () => { throw new TypeError("fetch failed"); }, log: () => {} };
+  await afterSessionEstablished({ method: "tools/call", params: { name: "bc_create_invite" } }, toolResp({ session_id: "s7" }), ctx);
+  assert.ok(store.load().s7.publicKey, "keypair is kept");
+  assert.equal(store.load().s7.pubkeySentAt, undefined);
 });
 
 test("afterSessionEstablished: bc_claim_invite success sends handshake as host; failed calls send nothing", async () => {

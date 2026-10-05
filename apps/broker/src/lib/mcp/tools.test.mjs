@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TOOLS, getTool, validateToolArgs } from "./tools.mjs";
+import { TOOLS, getTool, normalizeToolArgs, validateToolArgs, MISSING_THREAD_ID } from "./tools.mjs";
 
 test("catalog: every tool has a bc_ name, description, and object schema", () => {
   assert.ok(TOOLS.length >= 8);
@@ -30,7 +30,7 @@ test("getTool: known and unknown", () => {
 
 test("validateToolArgs: required, unknown, and null/undefined args", () => {
   const read = getTool("bc_read_messages");
-  assert.match(validateToolArgs(read, {}), /missing required argument: session_id/);
+  assert.equal(validateToolArgs(read, {}), MISSING_THREAD_ID);
   assert.match(validateToolArgs(read, { session_id: "s" }), /missing required argument: role/);
   assert.equal(validateToolArgs(read, { session_id: "s", role: "host" }), null);
   assert.match(validateToolArgs(read, { session_id: "s", role: "host", bogus: 1 }), /unknown argument: bogus/);
@@ -84,4 +84,55 @@ test("validateToolArgs: wait_seconds out of range or wrong type — clear error,
   assert.match(validateToolArgs(tool, { wait_seconds: -1 }), /must be >= 0/);
   assert.match(validateToolArgs(tool, { wait_seconds: 2.5 }), /must be integer/);
   assert.match(validateToolArgs(tool, { wait_seconds: "5" }), /must be integer/);
+});
+
+// ── Thread-id handling (field report 2026-10-05) ────────────────────────────
+
+const THREAD_TOOLS = ["bc_read_messages", "bc_send_message", "bc_end_session"];
+
+test("thread tools: session_id is NOT schema-required (a client-side validator must not block the thread_id alias) and thread_id is advertised", () => {
+  for (const name of THREAD_TOOLS) {
+    const schema = getTool(name).inputSchema;
+    assert.ok(!(schema.required ?? []).includes("session_id"), `${name}: session_id must not be in required`);
+    assert.equal(schema.properties.session_id.type, "string");
+    assert.equal(schema.properties.thread_id.type, "string");
+    // Top-level anyOf/oneOf/allOf would express "one of the two" but several MCP hosts reject it outright.
+    for (const k of ["anyOf", "oneOf", "allOf"]) assert.equal(schema[k], undefined, `${name}: no top-level ${k}`);
+  }
+});
+
+test("normalizeToolArgs: every accepted spelling folds into session_id; session_id wins; blank counts as absent", () => {
+  const read = getTool("bc_read_messages");
+  for (const alias of ["thread_id", "conversation_id", "sessionId", "threadId", "conversationId", "id"]) {
+    const out = normalizeToolArgs(read, { [alias]: "s1", role: "host" });
+    assert.deepEqual(out, { role: "host", session_id: "s1" }, alias);
+    assert.equal(validateToolArgs(read, out), null, alias);
+  }
+  assert.deepEqual(normalizeToolArgs(read, { session_id: "real", thread_id: "other", role: "host" }), { session_id: "real", role: "host" });
+  assert.deepEqual(normalizeToolArgs(read, { session_id: "  ", thread_id: " t9 ", role: "host" }), { session_id: "t9", role: "host" });
+  assert.deepEqual(normalizeToolArgs(getTool("bc_end_session"), { thread_id: "s1" }), { session_id: "s1" });
+});
+
+test("normalizeToolArgs + validateToolArgs: no usable id -> the actionable error naming thread_id", () => {
+  for (const name of THREAD_TOOLS) {
+    const tool = getTool(name);
+    for (const args of [{}, { role: "host" }, { session_id: "", role: "host" }, { session_id: null, role: "host" }, { thread_id: "", role: "host" }]) {
+      const err = validateToolArgs(tool, normalizeToolArgs(tool, args));
+      assert.equal(err, MISSING_THREAD_ID, `${name} ${JSON.stringify(args)}`);
+    }
+  }
+  assert.match(MISSING_THREAD_ID, /session_id/);
+  assert.match(MISSING_THREAD_ID, /thread_id/);
+  // A wrong TYPE is still a type error, not "missing".
+  const read = getTool("bc_read_messages");
+  assert.match(validateToolArgs(read, normalizeToolArgs(read, { session_id: 42, role: "host" })), /session_id must be string/);
+});
+
+test("normalizeToolArgs: leaves non-thread tools and non-object input alone", () => {
+  const claim = getTool("bc_claim_invite");
+  const args = { code: "BC-AAAA-BBBB", id: "x" };
+  assert.equal(normalizeToolArgs(claim, args), args, "an `id` on a tool that takes no thread id is not ours to rewrite");
+  assert.match(validateToolArgs(claim, args), /unknown argument: id/);
+  assert.equal(normalizeToolArgs(getTool("bc_read_messages"), "nope"), "nope");
+  assert.equal(normalizeToolArgs(getTool("bc_read_messages"), null), null);
 });

@@ -13,7 +13,7 @@ import {
   METHOD_NOT_FOUND,
   INVALID_PARAMS,
 } from "@/lib/mcp/protocol.mjs";
-import { TOOLS, getTool, validateToolArgs } from "@/lib/mcp/tools.mjs";
+import { TOOLS, getTool, normalizeToolArgs, validateToolArgs } from "@/lib/mcp/tools.mjs";
 
 // The wrapped route handlers — tools dispatch to these IN-PROCESS (no HTTP
 // round-trip, no duplicated logic). Each keeps enforcing its own participant/
@@ -87,6 +87,18 @@ function pick(text: string, keys: string[]): string {
   }
 }
 
+/** sessions/active names a thread's id `id`; every per-thread tool takes it as
+ * `session_id`. Carry both on the inbox so the value an agent reads is spelled
+ * the way it has to be sent back. MCP-only — the REST shape is unchanged. */
+function labelThreads(body: { sessions?: unknown }): void {
+  if (!Array.isArray(body.sessions)) return;
+  body.sessions = body.sessions.map((s) =>
+    s && typeof s === "object" && typeof (s as { id?: unknown }).id === "string"
+      ? { session_id: (s as { id: string }).id, ...s }
+      : s,
+  );
+}
+
 async function dispatchTool(
   req: NextRequest,
   name: string,
@@ -143,6 +155,7 @@ async function dispatchTool(
           if (empty.status !== 200) return empty;
           try {
             const body = JSON.parse(empty.text);
+            labelThreads(body);
             body.waited_seconds = doorbell.waited_seconds;
             return { status: empty.status, text: JSON.stringify(body) };
           } catch {
@@ -161,6 +174,7 @@ async function dispatchTool(
       // or a skill a friend sent via "Send to my agent". Marks them delivered.
       try {
         const body = JSON.parse(active.text);
+        labelThreads(body);
         if (typeof body.agent_payloads_pending === "number" && body.agent_payloads_pending > 0) {
           const payloads = await fromResponse(await agentPayloadsGET(synth(req, "/api/inbox/agent-payloads", "GET")));
           if (payloads.status === 200) body.agent_payloads = JSON.parse(payloads.text).payloads;
@@ -304,7 +318,7 @@ export async function POST(req: NextRequest) {
       const name = msg.params?.name;
       const tool = typeof name === "string" ? getTool(name) : null;
       if (!tool) return json(rpcError(msg.id, INVALID_PARAMS, `Unknown tool: ${String(name)}`));
-      const args = (msg.params?.arguments ?? {}) as Record<string, unknown>;
+      const args = normalizeToolArgs(tool, msg.params?.arguments ?? {}) as Record<string, unknown>;
       const argError = validateToolArgs(tool, args);
       if (argError) return json(rpcError(msg.id, INVALID_PARAMS, argError));
       try {

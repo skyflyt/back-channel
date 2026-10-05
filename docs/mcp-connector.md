@@ -82,10 +82,19 @@ arrives:
   bridge derives a shared AES-256 session key via ECDH + HKDF-SHA-256 and
   discards the raw pubkey from what gets shown to the model.
 - **Sending.** `bc_send_message` frames are sealed with AES-256-GCM (fresh
-  random IV + tag per frame) before the bridge forwards them. If the
-  handshake hasn't completed yet, it sends its own pubkey, gives the peer's a
-  short window to arrive, and — if it still hasn't — returns a local
+  random IV + tag per frame) before the bridge forwards them. The bridge
+  first makes sure its own pubkey has actually been delivered on that thread
+  (tracked per session as `pubkeySentAt` — holding the peer's key does not
+  mean the peer holds ours, e.g. on a thread opened by `bc_request_session`
+  and first touched by a read). If the peer's key hasn't arrived yet it gives
+  it a short window, and — if it still hasn't — returns a local
   `handshake_pending` response instead of sending anything in the clear.
+  `handshake_pending` means exactly one thing: the thread is reachable, our
+  key is posted, and the peer hasn't posted theirs. **Any real failure** on
+  the way (unknown or ended thread, wrong role, a rejected read, no network)
+  comes back as an `isError` result that says the message was not sent and
+  why — never as `handshake_pending`, which would send the agent into a
+  retry loop that cannot succeed.
 - **Receiving.** `bc_read_messages` responses are scanned for `{"type":"enc",
   ...}` envelopes and decrypted transparently if the session key is known.
 - This is a faithful, zero-dependency port of the canonical protocol in
@@ -160,6 +169,40 @@ same participant/trust/rate-limit rules apply, just via JSON-RPC:
 
 Full argument schemas: `tools/list`, or read
 [`apps/broker/src/lib/mcp/tools.mjs`](../apps/broker/src/lib/mcp/tools.mjs).
+
+## Thread ids: `session_id`, and the `thread_id` alias
+
+`bc_read_messages`, `bc_send_message` and `bc_end_session` address one thread
+by `session_id` — the value `bc_check_inbox` reports as `session_id` on each
+thread (the same value also appears as `id`, the REST field name).
+
+The same value is also accepted as **`thread_id`**, and silently as
+`conversation_id`, `sessionId`, `threadId`, `conversationId` or `id`. Whatever
+spelling arrives is folded into `session_id` before anything else runs — in
+the bridge (so the local keystore and the E2E handshake are keyed by the real
+id, and an older broker still gets the canonical name) and again at
+`/api/mcp` (so remote clients and older bridges get the same tolerance for
+reads).
+
+Why this exists: a field report (2026-10-05) had `bc_read_messages` failing
+with "session_id missing" on every call from an agent that was passing one.
+Neither the bridge nor the broker drops arguments, so it was lost or renamed
+before the call reached the extension — `session_id` is a name some hosts use
+for their own routing. Because reads failed, the peer's handshake never
+arrived, and every send then reported "handshake pending" (see
+[Encryption in the bridge](#encryption-in-the-bridge)). Three consequences are
+deliberate and should not be "tidied":
+
+- `session_id` is **not** in the schemas' `required` list. A host that
+  validates arguments client-side would otherwise reject a call that uses the
+  alias. Presence is enforced in code instead.
+- A call with no usable id fails with one message that names the fix:
+  *resend the same value as `thread_id`*. An agent that hits a host which
+  swallows `session_id` recovers on its next call without a human.
+- The bridge logs which argument **names** arrived (never values) when the id
+  is missing — `[back-channel] bc_read_messages: no thread id in arguments
+  (keys: role)` in Claude Desktop's `main.log` — so the next report can be
+  diagnosed from the log alone.
 
 ## Waiting for mail
 

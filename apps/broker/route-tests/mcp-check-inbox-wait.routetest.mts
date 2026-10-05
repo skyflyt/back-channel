@@ -118,7 +118,7 @@ test("wait_seconds>0, something already pending - returns immediately via the ex
   const elapsed = Date.now() - start;
   const body = await callToolResultBody(res);
 
-  assert.deepEqual(body.sessions, [{ id: "s1" }]);
+  assert.deepEqual(body.sessions, [{ session_id: "s1", id: "s1" }]); // session_id label: see mcp-thread-id.routetest.mts
   assert.equal(body.waited_seconds, undefined, "pending path returns the existing shape verbatim, no wait note");
   assert.ok(elapsed < 200, `must not actually wait when something is already pending (took ${elapsed}ms)`);
 });
@@ -147,7 +147,7 @@ test("wait_seconds>0, mail arrives mid-wait - resolves early with the full read 
   const elapsed = Date.now() - start;
 
   const body = await callToolResultBody(res);
-  assert.deepEqual(body.sessions, [{ id: "s2" }]);
+  assert.deepEqual(body.sessions, [{ session_id: "s2", id: "s2" }]);
   assert.ok(elapsed < 2000, `must resolve as soon as mail arrives, not wait the full 60s (took ${elapsed}ms)`);
 });
 
