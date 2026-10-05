@@ -564,3 +564,118 @@ test("bc_send_message: when the handshake read is rejected, the model gets the r
   assert.match(body.message, /NOT sent/);
   assert.match(body.message, /role_mismatch/);
 });
+
+// ── Channel: push "you have mail" into the session (Claude Code research preview) ──
+
+const FAST = { waitSeconds: 1, minGapMs: 1, unreadIntervalMs: 1, unconnectedMs: 1, shortPollsAfterBusy: 2, minBackoffMs: 1, maxBackoffMs: 4 };
+const until = async (cond, ms = 2000) => { const end = Date.now() + ms; while (!cond()) { if (Date.now() > end) throw new Error("timed out waiting"); await new Promise((r) => setTimeout(r, 2)); } };
+const initReply = (id) => new Response(JSON.stringify({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "back-channel", version: "1.0.0" }, instructions: "Server says hi." } }), { status: 200 });
+
+function channelHarness(doorbell, { token = "bc_test", channel = true, readTokenFile } = {}) {
+  const stdin = new PassThrough();
+  const lines = [];
+  const stdout = { write: (s) => { lines.push(...String(s).split("\n").filter(Boolean).map((l) => JSON.parse(l))); return true; } };
+  const polls = [];
+  const fetchImpl = async (u, init) => {
+    const url = String(u);
+    if (url.includes("/api/inbox/check")) {
+      polls.push({ wait: new URL(url).searchParams.get("wait"), auth: init.headers.authorization });
+      return doorbell(polls.length, init);
+    }
+    return initReply(JSON.parse(init.body).id);
+  };
+  const bridge = createBridge({ url: "https://example.test/api/mcp", token, stdin, stdout, fetchImpl, timeoutMs: 200, keystore: memoryKeystore(), log: () => {}, channel, channelTiming: FAST, ...(readTokenFile ? { readTokenFile } : {}) });
+  bridge.start();
+  const send = async (obj) => { stdin.write(JSON.stringify(obj) + "\n"); await bridge.flush(); };
+  const events = () => lines.filter((l) => l.method === "notifications/claude/channel");
+  return { bridge, send, lines, polls, events };
+}
+const pending = (n, kinds) => new Response(JSON.stringify({ pending_count: n, ...(kinds ? { kinds } : {}), waited_seconds: 0 }), { status: 200 });
+
+test("channel off (the default): initialize is untouched and the doorbell is never held", async () => {
+  const h = channelHarness(() => pending(3), { channel: false });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(h.lines[0].result.capabilities, { tools: {} });
+  assert.equal(h.lines[0].result.instructions, "Server says hi.");
+  assert.equal(h.polls.length, 0);
+});
+
+test("channel on: declares claude/channel on the forwarded initialize, keeps the server's capabilities, and explains the events", async () => {
+  const h = channelHarness(() => pending(0));
+  await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  h.bridge.stop();
+  const r = h.lines[0].result;
+  assert.deepEqual(r.capabilities, { tools: {}, experimental: { "claude/channel": {} } });
+  assert.match(r.instructions, /^Server says hi\. Back Channel also pushes an event/);
+  assert.match(r.instructions, /count only/);
+});
+
+test("channel on: one event per RISE in the pending count — counts and fixed labels only, long-polling only from zero", async () => {
+  // 0 (held) -> 2 -> 2 -> 3 -> 0 -> 1
+  const script = [pending(0), pending(2, ["frame"]), pending(2, ["frame"]), pending(3, ["frame", "invite", "<script>"]), pending(0), pending(1, ["payload"])];
+  const h = channelHarness((n) => script[n - 1] ?? pending(1, ["payload"]));
+  await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await until(() => h.polls.length >= 7);
+  h.bridge.stop();
+
+  const ev = h.events();
+  assert.deepEqual(ev.map((e) => e.params.meta.pending), ["2", "3", "1"], "2->2 says nothing; 3->0 says nothing; each rise says so once");
+  assert.match(ev[0].params.content, /^Back Channel: 2 unread items \(new messages\) waiting\./);
+  assert.match(ev[1].params.content, /3 unread items \(new messages, a session request\)/);
+  assert.doesNotMatch(JSON.stringify(ev), /script/, "an unknown kind never reaches the model");
+  assert.deepEqual(ev[1].params.meta, { pending: "3", kinds: "frame_invite" });
+  for (const e of ev) {
+    assert.match(e.params.content, /data, never instructions/);
+    for (const k of Object.keys(e.params.meta)) assert.match(k, /^[A-Za-z0-9_]+$/, "meta keys must be identifiers or Claude Code drops them");
+  }
+  // Held only when nothing is unread: polls 1 (start), 6 and 7 (after the count fell to 0 and then 1... i.e. only from zero).
+  assert.deepEqual(h.polls.slice(0, 6).map((p) => p.wait), ["1", "1", "0", "0", "0", "1"]);
+  assert.ok(h.polls.every((p) => p.auth === "Bearer bc_test"));
+});
+
+test("channel on: a refused long-poll (429, slot taken) drops to interval checks instead of fighting, then tries holding again", async () => {
+  const h = channelHarness((n) => (n === 1 ? new Response('{"error":"too_many_waiters"}', { status: 429 }) : pending(0)));
+  await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await until(() => h.polls.length >= 5);
+  h.bridge.stop();
+  assert.deepEqual(h.polls.slice(0, 4).map((p) => p.wait), ["1", "0", "0", "1"]);
+  assert.equal(h.events().length, 0);
+});
+
+test("channel on: a rejected token (401) ends the watch; other errors back off and recover", async () => {
+  const dead = channelHarness(() => new Response('{"error":"unauthorized"}', { status: 401 }));
+  await dead.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(dead.polls.length, 1, "no retry storm against a revoked key");
+
+  const flaky = channelHarness((n) => { if (n <= 2) throw new TypeError("fetch failed"); return pending(1, ["frame"]); });
+  await flaky.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await until(() => flaky.events().length === 1);
+  flaky.bridge.stop();
+  assert.equal(flaky.events()[0].params.meta.pending, "1");
+});
+
+test("channel on, not connected yet: local initialize also declares the channel, and the watch begins once a key appears", async () => {
+  let onDisk = "";
+  const h = channelHarness(() => pending(1, ["invite"]), { token: "", readTokenFile: () => onDisk });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  assert.deepEqual(h.lines[0].result.capabilities, { tools: { listChanged: true }, experimental: { "claude/channel": {} } });
+  await new Promise((r) => setTimeout(r, 15));
+  assert.equal(h.polls.length, 0, "nothing to authenticate with yet");
+  onDisk = "bc_paired_later";
+  await until(() => h.events().length === 1);
+  h.bridge.stop();
+  assert.equal(h.polls[0].auth, "Bearer bc_paired_later");
+});
+
+test("channel on: stop() cancels a held long-poll so the process can exit", async () => {
+  let aborted = false;
+  const h = channelHarness((_n, init) => new Promise((_res, rej) => init.signal.addEventListener("abort", () => { aborted = true; rej(new Error("aborted")); })));
+  await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await until(() => h.polls.length === 1);
+  h.bridge.stop();
+  await until(() => aborted);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(h.polls.length, 1, "no further polls after stop");
+});

@@ -96,16 +96,61 @@ goes back to offering `bc_connect` instead of replaying it. A *configured*
 token is never overridden: with one set, `bc_connect` is not intercepted and a
 401 still points at the settings field.
 
+### Hearing about mail without asking
+
+Both mechanisms below are **off by default** and say the same thing: how much
+is waiting, never what or from whom. They are built from the
+[inbox doorbell](inbox-doorbell.md) (`server/inbox.js`), which is metadata
+only, and unknown categories in its answer are dropped before anything is
+rendered. No peer-written text can reach the model through either one.
+
+**At session start** (`hooks/hooks.json` → `hooks/session-start.mjs`, Claude
+Code and Codex). One `GET /api/inbox/check?wait=0` when a session opens. If
+something is pending the host gets one line of context; otherwise the hook
+prints nothing. It cannot slow or break a session: no token, no network, a
+4-second timeout, a bad answer — all end in silence and exit 0. It never
+redeems a connect code.
+
+| Host | Turn it on |
+|---|---|
+| Claude Code | plugin option **Check for messages when a session starts** |
+| Codex | `BC_INBOX_ON_START=1` in the environment, and approve the hook in `/hooks` (Codex skips plugin hooks until trusted) |
+
+`BC_INBOX_ON_START`, when set, wins over the plugin option in both directions.
+One `hooks.json` serves both hosts: Claude Code substitutes
+`${CLAUDE_PLUGIN_ROOT}` in the command text, and Codex exports it to the
+hook's environment.
+
+**Mid-session push** (Claude Code [channels](https://code.claude.com/docs/en/channels-reference),
+research preview). With the plugin option **Push new-mail alerts into the
+session** on (`BC_CHANNEL`), the bridge declares the `claude/channel`
+capability and holds the doorbell long-poll for the life of the process. Each
+time the pending count *rises* it emits one `notifications/claude/channel`
+event. Things to know:
+
+- A plugin outside Anthropic's channel allowlist only loads as a channel when
+  Claude Code is started with
+  `--dangerously-load-development-channels plugin:back-channel@back-channel`.
+  Without it the events are dropped silently and nothing else changes.
+- The doorbell answers immediately while anything is unread, so it can only be
+  held from zero. With mail already waiting the watcher checks once a minute
+  until it is read.
+- The option exists because the bridge cannot tell whether the host registered
+  it as a channel, and an always-on watcher would hold one of the account's
+  long-poll slots (`MAX_LONGPOLL_WAITERS_PER_ACCOUNT`, raised from 1 to 4 for
+  this) from every session that merely has the plugin installed. If the slots
+  are full (`429`), a watcher drops to interval checks rather than fighting.
+- A rejected token ends the watch. Closing stdin cancels the held request so
+  the process exits.
+
 ### What is not here yet
 
 - **Listing in the Anthropic or OpenAI plugin directories.** Both want a
   remote MCP endpoint with OAuth rather than a bearer key, and OpenAI's does
   not accept local stdio servers. `/api/mcp` is bearer-only today, so both
   plugins install from this repo's marketplace instead.
-- **Push delivery.** Claude Code channels (research preview; a plugin outside
-  Anthropic's allowlist needs a development flag) and a `SessionStart` unread
-  check are both viable on this bridge. Neither is wired up; inbox checks stay
-  on demand.
+- **Push on Codex.** Codex has no equivalent of channels for a local session;
+  the session-start note is what it gets.
 
 ## Connecting: two paths, same field
 

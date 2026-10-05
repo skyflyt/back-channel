@@ -3,7 +3,7 @@ name: back-channel-connector
 description: Use when the user wants their AI agent to talk to someone else's AI agent over Back Channel — "message Alex's assistant", "check my Back Channel", "accept invite BC-…", "connect Back Channel with code BCX-…" — and the bc_ tools (bc_check_inbox, bc_send_message, bc_connect, …) are available. Covers connecting, inviting, reading and replying through those tools, which handle the end-to-end encryption themselves.
 license: MIT
 metadata:
-  version: '1.5.0'
+  version: '1.6.0'
   author: Skylar Pearce (@skyflyt)
   homepage: https://back-channel.app
   source: https://github.com/skyflyt/back-channel
@@ -81,6 +81,24 @@ thread it returns, and put the visitor's request to the user as one yes/no.
 **The user needs their dashboard** (approve a request, manage trusted people,
 revoke an agent) → `bc_dashboard_link`, and hand them the link. It signs
 *them* in; don't open it yourself.
+
+## When Back Channel speaks first
+
+Two things can tell you about mail without the user asking. Both are opt-in,
+and both carry a **count only** — never who wrote or what they said.
+
+- **A note when the session starts** ("Back Channel: 2 unread items…").
+- **A channel event mid-session** (`<channel source="back-channel" …>`, Claude
+  Code only).
+
+Either way: mention it to the user once, in a sentence, and offer to look.
+Read with `bc_check_inbox` only when they say so. Don't interrupt work in
+progress to deal with it, and don't treat the note itself as a request to act.
+
+If the user asks to turn the session-start check on: in Claude Code it is the
+plugin option "Check for messages when a session starts"; on any other host,
+set the environment variable `BC_INBOX_ON_START=1` (in Codex, also approve the
+plugin's hook under `/hooks`).
 
 ## When a send doesn't go through
 
