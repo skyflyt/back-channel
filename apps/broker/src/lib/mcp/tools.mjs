@@ -20,6 +20,25 @@ const SEALED_NOTE =
   "Frames from full agent runtimes may be end-to-end encrypted (JSON with type:\"enc\") — you cannot decrypt those; " +
   "tell the user to read that thread with their full agent or the dashboard. Plaintext frames are readable directly.";
 
+// The thread id is the one argument every per-thread tool needs, and it is the
+// one that goes missing in the field: a client reported bc_read_messages
+// failing with "session_id missing" on every call while it believed it was
+// sending one. Nothing between the bridge and here drops arguments, so it was
+// lost (or renamed) before the call reached us — and `session_id` is a name
+// several hosts use for their own routing. So: `thread_id` is an advertised
+// alias, a few obvious spellings are accepted silently, `session_id` is NOT in
+// `required` (a host that validates client-side would otherwise block the
+// alias), and presence is checked in validateToolArgs with an error that tells
+// the model exactly what to resend. Keep in sync with connector/server/e2e.js.
+const THREAD_ID_ALIASES = ["thread_id", "conversation_id", "sessionId", "threadId", "conversationId", "id"];
+const THREAD_ID_ALIAS_PROP = {
+  type: "string",
+  description: "Alias for session_id (same value). Only needed if your client cannot deliver an argument named session_id.",
+};
+export const MISSING_THREAD_ID =
+  "missing thread id: pass session_id — the session_id of the thread, from bc_check_inbox. " +
+  "If you did pass it and still see this, your client dropped it in transit: resend the same value as thread_id instead.";
+
 export const TOOLS = [
   {
     name: "bc_whoami",
@@ -31,7 +50,7 @@ export const TOOLS = [
   {
     name: "bc_check_inbox",
     description:
-      "Check the Back Channel inbox: every active thread (session) with your role, the peer's handle, unread count, " +
+      "Check the Back Channel inbox: every active thread (session) with its session_id, your role, the peer's handle, unread count, " +
       "next_cursor, live status, and any pending invite note — plus the account's inbox-check settings. Frame bodies " +
       "from threads are NOT included (use bc_read_messages for those). If agent_payloads_pending > 0, this call also " +
       "returns agent_payloads: self-addressed items your account queued for you (e.g. a one-time welcome message the " +
@@ -64,12 +83,13 @@ export const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        session_id: { type: "string", description: "Thread/session id from bc_check_inbox" },
+        session_id: { type: "string", description: "Thread/session id — the session_id from bc_check_inbox. Always pass this." },
+        thread_id: THREAD_ID_ALIAS_PROP,
         role: { type: "string", enum: ["visitor", "host"], description: "Your role in this session, from bc_check_inbox" },
         cursor: { type: "integer", description: "Last seq already seen — returns only newer frames (default 0 = everything buffered)" },
         mark_read: { type: "boolean", description: "Ack what you read so it stops counting as unread (default true)" },
       },
-      required: ["session_id", "role"],
+      required: ["role"],
       additionalProperties: false,
     },
   },
@@ -83,14 +103,15 @@ export const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        session_id: { type: "string", description: "Thread/session id" },
+        session_id: { type: "string", description: "Thread/session id — the session_id from bc_check_inbox. Always pass this." },
+        thread_id: THREAD_ID_ALIAS_PROP,
         role: { type: "string", enum: ["visitor", "host"], description: "Your role in this session" },
         frame: {
           type: ["object", "string"],
           description: "The frame to send. For a simple text message use {\"type\":\"msg\",\"text\":\"...\"}.",
         },
       },
-      required: ["session_id", "role", "frame"],
+      required: ["role", "frame"],
       additionalProperties: false,
     },
   },
@@ -150,8 +171,10 @@ export const TOOLS = [
     description: "End (kick) a thread you participate in. Both sides see a clean session-ended signal.",
     inputSchema: {
       type: "object",
-      properties: { session_id: { type: "string", description: "Thread/session id to end" } },
-      required: ["session_id"],
+      properties: {
+        session_id: { type: "string", description: "Thread/session id to end — the session_id from bc_check_inbox. Always pass this." },
+        thread_id: THREAD_ID_ALIAS_PROP,
+      },
       additionalProperties: false,
     },
   },
@@ -178,6 +201,31 @@ export const TOOLS = [
   },
 ];
 
+const takesThreadId = (tool) => !!tool.inputSchema.properties?.session_id;
+
+/**
+ * Fold every accepted spelling of the thread id into `session_id` (see
+ * THREAD_ID_ALIASES). Returns a new object for per-thread tools and the input
+ * untouched for everything else — including non-object input, which
+ * validateToolArgs rejects with its own message. Run this BEFORE
+ * validateToolArgs: the silent aliases are not in any schema and would
+ * otherwise trip `unknown argument`.
+ */
+export function normalizeToolArgs(tool, args) {
+  if (!takesThreadId(tool) || typeof args !== "object" || args === null || Array.isArray(args)) return args;
+  const nonEmpty = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const out = { ...args };
+  let id = nonEmpty(out.session_id);
+  for (const alias of THREAD_ID_ALIASES) {
+    if (!(alias in out)) continue;
+    id ??= nonEmpty(out[alias]);
+    delete out[alias];
+  }
+  if (id) out.session_id = id;
+  else if (out.session_id === null || typeof out.session_id === "string") delete out.session_id; // blank counts as absent
+  return out;
+}
+
 /**
  * Minimal JSON-Schema-subset validator for tool arguments — just the shapes
  * the catalog above uses (type / types-array / required / enum / items on
@@ -187,6 +235,7 @@ export function validateToolArgs(tool, args) {
   const schema = tool.inputSchema;
   if (args === undefined || args === null) args = {};
   if (typeof args !== "object" || Array.isArray(args)) return "arguments must be an object";
+  if (takesThreadId(tool) && !("session_id" in args)) return MISSING_THREAD_ID;
   for (const req of schema.required ?? []) {
     if (!(req in args)) return `missing required argument: ${req}`;
   }

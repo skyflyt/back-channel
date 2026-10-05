@@ -21,6 +21,17 @@ import { newEphemeralKeypair, loadKeypair, deriveSessionKey, seal, open, PLAINTE
 const HANDSHAKE_WAIT_ATTEMPTS = 3;
 const HANDSHAKE_WAIT_INTERVAL_MS = 1000;
 
+// Tools addressed to one thread, and every spelling of its id we accept. A
+// field report had bc_read_messages failing with "session_id missing" on every
+// call from a client that believed it was sending one — the argument was lost
+// or renamed before it reached this process, and `session_id` is a name some
+// hosts keep for their own routing. Keep in sync with src/lib/mcp/tools.mjs.
+const THREAD_TOOLS = new Set(["bc_read_messages", "bc_send_message", "bc_end_session"]);
+const THREAD_ID_ALIASES = ["thread_id", "conversation_id", "sessionId", "threadId", "conversationId", "id"];
+export const MISSING_THREAD_ID =
+  "missing thread id: pass session_id — the session_id of the thread, from bc_check_inbox. " +
+  "If you did pass it and still see this, your client dropped it in transit: resend the same value as thread_id instead.";
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function localToolResult(id, dataObj, isError = false) {
@@ -29,6 +40,49 @@ function localToolResult(id, dataObj, isError = false) {
 
 function toolName(msg) {
   return msg?.method === "tools/call" ? msg.params?.name : null;
+}
+
+/**
+ * Fold whichever spelling of the thread id the caller used into `session_id`,
+ * so the keystore is keyed by the real id and the broker always receives the
+ * canonical name (which also keeps a new bridge working against an older
+ * broker). Returns { msg } — the same object when nothing needed changing, so
+ * an untouched call is still forwarded byte-for-byte — or { error } when a
+ * per-thread tool arrived with no usable id at all.
+ */
+export function canonicalizeThreadCall(msg) {
+  if (!THREAD_TOOLS.has(toolName(msg))) return { msg };
+  const args = msg.params?.arguments;
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return { error: MISSING_THREAD_ID };
+  const nonEmpty = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  let id = nonEmpty(args.session_id);
+  const usedAlias = THREAD_ID_ALIASES.some((a) => a in args);
+  if (id && id === args.session_id && !usedAlias) return { msg };
+  const rest = { ...args };
+  for (const alias of THREAD_ID_ALIASES) {
+    if (!(alias in rest)) continue;
+    id ??= nonEmpty(rest[alias]);
+    delete rest[alias];
+  }
+  if (!id) return { error: MISSING_THREAD_ID };
+  return { msg: { ...msg, params: { ...msg.params, arguments: { ...rest, session_id: id } } } };
+}
+
+/** Why a bridge-internal tools/call failed, as text — or null if it succeeded. */
+function failureDetail(resp) {
+  if (resp?.error) return String(resp.error.message ?? "request rejected");
+  if (resp?.result?.isError) return String(resp.result.content?.[0]?.text ?? "request failed");
+  return null;
+}
+
+/** The end reason if a tools/call result says the thread has ended, else null. */
+function endedReason(resp) {
+  try {
+    const data = JSON.parse(resp?.result?.content?.[0]?.text ?? "");
+    return data?.ended ? String(data.end_reason ?? "ended") : null;
+  } catch {
+    return null;
+  }
 }
 
 function getOrCreateEntry(state, sessionId, role) {
@@ -45,6 +99,49 @@ function sessionKeyBuffer(entry) {
   return entry?.sessionKey ? Buffer.from(entry.sessionKey, "base64") : null;
 }
 
+/**
+ * Publish our handshake.pubkey on a thread and record that it landed
+ * (`pubkeySentAt`). Returns null on success, else why it failed. Never throws.
+ *
+ * The flag exists because "we hold a session key" does not imply "the peer has
+ * our pubkey": a thread opened outside create/claim (bc_request_session, the
+ * dashboard composer) gets its keypair on the first READ, which derives the
+ * session key from the peer's pubkey without ever sending ours — and the
+ * create/claim send is best-effort and can fail silently. Either way the next
+ * send would seal under a key the peer cannot derive. Entries written before
+ * this flag existed simply re-send once; the same pubkey derives the same key.
+ */
+async function publishOwnKey(sessionId, role, ctx) {
+  const state = ctx.keystore.load();
+  const entry = getOrCreateEntry(state, sessionId, role);
+  ctx.keystore.save(state); // persist the keypair BEFORE it leaves the machine
+
+  let resp;
+  try {
+    resp = await ctx.post({
+      jsonrpc: "2.0", id: `hs-${sessionId}`, method: "tools/call",
+      params: { name: "bc_send_message", arguments: { session_id: sessionId, role, frame: { type: "handshake.pubkey", pubkey: entry.publicKey } } },
+    });
+  } catch (e) {
+    ctx.log(`handshake send failed for session ${sessionId}: ${e?.message ?? e}`);
+    return `couldn't reach Back Channel (${e?.message ?? e})`;
+  }
+  const failed = failureDetail(resp);
+  if (failed) {
+    ctx.log(`handshake send rejected for session ${sessionId}: ${failed}`);
+    return failed;
+  }
+  const ended = endedReason(resp);
+  if (ended) return `this thread has ended (${ended})`;
+
+  const fresh = ctx.keystore.load();
+  if (fresh[sessionId]) {
+    fresh[sessionId].pubkeySentAt = Date.now();
+    ctx.keystore.save(fresh);
+  }
+  return null;
+}
+
 /** Best-effort: send our handshake.pubkey for a session we just created/claimed. Never throws. */
 export async function afterSessionEstablished(msg, respObj, ctx) {
   const name = toolName(msg);
@@ -57,18 +154,7 @@ export async function afterSessionEstablished(msg, respObj, ctx) {
   if (!sessionId) return;
   const role = name === "bc_create_invite" ? "visitor" : "host";
 
-  const state = ctx.keystore.load();
-  const entry = getOrCreateEntry(state, sessionId, role);
-  ctx.keystore.save(state);
-
-  try {
-    await ctx.post({
-      jsonrpc: "2.0", id: `hs-${sessionId}`, method: "tools/call",
-      params: { name: "bc_send_message", arguments: { session_id: sessionId, role, frame: { type: "handshake.pubkey", pubkey: entry.publicKey } } },
-    });
-  } catch (e) {
-    ctx.log(`handshake send failed for session ${sessionId}: ${e?.message ?? e}`);
-  }
+  await publishOwnKey(sessionId, role, ctx); // a failure here is retried by the first bc_send_message
 }
 
 /** Absorb any handshake.pubkey / decrypt any enc frames in a bc_read_messages response. Mutates and returns respObj. */
@@ -137,25 +223,36 @@ export async function prepareOutgoing(msg, ctx) {
     return { line: JSON.stringify(msg) }; // control frames (incl. our own handshake.pubkey) ride plaintext
   }
 
+  // A real failure (bad id, wrong role, ended thread, revoked token, network)
+  // must never be reported as "handshake pending — retry": the caller retries
+  // forever and is told the peer is the holdup when the peer already answered.
+  const notSent = (reason) => ({
+    shortCircuitResponse: localToolResult(msg.id, {
+      sent: false,
+      error: "send_failed",
+      message: `Your message was NOT sent — ${reason}. Retrying unchanged will fail the same way.`,
+    }, true),
+  });
+  if (typeof sessionId !== "string" || !sessionId) return notSent(MISSING_THREAD_ID);
+  if (role !== "visitor" && role !== "host") return notSent("role must be 'visitor' or 'host' — use the role bc_check_inbox reports for this thread");
+
   let state = ctx.keystore.load();
-  let entry = getOrCreateEntry(state, sessionId, role);
-  ctx.keystore.save(state);
+  let entry = state[sessionId];
 
-  if (!entry.peerPublicKey) {
-    // We don't have the peer's key yet — make sure OUR pubkey is at least out
-    // there, then give the handshake a short window to land.
-    try {
-      await ctx.post({
-        jsonrpc: "2.0", id: `hs-${sessionId}`, method: "tools/call",
-        params: { name: "bc_send_message", arguments: { session_id: sessionId, role, frame: { type: "handshake.pubkey", pubkey: entry.publicKey } } },
-      });
-    } catch (e) {
-      ctx.log(`handshake send failed for session ${sessionId}: ${e?.message ?? e}`);
-    }
+  // The peer can only derive the session key from OUR pubkey, so it has to be
+  // out there before anything is sealed — whether or not we already hold theirs.
+  if (!entry?.pubkeySentAt) {
+    const failed = await publishOwnKey(sessionId, role, ctx);
+    if (failed) return notSent(`couldn't start the encryption handshake on this thread: ${failed}`);
+    state = ctx.keystore.load();
+    entry = state[sessionId];
+  }
 
+  if (!entry?.peerPublicKey) {
+    // Our key is out; give the peer's a short window to land.
     const attempts = ctx.handshakeWaitAttempts ?? HANDSHAKE_WAIT_ATTEMPTS;
     const intervalMs = ctx.handshakeWaitIntervalMs ?? HANDSHAKE_WAIT_INTERVAL_MS;
-    for (let attempt = 0; attempt < attempts && !entry.peerPublicKey; attempt++) {
+    for (let attempt = 0; attempt < attempts && !entry?.peerPublicKey; attempt++) {
       let resp;
       try {
         resp = await ctx.post({
@@ -164,8 +261,15 @@ export async function prepareOutgoing(msg, ctx) {
         });
       } catch (e) {
         ctx.log(`handshake wait poll failed: ${e?.message ?? e}`);
-        break;
+        return notSent(`couldn't read this thread to finish the encryption handshake (${e?.message ?? e})`);
       }
+      const failed = failureDetail(resp);
+      if (failed) {
+        ctx.log(`handshake wait poll rejected for session ${sessionId}: ${failed}`);
+        return notSent(`couldn't read this thread to finish the encryption handshake: ${failed}`);
+      }
+      const ended = endedReason(resp);
+      if (ended) return notSent(`this thread has ended (${ended})`);
       await processIncoming(
         { method: "tools/call", params: { name: "bc_read_messages", arguments: { session_id: sessionId, role } } },
         resp, ctx,
@@ -181,7 +285,7 @@ export async function prepareOutgoing(msg, ctx) {
     return {
       shortCircuitResponse: localToolResult(msg.id, {
         handshake_pending: true,
-        message: "Encryption handshake with your peer hasn't completed yet — your message was NOT sent. Your own key is out there; retry bc_send_message in a few seconds once the peer has read it.",
+        message: "Your message was NOT sent. This thread is reachable and your encryption key is posted on it, but the peer's agent hasn't posted its key yet — nothing is wrong on your side. Try bc_send_message again after the peer's agent has next been active on this thread.",
       }, false),
     };
   }

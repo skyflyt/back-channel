@@ -353,3 +353,90 @@ test("bc_check_inbox: doorbell GET carries the same bearer token as the normal f
   await h.send(checkInboxCall(1, { wait_seconds: 1 }));
   assert.equal(doorbellAuth, "Bearer bc_mytoken");
 });
+
+// ── Thread-id handling (field report 2026-10-05) ────────────────────────────
+
+const toolText = (obj, isError = false) => ({ content: [{ type: "text", text: JSON.stringify(obj) }], isError });
+
+test("bc_read_messages: canonical session_id is forwarded byte-for-byte", async () => {
+  let body;
+  const h = harness({ fetchImpl: async (_u, init) => { body = init.body; return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: toolText({ frames: [], next_cursor: 0 }) }), { status: 200 }); } });
+  const call = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_read_messages", arguments: { session_id: "s1", role: "host" } } };
+  await h.send(call);
+  assert.equal(body, JSON.stringify(call));
+});
+
+test("bc_read_messages: thread_id alias is rewritten to session_id before forwarding, and keys the keystore by the real id", async () => {
+  let forwarded;
+  const { newEphemeralKeypair } = await import("./crypto.js");
+  const peer = newEphemeralKeypair();
+  const h = harness({
+    fetchImpl: async (_u, init) => {
+      forwarded = JSON.parse(init.body);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: toolText({ frames: [JSON.stringify({ type: "handshake.pubkey", pubkey: peer.publicKey })], next_cursor: 1 }) }), { status: 200 });
+    },
+  });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_read_messages", arguments: { thread_id: "s1", role: "host" } } });
+  assert.deepEqual(forwarded.params.arguments, { role: "host", session_id: "s1" });
+  assert.ok(h.keystore._peek().s1?.sessionKey, "peer key absorbed under the real session id");
+  assert.equal(h.keystore._peek().undefined, undefined, "never a junk 'undefined' entry");
+});
+
+test("bc_read_messages / bc_send_message / bc_end_session with no thread id: local actionable error, nothing forwarded", async () => {
+  let called = false;
+  const h = harness({ fetchImpl: async () => { called = true; return new Response("{}"); } });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_read_messages", arguments: { role: "host" } } });
+  await h.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "bc_send_message", arguments: { role: "host", frame: { type: "msg", text: "hi" } } } });
+  await h.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "bc_end_session", arguments: {} } });
+  assert.equal(called, false);
+  for (const r of h.parsed()) {
+    assert.equal(r.error.code, -32602);
+    assert.match(r.error.message, /missing thread id/);
+    assert.match(r.error.message, /thread_id/, "tells the model the spelling to retry with");
+  }
+  assert.ok(h.logs.some((l) => /no thread id in arguments \(keys: role\)/.test(l)), "logs which argument NAMES arrived (never values) for field diagnosis");
+  assert.deepEqual(h.keystore._peek(), {});
+});
+
+test("bc_send_message via thread_id: handshakes and seals under the real session id end to end", async () => {
+  const { newEphemeralKeypair, deriveSessionKey, open } = await import("./crypto.js");
+  const peer = newEphemeralKeypair();
+  const seen = [];
+  const h = harness({
+    fetchImpl: async (_u, init) => {
+      const m = JSON.parse(init.body);
+      seen.push(m);
+      const a = m.params.arguments;
+      assert.equal(a.session_id, "s1", "every call the broker sees carries the canonical id");
+      assert.equal("thread_id" in a, false);
+      const result = m.params.name === "bc_read_messages"
+        ? toolText({ frames: [JSON.stringify({ type: "handshake.pubkey", pubkey: peer.publicKey })], next_cursor: 1 })
+        : toolText({ sent_seq: seen.length });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }), { status: 200 });
+    },
+  });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_send_message", arguments: { thread_id: "s1", role: "visitor", frame: { type: "msg", text: "handover" } } } });
+  const [r] = h.parsed();
+  assert.equal(r.result.isError, false);
+  const last = seen.at(-1).params.arguments;
+  assert.equal(last.frame.type, "enc");
+  const ourPub = h.keystore._peek().s1.publicKey;
+  assert.deepEqual(open(last.frame, deriveSessionKey(peer.handle, ourPub)), { type: "msg", text: "handover" });
+});
+
+test("bc_send_message: when the handshake read is rejected, the model gets the real reason — not 'handshake pending, retry'", async () => {
+  const h = harness({
+    fetchImpl: async (_u, init) => {
+      const m = JSON.parse(init.body);
+      const result = m.params.name === "bc_read_messages" ? toolText("HTTP 403: {\"error\":\"role_mismatch\",\"detail\":\"your account is the host on this session\"}", true) : toolText({ sent_seq: 1 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }), { status: 200 });
+    },
+  });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_send_message", arguments: { session_id: "s1", role: "visitor", frame: { type: "msg", text: "hi" } } } });
+  const [r] = h.parsed();
+  assert.equal(r.result.isError, true);
+  const body = JSON.parse(r.result.content[0].text);
+  assert.equal(body.handshake_pending, undefined);
+  assert.match(body.message, /NOT sent/);
+  assert.match(body.message, /role_mismatch/);
+});

@@ -33,7 +33,7 @@
  */
 
 import { createKeyStore } from "./keystore.js";
-import { prepareOutgoing, processIncoming, afterSessionEstablished } from "./e2e.js";
+import { prepareOutgoing, processIncoming, afterSessionEstablished, canonicalizeThreadCall } from "./e2e.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
 const MAX_CHECK_INBOX_WAIT_S = 120; // hard cap on bc_check_inbox wait_seconds -- MCP clients time out tool calls well before Cloud Run does
@@ -196,6 +196,23 @@ export function createBridge({
     }
 
     let outgoingLine = line;
+
+    // Per-thread tools: settle the thread id BEFORE anything else touches the
+    // call. Everything downstream (the keystore, the E2E handshake, the broker)
+    // keys off `session_id`, so an aliased spelling is rewritten to it here and
+    // a call with no id at all is answered locally with an error the model can
+    // act on, instead of being forwarded to fail — or, for a send, being
+    // misreported as a pending handshake.
+    const canonical = canonicalizeThreadCall(msg);
+    if (canonical.error) {
+      log(`${msg.params?.name}: no thread id in arguments (keys: ${Object.keys(msg.params?.arguments ?? {}).join(",") || "none"})`);
+      if (!isNotification) writeLine(rpcError(id, -32602, canonical.error));
+      return;
+    }
+    if (canonical.msg !== msg) {
+      msg = canonical.msg;
+      outgoingLine = JSON.stringify(msg);
+    }
 
     // bc_check_inbox with wait_seconds: hold the doorbell BEFORE forwarding the
     // tools/call, then forward a wait_seconds-stripped copy so the remote side
