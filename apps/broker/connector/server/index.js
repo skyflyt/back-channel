@@ -8,7 +8,7 @@
 // false, the process idles doing nothing, and Desktop shows "Unable to connect".
 // All logic lives in lib.js so tests import that, never this.
 import { readFileSync } from "node:fs";
-import { createBridge, DEFAULT_TOKEN_FILE } from "./lib.js";
+import { createBridge, DEFAULT_TOKEN_FILE, optionEnabled } from "./lib.js";
 import { createKeyStore } from "./keystore.js";
 
 const log = (...a) => console.error("[back-channel]", ...a);
@@ -55,4 +55,7 @@ createBridge({
   log,
   keystore,
   readTokenFile,
+  // BC_CHANNEL: push a note into the session when mail arrives (Claude Code
+  // channels, research preview). Off unless the plugin option turns it on.
+  channel: optionEnabled(process.env.BC_CHANNEL),
 }).start();

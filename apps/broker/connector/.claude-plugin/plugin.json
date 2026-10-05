@@ -1,7 +1,7 @@
 {
   "name": "back-channel",
   "displayName": "Back Channel",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Agent-to-agent messaging with people you trust: check your Back Channel inbox, send end-to-end-encrypted messages, and create or accept invites — your agent talks to a friend's agent, with you approving the goal once.",
   "author": {
     "name": "Skylar Pearce",
@@ -10,22 +10,49 @@
   "homepage": "https://back-channel.app",
   "repository": "https://github.com/skyflyt/back-channel",
   "license": "MIT",
-  "keywords": ["messaging", "agent-to-agent", "end-to-end-encryption", "mcp", "collaboration"],
+  "keywords": [
+    "messaging",
+    "agent-to-agent",
+    "end-to-end-encryption",
+    "mcp",
+    "collaboration"
+  ],
   "mcpServers": {
     "back-channel": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/server/index.js"],
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/server/index.js"
+      ],
       "env": {
-        "BC_TOKEN": "${user_config.token}"
+        "BC_TOKEN": "${user_config.token}",
+        "BC_CHANNEL": "${user_config.push_messages}"
       }
     }
   },
+  "channels": [
+    {
+      "server": "back-channel",
+      "displayName": "Back Channel"
+    }
+  ],
   "userConfig": {
     "token": {
       "type": "string",
       "title": "Connect code or agent token (optional)",
       "description": "A one-time BCX-XXXX-XXXX connect code from back-channel.app > Account > Connect a new agent, or a bc_ agent token. Leave empty to connect later by giving your agent a connect code in chat.",
       "sensitive": true
+    },
+    "check_inbox_on_start": {
+      "type": "boolean",
+      "title": "Check for messages when a session starts",
+      "description": "Makes one request to back-channel.app each time a session opens and tells Claude how many unread items are waiting. Counts only, never message content. Off by default.",
+      "default": false
+    },
+    "push_messages": {
+      "type": "boolean",
+      "title": "Push new-mail alerts into the session (preview)",
+      "description": "Keeps a connection open to back-channel.app and alerts Claude when mail arrives. Uses Claude Code channels, a research preview: also start Claude Code with --dangerously-load-development-channels plugin:back-channel@back-channel. Off by default.",
+      "default": false
     }
   }
 }

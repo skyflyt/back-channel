@@ -218,24 +218,29 @@ test("_reset clears all bus state and the registered counter", async () => {
 });
 // --- L1 (security-pass-2026-07-03.md): per-account long-poll waiter cap -------------------
 
-test(`MAX_LONGPOLL_WAITERS_PER_ACCOUNT mirrors SSE's 1-connection-per-account limit`, () => {
-  assert.equal(MAX_LONGPOLL_WAITERS_PER_ACCOUNT, 1);
+test("MAX_LONGPOLL_WAITERS_PER_ACCOUNT is a small fixed bound with room for a few agents on one account", () => {
+  // Not 1: a connector holding the doorbell for push delivery would take the
+  // account's only slot (see the constant's comment). Not large: L1 is about
+  // per-account growth, so this stays a handful.
+  assert.ok(MAX_LONGPOLL_WAITERS_PER_ACCOUNT >= 2 && MAX_LONGPOLL_WAITERS_PER_ACCOUNT <= 8);
 });
 
-test("a second concurrent long-poll waiter on the SAME account is rejected with TooManyWaitersError, not parked unbounded", async () => {
+test("waiters up to the cap all park and ALL wake on one event; one past the cap is rejected, not parked unbounded", async () => {
   _reset();
   stubCounter({ acct1: { count: 0, kinds: [] } });
 
-  // First waiter parks (nothing pending yet) - don't await it yet.
-  const first = waitForInbox("acct1", 2000);
-  // Give the first call a tick to actually park its waiter before the second arrives.
+  // Fill the account's slots (nothing pending yet) - don't await them yet.
+  const parked = Array.from({ length: MAX_LONGPOLL_WAITERS_PER_ACCOUNT }, () => waitForInbox("acct1", 5000));
+  // Give those calls a tick to actually park before the extra one arrives.
   await new Promise((r) => setTimeout(r, 10));
 
-  await assert.rejects(() => waitForInbox("acct1", 2000), TooManyWaitersError);
+  await assert.rejects(() => waitForInbox("acct1", 5000), TooManyWaitersError);
 
-  // The first waiter is unaffected - still resolves normally (e.g. via timeout here).
-  const result = await first;
-  assert.equal(result.pending_count, 0);
+  // The parked waiters are unaffected, and one arrival wakes every one of them.
+  stubCounter({ acct1: { count: 1, kinds: ["frame"] } });
+  fireInboxEvent("acct1", "frame");
+  const results = await Promise.all(parked);
+  assert.deepEqual(results.map((r) => r.pending_count), Array(MAX_LONGPOLL_WAITERS_PER_ACCOUNT).fill(1));
 });
 
 test("the cap is per-account: a parked waiter on one account does not block a long-poll on another", async () => {

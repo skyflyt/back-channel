@@ -77,3 +77,37 @@ test("repo-root marketplaces both resolve to this directory", () => {
   assert.equal(x.source.source, "local");
   assert.equal(resolve(repoRoot, x.source.path), connector);
 });
+
+test("Claude Code plugin: the unread check and push alerts are both opt-in, and the channel binds to a real server", () => {
+  for (const key of ["check_inbox_on_start", "push_messages"]) {
+    assert.equal(claude.userConfig[key].type, "boolean", key);
+    assert.equal(claude.userConfig[key].default, false, `${key} must default to off`);
+  }
+  assert.equal(claude.mcpServers["back-channel"].env.BC_CHANNEL, "${user_config.push_messages}");
+  const [channel] = claude.channels;
+  assert.ok(claude.mcpServers[channel.server], "channels[].server must name one of this plugin's MCP servers");
+});
+
+test("hooks: the one hook is SessionStart and runs a file that exists", () => {
+  const hooks = json(connector, "hooks", "hooks.json").hooks;
+  assert.deepEqual(Object.keys(hooks), ["SessionStart"]);
+  const [{ command, timeout }] = hooks.SessionStart[0].hooks;
+  // Claude Code substitutes ${CLAUDE_PLUGIN_ROOT} in the text; Codex exports it to the hook's environment.
+  const rel = /\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\s]+)/.exec(command)?.[1];
+  assert.ok(rel && existsSync(join(connector, rel)), `hook command points at a missing file: ${command}`);
+  assert.ok(timeout <= 10, "a session-start hook must not be able to hold a session up");
+});
+
+test("the .mcpb pack list contains every module the entry point can reach", () => {
+  const packer = readFileSync(join(connector, "..", "scripts", "pack-mcpb.mjs"), "utf8");
+  const files = JSON.parse(/const FILES = (\[[^\]]+\]);/.exec(packer)[1]);
+  const seen = new Set();
+  const walk = (rel) => {
+    if (seen.has(rel)) return;
+    seen.add(rel);
+    const src = readFileSync(join(connector, rel), "utf8");
+    for (const m of src.matchAll(/from\s+"(\.\/[^"]+)"/g)) walk(join(dirname(rel), m[1]).replace(/\\/g, "/"));
+  };
+  walk(mcpb.server.entry_point);
+  for (const rel of seen) assert.ok(files.includes(rel), `${rel} is imported by the bridge but missing from pack-mcpb.mjs FILES — the extension would fail to start`);
+});

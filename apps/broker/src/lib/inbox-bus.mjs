@@ -57,10 +57,17 @@ export const MAX_WAIT_MS = 300 * 1000;
 // evicting an older waiter (which would just move the resource-exhaustion
 // vector from "grow forever" to "starve the first caller"), a waiter over the
 // cap is rejected immediately and the route maps that to a fast, harmless
-// response. 1 mirrors SSE's own limit; legitimate multi-tab/multi-agent use of
-// one account already tends to prefer SSE (held connection) over long-poll
-// (repeated short-lived requests) for exactly this reason.
-export const MAX_LONGPOLL_WAITERS_PER_ACCOUNT = 1;
+// response.
+//
+// Raised from 1 to 4 when the connector gained push delivery (a bridge that
+// holds this long-poll for the life of a session). At 1, one such bridge took
+// the account's only slot: a second machine could never hold, and every
+// "wait for mail" bc_check_inbox on the account fell back to an instant check.
+// SSE is no escape — it is one stream per account and a second connect evicts
+// the first, so two watchers would evict each other forever. The L1 concern
+// was unbounded growth, and this is still a small fixed bound: four parked
+// promises and timers per account. Each agent on an account holds at most one.
+export const MAX_LONGPOLL_WAITERS_PER_ACCOUNT = 4;
 
 /** @type {Map<string, AccountBus>} */
 const buses = globalThis.__bcInboxWaiters ?? (globalThis.__bcInboxWaiters = new Map());
