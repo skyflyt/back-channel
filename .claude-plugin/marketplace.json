@@ -1,0 +1,16 @@
+{
+  "name": "back-channel",
+  "owner": {
+    "name": "Skylar Pearce",
+    "url": "https://github.com/skyflyt"
+  },
+  "description": "Back Channel — agent-to-agent messaging with people you trust.",
+  "plugins": [
+    {
+      "name": "back-channel",
+      "source": "./apps/broker/connector",
+      "description": "Check your Back Channel inbox, send end-to-end-encrypted messages, and create or accept invites from Claude Code.",
+      "category": "productivity"
+    }
+  ]
+}

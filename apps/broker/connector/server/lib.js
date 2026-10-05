@@ -32,6 +32,8 @@
  * retry with the same code).
  */
 
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { createKeyStore } from "./keystore.js";
 import { prepareOutgoing, processIncoming, afterSessionEstablished, canonicalizeThreadCall } from "./e2e.js";
 
@@ -39,6 +41,47 @@ const DEFAULT_TIMEOUT_MS = 25_000;
 const MAX_CHECK_INBOX_WAIT_S = 120; // hard cap on bc_check_inbox wait_seconds -- MCP clients time out tool calls well before Cloud Run does
 const EXCHANGE_CODE_RE = /^BCX-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 const RESOLVED_TOKEN_KEY = "__resolved_bc_token__"; // keystore entry name — distinct from any session_id
+
+// Where `npx backchannel-cli --pair` leaves the agent key (packages/install).
+// Reading it here means anyone who paired that way has a working bridge with
+// no further configuration, on any host.
+export const DEFAULT_TOKEN_FILE = join(homedir(), ".bc", "token");
+
+// Mirrors src/lib/mcp/protocol.mjs — only used to answer `initialize` locally
+// while there is no token to forward it with.
+const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
+
+const CONNECT_URL_HINT = "back-channel.app → Account → Connect a new agent";
+const NOT_CONNECTED =
+  `Back Channel isn't connected on this machine yet. Ask the user to open ${CONNECT_URL_HINT}, generate a one-time connect code ` +
+  "(it looks like BCX-XXXX-XXXX), and give it to you; then call bc_connect with that code. Never ask for the bc_ key itself.";
+
+/**
+ * The one tool the bridge serves itself, offered only while there is no token.
+ * Plugin hosts differ in how (and whether) they collect a secret at install
+ * time — Claude Code prompts for one, Codex has no such step — so the bridge
+ * has to be able to start, say what it needs, and take a connect code through
+ * the conversation instead of failing `initialize`.
+ */
+export const BC_CONNECT_TOOL = {
+  name: "bc_connect",
+  description:
+    "Connect this agent to the user's Back Channel account with a one-time connect code. The user gets the code (BCX-XXXX-XXXX, " +
+    `valid 15 minutes, single use) at ${CONNECT_URL_HINT}. On success the key is stored locally with owner-only permissions and ` +
+    "the full Back Channel toolset (bc_check_inbox, bc_send_message, …) becomes available. Only call this with a code the user gave you.",
+  inputSchema: {
+    type: "object",
+    properties: { code: { type: "string", description: "The one-time connect code, e.g. BCX-7Q2M-XK4P" } },
+    required: ["code"],
+    additionalProperties: false,
+  },
+};
+
+/** A config value the host never filled in arrives as its own placeholder (`${user_config.token}`), not as empty. */
+export function cleanConfiguredToken(value) {
+  const v = String(value ?? "").trim();
+  return /^\$\{[^}]*\}$/.test(v) ? "" : v;
+}
 
 /** True if the configured value is a one-time exchange code rather than a real bc_ key. */
 export function looksLikeExchangeCode(value) {
@@ -53,7 +96,12 @@ export function looksLikeExchangeCode(value) {
  * uniform "invalid, already-used, or expired" response — same message for
  * all three, matching the server's opaque-failure design).
  */
-export async function redeemExchangeCode(code, { mcpUrl, fetchImpl = fetch, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export async function redeemExchangeCode(code, opts = {}) {
+  return (await redeemExchangeCodeFull(code, opts)).api_key;
+}
+
+/** Same as redeemExchangeCode, but returns the whole exchange body ({ api_key, handle, agent_name, … }). */
+export async function redeemExchangeCodeFull(code, { mcpUrl, fetchImpl = fetch, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const exchangeUrl = new URL("/api/auth/exchange", mcpUrl).toString();
   let res;
   try {
@@ -79,7 +127,7 @@ export async function redeemExchangeCode(code, { mcpUrl, fetchImpl = fetch, time
   if (!res.ok || !body?.api_key) {
     throw new Error(`Couldn't redeem your connect code (Back Channel said HTTP ${res.status}) — try generating a fresh one at back-channel.app → Account → Connect a new agent.`);
   }
-  return body.api_key;
+  return body;
 }
 
 export function createBridge({
@@ -91,11 +139,33 @@ export function createBridge({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   log = (...a) => console.error("[back-channel]", ...a),
   keystore = createKeyStore({ log }),
+  // Fallback when no token is configured: returns the key `backchannel-cli
+  // --pair` stored, or "". Off by default so nothing built on createBridge
+  // (tests above all) reads a real home directory — index.js wires the real one.
+  readTokenFile = () => "",
 } = {}) {
   let buffer = "";
   let chain = Promise.resolve(); // serialize forwards: order in = order out
-  let resolvedToken = (token || "").trim();
+  const configuredToken = cleanConfiguredToken(token);
+  let resolvedToken = configuredToken;
   let exchangeError = null; // set once if code redemption fails; surfaced to every request until fixed
+  let rejectedFallback = ""; // a fallback key the server already refused — don't pick it up again
+
+  /**
+   * With nothing configured, look for a key this machine already holds: one a
+   * previous bc_connect stored in the keystore, then the installer's
+   * ~/.bc/token. Re-checked on every request while unconnected, so pairing
+   * from another terminal takes effect without restarting the host.
+   */
+  function adoptFallbackToken() {
+    if (resolvedToken || configuredToken) return;
+    let found = "";
+    try {
+      found = String(keystore.load()[RESOLVED_TOKEN_KEY]?.bcToken ?? "").trim();
+    } catch { /* unreadable keystore — fall through to the token file */ }
+    if (!found || found === rejectedFallback) found = cleanConfiguredToken(readTokenFile());
+    if (found && found !== rejectedFallback) resolvedToken = found;
+  }
 
   /** Resolve `resolvedToken` to a real bc_ key exactly once, redeeming an exchange
    * code (and persisting the result) on the first call if one was configured. */
@@ -124,6 +194,72 @@ export function createBridge({
   };
 
   const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
+  const rpcResult = (id, result) => ({ jsonrpc: "2.0", id, result });
+  const toolText = (id, text, isError = false) => rpcResult(id, { content: [{ type: "text", text }], isError });
+
+  /**
+   * Answer a request locally while there is no token to forward it with. The
+   * server has to come up and list a tool — a host that sees `initialize` fail
+   * shows a dead connector and the user never learns what to do. `listChanged`
+   * is declared so the host re-reads the catalog once bc_connect succeeds.
+   */
+  function answerUnconnected(msg) {
+    const id = msg.id;
+    switch (msg.method) {
+      case "initialize": {
+        const requested = msg.params?.protocolVersion;
+        return rpcResult(id, {
+          protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : SUPPORTED_PROTOCOL_VERSIONS[0],
+          capabilities: { tools: { listChanged: true } },
+          serverInfo: { name: "back-channel", version: "1.0.0" },
+          instructions: NOT_CONNECTED,
+        });
+      }
+      case "ping":
+        return rpcResult(id, {});
+      case "tools/list":
+        return rpcResult(id, { tools: [BC_CONNECT_TOOL] });
+      case "tools/call":
+        return toolText(id, NOT_CONNECTED, true);
+      default:
+        return rpcError(id, -32001, NOT_CONNECTED);
+    }
+  }
+
+  /** bc_connect: redeem a one-time code and keep the key. Returns { response, connected }. */
+  async function connectWithCode(id, args) {
+    const code = String(args?.code ?? "").trim().toUpperCase();
+    if (!looksLikeExchangeCode(code)) {
+      return { connected: false, response: toolText(id, `That doesn't look like a connect code (expected BCX-XXXX-XXXX). The user can generate one at ${CONNECT_URL_HINT}.`, true) };
+    }
+    let body;
+    try {
+      body = await redeemExchangeCodeFull(code, { mcpUrl: url, fetchImpl, timeoutMs });
+    } catch (e) {
+      log(`bc_connect: redemption failed: ${e?.message ?? e}`);
+      return { connected: false, response: toolText(id, e?.message ?? "Couldn't redeem that connect code.", true) };
+    }
+    const connected = (persisted, note) => ({
+      connected: true,
+      response: toolText(id, JSON.stringify({ connected: true, handle: body.handle ?? null, agent_name: body.agent_name ?? null, persisted, note })),
+    });
+    try {
+      const state = keystore.load();
+      state[RESOLVED_TOKEN_KEY] = { bcToken: body.api_key, updatedAt: Date.now() };
+      keystore.save(state);
+    } catch (e) {
+      // The code is spent, so losing the key here would strand the user: stay
+      // connected for this run and say plainly that it won't survive a restart.
+      log(`bc_connect: connected, but the key could not be saved: ${e?.message ?? e}`);
+      resolvedToken = body.api_key;
+      return connected(false, "Connected for this session only — the key could not be saved to disk, so a new connect code will be needed after a restart.");
+    }
+    resolvedToken = body.api_key;
+    rejectedFallback = "";
+    exchangeError = null;
+    log("bc_connect: connected");
+    return connected(true, "Connected. The Back Channel tools (bc_check_inbox, bc_read_messages, bc_send_message, …) are available now; if they don't appear, restart the session once.");
+  }
 
   /** Raw POST + JSON-parsed response, no stdout writes — used for the bridge's
    * own internal calls (handshake sends, short handshake-wait polls). */
@@ -183,9 +319,20 @@ export function createBridge({
     const id = msg?.id;
     const isNotification = id === undefined || id === null;
 
+    adoptFallbackToken();
+
+    // bc_connect is the bridge's own tool: never forwarded, and only offered
+    // while unconnected (see answerUnconnected), but honored whenever called.
+    if (msg?.method === "tools/call" && msg.params?.name === BC_CONNECT_TOOL.name && !configuredToken) {
+      const out = await connectWithCode(id, msg.params?.arguments);
+      if (!isNotification) writeLine(out.response);
+      // After the reply, so a host that re-lists on this sees the full catalog.
+      if (out.connected) writeLine({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+      return;
+    }
+
     if (!resolvedToken) {
-      log("no token configured");
-      if (!isNotification) writeLine(rpcError(id, -32001, "No Back Channel token configured — open the extension settings and paste the token from back-channel.app → Account → Connect a new agent."));
+      if (!isNotification) writeLine(answerUnconnected(msg));
       return;
     }
 
@@ -291,6 +438,16 @@ export function createBridge({
           keystore.save(state);
         }
       } catch { /* best-effort cleanup */ }
+      if (!configuredToken) {
+        // The refused key was one we picked up ourselves (bc_connect or the
+        // installer's token file). Forget it and go back to offering bc_connect
+        // rather than replaying a dead key on every call.
+        rejectedFallback = resolvedToken;
+        resolvedToken = "";
+        if (!isNotification) writeLine(rpcError(id, -32001, `Back Channel rejected the saved key (revoked or expired). ${NOT_CONNECTED}`));
+        writeLine({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+        return;
+      }
       if (!isNotification) writeLine(rpcError(id, -32001, "Back Channel rejected the token (revoked or mistyped). Generate a fresh one at back-channel.app → Account → Connect a new agent and update the extension settings."));
       return;
     }

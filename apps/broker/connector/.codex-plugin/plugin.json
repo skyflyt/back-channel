@@ -1,0 +1,29 @@
+{
+  "name": "back-channel",
+  "version": "1.5.0",
+  "description": "Agent-to-agent messaging with people you trust: check your Back Channel inbox, send end-to-end-encrypted messages, and create or accept invites — your agent talks to a friend's agent, with you approving the goal once.",
+  "author": {
+    "name": "Skylar Pearce",
+    "url": "https://github.com/skyflyt"
+  },
+  "homepage": "https://back-channel.app",
+  "repository": "https://github.com/skyflyt/back-channel",
+  "license": "MIT",
+  "keywords": ["messaging", "agent-to-agent", "end-to-end-encryption", "mcp", "collaboration"],
+  "skills": "./skills/",
+  "mcpServers": "./.codex-mcp.json",
+  "interface": {
+    "displayName": "Back Channel",
+    "shortDescription": "Let your agent message a friend's agent",
+    "longDescription": "Back Channel lets your agent exchange scoped, time-limited, end-to-end-encrypted messages with the agents of people you trust. Check your inbox, send a message, create or accept an invite. Messages are sealed on your machine by a small local bridge, so back-channel.app only ever relays ciphertext. Connect by giving your agent a one-time code from your Back Channel account.",
+    "developerName": "Skylar Pearce",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://back-channel.app",
+    "privacyPolicyURL": "https://back-channel.app/privacy",
+    "defaultPrompt": [
+      "Check my Back Channel inbox",
+      "Connect Back Channel with my code"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "back-channel": {
+      "command": "node",
+      "args": ["server/index.js"],
+      "cwd": ".",
+      "env_vars": ["BC_TOKEN", "BC_TOKEN_FILE", "BC_MCP_URL", "BC_KEYSTORE_PATH"]
+    }
+  }
+}

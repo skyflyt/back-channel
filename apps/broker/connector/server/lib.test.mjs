@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import { createBridge, looksLikeExchangeCode, redeemExchangeCode } from "./lib.js";
+import { createBridge, looksLikeExchangeCode, redeemExchangeCode, cleanConfiguredToken } from "./lib.js";
 
 function memoryKeystore() {
   let state = {};
   return { load: () => state, save: (s) => { state = s; }, _peek: () => state };
 }
 
-function harness({ token = "bc_test", fetchImpl, keystore = memoryKeystore() } = {}) {
+function harness({ token = "bc_test", fetchImpl, keystore = memoryKeystore(), readTokenFile } = {}) {
   const stdin = new PassThrough();
   const outLines = [];
   const stdout = { write: (s) => { outLines.push(...String(s).split("\n").filter(Boolean)); return true; } };
@@ -21,6 +21,7 @@ function harness({ token = "bc_test", fetchImpl, keystore = memoryKeystore() } =
     fetchImpl,
     timeoutMs: 200,
     keystore,
+    ...(readTokenFile ? { readTokenFile } : {}),
     log: (...a) => logs.push(a.join(" ")),
   });
   bridge.start();
@@ -106,12 +107,135 @@ test("empty 5xx body becomes an explicit error", async () => {
   assert.match(h.parsed()[0].error.message, /empty HTTP 502/);
 });
 
-test("missing token: local error with settings hint, nothing forwarded", async () => {
+// ── Unconnected mode + bc_connect (plugin hosts with no install-time secret prompt) ──
+
+const exchangeOk = (extra = {}) => async (url, init) => {
+  if (String(url).endsWith("/api/auth/exchange")) return new Response(JSON.stringify({ api_key: "bc_minted", handle: "alice@bc", agent_name: "Codex", ...extra }), { status: 200 });
+  const m = JSON.parse(init.body);
+  return new Response(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { tools: [{ name: "bc_check_inbox" }], auth: init.headers.authorization } }), { status: 200 });
+};
+
+test("no token: the server still comes up — initialize, ping and tools/list are answered locally, nothing forwarded", async () => {
   let called = false;
   const h = harness({ token: "", fetchImpl: async () => { called = true; return new Response("{}"); } });
-  await h.send({ jsonrpc: "2.0", id: 7, method: "initialize" });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } });
+  await h.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+  await h.send({ jsonrpc: "2.0", id: 2, method: "ping" });
+  await h.send({ jsonrpc: "2.0", id: 3, method: "tools/list" });
+  await h.send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "bc_check_inbox", arguments: {} } });
   assert.equal(called, false);
-  assert.match(h.parsed()[0].error.message, /No Back Channel token/);
+  const [init, ping, list, call] = h.parsed();
+  assert.equal(h.parsed().length, 4, "the notification gets no reply line");
+  assert.equal(init.result.protocolVersion, "2025-03-26", "echoes a supported requested version");
+  assert.deepEqual(init.result.capabilities, { tools: { listChanged: true } });
+  assert.match(init.result.instructions, /bc_connect/);
+  assert.deepEqual(ping.result, {});
+  assert.deepEqual(list.result.tools.map((t) => t.name), ["bc_connect"]);
+  assert.equal(call.result.isError, true);
+  assert.match(call.result.content[0].text, /isn't connected.*bc_connect/s);
+  assert.match(call.result.content[0].text, /Never ask for the bc_ key/);
+});
+
+test("no token: an unsubstituted host placeholder counts as no token", async () => {
+  assert.equal(cleanConfiguredToken("${user_config.token}"), "");
+  assert.equal(cleanConfiguredToken("  bc_real  "), "bc_real");
+  assert.equal(cleanConfiguredToken(undefined), "");
+  const h = harness({ token: "${user_config.token}", fetchImpl: async () => { throw new Error("must not forward a placeholder as a bearer token"); } });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  assert.deepEqual(h.parsed()[0].result.tools.map((t) => t.name), ["bc_connect"]);
+});
+
+test("bc_connect: redeems the code, persists the key, announces list_changed AFTER the reply, then forwards with the new key", async () => {
+  const h = harness({ token: "", fetchImpl: exchangeOk() });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_connect", arguments: { code: " bcx-ab12-cd34 " } } });
+  const [reply, note] = h.parsed();
+  assert.equal(reply.id, 1);
+  assert.equal(reply.result.isError, false);
+  const body = JSON.parse(reply.result.content[0].text);
+  assert.deepEqual([body.connected, body.handle, body.agent_name, body.persisted], [true, "alice@bc", "Codex", true]);
+  assert.equal(reply.result.content[0].text.includes("bc_minted"), false, "the key itself is never shown to the model");
+  assert.deepEqual(note, { jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+  assert.equal(h.keystore._peek().__resolved_bc_token__.bcToken, "bc_minted");
+
+  await h.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  const list = h.parsed()[2];
+  assert.equal(list.result.auth, "Bearer bc_minted");
+  assert.deepEqual(list.result.tools.map((t) => t.name), ["bc_check_inbox"], "once connected the catalog is the server's");
+});
+
+test("bc_connect: malformed code and a spent code both fail plainly, stay unconnected, and announce nothing", async () => {
+  const h = harness({ token: "", fetchImpl: async () => new Response(JSON.stringify({ error: "invalid_or_expired_code" }), { status: 410 }) });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_connect", arguments: { code: "bc_somekey" } } });
+  await h.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "bc_connect", arguments: { code: "BCX-DEAD-BEEF" } } });
+  await h.send({ jsonrpc: "2.0", id: 3, method: "tools/list" });
+  const [bad, spent, list] = h.parsed();
+  assert.equal(h.parsed().length, 3, "no list_changed notification on failure");
+  assert.match(bad.result.content[0].text, /doesn't look like a connect code/);
+  assert.equal(spent.result.isError, true);
+  assert.match(spent.result.content[0].text, /already been used, expired, or doesn't exist/);
+  assert.deepEqual(list.result.tools.map((t) => t.name), ["bc_connect"]);
+});
+
+test("bc_connect: a key that can't be saved still connects this session and says it won't persist", async () => {
+  const keystore = { load: () => ({}), save: () => { throw new Error("EACCES"); } };
+  const h = harness({ token: "", fetchImpl: exchangeOk(), keystore });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_connect", arguments: { code: "BCX-AB12-CD34" } } });
+  const body = JSON.parse(h.parsed()[0].result.content[0].text);
+  assert.equal(body.connected, true);
+  assert.equal(body.persisted, false);
+  assert.match(body.note, /this session only/);
+  await h.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  assert.equal(h.parsed().at(-1).result.auth, "Bearer bc_minted");
+});
+
+test("no token configured: adopts the installer's ~/.bc/token, and a key stored by an earlier bc_connect wins over it", async () => {
+  const fetchImpl = async (_u, init) => new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { auth: init.headers.authorization } }), { status: 200 });
+  const fromFile = harness({ token: "", fetchImpl, readTokenFile: () => "bc_from_cli\n" });
+  await fromFile.send({ jsonrpc: "2.0", id: 1, method: "ping" });
+  assert.equal(fromFile.parsed()[0].result.auth, "Bearer bc_from_cli");
+
+  const keystore = memoryKeystore();
+  keystore.save({ __resolved_bc_token__: { bcToken: "bc_from_connect", updatedAt: Date.now() } });
+  const both = harness({ token: "", fetchImpl, keystore, readTokenFile: () => "bc_from_cli" });
+  await both.send({ jsonrpc: "2.0", id: 1, method: "ping" });
+  assert.equal(both.parsed()[0].result.auth, "Bearer bc_from_connect");
+
+  // A configured token always wins and the fallbacks are never consulted.
+  const configured = harness({ token: "bc_configured", fetchImpl, keystore, readTokenFile: () => { throw new Error("must not read the token file"); } });
+  await configured.send({ jsonrpc: "2.0", id: 1, method: "ping" });
+  assert.equal(configured.parsed()[0].result.auth, "Bearer bc_configured");
+});
+
+test("pairing from another terminal mid-session takes effect on the next call, no restart", async () => {
+  let onDisk = "";
+  const h = harness({ token: "", readTokenFile: () => onDisk, fetchImpl: async (_u, init) => new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { auth: init.headers.authorization } }), { status: 200 }) });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  assert.deepEqual(h.parsed()[0].result.tools.map((t) => t.name), ["bc_connect"]);
+  onDisk = "bc_just_paired";
+  await h.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  assert.equal(h.parsed()[1].result.auth, "Bearer bc_just_paired");
+});
+
+test("a fallback key the server refuses (401) is dropped: back to offering bc_connect, not replaying the dead key", async () => {
+  let forwards = 0;
+  const h = harness({ token: "", readTokenFile: () => "bc_revoked", fetchImpl: async () => { forwards++; return new Response('{"error":"unauthorized"}', { status: 401 }); } });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_check_inbox", arguments: {} } });
+  const [err, note] = h.parsed();
+  assert.equal(err.error.code, -32001);
+  assert.match(err.error.message, /rejected the saved key.*bc_connect/s);
+  assert.deepEqual(note, { jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+  await h.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  assert.deepEqual(h.parsed()[2].result.tools.map((t) => t.name), ["bc_connect"]);
+  assert.equal(forwards, 1, "the refused key is not tried again");
+});
+
+test("a CONFIGURED token is unaffected: bc_connect is not intercepted and a 401 keeps the settings hint", async () => {
+  const seen = [];
+  const h = harness({ token: "bc_configured", fetchImpl: async (_u, init) => { seen.push(JSON.parse(init.body)); return new Response('{"error":"unauthorized"}', { status: 401 }); } });
+  await h.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "bc_connect", arguments: { code: "BCX-AB12-CD34" } } });
+  assert.equal(seen[0].params.name, "bc_connect", "forwarded like any other call — the extension's settings own the token");
+  assert.match(h.parsed()[0].error.message, /update the extension settings/);
+  assert.equal(h.parsed().length, 1);
 });
 
 test("garbage input line -> -32700, does not kill the bridge", async () => {

@@ -36,6 +36,77 @@ and [`server/crypto.js`](../apps/broker/connector/server/crypto.js) (the
 crypto). Unit tests live alongside each file as `*.test.mjs` (`node --test`
 from `apps/broker/`).
 
+## One bridge, three hosts
+
+The same `server/` runs under three hosts. Only the manifest that starts it
+differs, and all of them live in `apps/broker/connector/` so there is no copy
+to drift:
+
+| Host | Manifest | How the token arrives |
+|---|---|---|
+| Claude Desktop extension (`.mcpb`) | `manifest.json` | `user_config.token` in the extension settings (required) |
+| Claude Code plugin | `.claude-plugin/plugin.json` | `userConfig.token`, prompted at enable time (optional, stored in the OS credential store) |
+| Codex plugin | `.codex-plugin/plugin.json` + `.codex-mcp.json` | none at install — Codex has no secret prompt |
+
+The repo root is the marketplace for both plugin hosts:
+`.claude-plugin/marketplace.json` (Claude Code) and
+`.agents/plugins/marketplace.json` (Codex), each pointing at
+`./apps/broker/connector`. Install commands are in the
+[README](../README.md#or-install-it-as-a-plugin-claude-code-codex). Both plugins
+also carry `skills/back-channel-connector/SKILL.md`, a short tools-first skill.
+It is deliberately **not** named `back-channel`: that is the REST skill
+`backchannel-cli` installs, which teaches an agent to do the HTTP calls and the
+encryption by hand. The two keep separate encryption state, and mixing them on
+one thread leaves the peer unable to decrypt.
+
+Two details that are easy to undo by accident:
+
+- **The Codex MCP file is `.codex-mcp.json`, not `.mcp.json`.** Claude Code
+  auto-loads a `.mcp.json` at the plugin root. The Codex entry uses a relative
+  entry point with `cwd: "."`, which Claude would resolve against the session
+  directory and fail to start — as a second, broken `back-channel` server.
+- **All four versions move together** (`manifest.json`, `package.json`, both
+  `plugin.json` files, and the skill). `server/packaging.test.mjs` fails the
+  build if they disagree or if a manifest points at a file that isn't there.
+
+### Connecting without a settings field: `bc_connect`
+
+A token is resolved in this order:
+
+1. The configured value (`BC_TOKEN`) — a `bc_…` key or a `BCX-…` code. A host
+   that never filled the option in may pass its own placeholder
+   (`${user_config.token}`); that counts as empty.
+2. A key stored by an earlier `bc_connect` (in the keystore file).
+3. The key `npx backchannel-cli --pair` stored at `~/.bc/token`
+   (`BC_TOKEN_FILE` overrides the path).
+
+With none of those, the bridge **still starts**. It answers `initialize`,
+`ping` and `tools/list` itself and offers exactly one tool, `bc_connect`, which
+takes a one-time `BCX-XXXX-XXXX` code, redeems it, stores the key with
+owner-only permissions, and emits `notifications/tools/list_changed` so the
+host loads the real catalog. The key is never returned to the model. Before
+this, a missing token failed `initialize` and the host showed a dead
+connector with no hint of what to do — survivable for the Desktop extension,
+where the field is required, and a dead end for a host with no field at all.
+
+While unconnected the bridge re-checks sources 2 and 3 on every request, so
+pairing from another terminal takes effect on the next call. If the server
+rejects a key the bridge picked up itself (revoked), it forgets that key and
+goes back to offering `bc_connect` instead of replaying it. A *configured*
+token is never overridden: with one set, `bc_connect` is not intercepted and a
+401 still points at the settings field.
+
+### What is not here yet
+
+- **Listing in the Anthropic or OpenAI plugin directories.** Both want a
+  remote MCP endpoint with OAuth rather than a bearer key, and OpenAI's does
+  not accept local stdio servers. `/api/mcp` is bearer-only today, so both
+  plugins install from this repo's marketplace instead.
+- **Push delivery.** Claude Code channels (research preview; a plugin outside
+  Anthropic's allowlist needs a development flag) and a `SessionStart` unread
+  check are both viable on this bridge. Neither is wired up; inbox checks stay
+  on demand.
+
 ## Connecting: two paths, same field
 
 Open the extension's settings in Claude Desktop and paste **one** value into
