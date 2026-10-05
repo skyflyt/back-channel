@@ -142,3 +142,15 @@ test("no thread id at all: one actionable INVALID_PARAMS error naming thread_id 
   assert.deepEqual(pollBodies, []);
   assert.deepEqual(endedIds, [], 'bc_end_session must never be dispatched with the literal id "undefined"');
 });
+
+test("unauthenticated: 401 carries WWW-Authenticate pointing at the OAuth protected-resource metadata, and keeps the bc_ key hint", async () => {
+  const { POST } = await import("@/app/api/mcp/route");
+  const res = await POST(
+    new Request("https://back-channel.app/api/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }) as never,
+  );
+  assert.equal(res.status, 401);
+  assert.equal(res.headers.get("www-authenticate"), 'Bearer resource_metadata="https://back-channel.app/.well-known/oauth-protected-resource"');
+  const json = await res.json();
+  assert.equal(json.error.code, -32001);
+  assert.match(json.error.message, /Bearer <bc_ token>/);
+});

@@ -14,6 +14,7 @@ import {
   INVALID_PARAMS,
 } from "@/lib/mcp/protocol.mjs";
 import { TOOLS, getTool, normalizeToolArgs, validateToolArgs } from "@/lib/mcp/tools.mjs";
+import { wwwAuthenticate } from "@/lib/oauth.mjs";
 
 // The wrapped route handlers — tools dispatch to these IN-PROCESS (no HTTP
 // round-trip, no duplicated logic). Each keeps enforcing its own participant/
@@ -281,7 +282,14 @@ export async function POST(req: NextRequest) {
   // a JSON-RPC error alone) so clients mark the credential bad, not the server.
   const ctx = await getAuthContext(req.headers.get("authorization"));
   if (!ctx) {
-    return json(rpcError(null, -32001, "Unauthorized: send Authorization: Bearer <bc_ token> (mint one in Settings → Connect an agent)"), 401);
+    // WWW-Authenticate points an OAuth-capable MCP client at the metadata that
+    // starts the authorization flow (RFC 9728). Clients that paste a bc_ key
+    // ignore it; the JSON-RPC error text is still for them.
+    const origin = (process.env.PUBLIC_APP_URL ?? req.nextUrl.origin).replace(/\/$/, "");
+    return NextResponse.json(
+      rpcError(null, -32001, "Unauthorized: send Authorization: Bearer <bc_ token> (mint one in Settings → Connect an agent)"),
+      { status: 401, headers: { "WWW-Authenticate": wwwAuthenticate(origin) } },
+    );
   }
 
   const rl = rateLimit("mcp", ctx.account.id, 120, 60_000);

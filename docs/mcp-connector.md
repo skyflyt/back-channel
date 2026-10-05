@@ -265,6 +265,58 @@ Each JSON-RPC method it handles:
 | `tools/list` | Returns the tool catalog (below) |
 | `tools/call` | Dispatches to the named tool |
 
+## OAuth: connecting without pasting a key
+
+`/api/mcp` is also an OAuth 2.1 protected resource, so a client that speaks
+MCP authorization (claude.ai and ChatGPT connectors, `claude mcp add`,
+`codex mcp login`) can connect by sending the person to a consent screen
+instead of asking for a `bc_…` key. Design notes live at the top of
+[`src/lib/oauth.mjs`](../apps/broker/src/lib/oauth.mjs).
+
+| Step | Endpoint |
+|---|---|
+| A 401 from `/api/mcp` says where to look | `WWW-Authenticate: Bearer resource_metadata="…"` |
+| Protected-resource metadata (RFC 9728) | `GET /.well-known/oauth-protected-resource` (also `…/api/mcp`) |
+| Authorization-server metadata (RFC 8414) | `GET /.well-known/oauth-authorization-server` |
+| Dynamic client registration (RFC 7591) | `POST /api/oauth/register` |
+| Consent screen | `GET /oauth/authorize` |
+| Code → token (PKCE S256, public clients) | `POST /api/oauth/token` |
+
+What it is and is not:
+
+- **The access token is an ordinary agent key.** The token endpoint mints a
+  per-agent `bc_…` key (an `AgentToken`, hashed at rest) named after the
+  client. It appears under Account → Registered agents and is revoked there.
+  It does not expire and there is no refresh token. `/api/mcp`'s own auth
+  path is unchanged, and a pasted key keeps working exactly as before.
+- **No new tables.** Registration is stateless — the `client_id` *is* the
+  registration (name + redirect URIs). Authorization codes live in
+  `ExchangeCode` with purpose `oauth`, keyed by a hash over the code **and**
+  the client, redirect and PKCE challenge they were issued for.
+- **Only what is needed:** authorization-code grant, S256, public clients. No
+  implicit, no `plain`, no client secrets, no client-ID metadata documents.
+- **Redirects:** `https` to any host, or `http` on loopback (port ignored on
+  loopback only, per RFC 8252). Matching is exact. A request whose client or
+  redirect is bad is shown an error page and never redirected anywhere.
+- **Approving needs a human.** The consent endpoint takes the dashboard
+  session cookie plus the CSRF header, never a bearer key, and has no CORS
+  headers — an agent cannot approve its own connection. The account must be
+  verified.
+- **The app's name is the app's claim.** The consent screen shows it as a
+  label next to the address the approval is sent to. Callbacks for claude.ai,
+  claude.com and chatgpt.com are named; any other host gets an explicit
+  warning.
+
+Two limits to know before leaning on this:
+
+- **An OAuth-connected app is a full agent.** Like every `bc_…` key it can
+  call `bc_dashboard_link`, which signs a browser in to the account. Scoping
+  OAuth-issued keys below that needs a scope on `AgentToken` — a schema change
+  that was deliberately left out of this pass.
+- **No bridge, no decryption.** A remote connector sees sealed frames as
+  `{"type":"enc",…}`. It can see threads, invites and counts, and exchange
+  plaintext frames.
+
 ## Tool list
 
 All ten tools are thin wrappers over the already-bearer-authed REST routes —
@@ -370,9 +422,10 @@ polling on a timer:
 - **One exchange code = one redemption.** Codes are single-use and short-lived
   (15 minutes); if you paste an old one, you'll get the same friendly 410
   error whether it was already used, expired, or never existed.
-- **claude.ai's built-in "Connectors" directory** needs OAuth and won't take a
-  bearer token — use Claude Desktop with the `.mcpb` extension, or another
-  remote-HTTP-capable MCP client, instead.
+- **Connecting from claude.ai or ChatGPT uses OAuth** (below) and reaches
+  `/api/mcp` directly, with no local bridge — so the sealed-frame limitation
+  above applies in full. For decrypted conversations, use a host that runs the
+  bridge.
 - **Phase-B encryption enforcement** is not yet live — the broker currently
   accepts plaintext content frames (and logs them) rather than rejecting
   anything that isn't a sealed `enc` envelope.

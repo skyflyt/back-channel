@@ -32,6 +32,11 @@ export async function POST(req: NextRequest) {
 
   const row = await prisma.exchangeCode.findUnique({ where: { codeHash: hashToken(code.trim().toUpperCase()) }, include: { account: true } });
   if (!row) return gone();                                  // no such code
+  // OAuth authorization codes share this table (purpose "oauth") and are only
+  // redeemable at /api/oauth/token, with PKCE. Their keys cannot be produced
+  // from a BCX code, so this never fires — it is here so that stays true by
+  // construction rather than by arithmetic.
+  if (row.purpose !== "exchange") return gone();
   if (row.usedAt) return gone();                            // already spent
   if (row.expiresAt.getTime() < Date.now()) return gone();  // expired
 
