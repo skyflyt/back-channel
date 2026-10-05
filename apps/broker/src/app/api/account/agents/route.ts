@@ -25,6 +25,7 @@ export async function GET(req: NextRequest) {
       id: a.id,
       name: a.name,
       runtime_type: a.runtimeType,
+      scope: a.scope, // "full" | "connector" (an app connected through OAuth) — src/lib/agent-scope.ts
       created_at: a.createdAt.toISOString(),
       last_used_at: a.lastUsedAt?.toISOString() ?? null,
       revoked_at: a.revokedAt?.toISOString() ?? null,

@@ -123,11 +123,11 @@ async function register(redirect_uris = [CLAUDE_CB], client_name = "Claude") {
 }
 async function authParams(over: Record<string, string | undefined> = {}) {
   const { body } = await register();
-  const p: Record<string, string | undefined> = { response_type: "code", client_id: body.client_id, redirect_uri: CLAUDE_CB, code_challenge: CHALLENGE, code_challenge_method: "S256", state: "st4te", ...over };
+  const p: Record<string, string | undefined> = { response_type: "code", client_id: body.client_id, redirect_uri: CLAUDE_CB, code_challenge: CHALLENGE, code_challenge_method: "S256", state: "st4te", resource: `${ORIGIN}/api/mcp`, ...over };
   return Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) as Record<string, string>;
 }
-async function approve(params: Record<string, string>, headers: Record<string, string> = signedIn) {
-  const res = await (await routes.consent()).POST(postJson("/api/oauth/consent", { params, decision: "approve" }, headers));
+async function approve(params: Record<string, string>, headers: Record<string, string> = signedIn, handle: string | null = "tester@bc") {
+  const res = await (await routes.consent()).POST(postJson("/api/oauth/consent", { params, decision: "approve", handle }, headers));
   return { res, body: await res.json() };
 }
 /** Approve and pull the code out of the redirect, the way a client would. */
@@ -233,6 +233,7 @@ test("consent approve needs a signed-in, VERIFIED human and the CSRF header — 
   assert.equal((await approve(params)).res.status, 429);
   assert.equal(Object.keys(exchangeCodes).length, 0, "none of those minted a code");
 
+  limited = false;
   const bad = await (await routes.consent()).POST(postJson("/api/oauth/consent", { params, decision: "maybe" }, signedIn));
   assert.equal(bad.status, 400);
 });
@@ -252,7 +253,7 @@ test("consent approve: redirects to the registered URI with code + state + iss; 
   const [[key, row]] = Object.entries(exchangeCodes) as [string, any][];
   assert.equal(row.purpose, "oauth");
   assert.equal(row.accountId, "a1");
-  assert.equal(row.agentName, "Claude");
+  assert.equal(row.agentName, "Claude (via claude.ai)", "the listed name carries where the approval went");
   assert.notEqual(key, code);
   assert.notEqual(key, sha(code), "the stored key is not a bare hash of the code — it is bound to the request");
   assert.equal(JSON.stringify(exchangeCodes).includes(code), false, "the raw code is never stored");
@@ -282,13 +283,13 @@ test("token: the full flow issues a bc_ agent key that authenticates, named afte
   assert.equal(res.headers.get("access-control-allow-origin"), "*");
   assert.deepEqual(Object.keys(body).sort(), ["access_token", "scope", "token_type"]);
   assert.equal(body.token_type, "Bearer");
-  assert.match(body.access_token, /^bc_/);
+  assert.match(body.access_token, /^bco_/, "connector keys have their own prefix, which pre-scope code rejects");
 
   // It is a real agent key: the REAL getAuthContext accepts it.
   const { getAuthContext } = await import("@/lib/auth");
   const ctx = await getAuthContext(`Bearer ${body.access_token}`);
   assert.equal(ctx?.account.id, "a1");
-  assert.deepEqual(agentTokens.map((t) => [t.name, t.runtimeType, t.accountId, t.scope]), [["Claude", "other", "a1", "connector"]]);
+  assert.deepEqual(agentTokens.map((t) => [t.name, t.runtimeType, t.accountId, t.scope]), [["Claude (via claude.ai)", "other", "a1", "connector"]]);
   assert.equal(ctx?.scope, "connector");
   assert.equal(agentTokens[0].keyHash, sha(body.access_token), "hash at rest, like every other agent key");
   assert.equal(JSON.stringify([agentTokens, audits, exchangeCodes]).includes(body.access_token), false, "the raw key is stored and logged nowhere");
@@ -358,11 +359,12 @@ test("token: JSON bodies work; unknown client and other grant types are refused;
 test("token: a loopback client may come back on a different port than it registered, as long as it uses the same one for both steps", async () => {
   const reg = (await register(["http://localhost:1111/callback"], "A CLI")).body;
   const redirect_uri = "http://localhost:53124/callback";
-  const params = { response_type: "code", client_id: reg.client_id, redirect_uri, code_challenge: CHALLENGE, code_challenge_method: "S256", state: "s" };
+  const params = { response_type: "code", client_id: reg.client_id, redirect_uri, code_challenge: CHALLENGE, code_challenge_method: "S256", state: "s", resource: ORIGIN };
   const code = await obtainCode(params);
   assert.equal(audits[0].detail.destination_kind, "loopback");
   assert.deepEqual((await redeem({ code, client_id: reg.client_id, redirect_uri: "http://localhost:9/callback", code_verifier: VERIFIER })).body, { error: "invalid_grant" }, "not a different port at the token step");
   assert.equal((await redeem({ code, client_id: reg.client_id, redirect_uri, code_verifier: VERIFIER })).res.status, 200);
+  assert.equal(agentTokens[0].name, "A CLI (via this computer)");
 });
 
 // ── The two code types stay apart ───────────────────────────────────────────
@@ -421,4 +423,93 @@ test("a connector key cannot mint a dashboard sign-in link; a full key still can
   assert.equal(viewTokens.length, 1);
 
   assert.equal((await link("bc_not_a_key")).status, 401);
+});
+
+// ── Review fixes (2026-10-05) ───────────────────────────────────────────────
+
+test("approve binds to the account the screen showed: a swapped session or a missing handle is refused, and mints nothing", async () => {
+  const params = await authParams();
+  // Another account's sign-in link was opened in a different tab: same browser, new session, same CSRF cookie.
+  accounts.a2 = { id: "a2", handle: "attacker@bc", email: "x@example.com", emailVerifiedAt: new Date() };
+  sessionCookies[sha(COOKIE)].accountId = "a2";
+  const swapped = await approve(params); // the page still believes it is tester@bc
+  assert.equal(swapped.res.status, 409);
+  assert.equal(swapped.body.error, "account_changed");
+  assert.equal(swapped.body.redirect_to, undefined);
+  for (const handle of [null, "", "TESTER@bc"]) assert.equal((await approve(params, signedIn, handle)).res.status, 409, String(handle));
+  assert.equal(Object.keys(exchangeCodes).length, 0);
+  // Approving as the account actually shown works.
+  assert.equal((await approve(params, signedIn, "attacker@bc")).res.status, 200);
+  assert.equal(Object.values(exchangeCodes)[0].accountId, "a2");
+});
+
+test("a malformed request aimed at an unknown site is 'invalid' — the consent endpoint never hands the page a redirect to it", async () => {
+  const forged = "bcc_" + Buffer.from(JSON.stringify({ v: 1, n: "x", r: ["https://evil.example/phish"] })).toString("base64url");
+  const g = await (await (await routes.consent()).GET(get(`/api/oauth/consent?client_id=${forged}`))).json();
+  assert.equal(g.status, "invalid");
+  assert.equal(g.redirect_to, undefined);
+  const p = await (await (await routes.consent()).POST(postJson("/api/oauth/consent", { params: { client_id: forged }, decision: "approve", handle: "tester@bc" }, signedIn))).json();
+  assert.equal(p.status, "invalid");
+  assert.equal(p.redirect_to, undefined);
+});
+
+test("authorize without `resource`, or naming someone else's server, is refused before any code exists", async () => {
+  for (const resource of [undefined, "https://evil.example/mcp"]) {
+    const { body } = await approve(await authParams({ resource }));
+    assert.equal(new URL(body.redirect_to).searchParams.get("error"), "invalid_target", String(resource));
+  }
+  assert.equal(Object.keys(exchangeCodes).length, 0);
+});
+
+test("token: client_id may arrive as the HTTP Basic username; a `resource` that is not this server is invalid_target and burns nothing", async () => {
+  const params = await authParams();
+  const code = await obtainCode(params);
+  const form = { grant_type: "authorization_code", code, redirect_uri: CLAUDE_CB, code_verifier: VERIFIER };
+  const wrong = await (await routes.token()).POST(postForm("/api/oauth/token", { ...form, client_id: params.client_id, resource: "https://evil.example/mcp" }));
+  assert.equal(wrong.status, 400);
+  assert.equal((await wrong.json()).error, "invalid_target");
+  assert.equal(agentTokens.length, 0);
+
+  const basic = "Basic " + Buffer.from(`${encodeURIComponent(params.client_id)}:`).toString("base64");
+  const res = await (await routes.token()).POST(new NextRequest(`${ORIGIN}/api/oauth/token`, {
+    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", authorization: basic }, body: new URLSearchParams({ ...form, resource: `${ORIGIN}/api/mcp` }).toString(),
+  }));
+  assert.equal(res.status, 200);
+});
+
+test("oversized bodies are refused before parsing on register, token and consent", async () => {
+  const big = "x".repeat(20_000);
+  assert.equal((await (await routes.register()).POST(postJson("/api/oauth/register", { client_name: big, redirect_uris: [CLAUDE_CB] }))).status, 413);
+  assert.equal((await (await routes.token()).POST(postForm("/api/oauth/token", { grant_type: "authorization_code", code: big }))).status, 413);
+  assert.equal((await (await routes.consent()).POST(postJson("/api/oauth/consent", { params: { junk: big }, decision: "deny" }))).status, 413);
+});
+
+test("consent is rate-limited per IP before it does anything, signed in or not", async () => {
+  limited = true;
+  const qs = new URLSearchParams(await authParams().catch(() => ({}))).toString();
+  assert.equal((await (await routes.consent()).GET(get(`/api/oauth/consent?${qs}`))).status, 429);
+  assert.equal((await (await routes.consent()).POST(postJson("/api/oauth/consent", { params: {}, decision: "deny" }))).status, 429);
+});
+
+test("scope is the default wall: getAccountFromAuth is closed to connector keys, only the any-agent variants accept them", async () => {
+  const params = await authParams();
+  const code = await obtainCode(params);
+  const { body } = await redeem({ code, client_id: params.client_id, redirect_uri: CLAUDE_CB, code_verifier: VERIFIER });
+  const auth = await import("@/lib/auth");
+  const connector = `Bearer ${body.access_token}`;
+  assert.equal(await auth.getAccountFromAuth(connector), null, "the default helper — what ~30 routes use — refuses it");
+  assert.equal(await auth.getAccountDual(connector, null), null);
+  assert.equal((await auth.getAccountFromAnyAgent(connector))?.id, "a1");
+  assert.equal((await auth.getAccountDualAnyAgent(connector, null))?.id, "a1");
+
+  // A connector-prefixed key is never full, even if its row says so (column dropped and re-added, say).
+  agentTokens[0].scope = "full";
+  assert.equal((await auth.getAuthContext(connector))?.scope, "connector");
+  assert.equal(await auth.getAccountFromAuth(connector), null);
+
+  // A full key passes both.
+  exchangeCodes[sha("BCX-AAAA-BBBB")] = { codeHash: sha("BCX-AAAA-BBBB"), accountId: "a1", purpose: "exchange", agentName: "My laptop", runtimeType: "other", usedAt: null, expiresAt: new Date(Date.now() + 60_000) };
+  const full = await (await (await routes.exchange()).POST(postJson("/api/auth/exchange", { code: "BCX-AAAA-BBBB" }))).json();
+  assert.equal((await auth.getAccountFromAuth(`Bearer ${full.api_key}`))?.id, "a1");
+  assert.equal((await auth.getAccountFromAnyAgent(`Bearer ${full.api_key}`))?.id, "a1");
 });

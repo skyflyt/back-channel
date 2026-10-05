@@ -44,13 +44,17 @@ const MAX_CLIENT_NAME_LENGTH = 60;
 const MAX_CLIENT_ID_LENGTH = 4000;
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-// Callback hosts of the first-party apps this was built for. Being on this
-// list changes one thing: the consent screen says the destination is a known
-// app instead of warning that it is not. It grants nothing else.
+// The exact OAuth callback URLs of the first-party apps this was built for.
+// Exact, not by hostname: those sites host plenty of other paths, and "some
+// URL on claude.ai" is not the same promise as "Claude's MCP callback".
+// Being on this list changes two things: the consent screen names the app
+// instead of warning about an unknown site, and a malformed request may be
+// bounced straight back to it with an error (see validateAuthorizeRequest).
+// It grants nothing else.
 const KNOWN_DESTINATIONS = new Map([
-  ["claude.ai", "Claude"],
-  ["claude.com", "Claude"],
-  ["chatgpt.com", "ChatGPT"],
+  ["https://claude.ai/api/mcp/auth_callback", "Claude"],
+  ["https://claude.com/api/mcp/auth_callback", "Claude"],
+  ["https://chatgpt.com/connector_platform_oauth_redirect", "ChatGPT"],
 ]);
 
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
@@ -87,7 +91,7 @@ export function authorizationServerMetadata(origin) {
 
 /** The WWW-Authenticate value a 401 from /api/mcp carries so a client can find the above. */
 export function wwwAuthenticate(origin) {
-  return `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`;
+  return `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource${MCP_PATH}"`;
 }
 
 // ── Redirect URIs ───────────────────────────────────────────────────────────
@@ -142,8 +146,8 @@ export function describeDestination(redirectUri) {
   if (!parsed.ok) return { kind: "invalid", host: "", label: "" };
   const u = new URL(redirectUri);
   if (parsed.loopback) return { kind: "loopback", host: u.host, label: "an app running on this computer" };
-  const known = KNOWN_DESTINATIONS.get(u.hostname);
-  if (known) return { kind: "known", host: u.hostname, label: known };
+  const known = KNOWN_DESTINATIONS.get(`${u.origin}${u.pathname}`);
+  if (known && !u.search) return { kind: "known", host: u.hostname, label: known };
   return { kind: "unknown", host: u.hostname, label: u.hostname };
 }
 
@@ -161,10 +165,12 @@ export function runtimeTypeFor(redirectUri) {
 /** A display name is shown to the user on the consent screen: plain text, one line, short. */
 export function cleanClientName(value) {
   const s = typeof value === "string" ? value : "";
-  // Letters, digits and ordinary punctuation only. Dropping everything else
-  // removes control and bidirectional-override characters, which is what would
-  // let a name render as something other than what it is.
-  const plain = s.replace(/[^\p{L}\p{N} .,_()&+'-]/gu, " ").replace(/\s+/g, " ").trim();
+  // ASCII letters, digits and a little punctuation only. That removes control
+  // and bidirectional-override characters, and also the look-alike letters of
+  // other scripts (a Cyrillic "С" in "Сlaude") and parentheses (which are how a
+  // name gives itself a badge: "Claude (verified)"). An app with a non-Latin
+  // name shows up abbreviated; that is the cheaper mistake.
+  const plain = s.replace(/[^A-Za-z0-9 ._&+'-]/g, " ").replace(/\s+/g, " ").trim();
   return plain.slice(0, MAX_CLIENT_NAME_LENGTH) || "An MCP client";
 }
 
@@ -240,6 +246,36 @@ export function oauthCodeKey({ code, clientId, redirectUri, codeChallenge }) {
   return createHash("sha256").update(JSON.stringify(["bc-oauth-code-v1", code, clientId, redirectUri, codeChallenge])).digest("hex");
 }
 
+// ── Resource indicator (RFC 8707) ───────────────────────────────────────────
+
+/**
+ * Is `resource` this server's MCP endpoint? Compared as URLs, so host case and
+ * an explicit default port do not matter; the path must be the MCP path (or
+ * empty — the bare origin), with or without a trailing slash.
+ *
+ * Why the caller must send it at all: an MCP client discovers its
+ * authorization server from the MCP server it is connecting to. A hostile MCP
+ * server can name THIS server as its authorization server. The client then
+ * runs a perfectly valid flow here, the user sees an honest consent screen for
+ * a real app, and the client carries the resulting key to the hostile server.
+ * The only thing that distinguishes that flow from a real one is which
+ * resource the client says the token is for — so a request that does not say
+ * is refused rather than assumed to mean us.
+ */
+export function resourceIsThisServer(resource, origin) {
+  if (typeof resource !== "string" || !resource) return false;
+  let r, o;
+  try {
+    r = new URL(resource);
+    o = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (r.origin !== o.origin || r.search || r.hash || r.username || r.password) return false;
+  const path = r.pathname.replace(/\/$/, "");
+  return path === "" || path === MCP_PATH;
+}
+
 // ── The authorization request ───────────────────────────────────────────────
 
 export function redirectWith(redirectUri, params) {
@@ -251,8 +287,9 @@ export function redirectWith(redirectUri, params) {
 /**
  * Validate /oauth/authorize's query. Three outcomes:
  *  - { ok: true, … }            show the consent screen
- *  - { ok: false, redirect }    the client and redirect are good, the request
- *                               is not: send the error back to the client
+ *  - { ok: false, redirect }    the redirect is a known app or this computer
+ *                               and the request is malformed: send the error
+ *                               back to the client
  *  - { ok: false, fatal }       the client or redirect itself is bad. NEVER
  *                               redirect — that is how an authorization server
  *                               becomes an open redirector. Show the reason.
@@ -277,19 +314,28 @@ export function validateAuthorizeRequest(q, origin) {
   }
 
   const state = get("state");
-  /** @returns {AuthorizeCheck} */
-  const fail = (error, error_description) => ({ ok: false, redirect: redirectWith(redirectUri, { error, error_description, state, iss: origin }) });
+  const destination = describeDestination(redirectUri);
+  /**
+   * A malformed request is reported back to the client's redirect — but only
+   * when that redirect is a known app or this computer. The client_id is
+   * self-asserted, so "registered" means nothing by itself: without this, a
+   * link to /oauth/authorize carrying a made-up client would bounce the visitor
+   * to any site, with no click. For anywhere else the error is shown here.
+   * @returns {AuthorizeCheck}
+   */
+  const fail = (error, error_description) =>
+    destination.kind === "known" || destination.kind === "loopback"
+      ? { ok: false, redirect: redirectWith(redirectUri, { error, error_description, state, iss: origin }) }
+      : { ok: false, fatal: `This connection request is incomplete (${error_description}). Start again from the app you were connecting.` };
 
   if (get("response_type") !== "code") return fail("unsupported_response_type", "only response_type=code is supported");
   if (get("code_challenge_method") !== "S256") return fail("invalid_request", "PKCE with code_challenge_method=S256 is required");
   if (!validCodeChallenge(get("code_challenge"))) return fail("invalid_request", "code_challenge is missing or malformed");
   if (state.length > 1024) return fail("invalid_request", "state is too long");
 
-  // RFC 8707: if the client names the resource it wants the token for, it must be this one.
-  const resource = get("resource");
-  if (resource && resource.replace(/\/$/, "") !== `${origin}${MCP_PATH}` && resource.replace(/\/$/, "") !== origin) {
-    return fail("invalid_target", "this server only issues tokens for its own MCP endpoint");
-  }
+  // RFC 8707: the client must say which resource the token is for, and it must be this one.
+  if (!get("resource")) return fail("invalid_target", "the resource parameter is required");
+  if (!resourceIsThisServer(get("resource"), origin)) return fail("invalid_target", "this server only issues tokens for its own MCP endpoint");
 
-  return { ok: true, client, redirectUri, state, codeChallenge: get("code_challenge"), destination: describeDestination(redirectUri) };
+  return { ok: true, client, redirectUri, state, codeChallenge: get("code_challenge"), destination };
 }

@@ -297,30 +297,54 @@ What it is and is not:
   implicit, no `plain`, no client secrets, no client-ID metadata documents.
 - **Redirects:** `https` to any host, or `http` on loopback (port ignored on
   loopback only, per RFC 8252). Matching is exact. A request whose client or
-  redirect is bad is shown an error page and never redirected anywhere.
+  redirect is bad is shown an error page and never redirected anywhere. A
+  *malformed* request is reported back to its redirect only when that is a
+  known app callback or loopback; for any other site the error is shown on our
+  page instead. (A `client_id` is self-asserted, so without that rule a link
+  to `/oauth/authorize` would be an open redirect to anywhere.)
+- **`resource` is required** (RFC 8707) and must be this server's MCP
+  endpoint. An MCP client learns its authorization server from the MCP server
+  it is connecting to, and a hostile MCP server can name this one. The flow
+  that follows is valid in every other respect, and the client would then
+  carry the key to the hostile server. Which resource the client says the
+  token is for is the only thing that tells the two apart, so a request that
+  does not say is refused.
 - **Approving needs a human.** The consent endpoint takes the dashboard
   session cookie plus the CSRF header, never a bearer key, and has no CORS
   headers — an agent cannot approve its own connection. The account must be
   verified.
-- **The app's name is the app's claim.** The consent screen shows it as a
-  label next to the address the approval is sent to. Callbacks for claude.ai,
-  claude.com and chatgpt.com are named; any other host gets an explicit
-  warning.
+- **The app's name is the app's claim.** It is reduced to plain ASCII (no
+  look-alike letters, no parentheses to badge itself with) and shown as a
+  label next to the address the approval is sent to. Only the exact MCP
+  callback URLs of Claude and ChatGPT are named as known apps — not every URL
+  on those sites. Any other destination gets an explicit warning. The agent
+  this creates is listed as `<name> (via <host>)`.
+- **Approval is for the account the screen named.** The page sends the handle
+  it displayed, and the server refuses if the session now belongs to a
+  different account.
 
 Two limits to know before leaning on this:
 
 - **An OAuth-issued key is a `connector` key, not a full one**
   (`AgentToken.scope`, [`src/lib/agent-scope.ts`](../apps/broker/src/lib/agent-scope.ts)).
-  It works threads, invites and messages like any agent, but it cannot mint a
-  dashboard sign-in link (`/api/account/view-token-self`, so `bc_dashboard_link`
-  is also left out of its tool list) and cannot use dispatch. Both would let a
-  key that lives on a hosted app's servers reach past messaging: the dashboard
-  can add agents and mint keys, and dispatch hands tasks to the user's own
-  machines. Every other key — dashboard-minted, BCX exchange, `bc_connect` —
-  is `full`, as before. Checks are fail-closed: anything other than exactly
-  `full` is refused. The column arrives in migration
+  **Closed by default:** `getAccountFromAuth`, which nearly every bearer route
+  uses, accepts full keys only. A connector key reaches just the routes the
+  MCP tools wrap — list threads, read and send on a thread, create and claim
+  invites, request and end a session — through `getAccountFromAnyAgent`.
+  Everything else answers it as if it had no key: skills and the library,
+  public share links, the self-inbox, favors, the inbox doorbell, dispatch,
+  and the dashboard sign-in link (`bc_dashboard_link` is left out of its tool
+  list). Opening another route to connectors is a decision about what a hosted
+  third-party app may do with an account, and the helper's name makes it one.
+  Every other key — dashboard-minted, BCX exchange, `bc_connect` — is `full`,
+  as before.
+- **Connector keys start with `bco_`**, not `bc_`. Code from before scopes
+  existed accepts only `bc_`, so a rollback rejects connector keys instead of
+  treating them as full ones; and current code never treats a `bco_` key as
+  full even if its row says so. The scope column arrives in migration
   `20261005160000_agent_token_scope`, which must be applied **before** this
-  code is deployed.
+  code is deployed (Prisma selects every column, and on this table a missing
+  one fails every bearer request). Its header gives the rollback order.
 - **No bridge, no decryption.** A remote connector sees sealed frames as
   `{"type":"enc",…}`. It can see threads, invites and counts, and exchange
   plaintext frames.

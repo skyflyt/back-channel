@@ -149,7 +149,7 @@ test("unauthenticated: 401 carries WWW-Authenticate pointing at the OAuth protec
     new Request("https://back-channel.app/api/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }) as never,
   );
   assert.equal(res.status, 401);
-  assert.equal(res.headers.get("www-authenticate"), 'Bearer resource_metadata="https://back-channel.app/.well-known/oauth-protected-resource"');
+  assert.equal(res.headers.get("www-authenticate"), 'Bearer resource_metadata="https://back-channel.app/.well-known/oauth-protected-resource/api/mcp"');
   const json = await res.json();
   assert.equal(json.error.code, -32001);
   assert.match(json.error.message, /Bearer <bc_ token>/);

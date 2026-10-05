@@ -15,6 +15,12 @@
 -- table that means every bearer-authenticated request). The old code ignores the column and its
 -- inserts take the default, so applying it first is safe.
 --
--- Rollback: ALTER TABLE "AgentToken" DROP COLUMN "scope"; (after rolling the app back).
+-- Rollback. Code from before this column has no scope check, so the ORDER matters:
+--   1. UPDATE "AgentToken" SET "revokedAt" = now() WHERE "scope" <> 'full' AND "revokedAt" IS NULL;
+--   2. roll the app back;
+--   3. only then, if at all: ALTER TABLE "AgentToken" DROP COLUMN "scope";
+-- Skipping step 1 would leave connector keys alive under code that treats every key as full.
+-- (Belt and braces: connector keys are minted with a "bco_" prefix that the old code rejects,
+-- and new code never treats a "bco_" key as full even if this column says so.)
 
 ALTER TABLE "AgentToken" ADD COLUMN "scope" TEXT NOT NULL DEFAULT 'full';

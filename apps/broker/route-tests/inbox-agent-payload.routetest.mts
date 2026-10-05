@@ -52,7 +52,9 @@ before(() => {
     namedExports: {
       // Bearer "good" resolves to our account WITH an agent-token id, mirroring getAuthContext.
       getAuthContext: async (header: string | null) =>
-        header === "Bearer good" ? { account: ACCOUNT, agentTokenId: AGENT_TOKEN_ID } : null,
+        header === "Bearer good" ? { account: ACCOUNT, agentTokenId: AGENT_TOKEN_ID, scope: "full" }
+          : header === "Bearer connector" ? { account: ACCOUNT, agentTokenId: "agt-connector", scope: "connector" }
+          : null,
     },
   });
   mock.module("@/lib/rate-limit", {
@@ -227,5 +229,12 @@ test("rate limit: over the cap → 429 with Retry-After, no write", async () => 
   const res = await POST(post({ payload_kind: "web-drop", payload: { url: "x" } }));
   assert.equal(res.status, 429);
   assert.equal(res.headers.get("Retry-After"), "42");
+  assert.equal(createdPayloads.length, 0);
+});
+
+test("a connector key (an app connected through OAuth) cannot queue anything into the self-inbox", async () => {
+  const { POST } = await import("@/app/api/inbox/agent-payload/route");
+  const res = await POST(post({ payload_kind: "web-drop", payload: { url: "https://example.com" } }, { authorization: "Bearer connector", "content-type": "application/json" }));
+  assert.equal(res.status, 401);
   assert.equal(createdPayloads.length, 0);
 });

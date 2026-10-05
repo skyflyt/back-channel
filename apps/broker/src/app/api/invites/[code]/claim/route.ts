@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromAuth } from "@/lib/auth";
+import { getAccountFromAnyAgent } from "@/lib/auth";
 import { rateLimit, clientIp } from "@/lib/rate-limit";
 import { mintRelayTicket } from "@/lib/relay";
 
@@ -24,7 +24,7 @@ export async function POST(
     );
   }
 
-  const account = await getAccountFromAuth(req.headers.get("authorization"));
+  const account = await getAccountFromAnyAgent(req.headers.get("authorization"));
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const { code } = await params;

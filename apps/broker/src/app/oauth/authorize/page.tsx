@@ -86,12 +86,18 @@ export default function AuthorizePage() {
       const r = await fetch("/api/oauth/consent", {
         method: "POST", credentials: "include",
         headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
-        body: JSON.stringify({ params, decision }),
+        // `handle`: the account this screen is showing. The server refuses the
+        // approval if the session now belongs to a different one.
+        body: JSON.stringify({ params, decision, handle: view.status === "consent" ? view.handle : null }),
       });
       const data = await r.json().catch(() => ({}));
       if (data.status === "redirect") return leave(data.redirect_to);
       if (data.status === "invalid") { setView({ status: "invalid", message: data.message }); setBusy(false); return; }
-      if (r.status === 401) { setBusy(false); return void load(); } // session ended while the page was open
+      if (r.status === 401 || data.error === "account_changed") { // session ended, or was replaced, while the page was open
+        setBusy(false);
+        if (data.message) setErr(data.message);
+        return void load();
+      }
       setErr(data.message ?? (r.status === 429 ? "Too many attempts — try again in a bit." : "That didn't go through. Reload this page and try again."));
     } catch {
       setErr("Couldn't reach Back Channel — try again.");
@@ -137,7 +143,7 @@ export default function AuthorizePage() {
               {!view.signed_in ? (
                 !linkSent ? (
                   <>
-                    <p style={s.lead}>Sign in first. Enter your email and we&apos;ll send you a sign-in link.</p>
+                    <p style={s.lead}>Sign in first. Enter your email and we&apos;ll send you a sign-in link. No account yet? <a href="/signup" target="_blank" rel="noopener" style={s.link}>Create one</a>, then come back to this tab.</p>
                     <div style={s.row}>
                       <input type="email" value={email} placeholder="you@company.com" aria-label="Email"
                         onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && !busy && sendLink()} style={s.input} />
@@ -197,6 +203,7 @@ const s = {
   input: { flex: 1, minWidth: 200, fontSize: 15, padding: "11px 14px", border: "1px solid #cbd5e1", borderRadius: 10 } as const,
   btn: { background: "#0f172a", color: "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontWeight: 600, fontSize: 15, cursor: "pointer" } as const,
   btnQuiet: { background: "#fff", color: "#0f172a", border: "1px solid #cbd5e1", borderRadius: 10, padding: "11px 22px", fontWeight: 600, fontSize: 15, cursor: "pointer" } as const,
+  link: { color: "#0f766e" } as const,
   linkBtn: { background: "none", border: "none", color: "#0f766e", cursor: "pointer", textDecoration: "underline", fontSize: "inherit", padding: 0 } as const,
   muted: { fontSize: 14, color: "#64748b", margin: "14px 0 0" } as const,
   err: { color: "#b91c1c", fontSize: 14, marginTop: 12 } as const,

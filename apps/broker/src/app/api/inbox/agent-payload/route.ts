@@ -64,7 +64,10 @@ const SELF_DROP_KINDS = new Set(["web-drop", "web-drop-manifest", "web-drop-resu
  */
 export async function POST(req: NextRequest) {
   const ctx = await getAuthContext(req.headers.get("authorization"));
-  if (!ctx) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  // Full keys only (not hasFullScope from agent-scope: this route's tests replace
+  // @/lib/auth, and the literal keeps the check independent of that). A connector
+  // key is a hosted app; it does not get to queue work into the user's self-inbox.
+  if (!ctx || ctx.scope !== "full") return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const { account, agentTokenId } = ctx;
 
   const rl = rateLimit("agent-payload", account.id, RATE_LIMIT_PER_HOUR, HOUR);

@@ -2,31 +2,40 @@ import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
-import { rateLimit } from "@/lib/rate-limit";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 import { OAUTH_CODE_PURPOSE, OAUTH_CODE_TTL_MS, oauthCodeKey, redirectWith, runtimeTypeFor, validateAuthorizeRequest } from "@/lib/oauth.mjs";
-import { publicOrigin } from "@/lib/oauth-http";
+import { publicOrigin, readBoundedBody } from "@/lib/oauth-http";
 
 export const runtime = "nodejs";
 
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
+
+/** Both verbs are reachable without a session, so both are rate-limited per IP before doing anything. */
+function limited(req: NextRequest): NextResponse | null {
+  const rl = rateLimit("oauth:consent", clientIp(req.headers.get("x-forwarded-for")), 300, 60 * 60 * 1000);
+  return rl.ok ? null : NextResponse.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
+}
 
 /**
  * The server half of the consent screen at /oauth/authorize. Human tier only:
  * the bc_session cookie, never a bearer key, and NO CORS headers — an agent
  * must not be able to approve its own connection.
  *
- * GET  ?<the authorize query>   what to show: is the request valid, who is
- *                               signed in, which app is asking, where an
- *                               approval sends them.
- * POST { params, decision }     "approve" (cookie + CSRF) mints the single-use
- *                               code and returns where to go; "deny" returns
- *                               the access_denied redirect and needs no session.
+ * GET  ?<the authorize query>          what to show: is the request valid, who
+ *                                      is signed in, which app is asking, where
+ *                                      an approval sends them.
+ * POST { params, decision, handle? }   "approve" (cookie + CSRF) mints the
+ *                                      single-use code and returns where to go;
+ *                                      "deny" returns the access_denied redirect
+ *                                      and needs no session.
  *
  * Both validate the full authorize request from scratch — the page is a thin
  * client and nothing it sends is trusted. A request whose client or redirect
- * is bad gets `fatal` and no redirect of any kind (see validateAuthorizeRequest).
+ * is bad gets `invalid` and no redirect of any kind (see validateAuthorizeRequest).
  */
 export async function GET(req: NextRequest) {
+  const shed = limited(req);
+  if (shed) return shed;
   const origin = publicOrigin(req);
   const v = validateAuthorizeRequest(Object.fromEntries(req.nextUrl.searchParams), origin);
   if (!v.ok) return json(v.fatal ? { status: "invalid", message: v.fatal } : { status: "redirect", redirect_to: v.redirect });
@@ -43,13 +52,18 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const shed = limited(req);
+  if (shed) return shed;
   const origin = publicOrigin(req);
-  let body: { params?: unknown; decision?: unknown };
+  let body: { params?: unknown; decision?: unknown; handle?: unknown };
   try {
-    body = await req.json();
+    const text = await readBoundedBody(req);
+    if (text === null) return json({ error: "too_large" }, 413);
+    body = JSON.parse(text);
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
+  if (!body || typeof body !== "object") return json({ error: "invalid_json" }, 400);
   const params = body.params && typeof body.params === "object" && !Array.isArray(body.params) ? (body.params as Record<string, unknown>) : {};
   const v = validateAuthorizeRequest(params, origin);
   if (!v.ok) return json(v.fatal ? { status: "invalid", message: v.fatal } : { status: "redirect", redirect_to: v.redirect });
@@ -62,10 +76,24 @@ export async function POST(req: NextRequest) {
   const account = await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value);
   if (!account) return json({ error: "unauthorized" }, 401);
   if (!csrfValid(req.headers.get(CSRF_HEADER), req.cookies.get(CSRF_COOKIE_NAME)?.value)) return json({ error: "csrf" }, 403);
+
+  // The approval is for the account the screen NAMED, not for whichever session
+  // cookie happens to be in the browser when the button is pressed. A sign-in
+  // link opened in another tab replaces the session silently; without this
+  // check the click would connect the app to that other account while the
+  // screen still said "Signed in as <the first one>".
+  if (typeof body.handle !== "string" || body.handle !== account.handle) {
+    return json({ error: "account_changed", message: "The signed-in account changed while this page was open. Check who you're signed in as, then try again." }, 409);
+  }
   if (!account.emailVerifiedAt) return json({ error: "unverified", message: "Verify your email first, then connect again." }, 409);
 
   const rl = rateLimit("oauth:approve", account.id, 20, 60 * 60 * 1000);
   if (!rl.ok) return NextResponse.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } });
+
+  // The agent this becomes is listed on the dashboard under a name the app
+  // chose for itself, so the name carries the one thing the app could not
+  // choose: where the approval was sent.
+  const agentName = `${v.client.name} (via ${v.destination.kind === "loopback" ? "this computer" : v.destination.host})`.slice(0, 80);
 
   // The raw code exists only in this response. What is stored is a hash over
   // the code and the request it belongs to, so it can only be redeemed by the
@@ -76,7 +104,7 @@ export async function POST(req: NextRequest) {
       codeHash: oauthCodeKey({ code, clientId: v.client.clientId, redirectUri: v.redirectUri, codeChallenge: v.codeChallenge }),
       accountId: account.id,
       purpose: OAUTH_CODE_PURPOSE,
-      agentName: v.client.name,
+      agentName,
       runtimeType: runtimeTypeFor(v.redirectUri) as "chatgpt" | "other",
       expiresAt: new Date(Date.now() + OAUTH_CODE_TTL_MS),
     },

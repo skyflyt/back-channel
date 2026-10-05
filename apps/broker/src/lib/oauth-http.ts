@@ -29,6 +29,17 @@ export function oauthPreflight(): NextResponse {
   return new NextResponse(null, { status: 204, headers: CORS });
 }
 
+/** Largest body any OAuth endpoint has a reason to read. Bigger is refused before parsing. */
+export const MAX_OAUTH_BODY_BYTES = 16 * 1024;
+
+/** Read a request body as text, or null if it is larger than MAX_OAUTH_BODY_BYTES. */
+export async function readBoundedBody(req: NextRequest): Promise<string | null> {
+  const declared = Number(req.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > MAX_OAUTH_BODY_BYTES) return null;
+  const text = await req.text();
+  return Buffer.byteLength(text, "utf8") > MAX_OAUTH_BODY_BYTES ? null : text;
+}
+
 /** Metadata documents are public and stable: cacheable, unlike everything else here. */
 export function metadataJson(body: unknown): NextResponse {
   return NextResponse.json(body, { headers: { ...CORS, "Cache-Control": "public, max-age=3600" } });

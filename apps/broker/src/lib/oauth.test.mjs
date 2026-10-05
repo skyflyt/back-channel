@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   protectedResourceMetadata, authorizationServerMetadata, wwwAuthenticate,
-  parseRedirectUri, redirectUriRegistered, describeDestination, runtimeTypeFor,
+  parseRedirectUri, redirectUriRegistered, describeDestination, runtimeTypeFor, resourceIsThisServer,
   cleanClientName, registerClient, readClient,
   validCodeChallenge, validCodeVerifier, s256, oauthCodeKey,
   redirectWith, validateAuthorizeRequest,
@@ -13,7 +13,8 @@ const CLAUDE_CB = "https://claude.ai/api/mcp/auth_callback";
 const VERIFIER = "a".repeat(43);
 const CHALLENGE = s256(VERIFIER);
 const client = (uris = [CLAUDE_CB], name = "Claude") => registerClient({ client_name: name, redirect_uris: uris });
-const authQuery = (over = {}) => ({ response_type: "code", client_id: client().client_id, redirect_uri: CLAUDE_CB, code_challenge: CHALLENGE, code_challenge_method: "S256", state: "xyz", ...over });
+const RESOURCE = `${ORIGIN}/api/mcp`;
+const authQuery = (over = {}) => ({ response_type: "code", client_id: client().client_id, redirect_uri: CLAUDE_CB, code_challenge: CHALLENGE, code_challenge_method: "S256", state: "xyz", resource: RESOURCE, ...over });
 
 test("metadata: the documents agree with each other and advertise only what is implemented", () => {
   const prm = protectedResourceMetadata(ORIGIN);
@@ -26,7 +27,7 @@ test("metadata: the documents agree with each other and advertise only what is i
   assert.deepEqual(as.response_types_supported, ["code"]);
   assert.deepEqual(as.token_endpoint_auth_methods_supported, ["none"]);
   for (const k of ["authorization_endpoint", "token_endpoint", "registration_endpoint"]) assert.ok(as[k].startsWith(ORIGIN + "/"), k);
-  assert.equal(wwwAuthenticate(ORIGIN), `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource"`);
+  assert.equal(wwwAuthenticate(ORIGIN), `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/api/mcp"`);
 });
 
 test("parseRedirectUri: https anywhere, http only on loopback, nothing else", () => {
@@ -61,24 +62,34 @@ test("describeDestination: known apps, this computer, and everything else called
   assert.deepEqual(describeDestination(CLAUDE_CB), { kind: "known", host: "claude.ai", label: "Claude" });
   assert.equal(describeDestination("https://chatgpt.com/connector_platform_oauth_redirect").label, "ChatGPT");
   assert.equal(describeDestination("http://localhost:5000/cb").kind, "loopback");
-  // Lookalikes are not the real thing.
-  for (const fake of ["https://claude.ai.evil.example/cb", "https://evil.example/claude.ai", "https://xclaude.ai/cb", "https://chatgpt.com.evil.example/cb"]) {
+  // Lookalikes are not the real thing — and neither is any OTHER url on the real sites.
+  for (const fake of [
+    "https://claude.ai.evil.example/api/mcp/auth_callback", "https://evil.example/claude.ai", "https://xclaude.ai/api/mcp/auth_callback", "https://chatgpt.com.evil.example/connector_platform_oauth_redirect",
+    "https://claude.ai/", "https://claude.ai/some/other/path", "https://claude.ai:8443/api/mcp/auth_callback", "https://claude.ai/api/mcp/auth_callback?x=1", "https://claude.ai/api/mcp/auth_callback/", "https://chatgpt.com/g/some-gpt/callback",
+  ]) {
     assert.equal(describeDestination(fake).kind, "unknown", fake);
   }
+  assert.equal(describeDestination("https://claude.com/api/mcp/auth_callback").kind, "known");
   assert.equal(describeDestination("https://claude.ai.evil.example/cb").host, "claude.ai.evil.example", "the full host is what gets shown");
+  assert.equal(describeDestination("https://xn--clude-0ra.ai/api/mcp/auth_callback").host, "xn--clude-0ra.ai", "an IDN lookalike is shown as punycode");
   assert.equal(describeDestination("javascript:alert(1)").kind, "invalid");
   assert.equal(runtimeTypeFor("https://chatgpt.com/x"), "chatgpt");
   assert.equal(runtimeTypeFor(CLAUDE_CB), "other");
   assert.equal(runtimeTypeFor("nope"), "other");
 });
 
-test("cleanClientName: one short line of plain text — nothing that can restyle or reorder what the user reads", () => {
+test("cleanClientName: one short line of plain ASCII — nothing that can restyle, reorder, impersonate by look-alike, or badge itself", () => {
   assert.equal(cleanClientName("  Claude  "), "Claude");
-  assert.equal(cleanClientName("Acme\nApp\t(beta)"), "Acme App (beta)");
+  assert.equal(cleanClientName("Acme\nApp\t(beta)"), "Acme App beta");
   assert.equal(cleanClientName("Evil‮edoc⁦ <b>x</b> \u0000"), "Evil edoc b x b");
   assert.equal(cleanClientName("x".repeat(200)).length, 60);
-  for (const empty of ["", "   ", null, undefined, 42, {}, "‮​"]) assert.equal(cleanClientName(empty), "An MCP client");
-  assert.equal(cleanClientName("Zoë's Résumé-Bot & Co. 2"), "Zoë's Résumé-Bot & Co. 2");
+  for (const empty of ["", "   ", null, undefined, 42, {}, "‮​", "Клод"]) assert.equal(cleanClientName(empty), "An MCP client");
+  // Look-alike letters from other scripts do not survive as letters.
+  assert.equal(cleanClientName("Сlaude"), "laude", "Cyrillic Es is not Latin C");
+  assert.equal(cleanClientName("Ｃｌａｕｄｅ"), "An MCP client", "fullwidth letters");
+  // A name cannot hand itself a parenthesised badge.
+  assert.equal(cleanClientName("Claude (verified by Back Channel)"), "Claude verified by Back Channel");
+  assert.equal(cleanClientName("O'Reilly Build-Bot & Co. v2.1"), "O'Reilly Build-Bot & Co. v2.1");
 });
 
 test("registerClient / readClient: the client_id round-trips its own registration", () => {
@@ -142,9 +153,54 @@ test("validateAuthorizeRequest: a good request yields everything the consent scr
   assert.equal(v.destination.kind, "known");
   // redirect_uri may be omitted when exactly one is registered.
   assert.equal(validateAuthorizeRequest(authQuery({ redirect_uri: undefined }), ORIGIN).redirectUri, CLAUDE_CB);
-  // resource, when given, must be this server's MCP endpoint (or its origin).
-  assert.equal(validateAuthorizeRequest(authQuery({ resource: `${ORIGIN}/api/mcp` }), ORIGIN).ok, true);
-  assert.equal(validateAuthorizeRequest(authQuery({ resource: `${ORIGIN}/` }), ORIGIN).ok, true);
+  // resource may be written any way a URL parser reads as this server's MCP endpoint (or its origin).
+  for (const resource of [`${ORIGIN}/api/mcp/`, `${ORIGIN}/`, ORIGIN, "https://BACK-CHANNEL.app/api/mcp", "https://back-channel.app:443/api/mcp"]) {
+    assert.equal(validateAuthorizeRequest(authQuery({ resource }), ORIGIN).ok, true, resource);
+  }
+});
+
+test("resourceIsThisServer: only this origin, only the MCP path or the bare origin", () => {
+  for (const no of [
+    "", null, undefined, 42, "not a url", "https://evil.example/api/mcp", "http://back-channel.app/api/mcp", "https://back-channel.app.evil.example/api/mcp",
+    "https://back-channel.app:8443/api/mcp", "https://back-channel.app/api/mcp/extra", "https://back-channel.app/api", "https://back-channel.app/api/mcp?x=1",
+    "https://back-channel.app/api/mcp#f", "https://user@back-channel.app/api/mcp", "https://www.back-channel.app/api/mcp",
+  ]) {
+    assert.equal(resourceIsThisServer(no, ORIGIN), false, String(no));
+  }
+});
+
+test("validateAuthorizeRequest: resource is REQUIRED — a flow that does not say which server the key is for is refused", () => {
+  // The mix-up this closes: a hostile MCP server names us as its authorization
+  // server; the client runs an honest-looking flow here and carries the key there.
+  const missing = validateAuthorizeRequest(authQuery({ resource: undefined }), ORIGIN);
+  assert.equal(missing.ok, false);
+  assert.equal(new URL(missing.redirect).searchParams.get("error"), "invalid_target");
+  const theirs = validateAuthorizeRequest(authQuery({ resource: "https://evil.example/mcp" }), ORIGIN);
+  assert.equal(new URL(theirs.redirect).searchParams.get("error"), "invalid_target");
+  assert.equal(new URL(theirs.redirect).searchParams.get("code"), null);
+});
+
+test("validateAuthorizeRequest: a malformed request aimed at an UNKNOWN site is shown here, never bounced there (zero-click open redirect)", () => {
+  // Anyone can mint a client_id for any https redirect, so "registered" proves nothing.
+  const forged = "bcc_" + Buffer.from(JSON.stringify({ v: 1, n: "x", r: ["https://evil.example/phish"] })).toString("base64url");
+  for (const q of [
+    { client_id: forged },
+    { client_id: forged, redirect_uri: "https://evil.example/phish", response_type: "token" },
+    { client_id: forged, response_type: "code", code_challenge: CHALLENGE, code_challenge_method: "S256" }, // no resource
+    { client_id: forged, response_type: "code", code_challenge: CHALLENGE, code_challenge_method: "S256", resource: "https://evil.example/mcp" },
+  ]) {
+    const v = validateAuthorizeRequest(q, ORIGIN);
+    assert.equal(v.ok, false);
+    assert.equal(v.redirect, undefined, JSON.stringify(q).slice(0, 90));
+    assert.match(v.fatal, /incomplete/);
+  }
+  // A complete, well-formed request to an unknown site still reaches the consent screen (with its warning).
+  const full = validateAuthorizeRequest({ client_id: forged, response_type: "code", code_challenge: CHALLENGE, code_challenge_method: "S256", resource: RESOURCE }, ORIGIN);
+  assert.equal(full.ok, true);
+  assert.equal(full.destination.kind, "unknown");
+  // And a loopback client is still told about its mistakes the normal way.
+  const cli = registerClient({ redirect_uris: ["http://localhost:7777/cb"] }).client_id;
+  assert.equal(new URL(validateAuthorizeRequest({ client_id: cli, response_type: "token" }, ORIGIN).redirect).searchParams.get("error"), "unsupported_response_type");
 });
 
 test("validateAuthorizeRequest: a bad client or redirect is FATAL — it must never produce a redirect (open-redirector guard)", () => {

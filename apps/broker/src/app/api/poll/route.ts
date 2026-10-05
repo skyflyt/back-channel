@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getAccountFromAuth } from "@/lib/auth";
+import { getAccountFromAnyAgent } from "@/lib/auth";
 import { pollSession } from "@/lib/relay";
 
 export const runtime = "nodejs";
@@ -18,7 +18,7 @@ const MAX_FRAME_BYTES = 64 * 1024;
  * Returns: { frames: string[], next_cursor, peer_present }
  */
 export async function POST(req: NextRequest) {
-  const account = await getAccountFromAuth(req.headers.get("authorization"));
+  const account = await getAccountFromAnyAgent(req.headers.get("authorization"));
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   let body: { session_id?: string; role?: string; cursor?: number; send?: unknown; wait_seconds?: number };
