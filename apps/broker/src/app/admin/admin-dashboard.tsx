@@ -136,6 +136,46 @@ function Metric({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
+type RemoteLog = { window_days: number; truncated: boolean; connections: { at: string; handle: string; attempts: number }[] };
+
+/**
+ * Who used the relay, and when: GET /api/admin/remote-connections. The route returns an account
+ * handle, a time and a count per row and nothing about devices, so there is nothing more to show.
+ */
+function RemoteLogCard() {
+  const [log, setLog] = useState<RemoteLog | null>(null);
+  const [state, setState] = useState<"loading" | "ok" | "error">("loading");
+  const load = useCallback(async () => {
+    setState("loading");
+    try {
+      const r = await fetch(`/api/admin/remote-connections`, { credentials: "include", cache: "no-store" });
+      if (!r.ok) { setState("error"); return; }
+      setLog(await r.json()); setState("ok");
+    } catch { setState("error"); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <section className="ds-card">
+      <h2 className="ds-cardh">Remote connection log</h2>
+      <p className="ds-cardsub">
+        Which account connected through the relay, and when, over the last 7 days. Account and time only: no device, address or
+        location is shown, and none of those is recorded. Attempts by one account within two minutes count as one row.
+      </p>
+      {state === "loading" && <SkeletonRows rows={3} />}
+      {state === "error" && <div className="ds-call danger">Couldn&apos;t load the log. <button className="ds-link" onClick={load}>Try again</button></div>}
+      {state === "ok" && log && log.connections.length === 0 && <p className="ds-fine" style={{ margin: 0 }}>No relayed connections in the last 7 days.</p>}
+      {state === "ok" && log && log.connections.map((c, i) => (
+        <div key={`${c.at}-${i}`} className="ds-item" style={{ justifyContent: "space-between", alignItems: "baseline", gap: 12, padding: "9px 0" }}>
+          <span style={{ fontSize: 13, overflowWrap: "anywhere" }}>{c.handle}{c.attempts > 1 && <span className="ds-fine"> · {c.attempts} attempts</span>}</span>
+          <span className="ds-mono" style={{ fontSize: 12.5, color: "var(--ds-mut)", whiteSpace: "nowrap" }} title={new Date(c.at).toLocaleString()}>{ago(c.at)}</span>
+        </div>
+      ))}
+      {state === "ok" && log?.truncated && <p className="ds-fine" style={{ margin: "10px 0 0" }}>Showing the most recent {log.connections.length}.</p>}
+    </section>
+  );
+}
+
 export function AdminDashboard() {
   const [data, setData] = useState<Analytics | null>(null);
   const [state, setState] = useState<"loading" | "ok" | "unauth" | "forbidden" | "error">("loading");
@@ -201,6 +241,8 @@ export function AdminDashboard() {
             <Metric k="relayed connections (7d)" v={rm.connections_7d} />
           </section>
         </div>
+
+        <RemoteLogCard />
 
         <div className="ds-grid">
           <section className="ds-card">

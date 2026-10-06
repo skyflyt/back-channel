@@ -31,6 +31,7 @@ import { Chip, EmptyState, HealthDot, MetricCard, PersonAvatar, SkeletonRows, ag
 import { DEMO_ACCOUNT } from "@/lib/demo-data";
 
 interface Me {
+  admin?: boolean; // present (true) only for the owner: shows the Admin tab
   id: string; handle: string; email: string; display_name: string | null; created_at: string;
   email_verified: boolean; api_key_masked: string | null; api_key_last_used_at: string | null;
   notify_idle_frames: boolean; favor_per_peer_daily?: number; favor_global_tokens_daily?: number;
@@ -637,7 +638,8 @@ export default function AccountPage() {
     key: n.key, label: n.label,
     count: n.key === "messages" ? needsYou || undefined : undefined,
     onSelect: () => { setNav(n.key); if (n.key !== "friends") setFriendView(null); },
-  })), { key: "remote", label: "Remote", href: "/account/remote" }];
+  })), { key: "remote", label: "Remote", href: "/account/remote" },
+    ...(me?.admin ? [{ key: "admin", label: "Admin", href: "/admin" }] : [])];
 
   const paletteItems: PaletteItem[] = useMemo(() => {
     const items: PaletteItem[] = [];

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME } from "@/lib/auth";
+import { isOwnerAccount } from "@/lib/admin";
 
 export const runtime = "nodejs";
 
@@ -41,5 +42,10 @@ export async function GET(req: NextRequest) {
     inbox_check_enabled: account.inboxCheckEnabled,
     inbox_check_minutes: account.inboxCheckMinutes,
     summary: { active_sessions: liveSessions },
+    // Present only for the owner (src/lib/admin.ts), so the dashboard can show its Admin tab.
+    // Omitted, not false, for everyone else: /admin answers them 404 so as not to confirm that an
+    // admin area exists, and a false here would say the same thing in another place. It grants
+    // nothing: /admin and every admin API check the owner again on the server.
+    ...(isOwnerAccount(account) ? { admin: true } : {}),
   });
 }
