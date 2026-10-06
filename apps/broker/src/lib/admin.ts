@@ -1,6 +1,6 @@
 /**
  * Owner-only admin gate. Every admin surface goes through checkOwnerAdmin():
- *   - src/app/api/admin/** (analytics, users, grant, revoke)
+ *   - src/app/api/admin/** (analytics, users, remote-connections, grant, revoke)
  *   - PUT /api/appbridge/v1/admin/entitlements (src/lib/appbridge.ts setEntitlement)
  *   - the /admin page itself (src/app/admin/page.tsx, server-side)
  *

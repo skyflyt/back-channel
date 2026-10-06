@@ -16,6 +16,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AppShell, type ShellTab } from "@/components/ui/shell";
+import { useIsOwner } from "@/components/ui/use-is-owner";
+
+// Where the apps are published (a public repository; the source repository is private). The page
+// links to it rather than fetching it: connect-src is 'self', and a download list that is always
+// the releases page cannot go stale.
+const RELEASES_URL = "https://github.com/skyflyt/appbridge-releases/releases";
 
 interface RemoteDevice { id: string; role: "host" | "remote"; label: string | null; relayEnabled: boolean; enabled: boolean; connectorSpkiSha256: string; createdAt: string; revokedAt: string | null; }
 interface DevicesReply { rollout: boolean; entitled: boolean; devices: RemoteDevice[]; }
@@ -106,6 +112,7 @@ export default function RemotePage() {
   const [now, setNow] = useState(() => Date.now());
   const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [billingMessage, setBillingMessage] = useState("");
+  const tabs: ShellTab[] = useIsOwner() ? [...TABS, { key: "admin", label: "Admin", href: "/admin" }] : TABS;
 
   // Billing is optional: when it isn't configured the status route answers 503 and the plan card hides.
   const loadBilling = useCallback(async (): Promise<BillingStatus | null> => {
@@ -195,7 +202,7 @@ export default function RemotePage() {
   const secondsLeft = minted ? Math.max(0, Math.round((new Date(minted.expiresAt).getTime() - now) / 1000)) : 0;
 
   return (
-    <AppShell tabs={TABS} activeTab="remote">
+    <AppShell tabs={tabs} activeTab="remote">
       <div className="ds-wrap">
         <h1 className="ds-h">Back Channel Remote</h1>
         <p className="ds-sub">Reach your PC&apos;s apps from your phone away from home. Pair a phone with a PC on your own network first; this page lets those paired devices find each other through the relay. Everything stays end-to-end encrypted: the relay cannot see your screen or typing.</p>
@@ -223,6 +230,13 @@ export default function RemotePage() {
             </div>
 
             {billing && <PlanCard billing={billing} busy={busy} message={billingMessage} onOpen={openStripe} />}
+
+            <div className="ds-card">
+              <div className="ds-cardh">Get the apps</div>
+              <p className="ds-cardsub">Install Back Channel Remote on the PC you want to reach, and on the phone or laptop you&apos;ll reach it from. Each release lists what it runs on and how to install it. These are early pilot builds.</p>
+              <a className="ds-btn ghost" style={{ textDecoration: "none", display: "inline-block" }} href={RELEASES_URL} target="_blank" rel="noopener noreferrer">Downloads and release notes</a>
+              <p className="ds-fine" style={{ margin: "10px 0 0" }}>Opens the releases page on GitHub in a new tab.</p>
+            </div>
 
             <div className="ds-card">
               <div className="ds-cardh">Add a device</div>

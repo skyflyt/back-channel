@@ -191,6 +191,8 @@ beforeEach(async () => {
 const routes = {
   analytics: () => import("@/app/api/admin/analytics/route"),
   users: () => import("@/app/api/admin/users/route"),
+  remoteLog: () => import("@/app/api/admin/remote-connections/route"),
+  me: () => import("@/app/api/account/me/route"),
   grant: () => import("@/app/api/admin/grant/route"),
   revoke: () => import("@/app/api/admin/revoke/route"),
   entitlements: () => import("@/app/api/appbridge/v1/admin/entitlements/route"),
@@ -217,11 +219,12 @@ function req(method: string, who: Who, o: { csrf?: Csrf; bearer?: string; body?:
 const call = {
   analytics: async (r: NextRequest) => (await routes.analytics()).GET(r),
   users: async (r: NextRequest) => (await routes.users()).GET(r),
+  remoteLog: async (r: NextRequest) => (await routes.remoteLog()).GET(r),
   grant: async (r: NextRequest) => (await routes.grant()).POST(r),
   revoke: async (r: NextRequest) => (await routes.revoke()).POST(r),
   entitlements: async (r: NextRequest) => (await routes.entitlements()).PUT(r),
 };
-const reads = [["analytics", "GET"], ["users", "GET"]] as const;
+const reads = [["analytics", "GET"], ["users", "GET"], ["remoteLog", "GET"]] as const;
 const writes = [["grant", "POST", { handle: "user@bc" }], ["revoke", "POST", { handle: "legacy-admin@bc" }], ["entitlements", "PUT", { handle: "user@bc", active: false }]] as const;
 const everyRoute = [...reads.map(([n, m]) => [n, m, undefined] as const), ...writes];
 
@@ -346,6 +349,72 @@ test("users: search by handle or email, case-insensitive, paginated", async () =
   assert.equal(page2.total, 5); assert.equal(page2.users.length, 2);
   // A–Z: idle, legacy-admin | skylar, twin | user
   assert.deepEqual(page2.users.map((u: any) => u.handle), ["skylar@bc", "twin@bc"]);
+});
+
+test("remote connection log: account handle, time and a count per row; nothing about devices; no secrets; bounded reads", async () => {
+  // user@bc: one attempt an hour ago; two attempts an hour apart two days ago (seeded). Add a burst:
+  // a phone opening one session redeems several passes within seconds, which is ONE row.
+  const burst = Date.now() - 10 * 60_000;
+  for (const [i, offset] of [0, 900, 1800, 2500].entries()) tables.appBridgeConnectionEvent.push({ id: `b${i}`, accountId: "acct-owner", hostDeviceId: "dev-own-pc", remoteDeviceId: "dev-own-ph", at: new Date(burst - offset) });
+  // Outside the 7-day window, and an account that no longer exists.
+  tables.appBridgeConnectionEvent.push({ id: "old", accountId: "acct-user", hostDeviceId: "dev-pc", remoteDeviceId: "dev-ph", at: ago(8 * DAY) });
+  tables.appBridgeConnectionEvent.push({ id: "gone", accountId: "acct-deleted", hostDeviceId: "x", remoteDeviceId: "y", at: ago(3 * DAY) });
+
+  const res = await call.remoteLog(req("GET", "owner"));
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("cache-control"), "no-store");
+  const body = await res.json();
+  assertNoSecrets(body, "remote log");
+  assertBoundedReads("remote log");
+  assert.deepEqual(Object.keys(body).sort(), ["connections", "truncated", "window_days"]);
+  assert.equal(body.window_days, 7);
+  assert.equal(body.truncated, false);
+  for (const c of body.connections) assert.deepEqual(Object.keys(c).sort(), ["at", "attempts", "handle"], "a row is exactly: when, who, how many");
+  assert.deepEqual(body.connections.map((c: any) => [c.handle, c.attempts]), [
+    ["skylar@bc", 4],          // the burst, folded
+    ["user@bc", 1],            // an hour ago
+    ["user@bc", 1],            // two days ago
+    ["user@bc", 1],            // two days and an hour ago: more than two minutes apart, so its own row
+    ["(deleted account)", 1],
+  ]);
+  assert.equal(body.connections[0].at, new Date(burst).toISOString(), "a folded row carries its latest time");
+  // Nothing about devices can be in the answer, because none of it is selected.
+  const text = JSON.stringify(body);
+  for (const leak of ["dev-pc", "dev-ph", "dev-own", "Office PC", "Phone", "acct-", "example.com"]) assert.ok(!text.includes(leak), `${leak} leaked`);
+  const selects = queryLog.filter(q => q.name === "appBridgeConnectionEvent" && q.op === "findMany").map(q => Object.keys(q.args.select ?? {}).sort());
+  assert.deepEqual(selects, [["accountId", "at"]], "only the account and the time are read");
+  assert.ok(!queryLog.some(q => q.name === "appBridgeDevice"), "the device table is never touched");
+  assert.equal(tables.accountAudit?.at(-1)?.eventType, "admin.remote_connections_viewed");
+});
+
+test("remote connection log: at most 50 rows from the newest 500 events, and it says when there was more", async () => {
+  tables.appBridgeConnectionEvent.length = 0;
+  for (let i = 0; i < 60; i++) tables.appBridgeConnectionEvent.push({ id: `e${i}`, accountId: "acct-user", hostDeviceId: "dev-pc", remoteDeviceId: "dev-ph", at: ago((i + 1) * 3600_000) });
+  const body = await (await call.remoteLog(req("GET", "owner"))).json();
+  assert.equal(body.connections.length, 50);
+  assert.equal(body.truncated, true);
+  const take = queryLog.filter(q => q.name === "appBridgeConnectionEvent" && q.op === "findMany").at(-1)!.args.take;
+  assert.equal(take, 500);
+});
+
+test("GET /api/account/me tells the owner, and only the owner, to show the Admin tab; the key is absent for everyone else", async () => {
+  // The route also counts the account's live sessions with a nested filter this file's fake does not
+  // model; that count is not what is under test.
+  const realCount = db.session.count;
+  db.session.count = async () => 0;
+  try {
+    const me = async (who: Who) => (await (await routes.me()).GET(req("GET", who))).json();
+    assert.equal((await me("owner")).admin, true);
+    for (const who of ["user", "admin"] as const) assert.equal("admin" in (await me(who)), false, `${who}: no admin key at all, not admin:false`);
+    // Not the owner once the allowlist is gone, or while unverified.
+    delete process.env.ADMIN_EMAILS;
+    assert.equal("admin" in (await me("owner")), false);
+    process.env.ADMIN_EMAILS = "owner@example.com";
+    tables.account.find(a => a.id === "acct-owner")!.emailVerifiedAt = null;
+    assert.equal("admin" in (await me("owner")), false);
+  } finally {
+    db.session.count = realCount;
+  }
 });
 
 test("signed out → 401 {error} on every admin route", async () => {
