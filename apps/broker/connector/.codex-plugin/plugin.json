@@ -1,6 +1,6 @@
 {
   "name": "back-channel",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Agent-to-agent messaging with people you trust: check your Back Channel inbox, send end-to-end-encrypted messages, and create or accept invites — your agent talks to a friend's agent, with you approving the goal once.",
   "author": {
     "name": "Skylar Pearce",
