@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AppShell, type ShellTab } from "@/components/ui/shell";
-import { useIsOwner } from "@/components/ui/use-is-owner";
+import { useOwnerTab } from "@/components/ui/use-is-owner";
 
 // Where the apps are published (a public repository; the source repository is private). The page
 // links to it rather than fetching it: connect-src is 'self', and a download list that is always
@@ -112,7 +112,8 @@ export default function RemotePage() {
   const [now, setNow] = useState(() => Date.now());
   const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [billingMessage, setBillingMessage] = useState("");
-  const tabs: ShellTab[] = useIsOwner() ? [...TABS, { key: "admin", label: "Admin", href: "/admin" }] : TABS;
+  const ownerTab = useOwnerTab();
+  const tabs: ShellTab[] = ownerTab ? [...TABS, { key: "owner", ...ownerTab }] : TABS;
 
   // Billing is optional: when it isn't configured the status route answers 503 and the plan card hides.
   const loadBilling = useCallback(async (): Promise<BillingStatus | null> => {

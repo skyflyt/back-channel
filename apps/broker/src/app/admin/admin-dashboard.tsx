@@ -183,7 +183,8 @@ export function AdminDashboard() {
   const load = useCallback(async () => {
     try {
       const r = await fetch(`/api/admin/analytics`, { credentials: "include", cache: "no-store" });
-      if (r.status === 401) { setState("unauth"); return; }
+      // 404: the proxy no longer takes this session for the owner (signed out, or expired) and answers as if nothing were here.
+      if (r.status === 401 || r.status === 404) { setState("unauth"); return; }
       if (r.status === 403) { setState("forbidden"); return; }
       if (!r.ok) { setState("error"); return; }
       setData(await r.json()); setState("ok");
@@ -339,7 +340,7 @@ function UsersCard() {
         headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
         body: JSON.stringify({ handle: u.handle, active }),
       });
-      if (!r.ok) { setMessage(r.status === 403 ? "Not allowed. Sign in again and retry." : `Couldn't change remote access for ${u.handle}.`); return; }
+      if (!r.ok) { setMessage(r.status === 403 || r.status === 404 ? "Not allowed. Sign in again and retry." : `Couldn't change remote access for ${u.handle}.`); return; }
       setReply(prev => prev && { ...prev, users: prev.users.map(x => x.handle === u.handle ? { ...x, remote: { ...x.remote, entitled: active } } : x) });
       setMessage(`Remote access ${active ? "on" : "off"} for ${u.handle}.`);
     } catch { setMessage(`Couldn't change remote access for ${u.handle}.`); }

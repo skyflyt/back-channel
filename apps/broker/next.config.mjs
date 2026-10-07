@@ -25,7 +25,7 @@ const nextConfig = {
           { key: "X-Frame-Options",           value: "DENY" },
           { key: "Referrer-Policy",           value: "strict-origin-when-cross-origin" },
           { key: "Permissions-Policy",        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()" },
-          // Content-Security-Policy is set per-request in middleware.ts (nonce + Trusted Types).
+          // Content-Security-Policy is set per-request in src/proxy.ts (Trusted Types).
         ],
       },
     ];

@@ -91,6 +91,16 @@ These are written into the admin UI footer and the public privacy statement (§5
 > mutations, the CSRF double-submit. `Account.admin` is kept for schema compatibility but
 > grants nothing; `/api/admin/grant` and `/api/admin/revoke` answer 410 to the owner and
 > 401/403 to everyone else. The design notes below are kept as history.
+>
+> **Added 2026-10-06.** From outside, the admin area does not exist for anyone but the owner.
+> `src/proxy.ts` runs the same check before a page or handler is chosen and answers every
+> non-owner (signed out included) exactly as it would a URL that does not exist: same status,
+> headers and body, for `/admin`, `/api/admin/*` and `/api/appbridge/v1/admin/*`. The handlers'
+> own 401/403 remain as a second lock. There is no sign-in prompt at `/admin`: sign in at
+> `/login`, and the account page shows the Admin tab, whose label and address come from
+> `GET /api/account/me` so they are not in the public scripts.
+> `node apps/broker/scripts/check-admin-404.mjs https://back-channel.app` compares the two
+> byte for byte and is safe to run against production.
 
 - **`Account.admin Boolean @default(false)`** — designates admin accounts. Seed **`skylar@bc` as the first admin** (a one-off migration/manual set). The first admin is the "admin-of-admins."
 - **`GET /api/admin/analytics?period=24h|7d|30d|all`** — returns the aggregates above as JSON. Requires the bearer-authed (or cookie-authed, §4) account to have `admin = true`; 403 (opaque) otherwise.
