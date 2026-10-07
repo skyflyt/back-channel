@@ -42,10 +42,11 @@ export async function GET(req: NextRequest) {
     inbox_check_enabled: account.inboxCheckEnabled,
     inbox_check_minutes: account.inboxCheckMinutes,
     summary: { active_sessions: liveSessions },
-    // Present only for the owner (src/lib/admin.ts), so the dashboard can show its Admin tab.
-    // Omitted, not false, for everyone else: /admin answers them 404 so as not to confirm that an
-    // admin area exists, and a false here would say the same thing in another place. It grants
-    // nothing: /admin and every admin API check the owner again on the server.
-    ...(isOwnerAccount(account) ? { admin: true } : {}),
+    // Present only for the owner (src/lib/admin.ts): one more tab for the dashboard to show, sent
+    // whole. The label and the address come from here so that the script every visitor downloads
+    // never contains them; the admin area answers everyone else as a URL that does not exist
+    // (src/proxy.ts), and a link in a public bundle would say otherwise. Omitted, not null, for
+    // everyone else. It grants nothing: the page and every admin API check the owner again.
+    ...(isOwnerAccount(account) ? { owner_tab: { label: "Admin", href: "/admin" } } : {}),
   });
 }

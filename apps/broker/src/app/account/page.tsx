@@ -27,11 +27,12 @@ import { Composer, type ComposerPrefill } from "./composer";
 import { FriendPage } from "./friend-page";
 import { AppShell, type ShellTab } from "@/components/ui/shell";
 import { type PaletteItem } from "@/components/ui/command-palette";
+import { ownerTabFrom } from "@/components/ui/use-is-owner";
 import { Chip, EmptyState, HealthDot, MetricCard, PersonAvatar, SkeletonRows, agoShort, shortHandle, initialsOf } from "@/components/ui/primitives";
 import { DEMO_ACCOUNT } from "@/lib/demo-data";
 
 interface Me {
-  admin?: boolean; // present (true) only for the owner: shows the Admin tab
+  owner_tab?: { label: string; href: string }; // present only for the owner: one more tab, sent whole by the server
   id: string; handle: string; email: string; display_name: string | null; created_at: string;
   email_verified: boolean; api_key_masked: string | null; api_key_last_used_at: string | null;
   notify_idle_frames: boolean; favor_per_peer_daily?: number; favor_global_tokens_daily?: number;
@@ -634,12 +635,13 @@ export default function AccountPage() {
   // Default reading-pane selection: first item that needs the user, else first thread.
   const effectiveSel: InboxSel = inboxSel ?? (vInbox[0] ? { kind: "req", id: vInbox[0].id } : vActive[0] ? { kind: "thread", id: vActive[0].session_id } : null);
 
+  const ownerTab = ownerTabFrom(me);
   const shellTabs: ShellTab[] = [...NAV.map((n): ShellTab => ({
     key: n.key, label: n.label,
     count: n.key === "messages" ? needsYou || undefined : undefined,
     onSelect: () => { setNav(n.key); if (n.key !== "friends") setFriendView(null); },
   })), { key: "remote", label: "Remote", href: "/account/remote" },
-    ...(me?.admin ? [{ key: "admin", label: "Admin", href: "/admin" }] : [])];
+    ...(ownerTab ? [{ key: "owner", ...ownerTab }] : [])];
 
   const paletteItems: PaletteItem[] = useMemo(() => {
     const items: PaletteItem[] = [];

@@ -2,7 +2,9 @@
  * Owner-only admin gate. Every admin surface goes through checkOwnerAdmin():
  *   - src/app/api/admin/** (analytics, users, remote-connections, grant, revoke)
  *   - PUT /api/appbridge/v1/admin/entitlements (src/lib/appbridge.ts setEntitlement)
- *   - the /admin page itself (src/app/admin/page.tsx, server-side)
+ *   - the /admin page: first in src/proxy.ts, which answers everyone but the
+ *     owner as it would a URL that does not exist (same status, body and
+ *     headers), then again in the page itself (src/app/admin/page.tsx)
  *
  * A caller passes only when ALL of these hold:
  *   1. No Authorization header at all. A bc_ agent key (or any bearer) never
@@ -21,6 +23,12 @@
  * Account.admin is deliberately NOT consulted. The column stays for schema
  * compatibility, but it grants nothing: an account with admin=true whose email
  * is not in ADMIN_EMAILS gets 403 like anyone else.
+ *
+ * From outside, none of the refusals below is ever seen on a GET or any other
+ * request to the admin area: src/proxy.ts runs this same check first and
+ * answers every non-owner as a URL that does not exist. What follows is what
+ * the handlers themselves answer, the second lock, and what the owner sees
+ * (a mutation without its CSRF token).
  *
  * Responses: 401 {error:"unauthorized"} when signed out, 403 {error:"forbidden"}
  * for every non-owner (bearer, unverified, not allowlisted, allowlist unset),

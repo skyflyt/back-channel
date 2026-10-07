@@ -397,21 +397,22 @@ test("remote connection log: at most 50 rows from the newest 500 events, and it 
   assert.equal(take, 500);
 });
 
-test("GET /api/account/me tells the owner, and only the owner, to show the Admin tab; the key is absent for everyone else", async () => {
+test("GET /api/account/me sends the owner, and only the owner, the extra tab; the key is absent for everyone else", async () => {
   // The route also counts the account's live sessions with a nested filter this file's fake does not
   // model; that count is not what is under test.
   const realCount = db.session.count;
   db.session.count = async () => 0;
   try {
     const me = async (who: Who) => (await (await routes.me()).GET(req("GET", who))).json();
-    assert.equal((await me("owner")).admin, true);
-    for (const who of ["user", "admin"] as const) assert.equal("admin" in (await me(who)), false, `${who}: no admin key at all, not admin:false`);
+    assert.deepEqual((await me("owner")).owner_tab, { label: "Admin", href: "/admin" });
+    const absent = (body: Row) => { assert.equal("owner_tab" in body, false); assert.equal("admin" in body, false); assert.doesNotMatch(JSON.stringify(body), /"\/admin"|"Admin"/); };
+    for (const who of ["user", "admin"] as const) absent(await me(who));
     // Not the owner once the allowlist is gone, or while unverified.
     delete process.env.ADMIN_EMAILS;
-    assert.equal("admin" in (await me("owner")), false);
+    absent(await me("owner"));
     process.env.ADMIN_EMAILS = "owner@example.com";
     tables.account.find(a => a.id === "acct-owner")!.emailVerifiedAt = null;
-    assert.equal("admin" in (await me("owner")), false);
+    absent(await me("owner"));
   } finally {
     db.session.count = realCount;
   }
@@ -520,4 +521,137 @@ test("grant/revoke can no longer widen (or change) admin, even for the owner", a
   // And the admin column itself grants nothing: flip it on for a normal user and they are still refused.
   tables.account.find(a => a.id === "acct-user")!.admin = true;
   await expectRefused(await call.users(req("GET", "user")), 403, "forbidden", "admin=true user");
+});
+
+// ── The /admin page: src/proxy.ts answers everyone but the owner as it would a URL that does not exist ──
+function pageReq(path: string, who: Who, o: { bearer?: string; cookie?: string } = {}) {
+  const headers: Record<string, string> = {};
+  const cookie = o.cookie ?? COOKIES[who];
+  if (cookie) headers.cookie = `bc_session=${cookie}`;
+  if (o.bearer) headers.authorization = `Bearer ${o.bearer}`;
+  return new NextRequest(`https://back-channel.app${path}`, { headers });
+}
+const proxy = async (r: NextRequest) => (await import("@/proxy")).proxy(r);
+const rewrittenTo = (res: Response) => res.headers.get("x-middleware-rewrite");
+const NOWHERE = "https://back-channel.app/_no-such-page";
+const shape = (res: Response) => JSON.stringify([res.status, [...res.headers].sort()]);
+
+test("/admin: the owner is let through to the page, with the CSP header", async () => {
+  const res = await proxy(pageReq("/admin", "owner"));
+  assert.equal(rewrittenTo(res), null);
+  assert.equal(res.headers.get("x-middleware-next"), "1");
+  assert.match(res.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+});
+
+test("/admin: everyone else is sent to a path with no route, and every refusal is the same response", async () => {
+  const refusals: [string, () => NextRequest][] = [
+    ["signed out", () => pageReq("/admin", "none")],
+    ["a signed-in user", () => pageReq("/admin", "user")],
+    ["an account with admin=true that is not allowlisted", () => pageReq("/admin", "admin")],
+    ["a bearer key", () => pageReq("/admin", "none", { bearer: "bc_ownerlookalike" })],
+    ["a bearer key alongside the owner's cookie", () => pageReq("/admin", "owner", { bearer: "bc_ownerlookalike" })],
+    ["a cookie that looks like a session and is not one", () => pageReq("/admin", "none", { cookie: "cs_forged" })],
+    ["a cookie without the session prefix", () => pageReq("/admin", "none", { cookie: "owner" })],
+    ["a path under /admin", () => pageReq("/admin/users?x=1", "user")],
+    ["/admin with an escaped letter, which the router decodes", () => pageReq("/%61dmin", "user")],
+    ["/admin as a data request", () => pageReq("/_next/data/BUILD/admin.json", "none")],
+    ["an admin API, signed out", () => pageReq("/api/admin/users", "none")],
+    ["an admin API, as a user", () => pageReq("/api/admin/remote-connections", "user")],
+    ["an admin API, with a bearer key", () => pageReq("/api/admin/analytics", "none", { bearer: "bc_ownerlookalike" })],
+    ["an admin API with an escaped letter", () => pageReq("/api/%61dmin/users", "user")],
+    ["the Remote entitlement admin route", () => pageReq("/api/appbridge/v1/admin/entitlements", "user")],
+  ];
+  const seen = new Set<string>();
+  for (const [label, make] of refusals) {
+    const res = await proxy(make());
+    assert.equal(rewrittenTo(res), NOWHERE, label);
+    assert.match(res.headers.get("content-security-policy") ?? "", /default-src 'self'/, `${label}: still gets the CSP header`);
+    seen.add(shape(res));
+  }
+  assert.equal(seen.size, 1, "nothing in the proxy's answer tells one kind of non-owner from another");
+  assert.ok(!calls.includes("agentToken.findUnique"), "a bearer key is refused without being looked up");
+
+  // The path it rewrites to must stay unrouted, or the 404 becomes a page.
+  const { existsSync } = await import("node:fs");
+  assert.equal(existsSync(new URL("../src/app/_no-such-page", import.meta.url)), false);
+});
+
+test("/admin: an unverified owner, and an empty allowlist, are not the owner", async () => {
+  tables.account.find(a => a.id === "acct-owner")!.emailVerifiedAt = null;
+  assert.equal(rewrittenTo(await proxy(pageReq("/admin", "owner"))), NOWHERE, "unverified");
+  tables.account.find(a => a.id === "acct-owner")!.emailVerifiedAt = new Date();
+  assert.equal(rewrittenTo(await proxy(pageReq("/admin", "owner"))), null, "verified again");
+  for (const value of [undefined, "", "not-an-email"]) {
+    if (value === undefined) delete process.env.ADMIN_EMAILS; else process.env.ADMIN_EMAILS = value;
+    assert.equal(rewrittenTo(await proxy(pageReq("/admin", "owner"))), NOWHERE, `ADMIN_EMAILS=${JSON.stringify(value)}`);
+  }
+});
+
+test("/admin: if the check itself fails, the answer is still the 404 (closed, and no different)", async () => {
+  const real = db.sessionCookie.findUnique;
+  db.sessionCookie.findUnique = async () => { throw new Error("database is down"); };
+  try {
+    assert.equal(rewrittenTo(await proxy(pageReq("/admin", "owner"))), NOWHERE);
+  } finally {
+    db.sessionCookie.findUnique = real;
+  }
+  assert.equal(rewrittenTo(await proxy(pageReq("/admin", "owner"))), null);
+});
+
+test("the owner reaches the admin APIs through the proxy, and a mutation by a non-owner never reaches its handler", async () => {
+  for (const path of ["/api/admin/users", "/api/admin/analytics", "/api/admin/remote-connections", "/api/appbridge/v1/admin/entitlements"]) {
+    assert.equal(rewrittenTo(await proxy(pageReq(path, "owner"))), null, path);
+  }
+  for (const method of ["POST", "PUT", "DELETE", "HEAD"]) {
+    const res = await proxy(new NextRequest("https://back-channel.app/api/admin/grant", { method, headers: { cookie: "bc_session=cs_user" } }));
+    assert.equal(rewrittenTo(res), NOWHERE, method);
+  }
+});
+
+test("isAdminPath: the admin area and nothing that merely resembles it", async () => {
+  const { isAdminPath } = await import("@/proxy");
+  for (const path of ["/admin", "/admin/", "/admin/x/y", "/%61dmin", "/%61%64min/x", "/api/admin", "/api/admin/users", "/api/%61dmin/users", "/api/appbridge/v1/admin/entitlements"]) {
+    assert.equal(isAdminPath(path), true, path);
+  }
+  for (const path of ["/", "/administrator", "/admins", "/admin.txt", "/api/administrator", "/api/account/me", "/api/appbridge/v1/devices", "/account/admin", "/Admin", "/%2561dmin", "/admin%"]) {
+    assert.equal(isAdminPath(path), false, path);
+  }
+});
+
+test("the script every visitor downloads does not name the admin area", async () => {
+  // The tab's label and address reach the owner's browser from /api/account/me. If either were written
+  // into a client component, it would sit in a public bundle for anyone to read.
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const root = new URL("../src/", import.meta.url);
+  const walk = (dir: URL): URL[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(new URL(`${e.name}/`, dir)) : /\.tsx?$/.test(e.name) ? [new URL(e.name, dir)] : []);
+  const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1"); // comments are not shipped
+  const offenders: string[] = [];
+  for (const file of [...walk(new URL("app/", root)), ...walk(new URL("components/", root))]) {
+    if (file.pathname.includes("/app/admin/") || file.pathname.includes("/app/api/")) continue; // the owner's page, and server code
+    const src = readFileSync(file, "utf8");
+    if (!/^\s*["']use client["']/.test(src)) continue;
+    if (/["'`]\/admin\b|["'`]\/api\/admin\b|label:\s*["']Admin["']/.test(strip(src))) offenders.push(file.pathname.split("/src/")[1]);
+  }
+  assert.deepEqual(offenders, []);
+});
+
+test("the gate is for the admin area only: other pages pass straight through and cost no database read", async () => {
+  for (const path of ["/", "/account", "/account/remote", "/administrator", "/admins", "/login", "/api/account/me", "/api/administrator"]) {
+    calls.length = 0;
+    const res = await proxy(pageReq(path, "none"));
+    assert.equal(rewrittenTo(res), null, path);
+    assert.deepEqual(calls, [], `${path}: no lookup`);
+    assert.match(res.headers.get("content-security-policy") ?? "", /default-src 'self'/, path);
+  }
+});
+
+test("the proxy's matcher covers /admin, and the page keeps its own lock with no sign-in prompt", async () => {
+  const { config } = await import("@/proxy");
+  const pattern = new RegExp(`^${config.matcher[0].source}$`);
+  for (const path of ["/admin", "/admin/users"]) assert.ok(pattern.test(path), `${path} runs through the proxy`);
+  const { readFileSync } = await import("node:fs");
+  const page = readFileSync(new URL("../src/app/admin/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /if \(!gate\.ok\) notFound\(\);/, "everyone who is not the owner gets notFound(), signed out included");
+  assert.doesNotMatch(page, /href="\/login"|Sign in/, "a sign-in prompt at /admin says there is something to sign in to");
 });

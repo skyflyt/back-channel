@@ -17,6 +17,7 @@ import { createServer } from "node:http";
 import { parse } from "node:url";
 import next from "next";
 import { handleRelayUpgrade } from "./src/lib/relay.mjs";
+import { hideRefusalMarkers } from "./src/lib/no-such-page.mjs";
 
 const dev = process.env.NODE_ENV !== "production";
 const port = parseInt(process.env.PORT ?? "8080", 10);
@@ -30,6 +31,9 @@ await app.prepare();
 const server = createServer(async (req, res) => {
   try {
     const parsedUrl = parse(req.url ?? "/", true);
+    // /admin answers everyone but the owner as a URL that does not exist (src/proxy.ts).
+    // This takes Next's "rewritten to" headers off that one answer so it really is the same.
+    hideRefusalMarkers(res);
     await handle(req, res, parsedUrl);
   } catch (err) {
     console.error("Request error:", err);
