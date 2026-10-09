@@ -73,6 +73,9 @@ model Account {
   // Back Channel Remote paid tier (Stripe): relation fields only, no Account columns.
   billingCustomer       BillingCustomer?
   remoteSubscriptions   RemoteSubscription[]
+  // Lists (task lists for people and their agents): relation fields only, no Account columns.
+  taskListsOwned        TaskList[]       @relation("TaskListOwner")
+  taskListMemberships   TaskListMember[]
 }
 
 // Invite-a-friend (Phase 3). An existing user invites someone by email; the
@@ -682,4 +685,105 @@ model StripeEvent {
   processedAt DateTime @default(now())
 
   @@index([processedAt])
+}
+
+// ── Lists: task lists for people and their agents (docs/lists.md) ──────────
+// List content is stored readable by the broker ON PURPOSE (decision
+// 2026-10-09): lists must work from every host, and remote MCP connectors
+// (claude.ai, ChatGPT) cannot decrypt anything. /privacy says so. Messages
+// between agents stay end-to-end encrypted; nothing here touches them.
+// Agents are never members. TaskListAgentGrant lets a person's OWN agent see or
+// work a list, and every agent action records both the agent and its person.
+// Attribution ids (createdBy*, claim*, completedBy*, author*) are plain columns
+// with no foreign key: revoking an agent or a person leaving must never
+// cascade-delete the history of what they did.
+model TaskList {
+  id             String    @id @default(uuid())
+  ownerAccountId String
+  name           String
+  emoji          String?
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  owner          Account   @relation("TaskListOwner", fields: [ownerAccountId], references: [id], onDelete: Cascade)
+  members        TaskListMember[]
+  agentGrants    TaskListAgentGrant[]
+  tasks          TaskItem[]
+
+  @@index([ownerAccountId])
+}
+
+model TaskListMember {
+  listId           String
+  accountId        String
+  role             String   // owner | member
+  agentsTakeFrom   String   @default("me") // me | anyone: whose tasks this person's agents may act on without an OK
+  addedByAccountId String
+  joinedAt         DateTime @default(now())
+  list             TaskList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  account          Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@id([listId, accountId])
+  @@index([accountId])
+}
+
+model TaskListAgentGrant {
+  listId       String
+  agentTokenId String   // AgentToken.id of one of accountId's agents (no FK: see the block comment)
+  accountId    String   // the agent's person, who granted it; must be a member of the list
+  access       String   // view | work
+  createdAt    DateTime @default(now())
+  list         TaskList @relation(fields: [listId], references: [id], onDelete: Cascade)
+
+  @@id([listId, agentTokenId])
+  @@index([agentTokenId])
+}
+
+model TaskItem {
+  id                   String    @id @default(uuid())
+  listId               String
+  title                String
+  notes                String    @default("")
+  version              Int       @default(1)       // optimistic concurrency on title/notes edits
+  status               String    @default("open")  // open | in_progress | blocked | needs_review | done | dropped
+  position             Float
+  dueAt                DateTime?
+  createdByAccountId   String
+  createdByAgentId     String?
+  assigneeAccountId    String?
+  assigneeAgents       Boolean   @default(false)   // "that person's agents" rather than the person
+  assigneeAgentId      String?                     // one specific agent
+  agentSeenAt          DateTime?                   // first time one of the assignee's agents saw it; the doorbell counts it until then
+  claimAccountId       String?
+  claimAgentId         String?
+  claimedAt            DateTime?
+  claimExpiresAt       DateTime?                   // agents only: lapses after 60 quiet minutes
+  reviewerAccountId    String?
+  completedAt          DateTime?
+  completedByAccountId String?
+  completedByAgentId   String?
+  summary              String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  list                 TaskList  @relation(fields: [listId], references: [id], onDelete: Cascade)
+  entries              TaskEntry[]
+
+  @@index([listId, status, position])
+  @@index([assigneeAccountId, status])
+  @@index([claimAgentId])
+  @@index([updatedAt])
+}
+
+model TaskEntry {
+  id              String   @id @default(uuid())
+  taskId          String
+  kind            String   // comment | progress | event
+  authorAccountId String
+  authorAgentId   String?
+  body            String
+  eventType       String?
+  createdAt       DateTime @default(now())
+  task            TaskItem @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
 }

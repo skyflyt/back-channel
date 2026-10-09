@@ -29,6 +29,8 @@ import { POST as endSessionPOST } from "@/app/api/sessions/[id]/end/route";
 import { GET as scopesGET } from "@/app/api/scopes/route";
 import { POST as viewTokenSelfPOST } from "@/app/api/account/view-token-self/route";
 import { GET as agentPayloadsGET } from "@/app/api/inbox/agent-payloads/route";
+// Lists (bc_task*, bc_list_create): called directly with the caller's own key, same rules as /api/lists.
+import { isListTool, listsTool, tasksWaitingForAgents } from "@/lib/lists";
 import { waitForInbox, TooManyWaitersError } from "@/lib/inbox-bus";
 // Side effect: registers the shared pendingCounter with inbox-bus (same wiring
 // /api/inbox/check and /api/inbox/events rely on) so waitForInbox here counts
@@ -107,6 +109,7 @@ async function dispatchTool(
   args: Record<string, unknown>,
   auth: { accountId: string; handle: string; displayName: string | null; agentTokenId: string | null },
 ): Promise<ToolOutcome> {
+  if (isListTool(name)) return listsTool(req, name, args);
   switch (name) {
     case "bc_whoami": {
       const agent = auth.agentTokenId
@@ -181,6 +184,9 @@ async function dispatchTool(
           const payloads = await fromResponse(await agentPayloadsGET(synth(req, "/api/inbox/agent-payloads", "GET")));
           if (payloads.status === 200) body.agent_payloads = JSON.parse(payloads.text).payloads;
         }
+        // Tasks assigned to this account's agents also ring the doorbell; say so, or a nonzero count reads as unexplained.
+        const tasksWaiting = await tasksWaitingForAgents(auth.accountId);
+        if (tasksWaiting > 0) body.tasks_waiting_for_your_agents = { count: tasksWaiting, next: "Call bc_tasks to see them." };
         return { status: active.status, text: JSON.stringify(body) };
       } catch {
         return active; // best-effort merge; the count alone is still useful

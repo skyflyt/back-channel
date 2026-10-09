@@ -18,7 +18,8 @@
  * multi-instance future swaps this Map for Redis pub/sub behind the same
  * four exported functions (documented, not built - v1 is in-memory only).
  *
- * @typedef {"frame" | "payload" | "invite"} InboxKind
+ * @typedef {"frame" | "payload" | "invite" | "task"} InboxKind
+ *   "task": a Lists task assigned to the account's agents that none of them has seen yet (docs/lists.md).
  *
  * @typedef {Object} InboxEvent
  * @property {number} pending_count

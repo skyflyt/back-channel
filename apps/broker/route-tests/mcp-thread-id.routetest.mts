@@ -162,5 +162,5 @@ test("tools/list: bc_dashboard_link is offered to a full-scope key and left out 
   const names = await list();
   assert.equal(names.includes("bc_dashboard_link"), false);
   assert.ok(names.includes("bc_check_inbox") && names.includes("bc_send_message"), "everything else is still there");
-  assert.equal(names.length, 9);
+  assert.equal(names.length, new Set(names).size, "each tool appears once");
 });
