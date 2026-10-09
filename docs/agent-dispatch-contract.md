@@ -86,7 +86,7 @@ A payload with `profile: "remote-app"` hands an approved remote app session to t
 `remoteAppSessionId` (a UUID) and, optionally, the words `objective`, `acceptance` and `acceptanceCriteria`.
 Nothing else is accepted: any other field rejects the task without running anything.
 Conversely, `remoteAppSessionId` on any other profile is refused. The local profile named `remote-app`
-chooses the runtime and must be read-only (codex `read-only` sandbox). The sender's `allowedSenders` entry
+chooses the runtime and must use the claude adapter in v1 (codex is refused: its shell could reach the PC unreported). The sender's `allowedSenders` entry
 there decides whether it may hand sessions over at all.
 
 After claiming the task, the worker treats Back Channel's session as the authority. It runs nothing unless the

@@ -219,8 +219,8 @@ reporting), `agent-control.mjs` (the pipe client) and `remote-app-mcp.mjs` (the 
 `rules.mjs`, and a fixture agent CLI that speaks MCP.
 
 **The profile.** `remote-app` is an ordinary local profile the owner installs (`profile --name remote-app --file
-...`): adapter, executable, working directory, `allowedSenders` and limits. It must be read-only: codex
-`sandbox: "read-only"`; claude `plan` or `manual`. Set `maxRuntimeMs` to cover the sessions you approve (it
+...`): adapter, executable, working directory, `allowedSenders` and limits. In v1 it must use the claude
+adapter (`plan` or `manual`); codex is refused, see below. Set `maxRuntimeMs` to cover the sessions you approve (it
 defaults to 5 minutes, and a run never outlasts its session). The sealed payload may carry only the routing
 binding, `profile`, `remoteAppSessionId` and words (`objective`, `acceptance`, `acceptanceCriteria`). Any other
 field (an executable, flags, a working directory, environment, a tool) rejects the task without running
@@ -291,9 +291,11 @@ answer, its end summary and its notes.
 - The `whoami` SID lookup on a domain or Entra account.
 - Process-tree cleanup of a real CLI.
 
-A codex read-only sandbox may still let a shell command open the agent-control pipe directly. The host enforces
-scope either way, but such acts would not be reported. The host should accept only the worker's process, or use
-the claude adapter.
+**Why claude only, in v1.** A codex read-only sandbox can still run shell commands as the user, and one could
+open the agent-control pipe directly. The host would still enforce scope, but those steps would never be
+reported. Claude runs remote-app with shell, file writes and the web denied, so its only way to the PC is the
+worker's reporting bridge. `validateRemoteAppProfile` refuses codex. It comes back once the pipe takes an
+executor secret only the worker holds (contract v1.1).
 
 ## Lists
 
