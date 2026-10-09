@@ -28,6 +28,9 @@ export const SUPPORT_CONNECTOR_OFF = "The support connector isn't running on thi
 export const TIMEOUT_MS = 30000;
 /** The helper waits up to 60 s for the person's yes or no (contract §4.1), so a support request gets longer. */
 export const SUPPORT_TIMEOUT_MS = 90000;
+// What a v1 AppBridge host answers to a hello it doesn't understand (AgentControlContract.Malformed). A v1 host
+// checks no secret at all, so on exactly this answer the agent-control client may greet once more without one.
+export const V1_MALFORMED = "That request isn't valid for agent control v1.";
 const MAX_MESSAGE = 1024 * 1024;
 // v1.1 (contract §5): `abx_` and 43 base64url characters, issued by Back Channel once per session.
 const EXECUTOR_SECRET = /^abx_[A-Za-z0-9_-]{43}$/;
@@ -108,11 +111,16 @@ function bounded(text, max) {
  */
 export class AgentControlClient {
     #executorSecret;
-    constructor({ path: target, timeoutMs = TIMEOUT_MS, executorSecret, refusals = REFUSALS, words = AGENT_CONTROL_WORDS } = {}) {
+    #v1Fallback;
+    #omitSecret = false;
+    constructor({ path: target, timeoutMs = TIMEOUT_MS, executorSecret, refusals = REFUSALS, words = AGENT_CONTROL_WORDS, v1Fallback = true } = {}) {
         if (executorSecret !== undefined && !isExecutorSecret(executorSecret)) throw Error('Invalid executor secret');
         this.target = target ?? defaultPipePath;
         this.timeoutMs = timeoutMs;
         this.#executorSecret = executorSecret;
+        // Phase A rollout: a host not yet on v1.1 refuses the secret field. The support connector is
+        // v1.1 from its first release and always requires the secret, so it never falls back.
+        this.#v1Fallback = v1Fallback;
         this.refusals = refusals;
         this.words = words;
         this.pending = new Map();
@@ -156,8 +164,15 @@ export class AgentControlClient {
         socket.on('error', () => {});
         socket.on('close', () => this.#drop(socket, 'The connection to the PC closed.'));
         this.socket = socket;
-        const greeting = { op: 'hello', version: 1, ...(this.#executorSecret ? { executorSecret: this.#executorSecret } : {}) };
+        const withSecret = !!this.#executorSecret && !this.#omitSecret;
+        const greeting = { op: 'hello', version: 1, ...(withSecret ? { executorSecret: this.#executorSecret } : {}) };
         const hello = normalize(await this.#send(socket, greeting), this.refusals);
+        if (!hello.ok && withSecret && this.#v1Fallback && hello.outcome === 'fail_closed' && hello.reason === V1_MALFORMED) {
+            // A v1 host: it checks no secret, so greeting it without one gives nothing away. Once, on a fresh connection.
+            this.#omitSecret = true;
+            this.#drop(socket);
+            return this.#open();
+        }
         if (!hello.ok) { this.#drop(socket); throw hello; }
         if (hello.version !== 1) { this.#drop(socket); throw refusal('fail_closed', this.words.version); }
         if (hello.agentControl !== true) { this.#drop(socket); throw refusal('needs_user', this.words.off); }
@@ -215,7 +230,7 @@ export class AgentControlClient {
 export class SupportConnectorClient extends AgentControlClient {
     constructor({ path: target, timeoutMs = SUPPORT_TIMEOUT_MS, executorSecret } = {}) {
         if (!isExecutorSecret(executorSecret)) throw Error("The support connector needs the session's executor secret");
-        super({ path: target ?? defaultSupportPipePath, timeoutMs, executorSecret, refusals: SUPPORT_REFUSALS, words: SUPPORT_WORDS });
+        super({ path: target ?? defaultSupportPipePath, timeoutMs, executorSecret, refusals: SUPPORT_REFUSALS, words: SUPPORT_WORDS, v1Fallback: false });
     }
 }
 
