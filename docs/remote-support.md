@@ -240,11 +240,24 @@ It reaches the helped person's PC only through that PC's AppBridge support conne
    the routing binding, `profile`, `remoteAppSessionId`, `executorSecret` and words (`objective`, `acceptance`,
    `acceptanceCriteria`). Anything else, or a missing or malformed secret, rejects the task unread. The local
    profile `remote-support` is read-only claude, like `remote-app`, and its `allowedSenders` decide who may send.
-3. The worker reads nothing from Back Channel. It greets the connector with `hello` carrying the secret (on every
-   connection, and in no other message) and needs the session in the connector's `sessions` list. The connector
-   knows only `executorSecretSha256` from its support-client pass and refuses a wrong secret. A missing pipe is
-   `waiting_user`: "The support connector isn't running on this PC. Turn on 'Allow this PC to reach helpers I approve'
-   in AppBridge."
+3. The worker reads nothing from Back Channel. With no connector pipe yet, it starts AppBridge's Windows client in
+   its connector mode for this session: `AppBridge.Client.exe --support-connector <sessionId>`, exactly that, no
+   shell. The client comes from the install folder (`%ProgramFiles%\AppBridge\owner\client`), or the worker's local
+   config `supportConnectorPath`, never from a task.
+   - The connector takes its support-client pass, reaches the helper and checks its pin before its pipe exists. The
+     worker waits for the pipe while the connector runs (up to 60 s) and stops the connector when the run ends.
+   - An exit before the pipe is up is said plainly:
+     - 3: "Allow this PC to reach helpers I approve" is off, or the PC isn't registered (`waiting_user`);
+     - 4: no pass;
+     - 5: the helper is unreachable or isn't the pinned one;
+     - 6: another connector is running;
+     - not installed: `waiting_user`.
+   - A connector already bridging the session is used as it is.
+   - The worker greets the connector with `hello` carrying the secret (on every connection, and in no other
+     message), and needs the session in the connector's `sessions` list. The connector knows only
+     `executorSecretSha256` from its support-client pass and refuses a wrong secret.
+   - With no client to start (off Windows), a missing pipe is `waiting_user`: "The support connector isn't running
+     on this PC. Turn on 'Allow this PC to reach helpers I approve' in AppBridge."
 4. The CLI gets one worker-owned MCP server, `bc_remote_support`, with the same tools and schemas as remote app
    sessions (`remote_sessions`, `remote_open`, `remote_observe`, `remote_act`, `remote_note`, `remote_end`).
    The wording and the prompt say:
@@ -270,8 +283,9 @@ per connection and is strict about fields, plus a loopback Back Channel that mus
 agent CLI.
 
 If that one reply is lost, the asking agent rotates the secret with `POST /api/support/invites/{id}/executor-secret`
-(REST, audited without the value): the reply carries a new secret, and the old one stops opening the pipe. The connector
-re-reads its pass to learn the new hash.
+(REST, audited without the value): the reply carries a new secret, and the old one stops opening the pipe. A
+connector keeps the hash from the pass it started with, so the new secret opens the next connector: the worker starts
+one per run and stops it after, and an idle one stops itself after two minutes.
 
 ## Endpoints
 
