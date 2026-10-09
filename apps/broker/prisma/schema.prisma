@@ -765,6 +765,7 @@ model TaskList {
   members        TaskListMember[]
   agentGrants    TaskListAgentGrant[]
   tasks          TaskItem[]
+  events         TaskListEvent[]
 
   @@index([ownerAccountId])
 }
@@ -774,6 +775,7 @@ model TaskListMember {
   accountId        String
   role             String   // owner | member
   agentsTakeFrom   String   @default("me") // me | anyone: whose tasks this person's agents may act on without an OK
+  notify           String   @default("off") // off | mentions_reviews: opt-in email nudges for this person on this list
   addedByAccountId String
   joinedAt         DateTime @default(now())
   list             TaskList @relation(fields: [listId], references: [id], onDelete: Cascade)
@@ -823,6 +825,9 @@ model TaskItem {
   updatedAt            DateTime  @updatedAt
   list                 TaskList  @relation(fields: [listId], references: [id], onDelete: Cascade)
   entries              TaskEntry[]
+  oks                  TaskAgentOk[]
+  mentions             TaskMention[]
+  reactions            TaskReaction[]
 
   @@index([listId, status, position])
   @@index([assigneeAccountId, status])
@@ -840,6 +845,73 @@ model TaskEntry {
   eventType       String?
   createdAt       DateTime @default(now())
   task            TaskItem @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  mentions        TaskMention[]
 
   @@index([taskId, createdAt])
+}
+
+// ── Lists Phase 2: sharing with friends (docs/lists.md) ─────────────────────
+// A member counts only while they and the owner are mutual friends (both
+// TrustedPeer rows); lists.ts checks that on every request, so access fails
+// closed. These tables follow the same no-FK attribution rule as above.
+
+// "My agents may act on this task": one row per person who OK'd it. An OK only
+// ever covers the OK-giver's own agents.
+model TaskAgentOk {
+  taskId     String
+  accountId  String   // the person whose agents may now act on it
+  via        String   // web | user_in_chat | list_setting
+  viaAgentId String?  // the agent that recorded an OK its person gave in chat
+  createdAt  DateTime @default(now())
+  task       TaskItem @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, accountId])
+  @@index([accountId])
+}
+
+// An @mention in a comment or progress line: a person on the list, or one of a
+// member's agents with access to it. Agent mentions ring that person's doorbell
+// until the agent sees them; person mentions wait on their plate.
+model TaskMention {
+  id        String    @id @default(uuid())
+  entryId   String
+  taskId    String
+  accountId String    // the person mentioned, or the person whose agent was
+  agentId   String?   // set when an agent was mentioned
+  seenAt    DateTime?
+  createdAt DateTime  @default(now())
+  entry     TaskEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  task      TaskItem  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, seenAt])
+  @@index([taskId])
+  @@index([entryId])
+}
+
+// 👍 🎉 🙏 ✅ on a task, by a person or one of their agents. The migration adds a
+// unique index on (taskId, accountId, COALESCE(agentId, ''), emoji), which
+// Prisma can't express, so a reaction toggles rather than stacks.
+model TaskReaction {
+  id        String   @id @default(uuid())
+  taskId    String
+  accountId String
+  agentId   String?
+  emoji     String
+  createdAt DateTime @default(now())
+  task      TaskItem @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+}
+
+// List-level activity: someone added, someone left or was taken off.
+model TaskListEvent {
+  id               String   @id @default(uuid())
+  listId           String
+  eventType        String   // member_added | member_left | member_removed
+  actorAccountId   String
+  subjectAccountId String
+  createdAt        DateTime @default(now())
+  list             TaskList @relation(fields: [listId], references: [id], onDelete: Cascade)
+
+  @@index([listId, createdAt])
 }

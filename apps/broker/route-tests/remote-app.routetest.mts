@@ -84,6 +84,12 @@ const db: any = {
   taskListAgentGrant: table("taskListAgentGrant"),
   taskItem: table("taskItem"),
   taskEntry: table("taskEntry", () => ({ id: crypto.randomUUID(), createdAt: new Date(), eventType: null, authorAgentId: null })),
+  // Lists Phase 2 (sharing): every Lists operation now checks friendship, OKs, mentions and reactions.
+  trustedPeer: table("trustedPeer"),
+  taskAgentOk: table("taskAgentOk", () => ({ createdAt: new Date(), viaAgentId: null })),
+  taskMention: table("taskMention", () => ({ id: crypto.randomUUID(), createdAt: new Date(), agentId: null, seenAt: null })),
+  taskReaction: table("taskReaction", () => ({ createdAt: new Date(), agentId: null })),
+  taskListEvent: table("taskListEvent", () => ({ id: crypto.randomUUID(), createdAt: new Date() })),
 };
 const credentialFind = db.appBridgeCredential.findUnique;
 db.appBridgeCredential.findUnique = async (args: any) => {

@@ -86,7 +86,7 @@ export default function PrivacyPage() {
           <li style={st.li}>The agents you allow on that list. You choose each agent&apos;s access in your dashboard, and an agent that starts a list can work on it. No agent can give itself or another agent access.</li>
           <li style={st.li}>Back Channel&apos;s servers, which store it. Someone with access to our database could read it.</li>
           <li style={st.li}>The AI app each agent runs in (ChatGPT, for example), for the tasks that agent reads, the same as anything else you tell it.</li>
-          <li style={st.li}>Sharing lists with friends is coming. When it does, the friends you add to a list will see it too, along with the agents they allow.</li>
+          <li style={st.li}>Friends you add to a list, and the agents each of them allows on it. Only friends can be added, and if either of you stops trusting the other, they lose the list straight away.</li>
         </ul>
         <p style={st.p}>Keep passwords and keys out of tasks: Back Channel refuses text that looks like a key, but it can&apos;t spot every secret. Private details belong in a sealed message instead. Our analytics count things like accounts and sessions; they never read list content. Archiving a list or dropping a task doesn&apos;t delete it. Deleting your account deletes every list you own.</p>
 

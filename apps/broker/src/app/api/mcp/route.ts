@@ -187,9 +187,9 @@ async function dispatchTool(
           const payloads = await fromResponse(await agentPayloadsGET(synth(req, "/api/inbox/agent-payloads", "GET")));
           if (payloads.status === 200) body.agent_payloads = JSON.parse(payloads.text).payloads;
         }
-        // Tasks assigned to this account's agents also ring the doorbell; say so, or a nonzero count reads as unexplained.
+        // Tasks assigned to this account's agents, and mentions of them, also ring the doorbell; say so, or a nonzero count reads as unexplained.
         const tasksWaiting = await tasksWaitingForAgents(auth.accountId);
-        if (tasksWaiting > 0) body.tasks_waiting_for_your_agents = { count: tasksWaiting, next: "Call bc_tasks to see them." };
+        if (tasksWaiting > 0) body.tasks_waiting_for_your_agents = { count: tasksWaiting, next: "Call bc_tasks to see them: tasks for your agents are in up_next, and comments that mention one of your agents are in mentions." };
         return { status: active.status, text: JSON.stringify(body) };
       } catch {
         return active; // best-effort merge; the count alone is still useful
