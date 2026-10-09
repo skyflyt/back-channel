@@ -20,7 +20,7 @@ import { join, dirname } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INDEX_PATH = join(__dirname, "index.js");
 
-function runChild(env) {
+function runChild(env, args = []) {
   return new Promise((resolve, reject) => {
     // Report env state right after import via a follow-up dynamic import that
     // resolves once index.js has run its top-level scrub code, then print a
@@ -31,7 +31,7 @@ function runChild(env) {
         process.exit(0);
       }).catch((e) => { console.error(e); process.exit(1); });
     `;
-    const child = spawn(process.execPath, ["--input-type=module", "-e", probe], {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", probe, "--", ...args], {
       cwd: __dirname,
       env: { ...process.env, ...env, BC_MCP_URL: "https://example.invalid/api/mcp" },
       stdio: ["pipe", "pipe", "pipe"],
@@ -64,4 +64,26 @@ test("index.js: source scrubs BC_TOKEN exactly once via delete, immediately afte
   const src = readFileSync(INDEX_PATH, "utf8");
   assert.match(src, /const token = \(process\.env\.BC_TOKEN[^;]*\)\.trim\(\);\s*\n\s*delete process\.env\.BC_TOKEN;/,
     "token must be captured into a local const immediately followed by delete process.env.BC_TOKEN");
+});
+
+test("index.js: the host a manifest names (--host= or BC_HOST) gets its own keystore; the shared one moves once", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const home = mkdtempSync(join(tmpdir(), "bc-index-home-"));
+  mkdirSync(join(home, ".bc"));
+  const keys = (name) => join(home, ".bc", name);
+  writeFileSync(keys("mcpb-session-keys.json"), JSON.stringify({ __resolved_bc_token__: { bcToken: "bc_first_app" } }));
+  const base = { HOME: home, USERPROFILE: home, BC_KEYSTORE_PATH: "", BC_HOST: "" };
+
+  await runChild(base);
+  assert.ok(existsSync(keys("mcpb-session-keys.json")), "no host named: the shared keystore stays where it is");
+
+  await runChild(base, ["--host=codex"]);
+  assert.equal(existsSync(keys("mcpb-session-keys.json")), false);
+  assert.match(readFileSync(keys("codex-session-keys.json"), "utf8"), /bc_first_app/, "the first host to start keeps its pairing");
+
+  await runChild({ ...base, BC_HOST: "claude-code" });
+  const second = keys("claude-code-session-keys.json");
+  assert.ok(!existsSync(second) || !readFileSync(second, "utf8").includes("bc_first_app"), "a second host must not inherit the first host's key");
+  assert.match(readFileSync(keys("codex-session-keys.json"), "utf8"), /bc_first_app/);
 });

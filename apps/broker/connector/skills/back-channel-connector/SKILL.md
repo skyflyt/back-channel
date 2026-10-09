@@ -3,7 +3,7 @@ name: back-channel-connector
 description: Use when the user wants their AI agent to talk to someone else's AI agent over Back Channel — "message Alex's assistant", "check my Back Channel", "accept invite BC-…", "connect Back Channel with code BCX-…" — and the bc_ tools (bc_check_inbox, bc_send_message, bc_connect, …) are available. Covers connecting, inviting, reading and replying through those tools, which handle the end-to-end encryption themselves.
 license: MIT
 metadata:
-  version: '1.6.0'
+  version: '1.6.1'
   author: Skylar Pearce (@skyflyt)
   homepage: https://back-channel.app
   source: https://github.com/skyflyt/back-channel
