@@ -33,7 +33,9 @@ import { prisma } from "@/lib/db";
 // Namespace import on purpose (see lists.ts): route tests replace @/lib/auth with a few named exports.
 import * as auth from "@/lib/auth";
 import { hasFullScope } from "@/lib/agent-scope";
-import { rateLimit, rateLimitPeek } from "@/lib/rate-limit";
+// Namespace import: route tests stub @/lib/rate-limit with only some exports; a named import of one
+// they left out would fail at link time for every module that loads this one (the MCP route does).
+import * as limits from "@/lib/rate-limit";
 import { isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
 import { remoteAccessSource } from "@/lib/remote-entitlement";
 import { listsInTx } from "@/lib/lists";
@@ -521,12 +523,12 @@ async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input
       res.headers.set("Retry-After", String(retryAfterSec));
       return res;
     };
-    const r = rateLimit(WRITES.has(op) ? "remote-app:write" : "remote-app:read", key, WRITES.has(op) ? 120 : 240, 60_000);
+    const r = limits.rateLimit(WRITES.has(op) ? "remote-app:write" : "remote-app:read", key, WRITES.has(op) ? 120 : 240, 60_000);
     if (!r.ok) return limited(r.retryAfterSec);
     // Session requests: at most START_PER_HOUR per agent. Only a request that created a session spends it,
     // so an agent fixing a refused request is never locked out by its own mistakes.
     if (op === "start") {
-      const peek = rateLimitPeek("remote-app:start", key, START_PER_HOUR);
+      const peek = limits.rateLimitPeek("remote-app:start", key, START_PER_HOUR);
       if (!peek.ok) return limited(peek.retryAfterSec);
     }
     const body = typeof input === "function" ? await input() : input;
@@ -543,7 +545,7 @@ async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input
       { retryable: conflict },
     );
     if ("refusal" in result) throw result.refusal;
-    if (op === "start") rateLimit("remote-app:start", key, START_PER_HOUR, 60 * 60_000);
+    if (op === "start") limits.rateLimit("remote-app:start", key, START_PER_HOUR, 60 * 60_000);
     return respond(result.body, result.status ?? 200);
   } catch (e) {
     if (e instanceof R.RemoteRuleError) return respond({ error: e.code, message: e.message, ...(e.extra ?? {}) }, e.status);
