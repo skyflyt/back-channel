@@ -7,11 +7,12 @@ import { identity } from '../src/crypto.mjs';
 import { Store } from '../src/store.mjs';
 import { Client, Worker } from '../src/worker.mjs';
 import { validateProfile } from '../src/runtime.mjs';
-const help = `bc-worker (Node 22+)\ninit --broker URL --name NAME     Token from BC_AGENT_TOKEN\nenroll                           Register public keys; prints peer trust JSON\nagents                           List enrolled peers (does not trust them)\ntrust --file peer.json            Pin {id,encryptionKey,signingKey} from owner-verified source\nprofile --name NAME --file FILE   Install local approved runtime profile\nsend --target ID --profile NAME --objective-file FILE [--continue-profile NAME]\nrun [--once]                     Poll and execute approved work/continuations\nstatus                           Print durable local journal\ncancel --id UUID                 Cancel your outbound task\nrecover --confirm-stopped        Remove stale lock after owner stops previous worker/tree\nAll commands accept --state DIRECTORY (outside any repository/vault).\nExit 0 success; 1 failure. Enrollment and trust are separate.\n`;
+import { REMOTE_APP_PROFILE, validateRemoteAppProfile } from '../src/remote-app.mjs';
+const help = `bc-worker (Node 22+)\ninit --broker URL --name NAME     Token from BC_AGENT_TOKEN\nenroll                           Register public keys; prints peer trust JSON\nagents                           List enrolled peers (does not trust them)\ntrust --file peer.json            Pin {id,encryptionKey,signingKey} from owner-verified source\nprofile --name NAME --file FILE   Install local approved runtime profile ("remote-app" must be read-only)\nsend --target ID --profile NAME --objective-file FILE [--continue-profile NAME] [--remote-session ID]\n                                 --remote-session hands an approved remote app session to --profile remote-app\nrun [--once]                     Poll and execute approved work/continuations\nstatus                           Print durable local journal\ncancel --id UUID                 Cancel your outbound task\nrecover --confirm-stopped        Remove stale lock after owner stops previous worker/tree\nAll commands accept --state DIRECTORY (outside any repository/vault).\nExit 0 success; 1 failure. Enrollment and trust are separate.\n`;
 async function main() {
     if (Number(process.versions.node.split('.')[0]) < 22)
         throw Error('Node 22 or newer required');
-    const { values: v, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries(['state', 'broker', 'name', 'file', 'target', 'profile', 'objective-file', 'continue-profile', 'id'].map(k => [k, { type: 'string' }]).concat(['once', 'help', 'confirm-stopped'].map(k => [k, { type: 'boolean' }]))) });
+    const { values: v, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries(['state', 'broker', 'name', 'file', 'target', 'profile', 'objective-file', 'continue-profile', 'id', 'remote-session'].map(k => [k, { type: 'string' }]).concat(['once', 'help', 'confirm-stopped'].map(k => [k, { type: 'boolean' }]))) });
     const command = positionals[0];
     if (v.help || !command) {
         console.log(help);
@@ -77,7 +78,8 @@ async function main() {
         if (command === 'profile') {
             if (!v.name)
                 throw Error('--name required');
-            const profile = validateProfile(JSON.parse(fs.readFileSync(v.file, 'utf8')));
+            const parsed = JSON.parse(fs.readFileSync(v.file, 'utf8'));
+            const profile = v.name === REMOTE_APP_PROFILE ? validateRemoteAppProfile(parsed) : validateProfile(parsed);
             if (profile.adapter === 'fixture')
                 throw Error('Fixture adapter is test-only and cannot be installed by CLI');
             config.profiles[v.name] = profile;
@@ -93,7 +95,7 @@ async function main() {
         else if (command === 'send') {
             if (!v.target || !v.profile || !v['objective-file'])
                 throw Error('send needs --target, --profile, --objective-file');
-            console.log(await worker.send({ targetAgentId: v.target, profile: v.profile, objective: fs.readFileSync(v['objective-file'], 'utf8'), continuationProfile: v['continue-profile'] }));
+            console.log(await worker.send({ targetAgentId: v.target, profile: v.profile, objective: fs.readFileSync(v['objective-file'], 'utf8'), continuationProfile: v['continue-profile'], remoteAppSessionId: v['remote-session'] }));
         }
         else if (command === 'cancel') {
             if (!v.id)

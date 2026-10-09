@@ -23,12 +23,33 @@ export function validateProfile(p) {
     }
     return p;
 }
-export function runtimeArgs(p) {
-    if (p.adapter === 'codex')
-        return ['exec', '--sandbox', p.sandbox ?? 'read-only', '--json', '--output-schema', path.join(import.meta.dirname, 'runtime-result.schema.json'), '-'];
-    if (p.adapter === 'claude')
-        return ['--print', '--output-format', 'json', '--permission-mode', p.permissionMode ?? 'plan', '--json-schema', JSON.stringify(resultSchema)];
-    return [p.fixtureScript];
+// Tools a remote-app run refuses outright on Claude (shell, file writes, the web): its only extra
+// capability is the worker's own MCP server.
+export const REMOTE_APP_DISALLOWED_TOOLS = Object.freeze(['Bash', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch']);
+const tomlString = value => {
+    if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value)) throw Error('Invalid MCP server setting');
+    return JSON.stringify(value); // a JSON string without control characters is a TOML basic string
+};
+const mcpServers = mcp => ({ [mcp.name]: { type: 'stdio', command: mcp.command, args: mcp.args } });
+/**
+ * Fixed adapter arguments. `mcp` is set only by the worker's remote-app profile: the worker's own
+ * stdio MCP server ({ name, command, args }, all chosen by the worker, never by a task).
+ */
+export function runtimeArgs(p, { mcp } = {}) {
+    if (mcp && !/^[a-z][a-z0-9_]{0,31}$/.test(mcp.name)) throw Error('Invalid MCP server name');
+    if (p.adapter === 'codex') {
+        const args = ['exec', '--sandbox', p.sandbox ?? 'read-only', '--json', '--output-schema', path.join(import.meta.dirname, 'runtime-result.schema.json')];
+        // Replaces the whole mcp_servers table: the run sees only the worker's server.
+        if (mcp) args.push('-c', `mcp_servers={${mcp.name}={command=${tomlString(mcp.command)},args=[${mcp.args.map(tomlString).join(',')}]}}`);
+        return [...args, '-'];
+    }
+    if (p.adapter === 'claude') {
+        const args = ['--print', '--output-format', 'json', '--permission-mode', p.permissionMode ?? 'plan', '--json-schema', JSON.stringify(resultSchema)];
+        if (mcp) args.push('--mcp-config', JSON.stringify({ mcpServers: mcpServers(mcp) }), '--strict-mcp-config',
+            '--allowedTools', `mcp__${mcp.name}`, '--disallowedTools', REMOTE_APP_DISALLOWED_TOOLS.join(','));
+        return args;
+    }
+    return mcp ? [p.fixtureScript, '--mcp-config', JSON.stringify({ mcpServers: mcpServers(mcp) })] : [p.fixtureScript];
 }
 export async function terminateTree(child) {
     if (!child.pid)
@@ -86,8 +107,9 @@ export function parseCodexResult(stdout, code) {
         return invalid;
     }
 }
-export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}) {
+export function runRuntime(profile, prompt, { signal, onSpawn = () => { }, mcp } = {}) {
     validateProfile(profile);
+    const args = runtimeArgs(profile, { mcp });
     return new Promise(resolve => {
         if (signal?.aborted)
             return resolve({ status: 'interrupted', text: 'Cancelled before launch' });
@@ -95,7 +117,7 @@ export function runRuntime(profile, prompt, { signal, onSpawn = () => { } } = {}
         for (const name of Object.keys(environment))
             if (name.startsWith('BC_'))
                 delete environment[name];
-        const child = spawn(profile.executable, runtimeArgs(profile), { cwd: profile.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: process.platform !== 'win32', env: environment });
+        const child = spawn(profile.executable, args, { cwd: profile.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: process.platform !== 'win32', env: environment });
         const stdoutChunks = [], stderrChunks = [];
         let bytes = 0, reason, settled = false, stopDeadline;
         const stop = why => {
