@@ -1,9 +1,9 @@
 # Lists: tasks for people and their agents
 
 **Status:** Phase 1 shipped 2026-10-09: personal lists, worked by one person and
-the agents they pick. Phase 2 backend built 2026-10-09: sharing lists with
-friends (members, per-task OKs, assigning to people, mentions, reactions, email
-nudges); its web UI is a separate change. Design approved 2026-10-09
+the agents they pick. Phase 2 built 2026-10-09: sharing lists with friends
+(members, per-task OKs, assigning to people, mentions, reactions, email
+nudges), with its web UI and the skill's sharing text. Design approved 2026-10-09
 (`task-lists.md` in Skylar's vault, decisions 1 to 4 as written). This page is
 the developer reference for what is built. Code: `apps/broker/src/lib/lists.ts`
 (I/O), `apps/broker/src/lib/lists/rules.mjs` (every decision, no I/O),
@@ -461,12 +461,41 @@ and friendship checked, archived lists left out). That count is part of
 
 Run from `apps/broker`: `npm test` and `npm run test:routes`.
 
+## The web app
+
+`apps/broker/src/app/account/lists/*`: the Lists tab (`lists-pane.tsx`), the
+task drawer, list settings (`list-forms.tsx`, `members.tsx`), the My plate
+card on Overview, and two pure modules with `node --test` coverage,
+`quick-add.mjs` and `mentions.mjs`. Sharing in the web app:
+
+- **List settings** show who is on the list (role, when they joined, and which
+  of their agents can read or work it) and the list's activity. The owner adds
+  a mutual friend from a picker fed by `GET /api/trust` and takes people off;
+  anyone else can leave. Both ask first. Refusals show the server's sentence.
+  On a shared list each person also sets their own "My agents may take tasks
+  from" and the email nudge. A new list offers "Share with a friend" once.
+- **The OK rule:** a friend's task your agents could take shows "OK for my
+  agents" (one tap, `POST .../ok`) in the list, the drawer and the plate, with
+  the task's `agent_may_act.why`. The plate's `ok_requests` and `mentions` show
+  under "Waiting on you" on Overview and in the open list.
+- **Assigning:** "For" in the drawer offers you, your agents, each of your
+  agents with work access, and each person on the list and their agents. Quick
+  add reads `@alex` and `@alex's agents` against the members and shows chips
+  before saving. Someone else's specific agent is shown when it's the current
+  choice but is never sent back: only its person picks it.
+- **Mentions:** the comment box suggests `@handle` and `@agent-slug` (or
+  `@alex/agent` when two share a name) as you type `@`, using the same
+  resolution as `parseMentions`; entries highlight the mentions that reached
+  someone, built from text spans with no HTML.
+- **Reactions** toggle on task rows (all four on finished tasks) and in the
+  drawer. **Attribution:** agent work shows as "Alex · via Codex" with the
+  person's avatar and an agent badge. A shared list's header says "Everyone on
+  this list, and the agents they allow, can see it."
+
 ## What Phase 2 and 3 add
 
-**Phase 2, shared with friends:** the backend above is built. Still to come:
-the web UI for it (members and leaving, "OK for my agents", `agentsTakeFrom`
-and `notify`, assigning to people, mentions, reactions, list activity), and the
-skill's Lists section (it still says sharing isn't available).
+**Phase 2, shared with friends:** built: the backend above, the web app's
+sharing, and the skill's Lists section on sharing (revision `2026-10-09-2`).
 
 **Phase 3, delight and reach:** a Lists tab in the MCP Apps panel, hand-off to
 an always-on Dispatch worker ("start now on my always-on agent"), a
