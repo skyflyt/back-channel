@@ -367,6 +367,10 @@ async function opPlate({ tx, caller, now }: Ctx) {
     const actor = actorFor(t.listId);
     return R.claimCheck(t, actor, now, mayActFor(t, caller.accountId, memberFor(t.listId), names)).ok;
   });
+  // Up next is work this agent can pick up, so only on lists where it has work access. A view-only
+  // agent must not be offered a task for "my agents", nor mark it seen and silence the doorbell
+  // for the agents that can do it.
+  if (caller.agentId) sections.up_next = sections.up_next.filter((t: Row) => R.canWork(actorFor(t.listId)));
   // A task waiting for this agent stops ringing the doorbell once the agent has seen it here.
   if (caller.agentId && sections.up_next.length) {
     const unseen = sections.up_next.filter((t: Row) => !t.agentSeenAt).map((t: Row) => t.id);
