@@ -76,6 +76,18 @@ if (scenario === 'happy') {
 } else if (scenario === 'silent') {
     // Finishes without ending the session: the worker must end it.
     steps.open = await call('remote_open', { appId });
+} else if (scenario === 'support-happy') {
+    // A support session: one act is declined on the other PC, and the agent goes on with something else.
+    steps.open = await call('remote_open', { appId });
+    const windowId = steps.open.windowId;
+    steps.observe = await call('remote_observe', { windowId });
+    steps.fill = await call('remote_act', { windowId, ref: 'e2', action: 'set_value', value: 'VALUE-MARKER-41' });
+    steps.declined = await call('remote_act', { windowId, ref: 'e6', action: 'invoke' });
+    steps.print = await call('remote_act', { windowId, ref: 'e1', action: 'invoke' });
+    steps.password = await call('remote_act', { windowId, ref: 'e4', action: 'set_value', value: 'VALUE-MARKER-41' });
+    steps.note = await call('remote_note', { text: 'NOTE-MARKER-77 printed a test page' });
+    steps.end = await call('remote_end', { summary: 'Printed a test page; they said no to removing the printer.', finished: true });
+    steps.after = await call('remote_observe', { windowId });
 }
 child.stdin.end();
 console.log(JSON.stringify(out));

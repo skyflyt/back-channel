@@ -5,7 +5,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Store } from '../src/store.mjs';
 import { identity, seal, binding } from '../src/crypto.mjs';
 import { Worker } from '../src/worker.mjs';
@@ -27,8 +27,11 @@ function socketPath(t, label) {
     return path.join(dir, `${label}.sock`);
 }
 
-/** A fake AppBridge host on the agent-control pipe (a named pipe on Windows, a Unix socket elsewhere). */
-async function fakeHost(t, sessionId, { act, hello } = {}) {
+/**
+ * A fake AppBridge host on the agent-control pipe (a named pipe on Windows, a Unix socket elsewhere). With
+ * secretHash it is a v1.1 host that knows the session's executor secret hash, and checks it in hello.
+ */
+async function fakeHost(t, sessionId, { act, hello, secretHash } = {}) {
     const where = socketPath(t, 'agent-control');
     const log = [];
     const surface = () => ({
@@ -45,7 +48,10 @@ async function fakeHost(t, sessionId, { act, hello } = {}) {
         apps: [{ appId: 'app-notepad', name: 'Notepad' }, { appId: 'app-regedit', name: 'Registry Editor' }] }] };
     const handle = m => {
         switch (m.op) {
-            case 'hello': return hello ?? { ok: true, version: 1, host: { name: 'Test-PC' }, agentControl: true };
+            case 'hello':
+                if (secretHash && (typeof m.executorSecret !== 'string' || createHash('sha256').update(m.executorSecret).digest('hex') !== secretHash))
+                    return { ok: false, outcome: 'fail_closed', reason: "this pipe needs the session's executor secret" };
+                return hello ?? { ok: true, version: 1, host: { name: 'Test-PC' }, agentControl: true };
             case 'sessions': return { ok: true, sessions: state.sessions };
             case 'open': return m.appId === 'app-notepad' ? { ok: true, windowId: 'w1', surface: surface() } : { ok: false, outcome: 'not_in_scope', reason: 'Not this session.' };
             case 'observe': return { ok: true, surface: surface() };
@@ -390,6 +396,52 @@ test('the payload can never pick an executable, arguments or anything else', asy
     assert.throws(() => validateRemoteAppProfile({ ...s.profile, adapter: 'codex', sandbox: 'workspace-write' }), /needs the claude adapter/);
   // v1: codex is refused even read-only, because its shell could open the PC's pipe without a report.
   assert.throws(() => validateRemoteAppProfile({ ...s.profile, adapter: 'codex', sandbox: 'read-only' }), /needs the claude adapter/);
+});
+
+test('v1.1: a payload with the executor secret greets the host with it, and only there; reporting is unchanged', async t => {
+    const secret = ['abx', randomBytes(32).toString('base64url')].join('_');
+    const s = await setup(t, { host: { secretHash: createHash('sha256').update(secret).digest('hex') } });
+    const id = await s.a.send({ targetAgentId: 'b', profile: 'remote-app', objective: 'SCENARIO:happy', remoteAppSessionId: s.sessionId, executorSecret: secret });
+    await s.b.cycle();
+    await s.a.cycle();
+    const result = s.a.journal.continuations[id]?.result;
+    assert.equal(s.relay.tasks.get(id).status, 'completed', result?.text);
+    assert.deepEqual(s.host.log[0], { id: '1', op: 'hello', version: 1, executorSecret: secret });
+    assert.ok(s.host.log.slice(1).every(m => !('executorSecret' in m)), 'the secret is in hello only');
+    // Phase A still records every step and ends with Back Channel, and never sends it the secret.
+    assert.equal(s.broker.posts('/actions').length, 5);
+    assert.equal(s.broker.posts('/end').length, 1);
+    assert.ok(!s.broker.requests.some(r => r.body.includes(secret) || r.url.includes(secret)));
+    assert.ok(!s.calls[0].prompt.includes(secret));
+    assert.ok(!JSON.stringify(runtimeArgs(s.calls[0].p, { mcp: s.calls[0].options.mcp })).includes(secret));
+    assert.ok(!result.text.includes(secret));
+    assert.ok(!JSON.stringify([...s.relay.tasks.values()]).includes(secret), 'only sealed');
+});
+
+test('v1.1 back-compat: without a secret hello is v1 exactly; a host that knows the hash refuses none or a wrong one', async t => {
+    const plain = await setup(t);
+    assert.equal((await plain.go('SCENARIO:happy')).status, 'completed');
+    assert.deepEqual(plain.host.log[0], { id: '1', op: 'hello', version: 1 });
+    const secret = ['abx', randomBytes(32).toString('base64url')].join('_');
+    const s = await setup(t, { host: { secretHash: createHash('sha256').update(secret).digest('hex') } });
+    for (const executorSecret of [undefined, ['abx', randomBytes(32).toString('base64url')].join('_')]) {
+        const id = await s.a.send({ targetAgentId: 'b', profile: 'remote-app', objective: 'SCENARIO:happy', remoteAppSessionId: s.sessionId, executorSecret });
+        await s.b.cycle();
+        await s.a.cycle();
+        assert.equal(s.relay.tasks.get(id).status, 'failed');
+        assert.match(s.a.journal.continuations[id].result.text, /^This PC's agent control refused: this pipe needs the session's executor secret Nothing was done on this PC\.$/);
+    }
+    assert.deepEqual(s.host.ops(), ['hello', 'hello'], 'nothing past hello');
+    assert.equal(s.calls.length, 0);
+    assert.equal(s.broker.requests.filter(r => r.method === 'POST').length, 0);
+    // A malformed secret never leaves the sender, and a sealed one is rejected unread.
+    await assert.rejects(s.a.send({ targetAgentId: 'b', profile: 'remote-app', objective: 'x', remoteAppSessionId: s.sessionId, executorSecret: 'abx_short' }), /Invalid executor secret/);
+    const task = { id: randomUUID(), senderAgentId: 'a', targetAgentId: 'b', expiresAt: new Date(Date.now() + 600000).toISOString() };
+    const payload = { ...binding(task, 'task'), profile: 'remote-app', objective: 'SCENARIO:happy', remoteAppSessionId: s.sessionId, executorSecret: secret + '=' };
+    s.relay.tasks.set(task.id, { ...task, status: 'queued', sealed: seal(payload, binding(task, 'task'), s.keys.a, s.keys.b) });
+    await s.b.cycle();
+    assert.equal(s.relay.tasks.get(task.id).status, 'rejected');
+    assert.equal(s.b.journal.tasks[task.id].reason, 'Invalid executor secret');
 });
 
 test('remote-app runtime arguments are fixed: only the worker MCP server, no shell, writes or web', () => {
