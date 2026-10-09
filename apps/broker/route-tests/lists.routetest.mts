@@ -186,12 +186,12 @@ test("a view agent can read and comment, but can't claim, add, add progress, edi
   ok(await rest("GET", `/tasks/${t.id}`, as(A2)));
   const commented = ok(await rest("POST", `/tasks/${t.id}/entries`, as(A2), { text: "Expiry is Oct 28" }));
   assert.equal(commented.task.id, t.id);
-  refused(await claim(t.id, as(A2)), 409, "not_allowed", "claim");
+  refused(await claim(t.id, as(A2)), 403, "not_allowed", "claim");
   refused(await rest("POST", `/${id}/tasks`, as(A2), { title: "More work" }), 403, "not_allowed", "add");
   refused(await rest("POST", `/tasks/${t.id}/entries`, as(A2), { kind: "progress", text: "step" }), 403, "not_allowed", "progress entry");
   refused(await rest("PATCH", `/tasks/${t.id}`, as(A2), { progress: "step" }), 403, "not_allowed", "progress");
   refused(await rest("PATCH", `/tasks/${t.id}`, as(A2), { title: "Renamed", version: 1 }), 403, "not_allowed", "edit");
-  refused(await rest("POST", `/tasks/${t.id}/done`, as(A2), { summary: "did it" }), 409, "not_allowed", "done");
+  refused(await rest("POST", `/tasks/${t.id}/done`, as(A2), { summary: "did it" }), 403, "not_allowed", "done");
   assert.equal(taskRow(t.id).status, "open");
   assert.equal(taskRow(t.id).claimAccountId, null);
   assert.equal(rows("taskItem").length, 1);
@@ -529,7 +529,7 @@ test("send back: within 7 days the person returns an agent's finished work to th
   const t = await addTask(id, SKYLAR, { title: "Renew cert" });
   ok(await claim(t.id, as(A1)));
   ok(await rest("POST", `/tasks/${t.id}/done`, as(A1), { summary: "Renewed" }));
-  refused(await rest("POST", `/tasks/${t.id}/review`, as(A1), { verdict: "send_back", comment: "redo" }), 409, "people_only");
+  refused(await rest("POST", `/tasks/${t.id}/review`, as(A1), { verdict: "send_back", comment: "redo" }), 403, "people_only");
   refused(await rest("POST", `/tasks/${t.id}/review`, SKYLAR, { verdict: "send_back" }), 400, "invalid_comment");
   refused(await rest("POST", `/tasks/${t.id}/review`, SKYLAR, { verdict: "maybe" }), 400, "invalid_verdict");
   assert.equal(taskRow(t.id).status, "done");
@@ -574,7 +574,7 @@ test("a friend's task on a shared list: their agent needs the OK, its finished w
   assert.equal(done.task.status, "needs_review");
   assert.equal(taskRow(t.id).reviewerAccountId, A.id);
   assert.deepEqual(ok(await rest("GET", "/plate", SKYLAR)).waiting_on_you.map((x: Row) => x.id), [t.id]);
-  refused(await rest("POST", `/tasks/${t.id}/review`, ALEX, { verdict: "accept" }), 409, "not_reviewer");
+  refused(await rest("POST", `/tasks/${t.id}/review`, ALEX, { verdict: "accept" }), 403, "not_reviewer");
   ok(await rest("POST", `/tasks/${t.id}/review`, SKYLAR, { verdict: "accept" }));
   assert.equal(taskRow(t.id).status, "done");
   assert.deepEqual(eventsOf(t.id), ["created", "claimed", "needs_review", "accepted"]);
@@ -633,14 +633,14 @@ test("status: agents can't drop, restore or reopen; a person can", async () => {
   const id = await makeList("Work", [A1]);
   const t = await addTask(id, SKYLAR, { title: "Renew cert" });
   ok(await claim(t.id, as(A1)));
-  for (const status of ["dropped", "restored", "reopened"]) refused(await rest("PATCH", `/tasks/${t.id}`, as(A1), { status }), 409, "people_only", status);
+  for (const status of ["dropped", "restored", "reopened"]) refused(await rest("PATCH", `/tasks/${t.id}`, as(A1), { status }), 403, "people_only", status);
   const dropped = ok(await rest("PATCH", `/tasks/${t.id}`, SKYLAR, { status: "dropped", reason: "not needed" }));
   assert.equal(dropped.task.status, "dropped");
   assert.equal(taskRow(t.id).claimAgentId, null, "dropping clears the claim");
-  refused(await rest("PATCH", `/tasks/${t.id}`, as(A1), { status: "restored" }), 409, "people_only");
+  refused(await rest("PATCH", `/tasks/${t.id}`, as(A1), { status: "restored" }), 403, "people_only");
   assert.equal(ok(await rest("PATCH", `/tasks/${t.id}`, SKYLAR, { status: "restored" })).task.status, "open");
   ok(await rest("POST", `/tasks/${t.id}/done`, as(A1), { summary: "done after all" }));
-  refused(await rest("PATCH", `/tasks/${t.id}`, as(A1), { status: "reopened" }), 409, "people_only");
+  refused(await rest("PATCH", `/tasks/${t.id}`, as(A1), { status: "reopened" }), 403, "people_only");
   const reopened = ok(await rest("PATCH", `/tasks/${t.id}`, SKYLAR, { status: "reopened" }));
   assert.equal(reopened.task.status, "open");
   assert.deepEqual([taskRow(t.id).completedAt, taskRow(t.id).completedByAgentId, taskRow(t.id).summary], [null, null, null]);
@@ -756,7 +756,7 @@ test("a view-only agent's plate doesn't offer, or mark as seen, work it can't do
   assert.deepEqual(viewer.up_next, [], "Codex can only look here, so the task isn't up next for it");
   assert.equal(taskRow(t.id).agentSeenAt, null);
   assert.equal(await tasksWaitingForAgents(A.id), 1, "the doorbell keeps ringing for an agent that can do it");
-  refused(await claim(t.id, as(A2)), 409, "not_allowed");
+  refused(await claim(t.id, as(A2)), 403, "not_allowed");
   assert.deepEqual(ok(await rest("GET", "/plate", as(A1))).up_next.map((x: Row) => x.id), [t.id]);
   assert.equal(await tasksWaitingForAgents(A.id), 0);
 });
@@ -978,4 +978,25 @@ test("REST map: unknown paths and wrong methods are 404 not_found, before auth",
   refused(await rest("POST", "", SKYLAR, "{not json"), 400, "invalid_json");
   refused(await rest("POST", "", SKYLAR, "[1,2]"), 400, "invalid_json");
   refused(await rest("POST", `/${id}/tasks`, SKYLAR, "null"), 400, "invalid_json");
+});
+
+// ── follow-ups from review ──────────────────────────────────────────────────
+
+test("auth comes before the body: an unauthenticated caller with a malformed body hears 401, not 400", async () => {
+  refused(await rest("POST", "", null, "{not json"), 401, "unauthorized");
+  const id = await makeList("Work", [A1]);
+  refused(await rest("POST", `/${id}/tasks`, null, "{not json"), 401, "unauthorized");
+  refused(await rest("POST", `/${id}/tasks`, as(A1), "{not json"), 400, "invalid_json", "an authenticated caller still hears what's wrong");
+});
+
+test("taking an agent's work access away releases what it holds on that list, with a line saying why", async () => {
+  const id = await makeList("Work", [A1]);
+  const t = await addTask(id, as(A1), { title: "Renew the cert" });
+  ok(await claim(t.id, as(A1)), "claim");
+  ok(await setAccess(id, A1, "view"), "downgrade to view");
+  assert.equal(taskRow(t.id).claimAgentId, null);
+  assert.equal(taskRow(t.id).status, "open");
+  const released = entriesOf(t.id).find((e) => e.kind === "event" && e.eventType === "released");
+  assert.match(String(released?.body), /work access on this list was removed/);
+  refused(await claim(t.id, as(A1)), 403, "not_allowed", "a view-only agent can't claim it back");
 });

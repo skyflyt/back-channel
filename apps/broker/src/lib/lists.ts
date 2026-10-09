@@ -51,6 +51,9 @@ const fail = (status: number, code: string, message: string, extra?: Record<stri
 };
 const NOT_AVAILABLE = () => fail(404, "not_available", "That list or task isn't available.");
 const respond = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
+// A rule refusal about WHO is asking is 403; one about the task's state (held, wrong status, too late) is 409.
+const PERMISSION_REFUSALS = new Set(["not_allowed", "people_only", "not_reviewer", "not_claimant"]);
+const refusalStatus = (code: string) => (PERMISSION_REFUSALS.has(code) ? 403 : 409);
 const conflict = (e: unknown) => isSerializationFailure(e) || (!!e && typeof e === "object" && "code" in e && (e as { code?: unknown }).code === "P2002");
 
 // ── auth ────────────────────────────────────────────────────────────────────
@@ -331,6 +334,15 @@ async function opSetAgentAccess({ tx, caller, input }: Ctx) {
   if (!agent) fail(400, "invalid_agent", "That isn't one of your connected agents.");
   await tx.taskListAgentGrant.deleteMany({ where: { listId: s.list.id, agentTokenId: agentId as string } });
   if (access !== "none") await tx.taskListAgentGrant.create({ data: { listId: s.list.id, agentTokenId: agentId as string, accountId: caller.accountId, access: access as string } });
+  // Work access taken away: the agent lets go of what it holds here now, with a line saying so,
+  // rather than keeping a claim it can no longer act on until it lapses.
+  if (access !== "work") {
+    const held = await tx.taskItem.findMany({ where: { listId: s.list.id, claimAgentId: agentId as string, status: { in: ["in_progress", "blocked"] } } });
+    for (const t of held as Row[]) {
+      await tx.taskItem.updateMany({ where: { id: t.id, claimAgentId: agentId as string }, data: R.releasePatch(t) });
+      await addEvent(tx, t.id, { accountId: t.claimAccountId, agentId: agentId as string }, "released", "its work access on this list was removed");
+    }
+  }
   return { agent_id: agentId, access };
 }
 
@@ -535,7 +547,7 @@ async function opClaim({ tx, caller, input, now }: Ctx) {
   const check = R.claimCheck(s.task, s.actor, now, mayActFor(s.task, caller.accountId, s.member, names), holderLabel(names, s.actor));
   if (!check.ok) {
     const holder = check.code === "already_claimed" ? R.who(names as never, s.task.claimAccountId, s.task.claimAgentId, s.actor) : undefined;
-    return fail(409, check.code!, check.why!, holder ? { claim: { by: holder, since: s.task.claimedAt } } : undefined);
+    return fail(refusalStatus(check.code!), check.code!, check.why!, holder ? { claim: { by: holder, since: s.task.claimedAt } } : undefined);
   }
   if (!check.already) {
     // Belt and braces on top of the serializable transaction: only an unheld
@@ -569,7 +581,7 @@ async function opDone({ tx, caller, input, now }: Ctx) {
   writable(s);
   const names = await loadNames(tx, [s.task]);
   const check = R.finishCheck(s.task, s.actor, now, mayActFor(s.task, caller.accountId, s.member, names), R.canManage(s.actor), holderLabel(names, s.actor));
-  if (!check.ok) fail(409, check.code!, check.why!);
+  if (!check.ok) fail(refusalStatus(check.code!), check.code!, check.why!);
   let summary = R.cleanText(input.summary, { field: "summary", max: R.LIMITS.summary });
   const evidence = R.cleanText(input.evidence, { field: "evidence", max: 2_000 });
   if (evidence) summary = `${summary ?? ""}${summary ? "\n\n" : ""}Evidence: ${evidence}`.slice(0, R.LIMITS.summary);
@@ -584,7 +596,7 @@ async function opReview({ tx, caller, input, now }: Ctx) {
   writable(s);
   const verdict = input.verdict === "accept" || input.verdict === "send_back" ? input.verdict : fail(400, "invalid_verdict", "verdict must be accept or send_back");
   const check = R.reviewCheck(s.task, s.actor, now, verdict, R.canManage(s.actor));
-  if (!check.ok) fail(409, check.code!, check.why!);
+  if (!check.ok) fail(refusalStatus(check.code!), check.code!, check.why!);
   const comment = R.cleanText(input.comment, { field: "comment", max: R.LIMITS.entry, required: verdict === "send_back" });
   await tx.taskItem.updateMany({ where: { id: s.task.id }, data: R.reviewPatch(s.task, verdict, now) });
   if (comment) await tx.taskEntry.create({ data: { taskId: s.task.id, kind: "comment", authorAccountId: caller.accountId, authorAgentId: null, body: comment } });
@@ -632,7 +644,7 @@ async function opUpdateTask({ tx, caller, input, now, after }: Ctx) {
     }
     const reason = R.cleanText(input.reason, { field: "reason", max: 1_000, required: change === "blocked" });
     const result = R.statusChange(task, s.actor, now, change as never, R.canManage(s.actor));
-    if (!result.ok) fail(409, result.code, result.why);
+    if (!result.ok) fail(refusalStatus(result.code), result.code, result.why);
     Object.assign(data, (result as { patch: Row }).patch);
     events.push([change as keyof typeof R.EVENT_PHRASES, reason]);
   }
@@ -663,8 +675,12 @@ const OPS: Record<ListsOp, (ctx: Ctx) => Promise<unknown>> = {
   updateTask: opUpdateTask, claim: opClaim, release: opRelease, done: opDone, review: opReview, entries: opEntries, addEntry: opAddEntry,
 };
 
-/** Run one operation for whoever is calling. Shared by the REST route and the MCP tools. */
-export async function lists(req: NextRequest, op: ListsOp, input: Input): Promise<NextResponse> {
+/**
+ * Run one operation for whoever is calling. Shared by the REST route and the MCP tools.
+ * `input` may be a function: the REST route passes one that reads the body, so an
+ * unauthenticated caller gets 401 before its body is ever parsed.
+ */
+export async function lists(req: NextRequest, op: ListsOp, inputOrReader: Input | (() => Promise<Input>)): Promise<NextResponse> {
   try {
     const caller = await resolveCaller(req);
     const write = WRITES.has(op);
@@ -674,6 +690,7 @@ export async function lists(req: NextRequest, op: ListsOp, input: Input): Promis
       res.headers.set("Retry-After", String(limit.retryAfterSec));
       return res;
     }
+    const input = typeof inputOrReader === "function" ? await inputOrReader() : inputOrReader;
     const after: Array<() => void> = [];
     const result = await withSerializableRetry(
       () => {
@@ -749,13 +766,8 @@ export async function listsRoute(req: NextRequest, path: string[]): Promise<Next
   // GET /api/lists/:id/tasks/:taskId must not quietly answer with the whole list.
   if (path.length > (a === "tasks" ? 3 : 2)) route = null;
   if (!route) return respond({ error: "not_found", message: "No such lists endpoint." }, 404);
-  try {
-    const [op, input] = route;
-    return await lists(req, op, typeof input === "function" ? await input() : input);
-  } catch (e) {
-    if (e instanceof R.ListRuleError) return respond({ error: e.code, message: e.message }, e.status);
-    throw e;
-  }
+  const [op, input] = route;
+  return lists(req, op, input);
 }
 
 // ── MCP: the bc_task* tools (catalog in src/lib/mcp/list-tools.mjs) ─────────
