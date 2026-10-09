@@ -169,9 +169,9 @@ export const errorText = (e: unknown) => (e instanceof ListsError ? e.message : 
 
 /**
  * Poll /api/lists/changes every 10 seconds while the page is visible and call
- * `onChange` when anything the person can see changed. The first poll always
- * counts as a change, so the hook also does the initial load. Phase 3 swaps
- * this for a live stream.
+ * `onChange` when anything the person can see changed. The first poll runs
+ * even in a background tab and always counts as a change, so the hook also
+ * does the initial load. Phase 3 swaps this for a live stream.
  */
 export function useListChanges(onChange: () => void, enabled = true) {
   const latest = useRef(onChange);
@@ -182,7 +182,8 @@ export function useListChanges(onChange: () => void, enabled = true) {
     let busy = false;
     let stopped = false;
     const tick = async () => {
-      if (busy || stopped || document.visibilityState !== "visible") return;
+      // The first call always runs (it's the initial load); after that, only while someone can see the page.
+      if (busy || stopped || (since && document.visibilityState !== "visible")) return;
       busy = true;
       try {
         const r = await listsApi.changes(since);

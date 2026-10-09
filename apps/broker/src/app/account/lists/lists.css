@@ -72,7 +72,7 @@
 /* ---------- who avatar (agents get a badge and, while working, a pulse) ---------- */
 .ds-who { position: relative; display: inline-flex; flex-shrink: 0; border-radius: 50%; }
 .ds-who-face { border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; }
-.ds-who-badge { position: absolute; right: -3px; bottom: -3px; width: 15px; height: 15px; border-radius: 50%; background: var(--ds-ink); color: #fff; border: 2px solid var(--ds-card); display: inline-flex; align-items: center; justify-content: center; box-sizing: content-box; }
+.ds-who-badge { position: absolute; right: -4px; bottom: -4px; border-radius: 50%; background: var(--ds-ink); color: #fff; border: 1.5px solid var(--ds-card); display: inline-flex; align-items: center; justify-content: center; box-sizing: content-box; }
 .ds-who.pulse::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--ds-acc); opacity: 0; animation: ds-who-pulse 2.6s ease-out infinite; pointer-events: none; }
 @keyframes ds-who-pulse { 0% { transform: scale(0.92); opacity: 0.6; } 70% { transform: scale(1.28); opacity: 0; } 100% { transform: scale(1.28); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .ds-who.pulse::after { animation: none; opacity: 0.45; transform: none; } }
@@ -131,4 +131,8 @@
 @media (max-width: 860px) {
   .ds-lists { grid-template-columns: 1fr; }
   .ds-lists-side { position: static; }
+}
+@media (max-width: 560px) {
+  .ds-task { flex-wrap: wrap; }
+  .ds-task-actions { flex-basis: 100%; justify-content: flex-start; padding-left: 42px; }
 }

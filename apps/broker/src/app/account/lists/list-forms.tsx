@@ -113,7 +113,7 @@ const ACCESS_OPTIONS: { value: Access; label: string; title: string }[] = [
   { value: "work", label: "Work", title: "Can add, pick up and finish tasks" },
 ];
 
-export function ListSettings({ detail, onChanged, onClose }: { detail: ListDetail; onChanged: () => void; onClose: () => void }) {
+export function ListSettings({ detail, onChanged }: { detail: ListDetail; onChanged: () => void }) {
   const l = detail.list;
   const isOwner = l.your_role === "owner";
   const [name, setName] = useState(l.name);
@@ -138,10 +138,7 @@ export function ListSettings({ detail, onChanged, onClose }: { detail: ListDetai
 
   return (
     <div className="ds-card" style={{ marginBottom: 18 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <h2 className="ds-cardh" style={{ margin: 0 }}>List settings</h2>
-        <button className="ds-link" style={{ marginLeft: "auto" }} onClick={onClose}>Close</button>
-      </div>
+      <h2 className="ds-cardh" style={{ margin: 0 }}>List settings</h2>
 
       {isOwner && (
         <form onSubmit={(e) => { e.preventDefault(); if (dirty && name.trim()) void act("save", () => listsApi.updateList(l.id, { name: name.trim(), emoji: emoji.trim() || null }), "Saved."); }}>
@@ -160,6 +157,7 @@ export function ListSettings({ detail, onChanged, onClose }: { detail: ListDetai
       {(detail.your_agents ?? []).length === 0 && <p className="ds-fine">No agents connected yet. Connect one from the Agents tab.</p>}
       {(detail.your_agents ?? []).map((a: YourAgent) => {
         const activity = agentActivity(a.last_used_at);
+        const runtime = a.runtime_type ? RUNTIME_LABEL[a.runtime_type] ?? a.runtime_type : "";
         return (
           <div key={a.id} className="ds-access">
             <HealthDot color={activity.color} label={activity.label} />
@@ -168,7 +166,7 @@ export function ListSettings({ detail, onChanged, onClose }: { detail: ListDetai
                 {a.name}
                 {a.hosted && <> <Chip title="An app you connected through your Back Channel account, like claude.ai or ChatGPT">connected app</Chip></>}
               </div>
-              <div className="ds-imeta">{a.runtime_type ? `${RUNTIME_LABEL[a.runtime_type] ?? a.runtime_type} · ` : ""}{activity.label}</div>
+              <div className="ds-imeta">{runtime && runtime.toLowerCase() !== a.name.toLowerCase() ? `${runtime} · ` : ""}{activity.label}</div>
             </div>
             <div className="ds-seg" role="group" aria-label={`${a.name}'s access`}>
               {ACCESS_OPTIONS.map((o) => (

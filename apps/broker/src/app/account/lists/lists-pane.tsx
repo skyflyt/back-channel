@@ -139,15 +139,16 @@ function LiveLists() {
     if (selId) void loadDetail(selId);
   }, [selId, loadDetail]);
 
-  // Pick a list when none is chosen (or the chosen one is gone); start the form when there are none.
+  // Pick a list when none is chosen, or when the chosen one couldn't be opened
+  // (a stale link). A list that's just been created may not be in `lists` yet;
+  // it loads on its own. With no lists at all, open the new-list form.
   useEffect(() => {
     if (!lists) return;
-    if (selId && lists.some((l) => l.id === selId)) return;
-    if (selId && !lists.some((l) => l.id === selId) && detail === null && !detailErr) return; // still loading a deep link
+    if (selId && (lists.some((l) => l.id === selId) || !detailErr)) return;
     const first = lists.find((l) => !l.archived) ?? lists[0];
     if (first) setSelId(first.id);
     else { setSelId(null); setCreating(true); }
-  }, [lists, selId, detail, detailErr]);
+  }, [lists, selId, detailErr]);
 
   /* ----------------------------- URL and events ---------------------------- */
 
@@ -221,6 +222,8 @@ function LiveLists() {
   const live = (lists ?? []).filter((l) => !l.archived);
   const archived = (lists ?? []).filter((l) => l.archived);
   const summary = lists?.find((l) => l.id === selId);
+  // The open list stays in view even when it's archived.
+  const showArchivedNow = showArchived || !!summary?.archived;
 
   const listItem = (l: ListSummary) => {
     const need = needsYou.get(l.id)?.size ?? 0;
@@ -241,7 +244,7 @@ function LiveLists() {
       {!creating && <button className="ds-btn" style={{ width: "100%" }} onClick={() => setCreating(true)}>＋ New list</button>}
       {creating && (
         <NewListForm
-          onCreated={(id) => { setCreating(false); setSelId(id); setTaskId(null); void loadLists(); }}
+          onCreated={(id) => { setCreating(false); setDetailErr(""); setSelId(id); setTaskId(null); void loadLists(); }}
           onCancel={live.length || archived.length ? () => setCreating(false) : undefined}
         />
       )}
@@ -249,11 +252,11 @@ function LiveLists() {
       {live.length > 0 && <div className="ds-lists-sec">Your lists</div>}
       {live.map(listItem)}
       {archived.length > 0 && (
-        <button className="ds-lists-sec ds-band-toggle" onClick={() => setShowArchived((v) => !v)} aria-expanded={showArchived}>
-          {showArchived ? "▾" : "▸"} Archived ({archived.length})
+        <button className="ds-lists-sec ds-band-toggle" onClick={() => setShowArchived((v) => !v)} aria-expanded={showArchivedNow}>
+          {showArchivedNow ? "▾" : "▸"} Archived ({archived.length})
         </button>
       )}
-      {showArchived && archived.map(listItem)}
+      {showArchivedNow && archived.map(listItem)}
     </aside>
   );
 
@@ -446,7 +449,7 @@ function LiveLists() {
         </div>
         <p className="ds-lists-privacy">{PRIVACY_NOTE}</p>
 
-        {showSettings && <ListSettings key={l.id} detail={detail} onChanged={refresh} onClose={() => setShowSettings(false)} />}
+        {showSettings && <ListSettings key={`settings-${l.id}`} detail={detail} onChanged={refresh} />}
 
         {l.archived && !showSettings && (
           <p className="ds-call warn" style={{ margin: "0 0 18px" }}>
@@ -463,7 +466,7 @@ function LiveLists() {
           </p>
         )}
 
-        {!l.archived && <QuickAdd key={l.id} listId={l.id} agents={detail.your_agents} disabled={l.archived} onAdded={refresh} />}
+        {!l.archived && <QuickAdd key={`quickadd-${l.id}`} listId={l.id} agents={detail.your_agents} disabled={l.archived} onAdded={refresh} />}
 
         {ready.length > 0 && (
           <section className="ds-band" aria-label="Ready for you">

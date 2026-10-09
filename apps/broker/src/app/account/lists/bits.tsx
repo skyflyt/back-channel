@@ -38,8 +38,8 @@ export function WhoAvatar({ who, size = 30, pulse = false }: { who: PersonRef | 
         {initials(face)}
       </span>
       {who?.agent && (
-        <span className="ds-who-badge" aria-hidden>
-          <AgentGlyph />
+        <span className="ds-who-badge" aria-hidden style={{ width: Math.max(10, Math.round(size * 0.4)), height: Math.max(10, Math.round(size * 0.4)) }}>
+          <AgentGlyph size={Math.max(7, Math.round(size * 0.28))} />
         </span>
       )}
     </span>

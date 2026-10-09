@@ -239,7 +239,7 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
             </div>
           </div>
         ) : (
-          <button className="ds-drawer-title" id="ds-drawer-title" disabled={locked} title={locked ? undefined : "Click to rename"} onClick={() => setTitleDraft({ text: task.title, base: task.version, baseText: task.title })}>
+          <button className="ds-drawer-title" disabled={locked} title={locked ? undefined : "Click to rename"} onClick={() => setTitleDraft({ text: task.title, base: task.version, baseText: task.title })}>
             {st === "done" && <span aria-hidden style={{ color: "var(--ds-ok)" }}>✓ </span>}{task.title}
           </button>
         )}
@@ -249,7 +249,7 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
         {claim && (
           <div className="ds-drawer-claim">
             <WhoAvatar who={claim.by} size={26} pulse={!!claim.by?.agent && st === "in_progress"} />
-            <span>
+            <span style={{ flex: "1 1 0", minWidth: 0 }}>
               <strong style={{ color: "var(--ds-ink)" }}>{mine ? "You're on it" : `${whoName(claim.by)} is on it`}</strong>
               {claim.since && <> · {elapsed(claim.since)}</>}
               {claim.by?.agent && claim.lapses_at && <> · {lapsesIn(claim.lapses_at)}</>}
@@ -347,7 +347,7 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
             value={notesValue}
             onChange={(e) => setNotesDraft(notesDraft ? { ...notesDraft, text: e.target.value } : { text: e.target.value, base: task.version, baseText: task.notes })}
           />
-          {notesDirty && (
+          {notesDirty && conflict?.field !== "notes" && (
             <div className="ds-actions" style={{ marginTop: 8 }}>
               <button className="ds-btn ds-sm" disabled={anyBusy} onClick={() => void saveField("notes", notesDraft.text, notesDraft.base, notesDraft.baseText)}>{busy === "save-notes" ? "Saving…" : "Save notes"}</button>
               <button className="ds-btn ghost ds-sm" onClick={() => { setNotesDraft(null); if (conflict?.field === "notes") setConflict(null); }}>Discard changes</button>
@@ -420,7 +420,7 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
   return (
     <>
       <div className="ds-drawer-back" onClick={onClose} aria-hidden />
-      <div className="ds-drawer" role="dialog" aria-modal="true" aria-labelledby="ds-drawer-title" ref={panelRef} tabIndex={-1}>
+      <div className="ds-drawer" role="dialog" aria-modal="true" aria-label={task ? `Task: ${task.title}` : "Task"} ref={panelRef} tabIndex={-1}>
         <div className="ds-drawer-head">
           <span className="ds-drawer-crumb">{task ? task.list.name : "Task"}</span>
           {task && <Chip tone={task.status === "needs_review" ? "acc" : task.status === "blocked" ? "warn" : task.status === "done" ? "ok" : undefined}>{STATUS_LABEL[task.status]}</Chip>}
@@ -436,7 +436,8 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
 function ConflictBox({ conflict, busy, onMine, onSave, onTheirs }: {
   conflict: Conflict; busy: string; onMine: (text: string) => void; onSave: () => void; onTheirs: () => void;
 }) {
-  const what = conflict.field === "title" ? "the title" : "the notes";
+  const noun = conflict.field === "title" ? "title" : "notes";
+  const what = `the ${noun}`;
   const current = conflict.field === "title" ? conflict.current.title : conflict.current.notes;
   const rows = conflict.field === "title" ? 2 : 6;
   return (
@@ -445,11 +446,11 @@ function ConflictBox({ conflict, busy, onMine, onSave, onTheirs }: {
       <div className="ds-conflict">
         <div>
           <div className="ds-drawer-label">Now</div>
-          <textarea className="ds-textarea" readOnly rows={rows} value={current} aria-label={`Current ${what}`} />
+          <textarea className="ds-textarea" readOnly rows={rows} value={current} aria-label={`Current ${noun}`} />
         </div>
         <div>
           <div className="ds-drawer-label">Yours</div>
-          <textarea className="ds-textarea" rows={rows} value={conflict.mine} onChange={(e) => onMine(e.target.value)} aria-label={`Your ${what}`} />
+          <textarea className="ds-textarea" rows={rows} value={conflict.mine} onChange={(e) => onMine(e.target.value)} aria-label={`Your ${noun}`} />
         </div>
       </div>
       <div className="ds-actions" style={{ marginTop: 8 }}>
