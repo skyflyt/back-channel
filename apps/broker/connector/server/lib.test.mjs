@@ -127,10 +127,10 @@ test("no token: the server still comes up — initialize, ping and tools/list ar
   const [init, ping, list, call] = h.parsed();
   assert.equal(h.parsed().length, 4, "the notification gets no reply line");
   assert.equal(init.result.protocolVersion, "2025-03-26", "echoes a supported requested version");
-  assert.deepEqual(init.result.capabilities, { tools: { listChanged: true } });
+  assert.deepEqual(init.result.capabilities, { tools: { listChanged: true }, resources: {} });
   assert.match(init.result.instructions, /bc_connect/);
   assert.deepEqual(ping.result, {});
-  assert.deepEqual(list.result.tools.map((t) => t.name), ["bc_connect"]);
+  assert.deepEqual(list.result.tools.map((t) => t.name), ["bc_connect", "bc_open_panel"]);
   assert.equal(call.result.isError, true);
   assert.match(call.result.content[0].text, /isn't connected.*bc_connect/s);
   assert.match(call.result.content[0].text, /Never ask for the bc_ key/);
@@ -142,7 +142,7 @@ test("no token: an unsubstituted host placeholder counts as no token", async () 
   assert.equal(cleanConfiguredToken(undefined), "");
   const h = harness({ token: "${user_config.token}", fetchImpl: async () => { throw new Error("must not forward a placeholder as a bearer token"); } });
   await h.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
-  assert.deepEqual(h.parsed()[0].result.tools.map((t) => t.name), ["bc_connect"]);
+  assert.deepEqual(h.parsed()[0].result.tools.map((t) => t.name), ["bc_connect", "bc_open_panel"]);
 });
 
 test("bc_connect: redeems the code, persists the key, announces list_changed AFTER the reply, then forwards with the new key", async () => {
@@ -160,7 +160,7 @@ test("bc_connect: redeems the code, persists the key, announces list_changed AFT
   await h.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
   const list = h.parsed()[2];
   assert.equal(list.result.auth, "Bearer bc_minted");
-  assert.deepEqual(list.result.tools.map((t) => t.name), ["bc_check_inbox"], "once connected the catalog is the server's");
+  assert.deepEqual(list.result.tools.map((t) => t.name), ["bc_check_inbox", "bc_open_panel"], "once connected the catalog is the server's, plus the bridge's own panel");
 });
 
 test("bc_connect: malformed code and a spent code both fail plainly, stay unconnected, and announce nothing", async () => {
@@ -173,7 +173,7 @@ test("bc_connect: malformed code and a spent code both fail plainly, stay unconn
   assert.match(bad.result.content[0].text, /doesn't look like a connect code/);
   assert.equal(spent.result.isError, true);
   assert.match(spent.result.content[0].text, /already been used, expired, or doesn't exist/);
-  assert.deepEqual(list.result.tools.map((t) => t.name), ["bc_connect"]);
+  assert.deepEqual(list.result.tools.map((t) => t.name), ["bc_connect", "bc_open_panel"]);
 });
 
 test("bc_connect: a key that can't be saved still connects this session and says it won't persist", async () => {
@@ -210,7 +210,7 @@ test("pairing from another terminal mid-session takes effect on the next call, n
   let onDisk = "";
   const h = harness({ token: "", readTokenFile: () => onDisk, fetchImpl: async (_u, init) => new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { auth: init.headers.authorization } }), { status: 200 }) });
   await h.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
-  assert.deepEqual(h.parsed()[0].result.tools.map((t) => t.name), ["bc_connect"]);
+  assert.deepEqual(h.parsed()[0].result.tools.map((t) => t.name), ["bc_connect", "bc_open_panel"]);
   onDisk = "bc_just_paired";
   await h.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
   assert.equal(h.parsed()[1].result.auth, "Bearer bc_just_paired");
@@ -225,7 +225,7 @@ test("a fallback key the server refuses (401) is dropped: back to offering bc_co
   assert.match(err.error.message, /rejected the saved key.*bc_connect/s);
   assert.deepEqual(note, { jsonrpc: "2.0", method: "notifications/tools/list_changed" });
   await h.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-  assert.deepEqual(h.parsed()[2].result.tools.map((t) => t.name), ["bc_connect"]);
+  assert.deepEqual(h.parsed()[2].result.tools.map((t) => t.name), ["bc_connect", "bc_open_panel"]);
   assert.equal(forwards, 1, "the refused key is not tried again");
 });
 
@@ -295,7 +295,7 @@ test("bridge: exchange code in token config is redeemed on first tool call, then
   };
   const h = harness({ token: "BCX-AB12-CD34", fetchImpl });
   await h.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
-  assert.deepEqual(h.parsed(), [{ jsonrpc: "2.0", id: 1, result: { tools: [] } }]);
+  assert.deepEqual(h.parsed()[0].result.tools.map((t) => t.name), ["bc_open_panel"]);
   assert.ok(calls.some((u) => u.endsWith("/api/auth/exchange")), "exchange endpoint was called");
 });
 
@@ -592,11 +592,11 @@ function channelHarness(doorbell, { token = "bc_test", channel = true, readToken
 }
 const pending = (n, kinds) => new Response(JSON.stringify({ pending_count: n, ...(kinds ? { kinds } : {}), waited_seconds: 0 }), { status: 200 });
 
-test("channel off (the default): initialize is untouched and the doorbell is never held", async () => {
+test("channel off (the default): initialize gains only the panel's resources capability and the doorbell is never held", async () => {
   const h = channelHarness(() => pending(3), { channel: false });
   await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   await new Promise((r) => setTimeout(r, 20));
-  assert.deepEqual(h.lines[0].result.capabilities, { tools: {} });
+  assert.deepEqual(h.lines[0].result.capabilities, { tools: {}, resources: {} });
   assert.equal(h.lines[0].result.instructions, "Server says hi.");
   assert.equal(h.polls.length, 0);
 });
@@ -606,7 +606,7 @@ test("channel on: declares claude/channel on the forwarded initialize, keeps the
   await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   h.bridge.stop();
   const r = h.lines[0].result;
-  assert.deepEqual(r.capabilities, { tools: {}, experimental: { "claude/channel": {} } });
+  assert.deepEqual(r.capabilities, { tools: {}, resources: {}, experimental: { "claude/channel": {} } });
   assert.match(r.instructions, /^Server says hi\. Back Channel also pushes an event/);
   assert.match(r.instructions, /count only/);
 });
@@ -660,7 +660,7 @@ test("channel on, not connected yet: local initialize also declares the channel,
   let onDisk = "";
   const h = channelHarness(() => pending(1, ["invite"]), { token: "", readTokenFile: () => onDisk });
   await h.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
-  assert.deepEqual(h.lines[0].result.capabilities, { tools: { listChanged: true }, experimental: { "claude/channel": {} } });
+  assert.deepEqual(h.lines[0].result.capabilities, { tools: { listChanged: true }, resources: {}, experimental: { "claude/channel": {} } });
   await new Promise((r) => setTimeout(r, 15));
   assert.equal(h.polls.length, 0, "nothing to authenticate with yet");
   onDisk = "bc_paired_later";

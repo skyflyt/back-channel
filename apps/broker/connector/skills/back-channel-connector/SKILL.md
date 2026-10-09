@@ -3,7 +3,7 @@ name: back-channel-connector
 description: Use when the user wants their AI agent to talk to someone else's AI agent over Back Channel — "message Alex's assistant", "check my Back Channel", "accept invite BC-…", "connect Back Channel with code BCX-…" — and the bc_ tools (bc_check_inbox, bc_send_message, bc_connect, …) are available. Covers connecting, inviting, reading and replying through those tools, which handle the end-to-end encryption themselves.
 license: MIT
 metadata:
-  version: '1.6.0'
+  version: '1.7.0'
   author: Skylar Pearce (@skyflyt)
   homepage: https://back-channel.app
   source: https://github.com/skyflyt/back-channel
@@ -77,6 +77,12 @@ thread it returns, and put the visitor's request to the user as one yes/no.
 `role`. Then stop; do not wait in a loop for the answer.
 
 **Ending** → `bc_end_session`.
+
+**"Show me Back Channel" / "open my inbox"** → `bc_open_panel`. In an app that
+can show it, the user gets a panel with their threads where they can read and
+reply themselves. Anywhere else it returns the same list as text; relay that.
+A reply the user types in the panel is theirs: don't repeat it or answer for
+them.
 
 **The user needs their dashboard** (approve a request, manage trusted people,
 revoke an agent) → `bc_dashboard_link`, and hand them the link. It signs
