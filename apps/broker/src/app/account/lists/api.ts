@@ -156,6 +156,15 @@ export interface Plate {
   hint?: string;
 }
 
+/** A peer as GET /api/trust lists it. Only `mutual` friends can be added to a list. */
+export interface TrustPeer {
+  handle: string;
+  last_session_at: string | null;
+  trusted: boolean;
+  mutual: boolean;
+  established_at: string | null;
+}
+
 /** An agent as /api/account/agents lists it (for the new-list form). */
 export interface AccountAgent {
   id: string;
@@ -240,6 +249,8 @@ export const listsApi = {
   okTask: (taskId: string) => call<{ task: TaskView }>("POST", `/api/lists/tasks/${enc(taskId)}/ok`, {}),
   /** Toggle one of REACTIONS on a task. */
   react: (taskId: string, emoji: ReactionEmoji) => call<{ task: TaskView }>("POST", `/api/lists/tasks/${enc(taskId)}/react`, { emoji }),
+  /** Your friends and would-be friends (the member picker offers the mutual ones). */
+  friends: () => call<{ peers: TrustPeer[] }>("GET", "/api/trust"),
 };
 
 export const errorText = (e: unknown) => (e instanceof ListsError ? e.message : "Something went wrong. Try again.");
@@ -313,17 +324,62 @@ export function openListsAt(target: ListsTarget) {
 
 const short = (name: string) => name.replace(/@bc$/, "");
 
+/** "Skylar's Claude Code", or just "Alex's Claude" when the agent's name already says whose it is. */
+function agentOf(person: string, agent: string): string {
+  const p = short(person).toLowerCase();
+  return agent.toLowerCase().replace(/’/g, "'").startsWith(`${p}'s `) ? agent : `${short(person)}'s ${agent}`;
+}
+
 /** "You", "Skylar", or "Skylar's Claude Code". */
 export function whoName(ref: PersonRef | null | undefined): string {
   if (!ref) return "Nobody";
-  if (ref.agent) return `${short(ref.person)}'s ${ref.agent}`;
+  if (ref.agent) return agentOf(ref.person, ref.agent);
   return ref.is_you ? "You" : short(ref.person);
+}
+
+/**
+ * Who did something, as a byline next to an avatar: "Alex", "You", or for an
+ * agent's work "Alex · via Codex" (the person first: agents act for them).
+ */
+export function attribution(ref: PersonRef | null | undefined): string {
+  if (!ref) return "Nobody";
+  const person = ref.is_you ? "You" : short(ref.person);
+  return ref.agent ? `${person} · via ${ref.agent}` : person;
+}
+
+/** Someone on a list as a PersonRef, for their avatar. */
+export function memberRef(m: MemberView): PersonRef {
+  return { person: m.display_name || m.handle || "someone", handle: m.handle, agent: null, agent_id: null, is_you: m.is_you };
+}
+
+/** "Alex", or their handle when they have no display name. */
+export const memberLabel = (m: MemberView) => (m.display_name && m.display_name.trim()) || short(m.handle ?? "") || "someone";
+
+/**
+ * Would your agents take this friend's task, once you OK it? The same test as
+ * the plate's ok_requests (okRequests in src/lib/lists/rules.mjs): someone else
+ * wrote it, it's open or blocked with nobody on it, it's for you, your agents,
+ * or anyone (then only where one of your agents has work access), and neither
+ * an OK nor your list setting covers it yet.
+ */
+export function needsMyOk(t: TaskView, agentsCanWork: boolean): boolean {
+  if (t.agent_may_act.ok || t.created_by?.is_you) return false;
+  if ((t.status !== "open" && t.status !== "blocked") || t.claim) return false;
+  if (t.assignee) return t.assignee.is_you;
+  return agentsCanWork;
+}
+
+/** Who a task waiting for a check is waiting for: you, or "Alex". */
+export function reviewerLabel(t: Pick<TaskView, "needs_review_by">): string {
+  const r = t.needs_review_by;
+  if (!r) return "someone";
+  return r.is_you ? "you" : short(r.person);
 }
 
 /** The person's own agents read better as just the agent's name in tight spots. */
 export function whoShort(ref: PersonRef | null | undefined): string {
   if (!ref) return "Nobody";
-  if (ref.agent) return ref.is_you ? ref.agent : `${short(ref.person)}'s ${ref.agent}`;
+  if (ref.agent) return ref.is_you ? ref.agent : agentOf(ref.person, ref.agent);
   return ref.is_you ? "You" : short(ref.person);
 }
 
@@ -420,8 +476,23 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
 
 /** The wording an activity line uses, from the event's stored text ("picked this up"). */
 export function eventLine(e: EntryView): string {
+  // "OK'd this for their agents" reads oddly after "You".
+  const text = e.event === "ok" && e.by?.is_you && !e.by.agent ? e.text.replace("for their agents", "for your agents") : e.text;
+  return `${whoName(e.by)} ${text}`;
+}
+
+/** A list-level activity line: "Skylar added Alex", "You took Carol off the list". */
+export function listEventLine(e: ListEventView): string {
   return `${whoName(e.by)} ${e.text}`;
 }
+
+/** What each reaction means, for screen readers and tooltips. */
+export const REACTION_LABEL: Record<ReactionEmoji, string> = {
+  "\u{1F44D}": "thumbs up",
+  "\u{1F389}": "celebrate",
+  "\u{1F64F}": "thanks",
+  "✅": "done",
+};
 
 /** What a blocked event said it was blocked on, if anything. */
 export function blockedReason(e: EntryView): string | null {

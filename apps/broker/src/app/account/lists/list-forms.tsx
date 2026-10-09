@@ -1,15 +1,17 @@
 "use client";
 /**
  * The Lists tab's forms: start a list, change a list's settings (name, emoji,
- * archive, which agents may work it), and quick add.
+ * who is on it, your own settings there, archive or leave, which of your
+ * agents may work it), and quick add.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Chip, HealthDot } from "@/components/ui/primitives";
 import {
   listsApi, errorText, agentActivity, dueInfo, RUNTIME_LABEL,
-  type AccountAgent, type Access, type ListDetail, type YourAgent,
+  type AccountAgent, type Access, type ListDetail, type MemberView, type YourAgent,
 } from "./api";
-import { parseQuickAdd, assigneeParam, agentSlug } from "./quick-add.mjs";
+import { parseQuickAdd, assigneeParam, assigneeChip, agentSlug, bareHandle } from "./quick-add.mjs";
+import { MembersPanel, MySettings, LeaveList } from "./members";
 
 const DAY = 24 * 60 * 60_000;
 const EMOJIS = ["📝", "🏠", "💼", "🛒", "🧳", "🎯", "🔧", "📚"];
@@ -113,9 +115,12 @@ const ACCESS_OPTIONS: { value: Access; label: string; title: string }[] = [
   { value: "work", label: "Work", title: "Can add, pick up and finish tasks" },
 ];
 
-export function ListSettings({ detail, onChanged }: { detail: ListDetail; onChanged: () => void }) {
+export function ListSettings({ detail, focusMembers, onChanged, onLeft }: {
+  detail: ListDetail; focusMembers?: boolean; onChanged: () => void; onLeft: () => void;
+}) {
   const l = detail.list;
   const isOwner = l.your_role === "owner";
+  const shared = detail.members.length > 1;
   const [name, setName] = useState(l.name);
   const [emoji, setEmoji] = useState(l.emoji ?? "");
   const [busy, setBusy] = useState("");
@@ -152,6 +157,9 @@ export function ListSettings({ detail, onChanged }: { detail: ListDetail; onChan
         </form>
       )}
 
+      <MembersPanel detail={detail} focusAdd={focusMembers} onChanged={onChanged} />
+      {shared && <MySettings detail={detail} onChanged={onChanged} />}
+
       <div className="ds-label" style={{ marginTop: 18 }}>Which of your agents can use this list</div>
       <p className="ds-fine" style={{ margin: "0 0 4px" }}>Work: add, pick up and finish tasks. View: read and comment. None: can&apos;t see it. Changes apply on the agent&apos;s next request.</p>
       {(detail.your_agents ?? []).length === 0 && <p className="ds-fine">No agents connected yet. Connect one from the Agents tab.</p>}
@@ -186,13 +194,16 @@ export function ListSettings({ detail, onChanged }: { detail: ListDetail; onChan
           <p className="ds-fine" style={{ margin: "0 0 8px" }}>
             {l.archived
               ? "This list is read-only and hidden from your agents' plates. Unarchive it to use it again."
-              : "Archiving hides the list from your agents' plates and makes it read-only. Nothing is deleted."}
+              : shared
+                ? "Archiving makes the list read-only for everyone on it and takes it off every agent's plate. Nothing is deleted."
+                : "Archiving hides the list from your agents' plates and makes it read-only. Nothing is deleted."}
           </p>
           <button className="ds-btn ghost ds-sm" disabled={!!busy} onClick={() => void act("archive", () => listsApi.updateList(l.id, { archived: !l.archived }), l.archived ? "Unarchived." : "Archived.")}>
             {busy === "archive" ? "…" : l.archived ? "Unarchive list" : "Archive list"}
           </button>
         </>
       )}
+      <LeaveList detail={detail} onLeft={onLeft} />
       {err && <p className="ds-err" role="alert">{err}</p>}
       {note && !err && <p className="ds-fine" role="status" style={{ color: "var(--ds-ok)" }}>{note}</p>}
     </div>
@@ -201,8 +212,8 @@ export function ListSettings({ detail, onChanged }: { detail: ListDetail; onChan
 
 /* --------------------------------- quick add -------------------------------- */
 
-export function QuickAdd({ listId, agents, disabled, onAdded }: {
-  listId: string; agents: YourAgent[] | undefined; disabled: boolean; onAdded: () => void;
+export function QuickAdd({ listId, agents, members, disabled, onAdded }: {
+  listId: string; agents: YourAgent[] | undefined; members: MemberView[]; disabled: boolean; onAdded: () => void;
 }) {
   const [text, setText] = useState("");
   const [skipDue, setSkipDue] = useState(false);
@@ -211,9 +222,14 @@ export function QuickAdd({ listId, agents, disabled, onAdded }: {
   const [err, setErr] = useState("");
 
   const known = useMemo(() => (agents ?? []).map((a) => ({ id: a.id, name: a.name, access: a.access })), [agents]);
-  const parsed = useMemo(() => parseQuickAdd(text, { now: new Date(), agents: known, skipDue, skipAssignee }), [text, known, skipDue, skipAssignee]);
+  const parsed = useMemo(() => parseQuickAdd(text, { now: new Date(), agents: known, members, skipDue, skipAssignee }), [text, known, members, skipDue, skipAssignee]);
   const example = (agents ?? []).find((a) => a.access === "work");
-  const mentions = example ? `@me, @agents, @${agentSlug(example.name)}` : "@me or @agents";
+  const friend = members.find((m) => !m.is_you && m.handle);
+  const mentions = [
+    "@me", "@agents",
+    ...(example ? [`@${agentSlug(example.name)}`] : []),
+    ...(friend ? [`@${bareHandle(friend.handle)}`, `@${bareHandle(friend.handle)}'s agents`] : []),
+  ].join(", ");
 
   const change = (v: string) => {
     setText(v);
@@ -242,9 +258,7 @@ export function QuickAdd({ listId, agents, disabled, onAdded }: {
 
   const read = !!parsed.due || !!parsed.assignee;
   const due = parsed.due ? dueInfo(`${parsed.due}T12:00:00.000Z`) : null;
-  const who = parsed.assignee
-    ? parsed.assignee.kind === "me" ? "For you" : parsed.assignee.kind === "my_agents" ? "For your agents" : `For ${parsed.assignee.name}`
-    : null;
+  const who = assigneeChip(parsed.assignee);
 
   return (
     <div className="ds-qa">
