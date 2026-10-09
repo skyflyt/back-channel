@@ -25,6 +25,12 @@
  *
  * List content is stored readable on purpose (decision 2026-10-09). Secret-
  * shaped text is refused by the rules before anything is written.
+ *
+ * Phase 3: every write tells the people who can see the list that something
+ * changed (lists/bus.mjs, behind GET /api/lists/stream), after commit and with
+ * no content. Lists can start from a template (built in, or one the person
+ * saved) or as a copy of another list. digestFor() gathers what the opt-in
+ * daily digest says (src/lib/lists-digest.ts sends it).
  */
 import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
@@ -38,6 +44,9 @@ import { rateLimit } from "@/lib/rate-limit";
 import { isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
 import { fireInboxEvent } from "@/lib/inbox-bus";
 import * as R from "@/lib/lists/rules.mjs";
+import * as listsBus from "@/lib/lists/bus.mjs";
+import * as T from "@/lib/lists/templates.mjs";
+import * as D from "@/lib/lists/digest.mjs";
 
 type Tx = Prisma.TransactionClient;
 type Input = Record<string, unknown>;
@@ -52,11 +61,12 @@ type Standing = { list: Row; member: Row; actor: Actor; shared: boolean; members
 export type ListsOp =
   | "lists" | "createList" | "getList" | "updateList" | "setAgentAccess" | "plate" | "search" | "changes"
   | "tasks" | "addTasks" | "getTask" | "updateTask" | "claim" | "release" | "done" | "review" | "entries" | "addEntry"
-  | "addMember" | "removeMember" | "updateMe" | "ok" | "react";
+  | "addMember" | "removeMember" | "updateMe" | "ok" | "react"
+  | "templates" | "saveTemplate" | "deleteTemplate" | "preferences" | "updatePreferences";
 
 const WRITES = new Set<ListsOp>([
   "createList", "updateList", "setAgentAccess", "addTasks", "updateTask", "claim", "release", "done", "review", "addEntry",
-  "addMember", "removeMember", "updateMe", "ok", "react",
+  "addMember", "removeMember", "updateMe", "ok", "react", "saveTemplate", "deleteTemplate", "updatePreferences",
 ]);
 const DAY = 24 * 60 * 60_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -279,8 +289,9 @@ async function addEventLine(tx: Tx, taskId: string, by: { accountId: string; age
 /**
  * An agent claim that ran out is released here, in the same transaction as
  * whatever touched the task, with an activity line saying so. Never silent.
+ * `touched` collects the list, so open pages hear that the task changed.
  */
-async function settleLapse(tx: Tx, task: Row, now: Date): Promise<Row> {
+async function settleLapse(tx: Tx, task: Row, now: Date, touched?: Set<string>): Promise<Row> {
   if (!R.claimLapsed(task, now)) return task;
   const released = await tx.taskItem.updateMany({
     where: { id: task.id, claimAgentId: task.claimAgentId, claimExpiresAt: { lte: now } },
@@ -289,16 +300,17 @@ async function settleLapse(tx: Tx, task: Row, now: Date): Promise<Row> {
   if (released.count !== 1) return (await tx.taskItem.findFirst({ where: { id: task.id } })) as Row;
   const last = await tx.taskEntry.findFirst({ where: { taskId: task.id, kind: "progress", authorAgentId: task.claimAgentId }, orderBy: { createdAt: "desc" } });
   await addEvent(tx, task.id, { accountId: task.claimAccountId, agentId: task.claimAgentId }, "lapsed", last ? `last progress was "${String(last.body).slice(0, 300)}"` : undefined);
+  touched?.add(task.listId);
   return (await tx.taskItem.findFirst({ where: { id: task.id } })) as Row;
 }
 
-async function loadTask(tx: Tx, caller: Caller, taskId: unknown, now: Date) {
+async function loadTask(tx: Tx, caller: Caller, taskId: unknown, now: Date, touched?: Set<string>) {
   if (typeof taskId !== "string" || !UUID.test(taskId)) return NOT_AVAILABLE();
   const found = await tx.taskItem.findFirst({ where: { id: taskId } });
   if (!found) return NOT_AVAILABLE();
   const s = await standing(tx, caller, found.listId);
   if (!s) return NOT_AVAILABLE();
-  const task = await settleLapse(tx, found as Row, now);
+  const task = await settleLapse(tx, found as Row, now, touched);
   return { ...s, task };
 }
 
@@ -350,8 +362,63 @@ function writable(s: { list: Row }) {
 
 // ── OKs, mentions, nudges ───────────────────────────────────────────────────
 
-/** `after` runs once the transaction commits; `rung` and `nudged` keep that to one doorbell and one email per person per request. */
-type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; after: Array<() => void>; rung: Set<string>; nudged: Set<string> };
+/**
+ * `after` runs once the transaction commits; `rung` and `nudged` keep that to one doorbell and one email per person per request.
+ * `touched` (list ids) and `audience` (account ids) say who hears `changed` on the live stream after commit.
+ */
+type Ctx = {
+  tx: Tx; caller: Caller; input: Input; now: Date; after: Array<() => void>; rung: Set<string>; nudged: Set<string>;
+  touched: Set<string>; audience: Set<string>;
+};
+
+/** Something on this list changed: everyone who can see it hears so after commit (see announce()). */
+function touch(ctx: Ctx, listId: string) {
+  ctx.touched.add(listId);
+}
+
+/**
+ * Queue a `changed` on the live stream, after commit, for everyone who can see
+ * a touched list (its members who still count) and anyone added to `audience`
+ * by hand (a person who just left, or whose own settings changed). Metadata
+ * only: the stream never says what changed.
+ */
+async function announce(ctx: Ctx) {
+  if (ctx.touched.size) {
+    const lists = (await ctx.tx.taskList.findMany({ where: { id: { in: [...ctx.touched] } }, select: { id: true, ownerAccountId: true } })) as Row[];
+    for (const members of (await liveMembers(ctx.tx, lists)).values()) for (const m of members) ctx.audience.add(m.accountId);
+  }
+  for (const accountId of ctx.audience) ctx.after.push(() => listsBus.fireListsChanged(accountId));
+}
+
+/**
+ * Run one operation in a serializable transaction with retry, then its after-commit effects
+ * (doorbells, nudges, the live stream). Shared by every REST and MCP call and by digestFor().
+ */
+async function transact<T>(caller: Caller, input: Input, fn: (ctx: Ctx) => Promise<T>): Promise<T> {
+  const after: Array<() => void> = [];
+  const rung = new Set<string>();
+  const nudged = new Set<string>();
+  const touched = new Set<string>();
+  const audience = new Set<string>();
+  const result = await withSerializableRetry(
+    () => {
+      after.length = 0;
+      rung.clear();
+      nudged.clear();
+      touched.clear();
+      audience.clear();
+      return prisma.$transaction(async (tx: Tx) => {
+        const ctx: Ctx = { tx, caller, input, now: new Date(), after, rung, nudged, touched, audience };
+        const out = await fn(ctx);
+        await announce(ctx);
+        return out;
+      }, { isolationLevel: "Serializable" });
+    },
+    { retryable: conflict },
+  );
+  for (const run of after) run();
+  return result;
+}
 
 /** Ring this account's doorbell (kind "task") after commit, once per request: the doorbell carries an absolute count. */
 function ring(ctx: Ctx, accountId: string) {
@@ -510,20 +577,18 @@ async function removeMembership(tx: Tx, list: Row, accountId: string, how: "left
 export async function endListSharing(accountId: string, peerId: string): Promise<void> {
   if (!accountId || !peerId || accountId === peerId) return;
   try {
-    await withSerializableRetry(
-      () =>
-        prisma.$transaction(async (tx: Tx) => {
-          const now = new Date();
-          const rows = (await tx.taskListMember.findMany({
-            where: { role: "member", OR: [{ accountId: peerId, list: { ownerAccountId: accountId } }, { accountId, list: { ownerAccountId: peerId } }] },
-          })) as Row[];
-          for (const m of rows) {
-            const list = (await tx.taskList.findFirst({ where: { id: m.listId } })) as Row;
-            await removeMembership(tx, list, m.accountId, m.accountId === accountId ? "left" : "removed", accountId, now);
-          }
-        }, { isolationLevel: "Serializable" }),
-      { retryable: conflict },
-    );
+    // Both people's pages hear about it, and so does everyone else still on those lists.
+    await transact({ accountId, agentId: null, viaCookie: false }, {}, async (ctx) => {
+      const rows = (await ctx.tx.taskListMember.findMany({
+        where: { role: "member", OR: [{ accountId: peerId, list: { ownerAccountId: accountId } }, { accountId, list: { ownerAccountId: peerId } }] },
+      })) as Row[];
+      for (const m of rows) {
+        const list = (await ctx.tx.taskList.findFirst({ where: { id: m.listId } })) as Row;
+        await removeMembership(ctx.tx, list, m.accountId, m.accountId === accountId ? "left" : "removed", accountId, ctx.now);
+        touch(ctx, list.id);
+        ctx.audience.add(m.accountId);
+      }
+    });
   } catch (e) {
     console.error("[lists] endListSharing failed:", e instanceof Error ? e.name : typeof e);
   }
@@ -558,9 +623,56 @@ async function opLists({ tx, caller }: Ctx) {
   };
 }
 
-async function opCreateList({ tx, caller, input }: Ctx) {
-  const name = R.cleanText(input.name, { field: "name", max: R.LIMITS.listName, required: true, singleLine: true })!;
-  const emoji = R.cleanText(input.emoji, { field: "emoji", max: R.LIMITS.emoji, singleLine: true }) || null;
+/** What a new list starts with: a template's items, or a copy of another list's unfinished tasks. */
+type Seed = { name: string; emoji: string | null; tasks: Array<{ title: string; notes: string; createdByAccountId?: string; createdByAgentId?: string | null }>; copied: boolean };
+
+/**
+ * A `template` argument as a seed: "builtin:<slug>", one of the caller's (or, for an agent, its person's)
+ * saved templates by id, or either by name. Nobody else's saved templates are reachable.
+ */
+async function templateSeed(tx: Tx, caller: Caller, value: unknown): Promise<Seed> {
+  let ref: ReturnType<typeof T.parseTemplateRef> | ReturnType<typeof T.matchTemplateName> = T.parseTemplateRef(value);
+  if (ref.kind === "name") {
+    const saved = (await tx.taskListTemplate.findMany({ where: { ownerAccountId: caller.accountId }, select: { id: true, name: true }, orderBy: { createdAt: "asc" } })) as Row[];
+    const wanted = ref.name;
+    ref = T.matchTemplateName(wanted, saved as Array<{ id: string; name: string }>);
+    if (ref === "ambiguous") return fail(400, "ambiguous_template", `More than one of your templates is called "${wanted}". Use its id instead.`);
+    if (!ref) {
+      const yours = saved.map((t) => `"${t.name}"`).join(", ");
+      return fail(404, "no_such_template", `No template called "${wanted}". ${yours ? `Yours: ${yours}. ` : ""}${T.builtinHint()}`);
+    }
+  }
+  if (ref.kind === "builtin") {
+    const b = T.builtinTemplate(ref.slug)!;
+    return { name: b.name, emoji: b.emoji, tasks: b.items.map((i) => ({ title: i.title, notes: i.notes })), copied: false };
+  }
+  const row = (await tx.taskListTemplate.findFirst({ where: { id: ref.id, ownerAccountId: caller.accountId } })) as Row | null;
+  if (!row) return fail(404, "no_such_template", "That template isn't available.");
+  return { name: row.name, emoji: row.emoji ?? null, tasks: T.cleanTemplateItems(row.items), copied: false };
+}
+
+/**
+ * A copy of a list the person can see: its name with "(copy)", its emoji, and its unfinished tasks'
+ * titles, notes and order. Not assignees, claims, comments or history. Each task keeps who wrote it,
+ * so a friend's task stays a request on the copy (the OK rule). People only: an agent copying a
+ * friend's tasks into a list of its own is the kind of laundering the OK rule exists to stop.
+ */
+async function duplicateSeed(tx: Tx, caller: Caller, listId: unknown): Promise<Seed> {
+  if (!caller.viaCookie) return peopleOnly("duplicate a list");
+  const s = await standing(tx, caller, String(listId ?? ""));
+  if (!s) return NOT_AVAILABLE();
+  const rows = (await tx.taskItem.findMany({ where: { listId: s.list.id, status: { in: [...R.ACTIVE] } }, orderBy: { position: "asc" }, take: R.LIMITS.openTasksPerList })) as Row[];
+  return { name: T.copyName(s.list.name), emoji: s.list.emoji ?? null, tasks: T.tasksToDuplicate(rows), copied: true };
+}
+
+async function opCreateList(ctx: Ctx) {
+  const { tx, caller, input } = ctx;
+  const fromTemplate = input.template !== undefined && input.template !== null;
+  const fromList = input.duplicate !== undefined && input.duplicate !== null;
+  if (fromTemplate && fromList) fail(400, "invalid_create", "Start from a template or duplicate a list, not both.");
+  const seed = fromTemplate ? await templateSeed(tx, caller, input.template) : fromList ? await duplicateSeed(tx, caller, input.duplicate) : null;
+  const name = R.cleanText(input.name ?? seed?.name, { field: "name", max: R.LIMITS.listName, required: true, singleLine: true })!;
+  const emoji = (input.emoji !== undefined ? R.cleanText(input.emoji, { field: "emoji", max: R.LIMITS.emoji, singleLine: true }) : seed?.emoji) || null;
   const owned = await tx.taskList.count({ where: { ownerAccountId: caller.accountId, archivedAt: null } });
   if (owned >= R.LIMITS.listsPerAccount) fail(429, "too_many_lists", `You already have ${R.LIMITS.listsPerAccount} lists. Archive one first.`);
   // Which agents may work here. A person picks theirs in the browser. An agent
@@ -580,7 +692,23 @@ async function opCreateList({ tx, caller, input }: Ctx) {
   const list = await tx.taskList.create({ data: { ownerAccountId: caller.accountId, name, emoji } });
   await tx.taskListMember.create({ data: { listId: list.id, accountId: caller.accountId, role: "owner", addedByAccountId: caller.accountId } });
   for (const agentTokenId of agentIds) await tx.taskListAgentGrant.create({ data: { listId: list.id, agentTokenId, accountId: caller.accountId, access: "work" } });
-  return { list: { id: list.id, name: list.name, emoji: list.emoji ?? null, archived: false, shared: false, your_role: "owner" } };
+  // A template's items are the caller's tasks now; a copy keeps who wrote each and says who copied it.
+  let position: number | null = null;
+  for (const item of seed?.tasks ?? []) {
+    const title = R.cleanText(item.title, { field: "title", max: R.LIMITS.title, required: true, singleLine: true })!;
+    const notes = R.cleanText(item.notes, { field: "notes", max: R.LIMITS.notes }) ?? "";
+    position = R.nextPosition(position);
+    const by = seed!.copied && item.createdByAccountId
+      ? { createdByAccountId: item.createdByAccountId, createdByAgentId: item.createdByAgentId ?? null }
+      : { createdByAccountId: caller.accountId, createdByAgentId: caller.agentId };
+    const task = (await tx.taskItem.create({ data: { listId: list.id, title, notes, position, ...by } })) as Row;
+    await addEvent(tx, task.id, caller, seed!.copied ? "copied" : "created");
+  }
+  touch(ctx, list.id);
+  return {
+    list: { id: list.id, name: list.name, emoji: list.emoji ?? null, archived: false, shared: false, your_role: "owner" },
+    ...(seed ? { tasks_added: seed.tasks.length } : {}),
+  };
 }
 
 /** Everyone on the list, owner first, with the agents each has given access here (what @mentions reach). */
@@ -599,7 +727,7 @@ async function memberViews(tx: Tx, s: Standing) {
     })));
 }
 
-async function opGetList({ tx, caller, input, now }: Ctx) {
+async function opGetList({ tx, caller, input, now, touched }: Ctx) {
   const s = await standing(tx, caller, String(input.list_id ?? ""));
   if (!s) return NOT_AVAILABLE();
   const recent = new Date(now.getTime() - 7 * DAY);
@@ -609,7 +737,7 @@ async function opGetList({ tx, caller, input, now }: Ctx) {
     take: 1_000,
   });
   const settled: Row[] = [];
-  for (const t of rows as Row[]) settled.push(await settleLapse(tx, t, now));
+  for (const t of rows as Row[]) settled.push(await settleLapse(tx, t, now, touched));
   const events = ((await tx.taskListEvent.findMany({ where: { listId: s.list.id }, orderBy: { createdAt: "desc" }, take: R.LIMITS.plateExtras })) as Row[]).reverse();
   const lens = await lensFor(tx, caller, settled, { lines: true, extra: events });
   const ref = listRef(s);
@@ -636,10 +764,12 @@ async function opGetList({ tx, caller, input, now }: Ctx) {
   return result;
 }
 
-async function opUpdateList({ tx, caller, input }: Ctx) {
+async function opUpdateList(ctx: Ctx) {
+  const { tx, caller, input } = ctx;
   const s = await standing(tx, caller, String(input.list_id ?? ""));
   if (!s) return NOT_AVAILABLE();
   if (!R.canManage(s.actor)) fail(403, "not_allowed", "Only the list's owner can change it.");
+  touch(ctx, s.list.id);
   const data: Row = {};
   const name = R.cleanText(input.name, { field: "name", max: R.LIMITS.listName, singleLine: true });
   if (name !== undefined) { if (!name) fail(400, "invalid_name", "name can't be empty"); data.name = name; }
@@ -654,12 +784,14 @@ async function opUpdateList({ tx, caller, input }: Ctx) {
   return { list: { id: list.id, name: list.name, emoji: list.emoji ?? null, archived: !!list.archivedAt } };
 }
 
-async function opSetAgentAccess({ tx, caller, input, now }: Ctx) {
+async function opSetAgentAccess(ctx: Ctx) {
+  const { tx, caller, input, now } = ctx;
   // Cookie-only: a person decides which of their agents work where. No agent,
   // and no tool, can widen any agent's access.
   if (!caller.viaCookie) fail(403, "people_only", "Only a person, in the Back Channel dashboard, can change which agents work on a list.");
   const s = await standing(tx, caller, String(input.list_id ?? ""));
   if (!s) return NOT_AVAILABLE();
+  touch(ctx, s.list.id);
   const agentId = input.agent_id;
   const access = input.access;
   if (typeof agentId !== "string" || !["none", "view", "work"].includes(String(access))) fail(400, "invalid_access", "Pass agent_id and access: none, view or work.");
@@ -681,13 +813,15 @@ async function opSetAgentAccess({ tx, caller, input, now }: Ctx) {
   return { agent_id: agentId, access };
 }
 
-async function opAddMember({ tx, caller, input, now }: Ctx) {
+async function opAddMember(ctx: Ctx) {
+  const { tx, caller, input, now } = ctx;
   // Sharing moves content across an account boundary, and trust is a human act: cookie only.
   if (!caller.viaCookie) peopleOnly("share a list");
   const s = await standing(tx, caller, String(input.list_id ?? ""));
   if (!s) return NOT_AVAILABLE();
   if (!R.canManage(s.actor)) fail(403, "not_allowed", "Only the list's owner can add people to it.");
   writable(s);
+  touch(ctx, s.list.id);
   if (typeof input.handle !== "string" || !input.handle.trim()) fail(400, "invalid_handle", "Say who to add: their handle.");
   // One answer for a stranger and for a handle that doesn't exist, so this never says which.
   const notAFriend = () => fail(403, "not_a_friend", "You can only add friends to a list.");
@@ -708,7 +842,8 @@ async function opAddMember({ tx, caller, input, now }: Ctx) {
   return { members: await memberViews(tx, fresh) };
 }
 
-async function opRemoveMember({ tx, caller, input, now }: Ctx) {
+async function opRemoveMember(ctx: Ctx) {
+  const { tx, caller, input, now } = ctx;
   if (!caller.viaCookie) peopleOnly("change who is on a list");
   const s = await standing(tx, caller, String(input.list_id ?? ""));
   if (!s) return NOT_AVAILABLE();
@@ -716,12 +851,16 @@ async function opRemoveMember({ tx, caller, input, now }: Ctx) {
   const check = R.removalCheck(s.actor, target?.accountId ?? "", target?.role ?? null);
   if (!check.ok) return fail(check.status, check.code, check.why);
   await removeMembership(tx, s.list, target!.accountId, check.how, caller.accountId, now);
+  // The person who came off isn't a member any more, so they're told by hand: their page drops the list.
+  touch(ctx, s.list.id);
+  ctx.audience.add(target!.accountId);
   if (check.how === "left") return { left: true };
   const fresh = (await standing(tx, caller, s.list.id))!;
   return { members: await memberViews(tx, fresh) };
 }
 
-async function opUpdateMe({ tx, caller, input }: Ctx) {
+async function opUpdateMe(ctx: Ctx) {
+  const { tx, caller, input } = ctx;
   // Each person sets only their own: whose tasks their agents take without asking, and email nudges.
   if (!caller.viaCookie) peopleOnly("change these settings");
   const s = await standing(tx, caller, String(input.list_id ?? ""));
@@ -737,6 +876,8 @@ async function opUpdateMe({ tx, caller, input }: Ctx) {
   }
   if (!Object.keys(data).length) fail(400, "nothing_to_change", "Pass agents_take_from or notify.");
   await tx.taskListMember.updateMany({ where: { listId: s.list.id, accountId: caller.accountId }, data });
+  // Only this person's own view changes (their OK requests, their settings): their other tabs hear it.
+  ctx.audience.add(caller.accountId);
   const me = (await tx.taskListMember.findFirst({ where: { listId: s.list.id, accountId: caller.accountId } })) as Row;
   return { me: { agents_take_from: me.agentsTakeFrom, notify: me.notify } };
 }
@@ -757,7 +898,7 @@ async function unreadMentions(tx: Tx, caller: Caller, listIds: string[]) {
   return { mentions, tasks, entries };
 }
 
-async function opPlate({ tx, caller, now }: Ctx) {
+async function opPlate({ tx, caller, now, touched }: Ctx) {
   const ids = await visibleListIds(tx, caller);
   if (!ids.length) {
     return { lists: [], doing: [], up_next: [], claimable: [], waiting_on_you: [], ok_requests: [], mentions: [], done_recently: [], hint: caller.agentId
@@ -777,10 +918,10 @@ async function opPlate({ tx, caller, now }: Ctx) {
     take: 2_000,
   });
   const settled: Row[] = [];
-  for (const t of rows as Row[]) settled.push(await settleLapse(tx, t, now));
+  for (const t of rows as Row[]) settled.push(await settleLapse(tx, t, now, touched));
   const unread = await unreadMentions(tx, caller, ids);
   const byId = new Map(settled.map((t) => [t.id as string, t]));
-  for (const t of unread.tasks) if (!byId.has(t.id)) byId.set(t.id, await settleLapse(tx, t, now));
+  for (const t of unread.tasks) if (!byId.has(t.id)) byId.set(t.id, await settleLapse(tx, t, now, touched));
   const all = [...byId.values()];
   const lens = await lensFor(tx, caller, all, { lines: true, extra: [...unread.entries, ...unread.mentions] });
 
@@ -843,7 +984,7 @@ async function opPlate({ tx, caller, now }: Ctx) {
   };
 }
 
-async function opSearch({ tx, caller, input, now }: Ctx) {
+async function opSearch({ tx, caller, input, now, touched }: Ctx) {
   const q = R.cleanText(input.q, { field: "q", max: 200, singleLine: true });
   const listFilter = input.list_id !== undefined ? String(input.list_id) : undefined;
   const status = input.status !== undefined ? String(input.status) : undefined;
@@ -859,7 +1000,7 @@ async function opSearch({ tx, caller, input, now }: Ctx) {
   if (q) where.AND = [{ OR: [{ title: { contains: q, mode: "insensitive" } }, { notes: { contains: q, mode: "insensitive" } }] }];
   const rows = await tx.taskItem.findMany({ where, orderBy: [{ position: "asc" }], take: R.LIMITS.pageSize });
   const settled: Row[] = [];
-  for (const t of rows as Row[]) settled.push(await settleLapse(tx, t, now));
+  for (const t of rows as Row[]) settled.push(await settleLapse(tx, t, now, touched));
   const lens = await lensFor(tx, caller, settled);
   const views = [];
   const cache = new Map<string, Standing | null>();
@@ -904,10 +1045,11 @@ async function resolveList(tx: Tx, caller: Caller, value: unknown) {
 }
 
 async function opAddTasks(ctx: Ctx) {
-  const { tx, caller, input, now } = ctx;
+  const { tx, caller, input, now, touched } = ctx;
   const s = input.list_id !== undefined ? await standing(tx, caller, String(input.list_id)) : await resolveList(tx, caller, input.list);
   if (!s) return NOT_AVAILABLE();
   writable(s);
+  touched.add(s.list.id);
   if (!R.canWork(s.actor)) fail(403, "not_allowed", s.actor.agentId ? "Your person hasn't given this agent work access to this list." : "You can't add tasks to this list.");
   const items: Input[] = Array.isArray(input.tasks) ? (input.tasks as Input[]) : [{ title: input.title, notes: input.notes, assignee: input.assignee, due: input.due }];
   if (!items.length || items.length > R.LIMITS.batchAdd) fail(400, "invalid_tasks", `Add between 1 and ${R.LIMITS.batchAdd} tasks at a time.`);
@@ -948,15 +1090,15 @@ async function taskResult(tx: Tx, caller: Caller, s: Standing, taskId: string, n
   return { task: view };
 }
 
-async function opGetTask({ tx, caller, input, now }: Ctx) {
-  const s = await loadTask(tx, caller, input.task_id, now);
+async function opGetTask({ tx, caller, input, now, touched }: Ctx) {
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   // Reading the task is seeing what mentions the caller on it: a person's mentions of them, an agent's of it.
   await tx.taskMention.updateMany({ where: { taskId: s.task.id, accountId: caller.accountId, agentId: caller.agentId, seenAt: null }, data: { seenAt: now } });
   return taskResult(tx, caller, s, s.task.id, now, true);
 }
 
-async function opEntries({ tx, caller, input, now }: Ctx) {
-  const s = await loadTask(tx, caller, input.task_id, now);
+async function opEntries({ tx, caller, input, now, touched }: Ctx) {
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   const before = typeof input.before === "string" ? await tx.taskEntry.findFirst({ where: { id: input.before, taskId: s.task.id } }) : null;
   const rows = (await tx.taskEntry.findMany({
     where: { taskId: s.task.id, ...(before ? { createdAt: { lt: (before as Row).createdAt } } : {}) },
@@ -973,9 +1115,10 @@ async function guardEntryRoom(tx: Tx, taskId: string) {
 }
 
 async function opAddEntry(ctx: Ctx) {
-  const { tx, caller, input, now } = ctx;
-  const s = await loadTask(tx, caller, input.task_id, now);
+  const { tx, caller, input, now, touched } = ctx;
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   writable(s);
+  touched.add(s.list.id);
   const kind = input.kind === "progress" ? "progress" : input.kind === "comment" || input.kind === undefined ? "comment" : fail(400, "invalid_kind", "kind must be comment or progress");
   if (kind === "progress" ? !R.canWork(s.actor) : !R.canComment(s.actor)) fail(403, "not_allowed", "You can't write on this task.");
   const text = R.cleanText(input.text, { field: "text", max: R.LIMITS.entry, required: true })!;
@@ -986,7 +1129,7 @@ async function opAddEntry(ctx: Ctx) {
   return taskResult(tx, caller, s, s.task.id, now);
 }
 
-async function opClaim({ tx, caller, input, now }: Ctx) {
+async function opClaim({ tx, caller, input, now, touched }: Ctx) {
   // ok_from: "user_in_chat" is an agent saying its person just said yes to this task in the chat.
   // The broker can't prove a person was there; it records the claim as theirs, visibly.
   const okFrom = input.ok_from;
@@ -994,8 +1137,9 @@ async function opClaim({ tx, caller, input, now }: Ctx) {
     if (!caller.agentId) fail(400, "invalid_ok_from", "ok_from is for agents. In the dashboard, use OK for my agents.");
     if (okFrom !== "user_in_chat") fail(400, "invalid_ok_from", "ok_from can only be \"user_in_chat\", and only when your person said yes to this task in this conversation.");
   }
-  const s = await loadTask(tx, caller, input.task_id, now);
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   writable(s);
+  touched.add(s.list.id);
   const lens = await lensFor(tx, caller, [s.task], { extra: [{ authorAccountId: caller.accountId, authorAgentId: caller.agentId }] });
   if (okFrom && R.canWork(s.actor)) {
     const ok = R.okCheck(s.task, s.actor, now, lens.oks.has(s.task.id));
@@ -1030,12 +1174,13 @@ async function opClaim({ tx, caller, input, now }: Ctx) {
   return taskResult(tx, caller, s, s.task.id, now);
 }
 
-async function opOk({ tx, caller, input, now }: Ctx) {
+async function opOk({ tx, caller, input, now, touched }: Ctx) {
   if (!caller.viaCookie) {
     fail(403, "people_only", "Only a person OKs a task for their agents, in the Back Channel dashboard. If your person said yes in this chat, claim it with ok_from: \"user_in_chat\".");
   }
-  const s = await loadTask(tx, caller, input.task_id, now);
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   writable(s);
+  touched.add(s.list.id);
   const lens = await lensFor(tx, caller, [s.task]);
   const check = R.okCheck(s.task, s.actor, now, lens.oks.has(s.task.id));
   if (!check.ok) fail(refusalStatus(check.code), check.code, check.why);
@@ -1046,9 +1191,10 @@ async function opOk({ tx, caller, input, now }: Ctx) {
   return taskResult(tx, caller, s, s.task.id, now);
 }
 
-async function opReact({ tx, caller, input, now }: Ctx) {
-  const s = await loadTask(tx, caller, input.task_id, now);
+async function opReact({ tx, caller, input, now, touched }: Ctx) {
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   writable(s);
+  touched.add(s.list.id);
   if (!R.canComment(s.actor)) fail(403, "not_allowed", "You can't react on this task.");
   const emoji = R.cleanEmoji(input.emoji);
   const mine = await tx.taskReaction.findFirst({ where: { taskId: s.task.id, accountId: caller.accountId, agentId: caller.agentId, emoji } });
@@ -1059,9 +1205,10 @@ async function opReact({ tx, caller, input, now }: Ctx) {
   return taskResult(tx, caller, s, s.task.id, now);
 }
 
-async function opRelease({ tx, caller, input, now }: Ctx) {
-  const s = await loadTask(tx, caller, input.task_id, now);
+async function opRelease({ tx, caller, input, now, touched }: Ctx) {
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   writable(s);
+  touched.add(s.list.id);
   const reason = R.cleanText(input.reason, { field: "reason", max: 1_000 });
   const owner = R.canManage(s.actor);
   if (!R.hasLiveClaim(s.task, now)) fail(409, "not_claimed", "Nobody is on this task.");
@@ -1072,9 +1219,10 @@ async function opRelease({ tx, caller, input, now }: Ctx) {
 }
 
 async function opDone(ctx: Ctx) {
-  const { tx, caller, input, now } = ctx;
-  const s = await loadTask(tx, caller, input.task_id, now);
+  const { tx, caller, input, now, touched } = ctx;
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   writable(s);
+  touched.add(s.list.id);
   const lens = await lensFor(tx, caller, [s.task]);
   const check = R.finishCheck(s.task, s.actor, now, mayActFor(s.task, caller.accountId, s.member, lens), R.canManage(s.actor), holderLabel(lens.names, s.actor));
   if (!check.ok) fail(refusalStatus(check.code!), check.code!, check.why!);
@@ -1089,9 +1237,10 @@ async function opDone(ctx: Ctx) {
 }
 
 async function opReview(ctx: Ctx) {
-  const { tx, caller, input, now } = ctx;
-  const s = await loadTask(tx, caller, input.task_id, now);
+  const { tx, caller, input, now, touched } = ctx;
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   writable(s);
+  touched.add(s.list.id);
   const verdict = input.verdict === "accept" || input.verdict === "send_back" ? input.verdict : fail(400, "invalid_verdict", "verdict must be accept or send_back");
   const check = R.reviewCheck(s.task, s.actor, now, verdict, R.canManage(s.actor));
   if (!check.ok) fail(refusalStatus(check.code!), check.code!, check.why!);
@@ -1103,9 +1252,10 @@ async function opReview(ctx: Ctx) {
 }
 
 async function opUpdateTask(ctx: Ctx) {
-  const { tx, caller, input, now } = ctx;
-  const s = await loadTask(tx, caller, input.task_id, now);
+  const { tx, caller, input, now, touched } = ctx;
+  const s = await loadTask(tx, caller, input.task_id, now, touched);
   writable(s);
+  touched.add(s.list.id);
   if (!R.canWork(s.actor)) fail(403, "not_allowed", s.actor.agentId ? "Your person hasn't given this agent work access to this list." : "You can't change tasks on this list.");
   const task = s.task;
   const data: Row = {};
@@ -1168,11 +1318,94 @@ async function opUpdateTask(ctx: Ctx) {
   return taskResult(tx, caller, s, task.id, now);
 }
 
+// ── templates (Phase 3) ─────────────────────────────────────────────────────
+
+/** The built-ins, then this person's saved templates, oldest first. An agent sees its person's. */
+async function opTemplates({ tx, caller }: Ctx) {
+  const saved = (await tx.taskListTemplate.findMany({ where: { ownerAccountId: caller.accountId }, orderBy: { createdAt: "asc" } })) as Row[];
+  return {
+    templates: [
+      ...T.BUILTIN_TEMPLATES.map((b) => T.templateView(b)),
+      ...saved.map((t) => T.templateView({ id: t.id, name: t.name, emoji: t.emoji, items: Array.isArray(t.items) ? t.items : [], createdAt: t.createdAt })),
+    ],
+  };
+}
+
+/**
+ * "Save as template": the list's unfinished tasks that this person or their agents wrote, titles and
+ * notes in order. People only, in the dashboard. `skipped` counts unfinished tasks someone else wrote,
+ * which stay out (see templates.mjs).
+ */
+async function opSaveTemplate({ tx, caller, input }: Ctx) {
+  if (!caller.viaCookie) peopleOnly("save a list as a template");
+  const s = await standing(tx, caller, String(input.list_id ?? ""));
+  if (!s) return NOT_AVAILABLE();
+  const owned = await tx.taskListTemplate.count({ where: { ownerAccountId: caller.accountId } });
+  if (owned >= T.TEMPLATE_LIMITS.perAccount) fail(429, "too_many_templates", `You already have ${T.TEMPLATE_LIMITS.perAccount} templates. Delete one first.`);
+  const rows = (await tx.taskItem.findMany({ where: { listId: s.list.id, status: { in: [...R.ACTIVE] } }, orderBy: { position: "asc" }, take: R.LIMITS.openTasksPerList })) as Row[];
+  const { items, skipped } = T.itemsFromTasks(rows, caller.accountId);
+  if (!items.length) {
+    fail(400, "empty_template", skipped
+      ? "A template keeps only tasks you or your agents wrote, and every unfinished task here was written by someone else."
+      : "There are no unfinished tasks on this list to save.");
+  }
+  if (items.length > T.TEMPLATE_LIMITS.items) fail(400, "template_too_big", `This list has ${items.length} unfinished tasks. A template holds up to ${T.TEMPLATE_LIMITS.items}.`);
+  const clean = T.cleanTemplateItems(items);
+  const name = R.cleanText(input.name ?? s.list.name, { field: "name", max: R.LIMITS.listName, required: true, singleLine: true })!;
+  const emoji = (input.emoji !== undefined ? R.cleanText(input.emoji, { field: "emoji", max: R.LIMITS.emoji, singleLine: true }) : s.list.emoji) || null;
+  const row = (await tx.taskListTemplate.create({ data: { ownerAccountId: caller.accountId, name, emoji, items: clean } })) as Row;
+  return { template: T.templateView({ id: row.id, name: row.name, emoji: row.emoji, items: clean, createdAt: row.createdAt }), skipped };
+}
+
+async function opDeleteTemplate({ tx, caller, input }: Ctx) {
+  if (!caller.viaCookie) peopleOnly("delete a template");
+  const id = String(input.template_id ?? "");
+  if (!UUID.test(id)) return fail(404, "not_available", "That template isn't available.");
+  const gone = await tx.taskListTemplate.deleteMany({ where: { id, ownerAccountId: caller.accountId } });
+  if (gone.count !== 1) return fail(404, "not_available", "That template isn't available.");
+  return { deleted: true };
+}
+
+// ── the daily digest's settings (Phase 3) ───────────────────────────────────
+
+async function emailReady(tx: Tx, accountId: string) {
+  const a = (await tx.account.findFirst({ where: { id: accountId }, select: { email: true, emailVerifiedAt: true } })) as Row | null;
+  return !!a?.email && !!a.emailVerifiedAt;
+}
+
+/** The person's own Lists settings (the daily digest). People only: it's about their email. */
+async function opPreferences({ tx, caller }: Ctx) {
+  if (!caller.viaCookie) peopleOnly("see these settings");
+  const row = await tx.listsPreference.findFirst({ where: { accountId: caller.accountId } });
+  return { preferences: D.preferenceView(row, { emailReady: await emailReady(tx, caller.accountId) }) };
+}
+
+/**
+ * Turn the daily digest on or off, or change its hour or timezone. Turning it on after today's hour
+ * has passed records today's as had, so the first one comes at that hour tomorrow, not at the next run.
+ */
+async function opUpdatePreferences({ tx, caller, input, now }: Ctx) {
+  if (!caller.viaCookie) peopleOnly("change these settings");
+  const patch: Row = D.cleanPreference(input);
+  const current = (await tx.listsPreference.findFirst({ where: { accountId: caller.accountId } })) as Row | null;
+  const next = { digest: "off", digestHour: D.DEFAULT_DIGEST_HOUR, timezone: null, lastDigestAt: null, ...(current ?? {}), ...patch };
+  if (next.digest === "daily" && current?.digest !== "daily") {
+    const anchor = D.enableAnchor(now, next.timezone, next.digestHour);
+    if (anchor) patch.lastDigestAt = anchor;
+  }
+  if (current) await tx.listsPreference.updateMany({ where: { accountId: caller.accountId }, data: patch });
+  else await tx.listsPreference.create({ data: { accountId: caller.accountId, ...patch } });
+  const row = await tx.listsPreference.findFirst({ where: { accountId: caller.accountId } });
+  return { preferences: D.preferenceView(row, { emailReady: await emailReady(tx, caller.accountId) }) };
+}
+
 const OPS: Record<ListsOp, (ctx: Ctx) => Promise<unknown>> = {
   lists: opLists, createList: opCreateList, getList: opGetList, updateList: opUpdateList, setAgentAccess: opSetAgentAccess,
   plate: opPlate, search: opSearch, changes: opChanges, tasks: opSearch, addTasks: opAddTasks, getTask: opGetTask,
   updateTask: opUpdateTask, claim: opClaim, release: opRelease, done: opDone, review: opReview, entries: opEntries, addEntry: opAddEntry,
   addMember: opAddMember, removeMember: opRemoveMember, updateMe: opUpdateMe, ok: opOk, react: opReact,
+  templates: opTemplates, saveTemplate: opSaveTemplate, deleteTemplate: opDeleteTemplate,
+  preferences: opPreferences, updatePreferences: opUpdatePreferences,
 };
 
 /**
@@ -1191,20 +1424,7 @@ export async function lists(req: NextRequest, op: ListsOp, inputOrReader: Input 
       return res;
     }
     const input = typeof inputOrReader === "function" ? await inputOrReader() : inputOrReader;
-    const after: Array<() => void> = [];
-    const rung = new Set<string>();
-    const nudged = new Set<string>();
-    const result = await withSerializableRetry(
-      () => {
-        after.length = 0;
-        rung.clear();
-        nudged.clear();
-        return prisma.$transaction((tx: Tx) => OPS[op]({ tx, caller, input, now: new Date(), after, rung, nudged }), { isolationLevel: "Serializable" });
-      },
-      { retryable: conflict },
-    );
-    for (const fn of after) fn();
-    return respond(result);
+    return respond(await transact(caller, input, OPS[op]));
   } catch (e) {
     if (e instanceof R.ListRuleError) return respond({ error: e.code, message: e.message, ...(e.extra ?? {}) }, e.status);
     if (conflict(e)) {
@@ -1238,6 +1458,10 @@ async function readJson(req: NextRequest): Promise<Input> {
  *   GET    /api/lists                     lists           POST /api/lists               createList
  *   GET    /api/lists/plate               plate           GET  /api/lists/search?q=     search
  *   GET    /api/lists/changes?since=      changes
+ *   POST   /api/lists {template | duplicate}              createList, seeded (Phase 3)
+ *   GET    /api/lists/templates           templates       POST /api/lists/templates     saveTemplate (people only)
+ *   DELETE /api/lists/templates/:id       deleteTemplate  (people only)
+ *   GET    /api/lists/preferences         preferences     PATCH /api/lists/preferences  updatePreferences (people only)
  *   GET    /api/lists/:id                 getList         PATCH /api/lists/:id          updateList
  *   PUT    /api/lists/:id/agents          setAgentAccess  (people only)
  *   POST   /api/lists/:id/members         addMember       (owner, people only)
@@ -1258,6 +1482,10 @@ export async function listsRoute(req: NextRequest, path: string[]): Promise<Next
   else if (a === "plate" && !b && m === "GET") route = ["plate", query];
   else if (a === "search" && !b && m === "GET") route = ["search", query];
   else if (a === "changes" && !b && m === "GET") route = ["changes", query];
+  else if (a === "templates") {
+    if (!b) route = m === "GET" ? ["templates", query] : m === "POST" ? ["saveTemplate", body] : null;
+    else if (!c && m === "DELETE") route = ["deleteTemplate", { template_id: b }];
+  } else if (a === "preferences" && !b) route = m === "GET" ? ["preferences", query] : m === "PATCH" ? ["updatePreferences", body] : null;
   else if (a === "tasks" && b) {
     const withId = async (i: Input) => ({ ...i, task_id: b });
     if (!c) route = m === "GET" ? ["getTask", { task_id: b }] : m === "PATCH" ? ["updateTask", async () => withId(await body())] : null;
@@ -1290,7 +1518,7 @@ const TOOL_OPS: Record<string, (args: Input) => [ListsOp, Input]> = {
   bc_task_update: (args) => ["updateTask", args],
   bc_task_done: (args) => ["done", { task_id: args.task_id, summary: args.summary, evidence: args.evidence }],
   bc_task_comment: (args) => ["addEntry", { task_id: args.task_id, kind: "comment", text: args.text }],
-  bc_list_create: (args) => ["createList", { name: args.name, emoji: args.emoji }],
+  bc_list_create: (args) => ["createList", { name: args.name, emoji: args.emoji, template: args.template }],
 };
 
 export function isListTool(name: string): boolean {
@@ -1352,4 +1580,43 @@ export async function tasksWaitingForAgents(accountId: string): Promise<number> 
   } catch {
     return 0;
   }
+}
+
+/**
+ * What one person's daily digest says (src/lib/lists-digest.ts decides when and sends it), from the
+ * lists they can still open, archived ones left out:
+ *  - finished: tasks their agents finished since `since` (done, or waiting for someone's check);
+ *  - needsYou: finished work waiting for their look, and friends' tasks their agents need their OK
+ *    for (the plate's waiting_on_you and ok_requests, by the same rules);
+ *  - overdue: unfinished tasks due before `overdueBefore` that are theirs: held by them or their
+ *    agents, or (when nobody holds them) for them, their agents, or anyone.
+ * Titles and list names only, up to D.TITLES_PER_SECTION of each, with full counts.
+ */
+export async function digestFor(accountId: string, { since, overdueBefore }: { since: Date; overdueBefore: Date }): Promise<D.DigestData> {
+  return transact({ accountId, agentId: null, viaCookie: true }, {}, async (ctx) => {
+    const { tx, now } = ctx;
+    const ids = await visibleListIds(tx, { accountId, agentId: null });
+    if (!ids.length) return { finished: [], finishedCount: 0, needsYou: [], needsYouCount: 0, overdue: [], overdueCount: 0 };
+    const lists = (await tx.taskList.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })) as Row[];
+    const listName = new Map(lists.map((l) => [l.id as string, l.name as string]));
+    const ref = (t: Row) => ({ title: t.title as string, list: listName.get(t.listId) ?? "" });
+    const finishedWhere = {
+      listId: { in: ids }, completedByAccountId: accountId, completedByAgentId: { not: null }, completedAt: { gt: since }, status: { in: ["done", "needs_review"] },
+    };
+    const finishedCount = await tx.taskItem.count({ where: finishedWhere });
+    const finished = (await tx.taskItem.findMany({ where: finishedWhere, orderBy: { completedAt: "desc" }, take: D.TITLES_PER_SECTION, select: { title: true, listId: true } })) as Row[];
+    const plate = (await opPlate(ctx)) as { waiting_on_you: Row[]; ok_requests: Row[] };
+    const needs = [...plate.waiting_on_you, ...plate.ok_requests.filter((t) => !plate.waiting_on_you.some((w) => w.id === t.id))];
+    const late = (await tx.taskItem.findMany({
+      where: { listId: { in: ids }, status: { in: ["open", "in_progress", "blocked"] }, dueAt: { lt: overdueBefore } },
+      orderBy: { dueAt: "asc" },
+      take: 500,
+    })) as Row[];
+    const overdue = late.filter((t) => (R.hasLiveClaim(t, now) ? t.claimAccountId === accountId : !t.assigneeAccountId || t.assigneeAccountId === accountId));
+    return {
+      finished: finished.map(ref), finishedCount,
+      needsYou: needs.slice(0, D.TITLES_PER_SECTION).map((t) => ({ title: t.title as string, list: (t.list?.name as string) ?? "" })), needsYouCount: needs.length,
+      overdue: overdue.slice(0, D.TITLES_PER_SECTION).map(ref), overdueCount: overdue.length,
+    };
+  });
 }

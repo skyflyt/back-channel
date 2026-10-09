@@ -154,14 +154,19 @@ export const LIST_TOOLS = [
     name: "bc_list_create",
     description:
       "Start a new personal list (e.g. \"start a packing list for Vegas\"). You get work access to it. Only your person can share a list or " +
-      "give other agents access, in the Back Channel dashboard.",
+      "give other agents access, in the Back Channel dashboard. To start from a template, pass template: a built-in (\"builtin:trip-packing\", " +
+      "\"builtin:new-hire-onboarding\", \"builtin:move-out\", \"builtin:weekly-review\") or one your person saved, by its name or id. The new " +
+      "list gets the template's tasks (titles and notes), written by you; name and emoji default to the template's. " + PRIVACY,
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Up to 80 characters." },
+        name: { type: "string", description: "Up to 80 characters. Required unless you pass template." },
         emoji: { type: "string", description: "Optional, e.g. 🧳" },
+        template: {
+          type: "string",
+          description: "Optional. \"builtin:<name>\" for a built-in, or the name or id of a template your person saved (GET /api/lists/templates lists them).",
+        },
       },
-      required: ["name"],
       additionalProperties: false,
     },
   },
