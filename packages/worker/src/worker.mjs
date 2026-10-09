@@ -327,7 +327,9 @@ export class Worker {
     }
     remoteSupport() {
         // No Back Channel client on purpose: the helper on the other PC records every step; this worker never does.
-        return this.remoteSupportRunner ??= new RemoteSupport({ ...this.remoteSupportOptions, runner: (...args) => this.runner(...args) });
+        // supportConnectorPath: local config only, for an AppBridge client outside its install folder.
+        const local = typeof this.config.supportConnectorPath === 'string' ? { connectorPath: this.config.supportConnectorPath } : {};
+        return this.remoteSupportRunner ??= new RemoteSupport({ ...local, ...this.remoteSupportOptions, runner: (...args) => this.runner(...args) });
     }
     stop() { this.stopped = true; this.active?.abort(); }
 }

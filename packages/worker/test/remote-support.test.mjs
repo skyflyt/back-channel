@@ -13,7 +13,7 @@ import { Worker } from '../src/worker.mjs';
 import { runRuntime, runtimeArgs } from '../src/runtime.mjs';
 import { AgentControlClient, SupportConnectorClient, SUPPORT_CONNECTOR_OFF, SUPPORT_REFUSALS, SUPPORT_TIMEOUT_MS, isExecutorSecret, normalize } from '../src/agent-control.mjs';
 import { MCP_SCRIPT } from '../src/remote-app.mjs';
-import { REMOTE_SUPPORT_FIELDS, validateRemoteSupportProfile } from '../src/remote-support.mjs';
+import { REMOTE_SUPPORT_FIELDS, validateRemoteSupportProfile, defaultConnectorPath } from '../src/remote-support.mjs';
 import { TOOLS, TOOL_NAMES, SUPPORT_TOOLS, SUPPORT_RULES } from '../src/remote-app-mcp.mjs';
 
 const TOKEN = 'fixture-agent-key';
@@ -34,8 +34,7 @@ function socketPath(t, label) {
  * A stand-in for AppBridge's support connector pipe (contract §4-§5), bridging to a helper that asks its person.
  * It knows only the secret's hash, checks it in hello per connection, and is strict: unknown ops or fields fail closed.
  */
-async function fakeConnector(t, sessionId, { secret, act, endWhen, expiresInMs = 600000 } = {}) {
-    const where = socketPath(t, 'support-connector');
+async function fakeConnector(t, sessionId, { secret, act, endWhen, expiresInMs = 600000, where = socketPath(t, 'support-connector') } = {}) {
     const expected = Buffer.from(sha(secret), 'hex');
     const log = [];
     const state = { ended: false };
@@ -144,7 +143,7 @@ class MemoryRelay {
 }
 
 /** "a" is the asking agent; "b" is the worker on Skylar's PC with a local "remote-support" profile running the fixture agent. */
-async function setup(t, { connector: connectorOptions, noConnector = false } = {}) {
+async function setup(t, { connector: connectorOptions, noConnector = false, remoteSupport = {} } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bc-remote-support-test-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const sessionId = randomUUID(), secret = newSecret();
@@ -160,7 +159,8 @@ async function setup(t, { connector: connectorOptions, noConnector = false } = {
         return new Worker(store, {
             client: relay.client(id), heartbeatMs: 50,
             runner: async (p, prompt, options) => { calls.push({ p, prompt, options }); return runRuntime(p, prompt, options); },
-            remoteSupport: { pipePath: connector.path, hostWaitMs: 300, endGraceMs: 5000 },
+            // connectorPath null: nothing is started unless a test says so (the default is AppBridge's install folder).
+            remoteSupport: { pipePath: connector.path, hostWaitMs: 300, endGraceMs: 5000, connectorPath: null, ...remoteSupport },
         });
     };
     const s = { a: make('a', 'b'), b: make('b', 'a'), relay, keys, calls, broker, connector, profile, sessionId, secret, dir, run };
@@ -286,6 +286,78 @@ test('a missing support connector pipe is the plain needs_user sentence, and no 
     assert.deepEqual(s.broker.requests, []);
     const direct = await new SupportConnectorClient({ path: s.connector.path, executorSecret: s.secret }).sessions();
     assert.deepEqual(direct, { ok: false, outcome: 'needs_user', reason: SUPPORT_CONNECTOR_OFF });
+});
+
+/** A stand-in for starting AppBridge's client in its connector mode: records each start, and what it was told. */
+function fakeLauncher() {
+    const l = { starts: [], stops: 0, behave: null };
+    l.launch = (command, sessionId) => {
+        l.starts.push({ command, sessionId });
+        let exit;
+        const exited = new Promise(resolve => { exit = resolve; });
+        l.behave?.({ exit, command, sessionId });
+        return { exited, stop: () => { l.stops++; exit({ code: 0 }); } };
+    };
+    return l;
+}
+const FIXTURE_CLIENT = 'C:\\Program Files\\AppBridge\\owner\\client\\AppBridge.Client.exe';
+
+test('no pipe yet: the worker starts the connector for this session only, waits for its pipe, and stops it after the run', async t => {
+    const launcher = fakeLauncher();
+    const s = await setup(t, { noConnector: true, remoteSupport: { connectorPath: FIXTURE_CLIENT, launchConnector: (...a) => launcher.launch(...a), connectorStartMs: 10000 } });
+    // Like the real one, it takes a moment to get its pass and reach the helper before its pipe exists, and goes after the end.
+    launcher.behave = ({ exit, sessionId }) => setTimeout(async () => {
+        const up = await fakeConnector(t, sessionId, { secret: s.secret, where: s.connector.path });
+        const done = setInterval(() => { if (up.ops().includes('end')) { clearInterval(done); setTimeout(() => exit({ code: 0 }), 100); } }, 20);
+        t.after(() => clearInterval(done));
+    }, 400);
+    const { status, result } = await s.go();
+    assert.equal(status, 'completed', result?.text);
+    assert.deepEqual(launcher.starts, [{ command: FIXTURE_CLIENT, sessionId: s.sessionId }], 'once, with the session id and nothing from the task');
+    assert.equal(launcher.stops, 1);
+    assert.deepEqual(s.broker.requests, []);
+});
+
+test('a connector already bridging the session is used as it is: nothing is started', async t => {
+    const launcher = fakeLauncher();
+    const s = await setup(t, { remoteSupport: { connectorPath: FIXTURE_CLIENT, launchConnector: (...a) => launcher.launch(...a) } });
+    assert.equal((await s.go()).status, 'completed');
+    assert.deepEqual(launcher.starts, []);
+});
+
+test("the connector's exit before its pipe is up is said plainly, and no agent runs", async t => {
+    const cases = [
+        [{ code: 3 }, 'waiting_user', /^"Allow this PC to reach helpers I approve" is off on this PC, or this PC isn't registered/],
+        [{ code: 4 }, 'failed', /^Back Channel didn't give this PC's support connector a pass/],
+        [{ code: 5 }, 'failed', /^The support connector couldn't reach the helper on the other PC, or the helper wasn't the one Back Channel pinned/],
+        [{ code: 6 }, 'failed', /^Another support connector is already running on this PC/],
+        [{ code: 2 }, 'failed', /doesn't know the support connector command: it needs an update/],
+        [{ error: Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }) }, 'waiting_user', /^AppBridge isn't installed on this PC, or not where this worker looks/],
+    ];
+    for (const [outcome, want, text] of cases) {
+        const launcher = fakeLauncher();
+        launcher.behave = ({ exit }) => setTimeout(() => exit(outcome), 30);
+        const s = await setup(t, { noConnector: true, remoteSupport: { connectorPath: FIXTURE_CLIENT, launchConnector: (...a) => launcher.launch(...a), connectorStartMs: 5000 } });
+        const { status, result } = await s.go();
+        assert.equal(status, want, JSON.stringify(outcome));
+        assert.match(result.text, text);
+        assert.match(result.text, /Nothing was done on the other PC\.$/);
+        assert.equal(launcher.starts.length, 1);
+        assert.equal(s.calls.length, 0);
+        assert.deepEqual(s.broker.requests, []);
+    }
+});
+
+test('the real launch runs the configured file with exactly --support-connector and the session id, no shell', async t => {
+    // node refuses the flag and exits at once, which is enough to see the command line and the exit being reported.
+    const s = await setup(t, { noConnector: true, remoteSupport: { connectorPath: process.execPath, connectorStartMs: 10000 } });
+    const { status, result } = await s.go();
+    assert.equal(status, 'failed');
+    assert.match(result.text, /^The support connector on this PC stopped unexpectedly \(exit \d+\)\. Nothing was done on the other PC\.$/);
+    assert.equal(s.calls.length, 0);
+    assert.equal(defaultConnectorPath({ ProgramFiles: 'D:\\Apps' }, 'win32'), 'D:\\Apps\\AppBridge\\owner\\client\\AppBridge.Client.exe');
+    assert.equal(defaultConnectorPath({}, 'win32'), FIXTURE_CLIENT);
+    assert.equal(defaultConnectorPath({ ProgramFiles: 'C:\\Program Files' }, 'linux'), null, 'no AppBridge client off Windows');
 });
 
 test('the session ending on the other PC stops the agent CLI; end is still sent, and nothing is recorded', async t => {
