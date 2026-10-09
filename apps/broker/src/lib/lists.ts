@@ -367,6 +367,10 @@ async function opPlate({ tx, caller, now }: Ctx) {
     const actor = actorFor(t.listId);
     return R.claimCheck(t, actor, now, mayActFor(t, caller.accountId, memberFor(t.listId), names)).ok;
   });
+  // Up next is work this agent can pick up, so only on lists where it has work access. A view-only
+  // agent must not be offered a task for "my agents", nor mark it seen and silence the doorbell
+  // for the agents that can do it.
+  if (caller.agentId) sections.up_next = sections.up_next.filter((t: Row) => R.canWork(actorFor(t.listId)));
   // A task waiting for this agent stops ringing the doorbell once the agent has seen it here.
   if (caller.agentId && sections.up_next.length) {
     const unseen = sections.up_next.filter((t: Row) => !t.agentSeenAt).map((t: Row) => t.id);
@@ -388,7 +392,9 @@ async function opSearch({ tx, caller, input, now }: Ctx) {
   const listFilter = input.list_id !== undefined ? String(input.list_id) : undefined;
   const status = input.status !== undefined ? String(input.status) : undefined;
   if (status && !R.STATUSES.includes(status)) fail(400, "invalid_status", `status must be one of: ${R.STATUSES.join(", ")}`);
-  let ids = await visibleListIds(tx, caller);
+  // One list asked for by id reads even when archived (as getList and getTask do); only a search
+  // across lists leaves archived ones out.
+  let ids = await visibleListIds(tx, caller, { includeArchived: listFilter !== undefined });
   if (listFilter) ids = ids.filter((id) => id === listFilter);
   if (!ids.length) return listFilter ? NOT_AVAILABLE() : { tasks: [] };
   const where: Row = { listId: { in: ids } };
@@ -739,6 +745,9 @@ export async function listsRoute(req: NextRequest, path: string[]): Promise<Next
     else if (b === "agents" && m === "PUT") route = ["setAgentAccess", async () => withList(await body())];
     else if (b === "tasks") route = m === "GET" ? ["tasks", { ...query, list_id: a }] : m === "POST" ? ["addTasks", async () => withList(await body())] : null;
   }
+  // Each endpoint has a fixed depth. A longer path is an unknown endpoint, not the shorter one:
+  // GET /api/lists/:id/tasks/:taskId must not quietly answer with the whole list.
+  if (path.length > (a === "tasks" ? 3 : 2)) route = null;
   if (!route) return respond({ error: "not_found", message: "No such lists endpoint." }, 404);
   try {
     const [op, input] = route;
