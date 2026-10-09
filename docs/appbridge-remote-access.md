@@ -90,6 +90,7 @@ All routes are under `/api/appbridge/v1`.
 | `POST /relay/presence-passes` | `appbridge.relay.presence` | `{}` | `{ pass, expiresAt, relay }` |
 | `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId, takeover? }` | `{ pass, expiresAt, relay }`, or `409 devices_busy` with the busy devices: see **Device limit and takeover** below. |
 | `POST /relay/agent-passes` | `appbridge.relay.presence` | `{ sessionId }` | `{ pass, expiresAt, relay }` for an "agent" lease: a PC's standing to let an agent use an app on it, for one remote app session its owner approved. `403 session_inactive` unless that session is approved, running, not paused and in time; `404` if it is not this PC's. Host devices only. See docs/remote-app-sessions.md. |
+| `POST /relay/support-passes` | none: the temporary support client's own `abs_` credential (never a device's) | `{}` | `{ pass, expiresAt, relay }` for a "support" lease: the helper's standing at the relay for the one support session it redeemed, while the helped person has allowed it. `403 session_inactive` before Allow, after Stop or once time is up. See docs/remote-support.md. |
 | `GET /hosts/self/agent-sessions` | `appbridge.relay.presence` | — | `{ sessions }`: the running remote app sessions bound to this PC (apps, goal, until when, which agents, which task), for its banner and allow-list. Host devices only. |
 | `POST /hosts/self/agent-sessions/{id}/stop` | `appbridge.relay.presence` | — | `204`. Stop on the PC: final, and the session's agent leases are deleted in the same transaction. |
 
@@ -207,6 +208,14 @@ dashboard cookie all get `401`.
   presence leases (one per PC, plus spares for a PC that reconnects before the relay has released its
   old lease). Checked in the same serializable transaction as the other caps; the pass is still
   consumed.
+- **Support leases** (`purpose: "support"`, docs/remote-support.md): the temporary support client is not a device.
+  Its pass names its session; the grant's `hostDeviceId` is the session's ephemeral relay identity (`support_` + 22
+  characters, never a device id), `hostConnectorSpkiSha256` the key pinned when it redeemed its code, and it adds
+  `remoteAppSessionId`; the `client*` and `enrollmentId` members are `null`. It is presented with that pinned key. The
+  gate re-reads the rollout switch, the issuer's entitlement and the session (allowed on the helped person's screen,
+  running, in time) at redemption and every renewal, and the lease never outlives the session. Its own cap: at most 2
+  live support leases per account, never counted with or displacing any other lease. No connection-log row. Every way
+  the session ends deletes its lease in the same transaction. The relay must accept `"support"` for this to work.
 - **Agent leases** (`purpose: "agent"`, docs/remote-app-sessions.md): presented with the **PC's** key, like
   presence. The grant adds `remoteAppSessionId`. The gate also re-reads the remote app session (approved,
   running, not paused, in time, this PC, live full-scope agents) at redemption and every renewal, and the
