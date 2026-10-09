@@ -16,6 +16,10 @@
  * every statement against the committed rows (READ COMMITTED with an undo log
  * for rollback), to prove the conditional claim write holds on its own.
  *
+ * Unique keys (primary keys, @unique columns, and the migration's COALESCE
+ * unique indexes, where NULL counts as one value) raise P2002 on a duplicate,
+ * and the migrations' CHECK constraints are enforced on every write.
+ *
  * mock.module() may be called once per specifier per process: each test file
  * calls installMocks() once in before(), and per-test behaviour is driven by
  * mutating `state`.
@@ -27,9 +31,11 @@ import { NextRequest } from "next/server";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 
 export type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
-export type Table = "taskList" | "taskListMember" | "taskListAgentGrant" | "taskItem" | "taskEntry" | "account" | "agentToken";
+export type Table =
+  | "taskList" | "taskListMember" | "taskListAgentGrant" | "taskItem" | "taskEntry" | "account" | "agentToken"
+  | "taskAgentOk" | "taskMention" | "taskReaction" | "taskListEvent" | "trustedPeer" | "accountAudit" | "viewToken";
 type Store = Record<Table, Row[]>;
-type Kind = "string" | "int" | "float" | "bool" | "date";
+type Kind = "string" | "int" | "float" | "bool" | "date" | "json";
 type Field = { kind: Kind; optional?: boolean; def?: () => unknown; updatedAt?: boolean };
 
 // Strictly increasing timestamps, so "latest" is never a tie between two rows written in the same millisecond.
@@ -45,7 +51,17 @@ export async function catchUpClock() {
 
 const F = (kind: Kind, extra: Partial<Field> = {}): Field => ({ kind, ...extra });
 const opt = (kind: Kind): Field => F(kind, { optional: true });
-const MODELS: Record<Table, { pk: string[]; fields: Record<string, Field>; relations?: Record<string, [Table, string, string]> }> = {
+type Model = {
+  pk: string[];
+  fields: Record<string, Field>;
+  relations?: Record<string, [Table, string, string]>;
+  /** Other unique keys. NULL counts as one value, like the migration's COALESCE unique indexes. */
+  unique?: string[][];
+  /** The migrations' CHECK constraints, by name. */
+  checks?: Record<string, (row: Row) => boolean>;
+};
+const oneOf = (k: string, values: string[]) => (r: Row) => values.includes(r[k]);
+const MODELS: Record<Table, Model> = {
   taskList: {
     pk: ["id"],
     fields: {
@@ -57,14 +73,20 @@ const MODELS: Record<Table, { pk: string[]; fields: Record<string, Field>; relat
     pk: ["listId", "accountId"],
     fields: {
       listId: F("string"), accountId: F("string"), role: F("string"), agentsTakeFrom: F("string", { def: () => "me" }),
-      addedByAccountId: F("string"), joinedAt: F("date", { def: tick }),
+      notify: F("string", { def: () => "off" }), addedByAccountId: F("string"), joinedAt: F("date", { def: tick }),
     },
     relations: { list: ["taskList", "listId", "id"] },
+    checks: {
+      TaskListMember_role_check: oneOf("role", ["owner", "member"]),
+      TaskListMember_agentsTakeFrom_check: oneOf("agentsTakeFrom", ["me", "anyone"]),
+      TaskListMember_notify_check: oneOf("notify", ["off", "mentions_reviews"]),
+    },
   },
   taskListAgentGrant: {
     pk: ["listId", "agentTokenId"],
     fields: { listId: F("string"), agentTokenId: F("string"), accountId: F("string"), access: F("string"), createdAt: F("date", { def: tick }) },
     relations: { list: ["taskList", "listId", "id"] },
+    checks: { TaskListAgentGrant_access_check: oneOf("access", ["view", "work"]) },
   },
   taskItem: {
     pk: ["id"],
@@ -86,16 +108,82 @@ const MODELS: Record<Table, { pk: string[]; fields: Record<string, Field>; relat
       body: F("string"), eventType: opt("string"), createdAt: F("date", { def: tick }),
     },
     relations: { task: ["taskItem", "taskId", "id"] },
+    checks: {
+      TaskEntry_kind_check: oneOf("kind", ["comment", "progress", "event"]),
+      TaskEntry_body_size: (r) => [...r.body].length >= 1 && [...r.body].length <= 8000,
+    },
   },
   account: {
     pk: ["id"],
-    fields: { id: F("string", { def: randomUUID }), handle: F("string"), displayName: opt("string"), createdAt: F("date", { def: tick }) },
+    fields: {
+      id: F("string", { def: randomUUID }), handle: F("string"), displayName: opt("string"), email: opt("string"), emailVerifiedAt: opt("date"),
+      notifyIdleFrames: F("bool", { def: () => true }), createdAt: F("date", { def: tick }),
+    },
+    unique: [["handle"]],
   },
   agentToken: {
     pk: ["id"],
     fields: {
       id: F("string", { def: randomUUID }), accountId: F("string"), keyHash: F("string"), name: F("string"), runtimeType: F("string", { def: () => "other" }),
       createdAt: F("date", { def: tick }), lastUsedAt: opt("date"), revokedAt: opt("date"), scope: F("string", { def: () => "full" }),
+    },
+  },
+  // Lists Phase 2 (migration 20261009210000_task_lists_sharing).
+  taskAgentOk: {
+    pk: ["taskId", "accountId"],
+    fields: { taskId: F("string"), accountId: F("string"), via: F("string"), viaAgentId: opt("string"), createdAt: F("date", { def: tick }) },
+    relations: { task: ["taskItem", "taskId", "id"] },
+    checks: {
+      TaskAgentOk_via_check: oneOf("via", ["web", "user_in_chat", "list_setting"]),
+      TaskAgentOk_chat_agent: (r) => r.via !== "user_in_chat" || r.viaAgentId !== null,
+    },
+  },
+  taskMention: {
+    pk: ["id"],
+    fields: {
+      id: F("string", { def: randomUUID }), entryId: F("string"), taskId: F("string"), accountId: F("string"), agentId: opt("string"),
+      seenAt: opt("date"), createdAt: F("date", { def: tick }),
+    },
+    relations: { task: ["taskItem", "taskId", "id"], entry: ["taskEntry", "entryId", "id"] },
+    unique: [["entryId", "accountId", "agentId"]],
+  },
+  taskReaction: {
+    pk: ["id"],
+    fields: {
+      id: F("string", { def: randomUUID }), taskId: F("string"), accountId: F("string"), agentId: opt("string"), emoji: F("string"),
+      createdAt: F("date", { def: tick }),
+    },
+    relations: { task: ["taskItem", "taskId", "id"] },
+    unique: [["taskId", "accountId", "agentId", "emoji"]],
+    checks: { TaskReaction_emoji_check: oneOf("emoji", ["\u{1F44D}", "\u{1F389}", "\u{1F64F}", "\u2705"]) },
+  },
+  taskListEvent: {
+    pk: ["id"],
+    fields: {
+      id: F("string", { def: randomUUID }), listId: F("string"), eventType: F("string"), actorAccountId: F("string"), subjectAccountId: F("string"),
+      createdAt: F("date", { def: tick }),
+    },
+    relations: { list: ["taskList", "listId", "id"] },
+    checks: { TaskListEvent_eventType_check: oneOf("eventType", ["member_added", "member_left", "member_removed"]) },
+  },
+  // Outside Lists: friendship (src/app/api/trust/*), the audit log, and one-time sign-in links.
+  trustedPeer: {
+    pk: ["id"],
+    fields: {
+      id: F("string", { def: randomUUID }), accountId: F("string"), trustedAccountId: F("string"), establishedAt: F("date", { def: tick }),
+      lastUsedAt: opt("date"),
+    },
+    unique: [["accountId", "trustedAccountId"]],
+  },
+  accountAudit: {
+    pk: ["id"],
+    fields: { id: F("string", { def: randomUUID }), accountId: F("string"), eventType: F("string"), detail: F("json"), createdAt: F("date", { def: tick }) },
+  },
+  viewToken: {
+    pk: ["token"],
+    fields: {
+      token: F("string"), accountId: F("string"), purpose: F("string", { def: () => "account" }), createdAt: F("date", { def: tick }),
+      expiresAt: F("date"), usedAt: opt("date"),
     },
   },
 };
@@ -115,6 +203,8 @@ export const state = {
   barrier: null as null | { need: number; arrived: number; open: () => void; opened: Promise<void> },
   /** fireInboxEvent calls, with how many tasks were COMMITTED when it fired. */
   fired: [] as Array<{ accountId: string; kind: string; committedTasks: number }>,
+  /** sendListNudgeEmail calls, as the email module received them. */
+  emails: [] as Row[],
   rateLimited: false,
 };
 
@@ -251,6 +341,7 @@ function checkValue(table: Table, k: string, v: unknown): unknown {
     assert.ok(field.optional, `${table}.${k} is required and can't be null`);
     return null;
   }
+  if (field.kind === "json") return structuredClone(v);
   assert.ok(!isFilter(v), `${table}.${k}: atomic update operators are unsupported here`);
   const ok = { string: typeof v === "string", int: Number.isInteger(v), float: typeof v === "number" && Number.isFinite(v), bool: typeof v === "boolean", date: v instanceof Date && Number.isFinite(v.getTime()) }[field.kind];
   assert.ok(ok, `${table}.${k} must be ${field.kind}, got ${JSON.stringify(v)}`);
@@ -259,8 +350,38 @@ function checkValue(table: Table, k: string, v: unknown): unknown {
 
 export const rowKey = (table: Table, row: Row) => `${table}|${MODELS[table].pk.map((k) => row[k]).join("|")}`;
 
-function uniqueViolation(table: Table) {
-  return new PrismaClientKnownRequestError(`Unique constraint failed on the fields: (${MODELS[table].pk.join(",")})`, { code: "P2002", clientVersion: "5.22.0" });
+function uniqueViolation(table: Table, fields = MODELS[table].pk) {
+  return new PrismaClientKnownRequestError(`Unique constraint failed on the fields: (${fields.join(",")})`, { code: "P2002", clientVersion: "5.22.0" });
+}
+
+/** Raise what PostgreSQL would for a row that breaks a unique key or a CHECK constraint. */
+function checkRow(table: Table, rowsNow: Row[], row: Row) {
+  for (const [name, holds] of Object.entries(MODELS[table].checks ?? {})) {
+    if (!holds(row)) {
+      throw new PrismaClientKnownRequestError(`new row for relation violates check constraint "${name}"`, { code: "P2010", clientVersion: "5.22.0", meta: { code: "23514" } });
+    }
+  }
+  for (const fields of MODELS[table].unique ?? []) {
+    const key = (r: Row) => JSON.stringify(fields.map((f) => scalar(r[f] ?? null)));
+    if (rowsNow.some((r) => r !== row && key(r) === key(row))) throw uniqueViolation(table, fields);
+  }
+}
+
+/**
+ * findUnique's where: the primary key, one @unique column ({ handle }), or a compound unique by
+ * Prisma's generated name ({ accountId_trustedAccountId: { accountId, trustedAccountId } }).
+ */
+function uniqueWhere(table: Table, where: Row): Row {
+  const keys = Object.keys(where ?? {}).sort();
+  const sets = [MODELS[table].pk, ...(MODELS[table].unique ?? [])];
+  const compound = keys.length === 1 ? sets.find((f) => f.length > 1 && f.join("_") === keys[0]) : undefined;
+  if (compound) {
+    const inner = where[keys[0]] as Row;
+    assert.deepEqual(Object.keys(inner).sort(), [...compound].sort(), `${table}.findUnique ${keys[0]} needs ${compound.join(", ")}`);
+    return inner;
+  }
+  assert.ok(sets.some((f) => JSON.stringify([...f].sort()) === JSON.stringify(keys)), `${table}.findUnique needs the primary key or a unique key, got ${keys.join(", ")}`);
+  return where;
 }
 
 type WriteLog = (table: Table, key: string, before: Row | null) => void;
@@ -282,6 +403,7 @@ function makeClient(getDb: () => Store, wrote: WriteLog) {
         row[k] = checkValue(table, k, v);
       }
       stamp(row, data);
+      checkRow(table, all(), row);
       wrote(table, rowKey(table, row), before);
     };
     client[table] = {
@@ -292,8 +414,7 @@ function makeClient(getDb: () => Store, wrote: WriteLog) {
       },
       findUnique: async (args: Row) => {
         checkArgs(table, "findUnique", args, ["where", "select"]);
-        assert.deepEqual(Object.keys(args.where).sort(), [...MODELS[table].pk].sort(), `${table}.findUnique needs the primary key`);
-        const r = find(args.where)[0];
+        const r = find(uniqueWhere(table, args.where))[0];
         return r ? project(table, r, args.select) : null;
       },
       findMany: async (args: Row = {}) => {
@@ -333,6 +454,7 @@ function makeClient(getDb: () => Store, wrote: WriteLog) {
         for (const k of Object.keys(args.data)) assert.ok(k in fields, `unknown column ${table}.${k} in data`);
         const key = rowKey(table, row);
         if (all().some((r) => rowKey(table, r) === key)) throw uniqueViolation(table);
+        checkRow(table, all(), row);
         all().push(row);
         wrote(table, key, null);
         return project(table, row, args.select);
@@ -432,13 +554,18 @@ export const prisma: Row = {
 
 export const A = { id: "acct-a", handle: "skylar", displayName: "Skylar" };
 export const B = { id: "acct-b", handle: "alex", displayName: "Alex" };
+/** Someone Skylar isn't friends with. Her handle is in the "@bc" form real accounts get. */
+export const C = { id: "acct-c", handle: "carol@bc", displayName: "Carol" };
 /** Skylar's agents. A3 is a connector key (claude.ai over OAuth). AR is revoked. */
 export const A1 = "a1a1a1a1-0000-4000-8000-000000000001";
 export const A2 = "a2a2a2a2-0000-4000-8000-000000000002";
 export const A3 = "a3a3a3a3-0000-4000-8000-000000000003";
 export const AR = "a4a4a4a4-0000-4000-8000-000000000004";
-/** Alex's agent. */
+/** Alex's agents. B2 shares a name with Skylar's A1. */
 export const B1 = "b1b1b1b1-0000-4000-8000-000000000001";
+export const B2 = "b2b2b2b2-0000-4000-8000-000000000002";
+/** Carol's agent. */
+export const C1 = "c1c1c1c1-0000-4000-8000-000000000001";
 
 export function resetStore() {
   state.db = emptyStore();
@@ -449,9 +576,12 @@ export function resetStore() {
   state.txFaults = [];
   state.barrier = null;
   state.fired = [];
+  state.emails = [];
   state.rateLimited = false;
   const t = tick();
-  state.db.account.push({ ...A, createdAt: t }, { ...B, createdAt: t });
+  for (const p of [A, B, C]) {
+    state.db.account.push({ ...p, email: `${p.handle.replace(/@bc$/, "")}@example.invalid`, emailVerifiedAt: t, notifyIdleFrames: true, createdAt: t });
+  }
   const agent = (id: string, accountId: string, name: string, extra: Row = {}) =>
     state.db.agentToken.push({ id, accountId, keyHash: `hash-${id}`, name, runtimeType: "claude_code", createdAt: tick(), lastUsedAt: null, revokedAt: null, scope: "full", ...extra });
   agent(A1, A.id, "Claude Code");
@@ -459,9 +589,11 @@ export function resetStore() {
   agent(A3, A.id, "claude.ai", { scope: "connector", runtimeType: "other" });
   agent(AR, A.id, "Old laptop", { revokedAt: tick() });
   agent(B1, B.id, "Alex's Claude");
+  agent(B2, B.id, "Claude Code");
+  agent(C1, C.id, "Carol's Codex", { runtimeType: "codex" });
 }
 
-const SESSIONS: Record<string, typeof A> = { "sess-a": A, "sess-b": B };
+const SESSIONS: Record<string, typeof A> = { "sess-a": A, "sess-b": B, "sess-c": C };
 export const SESSION_COOKIE_NAME = "bc_session";
 export const CSRF_COOKIE_NAME = "bc_csrf";
 export const CSRF_HEADER = "x-bc-csrf";
@@ -488,7 +620,14 @@ export function installMocks({ mcp = false } = {}) {
       SESSION_COOKIE_NAME,
       CSRF_COOKIE_NAME,
       CSRF_HEADER,
+      // One-time sign-in links for email nudges.
+      generateViewToken: () => `vt_${randomUUID()}`,
+      hashToken: (raw: string) => `hash:${raw}`,
+      viewTokenExpiry: () => new Date(Date.now() + 15 * 60_000),
     },
+  });
+  mock.module("@/lib/email", {
+    namedExports: { sendListNudgeEmail: async (args: Row) => { state.emails.push(structuredClone(args)); return true; } },
   });
   mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: !state.rateLimited, retryAfterSec: 42 }) } });
   class TooManyWaitersError extends Error {}
@@ -516,19 +655,20 @@ export function installMocks({ mcp = false } = {}) {
 export type Who =
   | { agent: string }
   | { bearer: string }
-  | { person: "A" | "B"; csrf?: "ok" | "missing" | "mismatched" }
+  | { person: "A" | "B" | "C"; csrf?: "ok" | "missing" | "mismatched" }
   | null;
 export const SKYLAR: Who = { person: "A" };
 export const ALEX: Who = { person: "B" };
+export const CAROL: Who = { person: "C" };
 export const as = (agent: string): Who => ({ agent });
 
-function headersFor(who: Who): Record<string, string> {
+export function headersFor(who: Who): Record<string, string> {
   const h: Record<string, string> = { "content-type": "application/json" };
   if (!who) return h;
   if ("agent" in who) h.authorization = `Bearer key-${who.agent}`;
   else if ("bearer" in who) h.authorization = `Bearer ${who.bearer}`;
   else {
-    const session = who.person === "A" ? "sess-a" : "sess-b";
+    const session = `sess-${who.person.toLowerCase()}`;
     h.cookie = `${SESSION_COOKIE_NAME}=${session}; ${CSRF_COOKIE_NAME}=csrf-${session}`;
     const csrf = who.csrf ?? "ok";
     if (csrf === "ok") h[CSRF_HEADER] = `csrf-${session}`;
@@ -540,7 +680,7 @@ function headersFor(who: Who): Record<string, string> {
 export type Res = { status: number; body: any; headers: Headers }; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 /** Call the real /api/lists/[[...path]] route handler. */
-export async function rest(method: "GET" | "POST" | "PATCH" | "PUT", path: string, who: Who, body?: unknown): Promise<Res> {
+export async function rest(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, who: Who, body?: unknown): Promise<Res> {
   const route = await import("@/app/api/lists/[[...path]]/route");
   const url = new URL(`https://back-channel.app/api/lists${path}`);
   const segments = url.pathname.replace(/^\/api\/lists\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
@@ -617,4 +757,29 @@ export async function addTask(listId: string, who: Who, item: Row): Promise<Row>
 }
 export async function setAccess(listId: string, agentId: string, access: "none" | "view" | "work", who: Who = SKYLAR) {
   return rest("PUT", `/${listId}/agents`, who, { agent_id: agentId, access });
+}
+
+// ── friends and sharing ──────────────────────────────────────────────────────
+
+/** Make two people friends: both directed trust rows, as accepting a friend invite does. */
+export function befriend(a: Row, b: Row) {
+  for (const [x, y] of [[a, b], [b, a]]) {
+    if (!state.db.trustedPeer.some((t) => t.accountId === x.id && t.trustedAccountId === y.id)) seedRow("trustedPeer", { accountId: x.id, trustedAccountId: y.id });
+  }
+}
+/** One side stops trusting the other, straight in the store (no cleanup hook runs). */
+export function untrust(from: Row, to: Row) {
+  state.db.trustedPeer = state.db.trustedPeer.filter((t) => !(t.accountId === from.id && t.trustedAccountId === to.id));
+}
+/** Skylar adds a friend to her list from the dashboard. */
+export async function share(listId: string, handle = "alex", who: Who = SKYLAR) {
+  return ok(await rest("POST", `/${listId}/members`, who, { handle }), `add ${handle}`);
+}
+/** Skylar's list shared with Alex, with work access for Skylar's `agents` and Alex's `alexAgents`. */
+export async function sharedList(name = "Trip", agents: string[] = [A1], alexAgents: string[] = [B1]): Promise<string> {
+  befriend(A, B);
+  const id = await makeList(name, agents);
+  await share(id);
+  for (const agent of alexAgents) ok(await setAccess(id, agent, "work", ALEX), `Alex grants ${agent}`);
+  return id;
 }
