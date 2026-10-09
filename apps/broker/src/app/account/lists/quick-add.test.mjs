@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseQuickAdd, readDateWord, readMention, agentSlug, ymdLocal, assigneeParam } from "./quick-add.mjs";
+import { parseQuickAdd, readDateWord, readMention, agentSlug, ymdLocal, assigneeParam, assigneeChip, bareHandle, memberName } from "./quick-add.mjs";
 
 // Friday 9 October 2026, mid-morning local time.
 const NOW = new Date(2026, 9, 9, 10, 30);
@@ -169,4 +169,110 @@ test("assigneeParam speaks the REST API's words", () => {
 test("readMention on its own", () => {
   assert.deepEqual(readMention("@ME", AGENTS), { assignee: { kind: "me" } });
   assert.equal("problem" in readMention("@zz", []), true);
+});
+
+/* ------------------------- shared lists (Phase 2) ------------------------- */
+
+// People on a shared list, shaped like the API's MemberView. Alex also has an agent called Codex.
+const MEMBERS = [
+  { handle: "skylar@bc", display_name: "Skylar", is_you: true, agents: [{ name: "Claude Code", access: "work" }, { name: "Codex", access: "work" }] },
+  { handle: "alex@bc", display_name: "Alex Rivera", is_you: false, agents: [{ name: "Codex", access: "work" }, { name: "Alex’s ChatGPT", access: "view" }] },
+  { handle: "carol@bc", display_name: null, is_you: false, agents: [] },
+];
+const shared = (text, opts = {}) => parse(text, { members: MEMBERS, ...opts });
+
+test("@alex is a person on the list, by handle or a unique start of their name", () => {
+  const r = shared("Book the Airbnb @alex");
+  assert.equal(r.title, "Book the Airbnb");
+  assert.deepEqual(r.assignee, { kind: "person", handle: "alex", name: "Alex Rivera" });
+  assert.equal(r.assigneeToken, "@alex");
+  assert.equal(assigneeParam(r.assignee), "@alex");
+  assert.equal(assigneeChip(r.assignee), "For Alex Rivera");
+  assert.equal(shared("Pack @alex@bc").assignee?.handle, "alex", "the @bc form");
+  assert.equal(shared("Pack @AlexRivera").assignee?.handle, "alex", "the display name");
+  assert.deepEqual(shared("Pack @car").assignee, { kind: "person", handle: "carol", name: "carol" }, "a unique start; no display name falls back to the handle");
+});
+
+test("@alex's agents is two words, read together, with either apostrophe", () => {
+  const r = shared("Book the Airbnb @alex's agents");
+  assert.equal(r.title, "Book the Airbnb");
+  assert.deepEqual(r.assignee, { kind: "person_agents", handle: "alex", name: "Alex Rivera" });
+  assert.equal(r.assigneeToken, "@alex's agents");
+  assert.equal(assigneeParam(r.assignee), "@alex's agents");
+  assert.equal(assigneeChip(r.assignee), "For Alex Rivera's agents");
+  assert.equal(shared("Book it @Alex’s Agents").assignee?.kind, "person_agents");
+  // With a date on either side.
+  const before = shared("Book hotel fri @alex's agents");
+  assert.equal(before.due, "2026-10-16");
+  assert.equal(before.assignee?.kind, "person_agents");
+  assert.equal(before.title, "Book hotel");
+  const after = shared("Book hotel @alex's agents by fri");
+  assert.equal(after.due, "2026-10-16");
+  assert.equal(after.assignee?.kind, "person_agents");
+  assert.equal(after.title, "Book hotel");
+});
+
+test("your own handle means you, and your own agents", () => {
+  assert.deepEqual(shared("Call the bank @skylar").assignee, { kind: "me" });
+  assert.deepEqual(shared("Call the bank @skylar's agents").assignee, { kind: "my_agents" });
+  assert.deepEqual(shared("Call the bank @me's agents").assignee, { kind: "my_agents" });
+});
+
+test("your own agent wins a name you and a friend's agent share", () => {
+  assert.deepEqual(shared("Fix tests @codex").assignee, { kind: "agent", id: "a-codex", name: "Codex" });
+});
+
+test("someone else's specific agent is never an assignee: the problem says to ask their person", () => {
+  const slash = shared("Review PR @alex/codex");
+  assert.equal(slash.assignee, null);
+  assert.equal(slash.title, "Review PR @alex/codex");
+  assert.equal(slash.problems[0].kind, "other_agent");
+  assert.match(slash.problems[0].message, /Only Alex Rivera picks which of their agents works on something, so try @alex's agents\./);
+  // A name only a friend's agent answers to.
+  const theirs = shared("Summarise @alexs-chatgpt");
+  assert.equal(theirs.assignee, null);
+  assert.equal(theirs.problems[0].kind, "other_agent");
+  assert.match(theirs.problems[0].message, /^Alex’s ChatGPT is Alex Rivera's agent\./);
+  // Your own agent by the qualified form is still yours.
+  assert.equal(shared("Fix tests @skylar/claude-code").assignee?.id, "a-cc");
+});
+
+test("names nobody on the list answers to stay in the title", () => {
+  const r = shared("Water plants @dave");
+  assert.equal(r.assignee, null);
+  assert.equal(r.title, "Water plants @dave");
+  assert.equal(r.problems[0].kind, "unknown_name");
+  assert.match(r.problems[0].message, /Nobody on this list, and none of your agents, is called @dave/);
+  const theirs = shared("Water plants @dave's agents");
+  assert.equal(theirs.title, "Water plants @dave's agents");
+  assert.equal(theirs.problems[0].kind, "unknown_person");
+  assert.match(theirs.problems[0].message, /Nobody on this list is called @dave/);
+  // A plain "agents" at the end is just a word.
+  assert.equal(shared("Thank the agents").title, "Thank the agents");
+  assert.equal(shared("Thank the agents").problems.length, 0);
+});
+
+test("a person and an agent that both match a start are ambiguous", () => {
+  const members = [...MEMBERS, { handle: "cody@bc", display_name: null, is_you: false, agents: [] }];
+  const r = parse("Ship it @cod", { members });
+  assert.equal(r.assignee, null);
+  assert.equal(r.problems[0].kind, "ambiguous_agent");
+  assert.match(r.problems[0].message, /More than one person or agent matches @cod/);
+});
+
+test("a dismissed @alex's agents chip keeps both words in the title", () => {
+  const r = shared("Book it @alex's agents", { skipAssignee: true });
+  assert.equal(r.title, "Book it @alex's agents");
+  assert.equal(r.assignee, null);
+});
+
+test("helpers: bare handles, member names, the assignee chip", () => {
+  assert.equal(bareHandle("@Alex@bc"), "Alex");
+  assert.equal(bareHandle(null), "");
+  assert.equal(memberName({ handle: "carol@bc", display_name: "  " }), "carol");
+  assert.equal(memberName({ handle: "alex@bc", display_name: "Alex" }), "Alex");
+  assert.equal(assigneeChip(null), null);
+  assert.equal(assigneeChip({ kind: "me" }), "For you");
+  assert.equal(assigneeChip({ kind: "my_agents" }), "For your agents");
+  assert.equal(assigneeChip({ kind: "agent", id: "a-cc", name: "Claude Code" }), "For Claude Code");
 });

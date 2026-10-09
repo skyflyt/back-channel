@@ -7,13 +7,15 @@
 // claims and edits raced under SERIALIZABLE end with one winner and no 503 while the retry bound holds,
 // and sharing with a friend (Phase 2) works end to end: friends-only add, the OK rule across two
 // accounts from the web and from chat, mentions and the doorbell, reactions, and revocation through the
-// real trust route.
+// real trust route. Phase 3: templates (built in and saved, as JSONB), "Duplicate list", the new CHECK
+// constraints and account cascade, and the daily digest's once-a-day claim under overlapping runs.
 import assert from 'node:assert/strict';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {NextRequest} from 'next/server';
 import {prisma} from '../src/lib/db.ts';
 import {listsRoute,tasksWaitingForAgents} from '../src/lib/lists.ts';
+import {runListsDigest} from '../src/lib/lists-digest.ts';
 import {DELETE as trustDELETE} from '../src/app/api/trust/[handle]/route.ts';
 
 const database=new URL(process.env.DATABASE_URL??'');
@@ -23,8 +25,8 @@ const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
 // The job's schema comes from `prisma db push`. Rebuild the Lists tables from the migrations that run in
 // production instead, in order, so the SQL under test is the SQL that ships (comments stripped: they
 // contain semicolons).
-const MIGRATIONS=['20261009200000_task_lists','20261009210000_task_lists_sharing'];
-for(const t of ['TaskListEvent','TaskReaction','TaskMention','TaskAgentOk','TaskEntry','TaskItem','TaskListAgentGrant','TaskListMember','TaskList'])await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "${t}" CASCADE`);
+const MIGRATIONS=['20261009200000_task_lists','20261009210000_task_lists_sharing','20261009230000_task_lists_phase3'];
+for(const t of ['ListsPreference','TaskListTemplate','TaskListEvent','TaskReaction','TaskMention','TaskAgentOk','TaskEntry','TaskItem','TaskListAgentGrant','TaskListMember','TaskList'])await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "${t}" CASCADE`);
 for(const m of MIGRATIONS){
  const sql=readFileSync(new URL(`../prisma/migrations/${m}/migration.sql`,import.meta.url),'utf8').split('\n').map(l=>l.replace(/--.*$/,'')).join('\n');
  for(const stmt of sql.split(';').map(s=>s.trim()).filter(Boolean))await prisma.$executeRawUnsafe(stmt);
@@ -217,6 +219,55 @@ try{
  await assert.rejects(prisma.taskListMember.update({where:{listId_accountId:{listId:trip.id,accountId:account.id}},data:{notify:'always'}}));
  await assert.rejects(prisma.taskListEvent.create({data:{listId:trip.id,eventType:'member_banned',actorAccountId:account.id,subjectAccountId:friend.id}}));
  console.log('PASS: CHECK constraints refuse a bad OK, a chat OK without its agent, an unknown reaction, a bad notify and an unknown list event');
+
+ // ── Phase 3: templates, duplicate, the digest ──
+ const packing=ok(await call('POST','','person',{template:'builtin:trip-packing',agents:[a1.id]}),'list from a built-in');
+ assert.equal(packing.list.name,'Trip packing');
+ const packed=await prisma.taskItem.findMany({where:{listId:packing.list.id},orderBy:{position:'asc'}});
+ assert.equal(packed.length,packing.tasks_added);
+ assert.equal(packed[0].title,'Passport or ID');
+ assert.ok(packed.every(t=>t.createdByAccountId===account.id&&t.createdByAgentId===null&&t.status==='open'));
+ const src=ok(await call('POST','','person',{name:'Sprint',agents:[a1.id]}),'sprint').list;
+ ok(await call('POST',`/${src.id}/tasks`,'person',{tasks:[{title:'Plan',notes:'Monday, 10:00'},{title:'Demo'}]}),'sprint tasks');
+ const saved=ok(await call('POST','/templates','person',{list_id:src.id,name:'Sprint kickoff'}),'save as template').template;
+ const stored=await prisma.taskListTemplate.findUniqueOrThrow({where:{id:saved.id}});
+ assert.deepEqual(stored.items,[{title:'Plan',notes:'Monday, 10:00'},{title:'Demo',notes:''}],'items round-trip through JSONB');
+ const fromSaved=ok(await call('POST','',a1,{template:'sprint kickoff'}),'an agent starts a list from its person\'s template by name');
+ assert.deepEqual((await prisma.taskItem.findMany({where:{listId:fromSaved.list.id},orderBy:{position:'asc'}})).map(t=>[t.title,t.createdByAgentId]),[['Plan',a1.id],['Demo',a1.id]]);
+ refused(await call('POST','',b1,{template:saved.id}),404,'no_such_template','another account\'s template');
+ assert.equal(ok(await call('GET','/templates',a1),'templates').templates.filter((t:{kind:string})=>t.kind==='saved').length,1);
+ const copy=ok(await call('POST','','person',{duplicate:src.id}),'duplicate').list;
+ assert.equal(copy.name,'Sprint (copy)');
+ assert.deepEqual((await prisma.taskEntry.findMany({where:{task:{listId:copy.id}}})).map(e=>e.eventType),['copied','copied']);
+ refused(await call('POST','',a1,{duplicate:src.id}),403,'people_only','an agent can\'t duplicate');
+ ok(await call('DELETE',`/templates/${saved.id}`,'person'),'delete template');
+ assert.equal(await prisma.taskListTemplate.count({where:{id:saved.id}}),0);
+ await assert.rejects(prisma.taskListTemplate.create({data:{ownerAccountId:account.id,name:'Empty',items:[]}}),'an empty template');
+ await assert.rejects(prisma.taskListTemplate.create({data:{ownerAccountId:account.id,name:'Not a list',items:{title:'x'}}}),'items must be an array');
+ await assert.rejects(prisma.listsPreference.create({data:{accountId:account.id,digest:'weekly'}}));
+ await assert.rejects(prisma.listsPreference.create({data:{accountId:account.id,digestHour:24}}));
+ console.log('PASS: built-in and saved templates (JSONB round trip), duplicate, and the Phase 3 CHECK constraints');
+
+ // Deleting an account deletes its templates and its preference (foreign keys in the migration only).
+ const leaving=await prisma.account.create({data:{handle:randomUUID()+'@bc',email:randomUUID()+'@example.invalid'}});
+ await prisma.taskListTemplate.create({data:{ownerAccountId:leaving.id,name:'Mine',items:[{title:'x',notes:''}]}});
+ await prisma.listsPreference.create({data:{accountId:leaving.id,digest:'daily'}});
+ await prisma.account.delete({where:{id:leaving.id}});
+ assert.equal(await prisma.taskListTemplate.count({where:{ownerAccountId:leaving.id}}),0);
+ assert.equal(await prisma.listsPreference.count({where:{accountId:leaving.id}}),0);
+ console.log('PASS: templates and the digest preference cascade with the account');
+
+ // The digest: turned on through the route, then two overlapping runs claim today's at most once.
+ ok(await call('PATCH','/preferences','person',{digest:'daily',digest_hour:0,timezone:'UTC'}),'turn the digest on');
+ await prisma.listsPreference.update({where:{accountId:account.id},data:{lastDigestAt:null}});
+ const now=new Date();
+ const runs=await Promise.all([runListsDigest(now),runListsDigest(now),runListsDigest(now)]);
+ const handled=runs.reduce((n,r)=>n+r.sent+r.not_sent+r.empty+r.failed,0);
+ assert.equal(handled,1,`one digest across overlapping runs: ${JSON.stringify(runs)}`);
+ assert.equal((await prisma.listsPreference.findUniqueOrThrow({where:{accountId:account.id}})).lastDigestAt?.getTime(),now.getTime());
+ assert.equal((await runListsDigest(now)).due,0,'and none again today');
+ assert.equal((await runListsDigest(new Date(now.getTime()+24*3600_000))).due>=1,true,'tomorrow it is due again');
+ console.log('PASS: the daily digest is claimed once per account per day under overlapping runs');
 }finally{
  await prisma.$disconnect();
 }
