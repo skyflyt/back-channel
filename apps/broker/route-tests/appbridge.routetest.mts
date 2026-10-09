@@ -116,6 +116,8 @@ const routes = {
   presence: () => import("@/app/api/appbridge/v1/relay/presence-passes/route"),
   passes: () => import("@/app/api/appbridge/v1/relay/passes/route"),
   agentPasses: () => import("@/app/api/appbridge/v1/relay/agent-passes/route"),
+  supportPasses: () => import("@/app/api/appbridge/v1/relay/support-passes/route"),
+  supportClientPasses: () => import("@/app/api/appbridge/v1/relay/support-client-passes/route"),
   redeem: () => import("@/app/api/appbridge/v1/relay/redeem/route"),
   renew: () => import("@/app/api/appbridge/v1/relay/renew/route"),
   release: () => import("@/app/api/appbridge/v1/relay/release/route"),
@@ -1347,4 +1349,211 @@ test("revoking or unregistering a PC ends its agent sessions and their leases in
   noContent(await (await routes.self()).DELETE(req("DELETE", undefined, bearer(pc.credential))));
   assert.deepEqual([t.status, t.endReason], ["ended", "revoked"]);
   assert.equal(tables.lease.length, 0);
+});
+
+// ── The "support-client" purpose (vault design/support-relay-contract.md §2): the issuer connector's leg to the helper ──
+
+/**
+ * A support session (remote-support.routetest.mts covers how one comes to be), allowed and running unless `over` says
+ * otherwise: the helper's relay identity, its pinned key, its abs_ credential, and the executor secret's hash.
+ */
+function supportSession(over: Record<string, unknown> = {}) {
+  const helper = newKey();
+  const credential = "abs_" + randomBytes(32).toString("base64url");
+  const s = { id: crypto.randomUUID(), accountId: "acct-a", kind: "support", hostDeviceId: "support_" + randomBytes(16).toString("base64url"), agentTokenId: "agent-1",
+    executorAgentId: null, listTaskId: null, goal: "Get the printer working again", appAllowList: [], status: "active", minutes: 30, createdAt: new Date(),
+    startedAt: new Date(), expiresAt: new Date(Date.now() + 30 * 60_000), endedAt: null, endReason: null, supportKeySha256: helper.fp, supportKeySpki: helper.spki,
+    supportCredentialHash: sha(credential), supportCredentialExpiresAt: new Date(Date.now() + 3 * 3_600_000), supportClientDeviceId: null, supportClientKeySha256: null,
+    executorSecretHash: sha("abx_" + randomBytes(32).toString("base64url")), executorSecretIssuedAt: null, ...over };
+  tables.remoteAppSession.push(s);
+  // The row as the table holds it now: a rolled-back transaction restores the table from a copy, so never keep `s` itself.
+  const row = () => tables.remoteAppSession.find(x => x.id === s.id)!;
+  return { id: s.id, relayId: s.hostDeviceId, helper, credential, row };
+}
+async function supportClientPass(device: { credential: string }, sessionId: string, extra: Record<string, unknown> = {}, headers?: Record<string, string>) {
+  return (await routes.supportClientPasses()).POST(req("POST", { sessionId, ...extra }, headers ?? bearer(device.credential)));
+}
+async function supportClientLease(device: { credential: string; key: { fp: string } }, sessionId: string) {
+  const issued = await supportClientPass(device, sessionId);
+  assert.equal(issued.status, 200, JSON.stringify(await issued.clone().json()));
+  return redeem((await issued.json()).pass, "support-client", device.key.fp);
+}
+const refusalOf = async (r: Response) => [r.status, (await r.json()).error];
+
+test("support-client: the issuer device's pass pins the session at first use and names the helper's key and the executor secret's hash; it redeems with the device's own key", async () => {
+  const { host, remote: issuer } = await ready();
+  const s = supportSession();
+  const issued = await supportClientPass(issuer, s.id);
+  assert.equal(issued.status, 200); assert.equal(issued.headers.get("cache-control"), "no-store");
+  const body = await issued.json();
+  assert.deepEqual(Object.keys(body).sort(), ["executorSecretSha256", "expiresAt", "host", "pass", "relay"]);
+  assert.match(body.pass, /^[0-9A-F]{64}$/); assert.equal(body.relay, "wss://relay.back-channel.app/v1/connect");
+  assert.ok(Math.abs(new Date(body.expiresAt).getTime() - Date.now() - 60_000) < 2000);
+  assert.equal(body.host, s.helper.fp, "the helper's key: the relay target and the inner-TLS server pin");
+  assert.equal(body.executorSecretSha256, s.row().executorSecretHash, "the connector checks the worker's hello against it");
+  assert.deepEqual([s.row().supportClientDeviceId, s.row().supportClientKeySha256], [issuer.deviceId, issuer.key.fp], "pinned at first use");
+  const passRow = tables.pass.find(p => p.passHash === sha(body.pass))!;
+  assert.deepEqual([passRow.purpose, passRow.accountId, passRow.hostDeviceId, passRow.remoteDeviceId, passRow.enrollmentId, passRow.remoteAppSessionId],
+    ["support-client", "acct-a", s.relayId, issuer.deviceId, null, s.id]);
+  // The relay redeems it presenting the issuer's own key: the grant joins it to the helper's relay identity.
+  const r = await redeem(body.pass, "support-client", issuer.key.fp);
+  assert.equal(r.status, 200);
+  const grant = await r.json();
+  assert.deepEqual({ ...grant, leaseId: undefined }, { leaseId: undefined, accountId: "acct-a", hostDeviceId: s.relayId, clientDeviceId: issuer.deviceId, enrollmentId: null,
+    hostConnectorSpkiSha256: s.helper.fp, clientConnectorSpkiSha256: issuer.key.fp, remoteAppSessionId: s.id });
+  assert.equal(tables.connection.length, 0, "not a phone reaching a PC: no connection-log row");
+  assert.equal((await redeem(body.pass, "support-client", issuer.key.fp)).status, 403, "a pass is redeemable once");
+  assert.deepEqual(await (await renew(grant.leaseId)).json(), { hostConnectorSpkiSha256: s.helper.fp, clientConnectorSpkiSha256: issuer.key.fp });
+  // A lease never outlives its session, at redemption or renewal.
+  s.row().expiresAt = new Date(Date.now() + 30_000);
+  assert.equal((await renew(grant.leaseId)).status, 200);
+  const second = await supportClientLease(issuer, s.id);
+  assert.equal(second.status, 200, "the same device again: the pin holds, a second leg is admitted");
+  assert.ok(tables.lease.every(l => l.expiresAt.getTime() <= s.row().expiresAt.getTime()), "never past the session's end");
+  // Presenter and purpose are checked like any pass.
+  const pass = async () => (await (await supportClientPass(issuer, s.id)).json()).pass as string;
+  assert.equal((await redeem(await pass(), "support-client", s.helper.fp)).status, 403, "the helper's key is the host side, never the client");
+  assert.equal((await redeem(await pass(), "support-client", host.key.fp)).status, 403, "nor another device's");
+  assert.equal((await redeem(await pass(), "support", s.helper.fp)).status, 403, "a support-client pass is never a support pass");
+  assert.equal((await redeem(await pass(), "session", issuer.key.fp)).status, 403, "nor a session pass");
+  const helperPass = (await (await (await routes.supportPasses()).POST(req("POST", {}, bearer(s.credential)))).json()).pass;
+  assert.equal((await redeem(helperPass, "support-client", issuer.key.fp)).status, 403, "nor the other way round");
+});
+
+test("support-client: pinned to the first device that takes a pass; another device is 409 support_client_pinned, and a refused request pins nobody", async () => {
+  const { remote: issuer } = await ready();
+  const other = await register("remote");
+  const s = supportSession({ status: "awaiting_consent", startedAt: null, expiresAt: null });
+  // Before the helped person's Allow: refused, and nobody is pinned (the pin rolls back with the refusal).
+  assert.deepEqual(await refusalOf(await supportClientPass(other, s.id)), [403, "session_inactive"]);
+  assert.deepEqual([s.row().supportClientDeviceId, s.row().supportClientKeySha256], [null, null]);
+  Object.assign(s.row(), { status: "active", consentVia: "helper", startedAt: new Date(), expiresAt: new Date(Date.now() + 30 * 60_000) });
+  assert.equal((await supportClientPass(issuer, s.id)).status, 200);
+  const pinned = await supportClientPass(other, s.id);
+  assert.equal(pinned.status, 409); assert.deepEqual(await pinned.json(), { error: "support_client_pinned" });
+  assert.deepEqual([s.row().supportClientDeviceId, s.row().supportClientKeySha256], [issuer.deviceId, issuer.key.fp], "the pin never moves");
+  assert.equal(unconsumedPasses(other.deviceId), 0, "no pass for the other device");
+  // A pass of the pinned device presented with the other device's key: refused.
+  assert.equal((await redeem((await (await supportClientPass(issuer, s.id)).json()).pass, "support-client", other.key.fp)).status, 403);
+  // The pin is the key: a device that rotates its connector key is no longer the one the helper pins, and its live leg ends.
+  const lease = await (await supportClientLease(issuer, s.id)).json();
+  const next = newKey();
+  const message = `appbridge-connector-rotate-v1:${issuer.deviceId}:${next.fp}`;
+  const rotated = await (await routes.connector()).PUT(req("PUT", { connectorSpki: next.spki, proofOld: issuer.key.sign(message), proofNew: next.sign(message) }, bearer(issuer.credential)));
+  assert.equal(rotated.status, 200);
+  assert.equal((await renew(lease.leaseId)).status, 403, "the next renewal refuses and deletes it");
+  assert.ok(!tables.lease.some(l => l.id === lease.leaseId));
+  assert.deepEqual(await refusalOf(await supportClientPass(issuer, s.id)), [409, "support_client_pinned"]);
+  // Each session has its own pin: another support session may pin the other device.
+  const t = supportSession();
+  assert.equal((await supportClientPass(other, t.id)).status, 200);
+  assert.equal(t.row().supportClientDeviceId, other.deviceId);
+});
+
+test("support-client refusals, each read fresh: not this account's, not a support session, rollout off, not entitled, not running; device credentials only", async () => {
+  const { host, remote: issuer } = await ready();
+  const s = supportSession();
+  assert.deepEqual(await refusalOf(await supportClientPass(issuer, supportSession({ accountId: "acct-b" }).id)), [404, "not_found"], "another account's support session");
+  assert.deepEqual(await refusalOf(await supportClientPass(issuer, agentSession(host).id)), [404, "not_found"], "a remote app session is not a support session");
+  assert.deepEqual(await refusalOf(await supportClientPass(issuer, crypto.randomUUID())), [404, "not_found"], "no such session");
+  process.env.APPBRIDGE_REMOTE_ACCESS = "off";
+  assert.deepEqual(await refusalOf(await supportClientPass(issuer, s.id)), [403, "rollout_off"]);
+  process.env.APPBRIDGE_REMOTE_ACCESS = "on";
+  await entitle("skylar", false);
+  assert.deepEqual(await refusalOf(await supportClientPass(issuer, s.id)), [403, "not_entitled"]);
+  await entitle("skylar", true);
+  const inactive: Array<[string, Record<string, unknown>]> = [
+    ["ended", { status: "ended", endReason: "user_stop", endedAt: new Date() }], ["out of time", { expiresAt: new Date(Date.now() - 1) }],
+    ["lapsed", { status: "lapsed", startedAt: null, expiresAt: null }], ["denied", { status: "denied", startedAt: null, expiresAt: null }],
+  ];
+  for (const [why, over] of inactive) assert.deepEqual(await refusalOf(await supportClientPass(issuer, supportSession(over).id)), [403, "session_inactive"], why);
+  assert.equal(tables.remoteAppSession.filter(x => x.supportClientKeySha256).length, 0, "no refusal pinned anything");
+  // A device's ab_ credential with the relay pass scope only: a PC's is 403 scope; an agent key, the cookie, a helper's abs_ credential are 401.
+  assert.deepEqual(await refusalOf(await supportClientPass(host, s.id)), [403, "scope"]);
+  for (const headers of [{}, bearer("bc_" + "x".repeat(32)), cookie("a"), bearer(s.credential)]) {
+    assert.equal((await supportClientPass(issuer, s.id, {}, headers)).status, 401, JSON.stringify(headers));
+  }
+  for (const body of [{}, { sessionId: s.id, extra: 1 }, { sessionId: "bad id!" }, { sessionId: 7 }]) {
+    assert.equal((await (await routes.supportClientPasses()).POST(req("POST", body, bearer(issuer.credential)))).status, 400, JSON.stringify(body));
+  }
+  // A revoked device's credential is dead.
+  noContent(await (await routes.device()).DELETE(req("DELETE", undefined, cookie("a")), params({ id: issuer.deviceId })));
+  assert.equal((await supportClientPass(issuer, s.id)).status, 401);
+  assert.equal(s.row().supportClientKeySha256, null);
+});
+
+test("support-client budget: its own 2 per account, never counted with or displacing support, agent, session or presence leases", async () => {
+  const { host, remotes: [a, b, c], taker, leases } = await busyAccount();
+  const issuer = taker;
+  const s = supportSession();
+  const agent = agentSession(host);
+  const one = await supportClientLease(issuer, s.id); const two = await supportClientLease(issuer, s.id);
+  assert.equal(one.status, 200); assert.equal(two.status, 200);
+  const third = await supportClientLease(issuer, s.id);
+  assert.equal(third.status, 409, "a third issuer leg is over its budget"); assert.deepEqual(await third.json(), { error: "refused" });
+  // The helper's own support leases and the PC's agent leases keep their own budgets beside it.
+  const helperLease = async () => redeem((await (await (await routes.supportPasses()).POST(req("POST", {}, bearer(s.credential)))).json()).pass, "support", s.helper.fp);
+  assert.equal((await helperLease()).status, 200); assert.equal((await helperLease()).status, 200); assert.equal((await helperLease()).status, 409);
+  assert.equal((await redeem((await (await agentPass(host, agent.id)).json()).pass, "agent", host.key.fp)).status, 200);
+  assert.equal(tables.lease.filter(l => l.purpose === "support-client").length, 2);
+  assert.ok(leases.every(id => tables.lease.some(l => l.id === id)), "three phones relayed, never touched");
+  // The issuer device is not a relayed phone: the waiting device still sees exactly the three busy phones.
+  const busy = await (await sessionPass(taker, host.deviceId, "enr-busy-3")).json();
+  assert.deepEqual(busy.devices.map((d: any) => d.deviceId).sort(), [a.deviceId, b.deviceId, c.deviceId].sort());
+  // A released leg frees its slot at once.
+  noContent(await release((await one.json()).leaseId));
+  assert.equal((await supportClientLease(issuer, s.id)).status, 200);
+});
+
+test("support-client: the lease never outlives its session or its device; ending, time, the switch and the device's revocation all end it", async () => {
+  const { remote: issuer } = await ready();
+  // The session ends (remote-support.routetest.mts drives each real ending): the next renewal refuses and deletes it.
+  const s = supportSession();
+  const ended = await (await supportClientLease(issuer, s.id)).json();
+  Object.assign(s.row(), { status: "ended", endReason: "host_stop", endedAt: new Date() });
+  assert.equal((await renew(ended.leaseId)).status, 403); assert.ok(!tables.lease.some(l => l.id === ended.leaseId));
+  assert.deepEqual(await refusalOf(await supportClientPass(issuer, s.id)), [403, "session_inactive"], "a stopped session never reopens");
+  // Out of time.
+  const t = supportSession();
+  const timed = await (await supportClientLease(issuer, t.id)).json();
+  t.row().expiresAt = new Date(Date.now() - 1);
+  assert.ok([403, 410].includes((await renew(timed.leaseId)).status)); assert.ok(!tables.lease.some(l => l.id === timed.leaseId));
+  // The relay-wide switch and the issuer's entitlement.
+  const u = supportSession();
+  const switched = await (await supportClientLease(issuer, u.id)).json();
+  process.env.APPBRIDGE_REMOTE_ACCESS = "off";
+  assert.equal((await renew(switched.leaseId)).status, 403);
+  process.env.APPBRIDGE_REMOTE_ACCESS = "on";
+  const unentitled = await (await supportClientLease(issuer, u.id)).json();
+  await entitle("skylar", false);
+  assert.equal((await renew(unentitled.leaseId)).status, 403);
+  await entitle("skylar", true);
+  // The device switched off (not revoked): refused at the next renewal.
+  const disabled = await (await supportClientLease(issuer, u.id)).json();
+  tables.device.find(d => d.id === issuer.deviceId)!.enabled = false;
+  assert.equal((await renew(disabled.leaseId)).status, 403);
+  tables.device.find(d => d.id === issuer.deviceId)!.enabled = true;
+  // The device revoked from the dashboard: its legs are deleted in the revoking transaction (404 at the next renewal).
+  const revoked = await (await supportClientLease(issuer, u.id)).json();
+  noContent(await (await routes.device()).DELETE(req("DELETE", undefined, cookie("a")), params({ id: issuer.deviceId })));
+  assert.equal((await renew(revoked.leaseId)).status, 404);
+  assert.equal(tables.lease.filter(l => l.purpose === "support-client").length, 0);
+  assert.equal(u.row().status, "active", "revoking the issuer's device ends its legs, not the helped person's session");
+});
+
+test("H1 and the support relay path: under a redeem flood, the keys pinned on a running support session still reach the gate", async () => {
+  const { remote: issuer } = await ready();
+  const s = supportSession();
+  assert.equal((await supportClientPass(issuer, s.id)).status, 200);
+  hits.set("appbridge:redeem-failed:all", 600);
+  assert.equal((await redeem(junkHex(), "support-client", junkHex())).status, 429, "an unknown key is shed");
+  // The issuer's key is a live device's anyway; with that device gone, its pin on a RUNNING session still lets it
+  // through to the transaction (one indexed read covers both pinned keys), where the gate refuses it.
+  tables.device.find(d => d.id === issuer.deviceId)!.revokedAt = new Date();
+  assert.equal((await redeem(junkHex(), "support-client", issuer.key.fp)).status, 403, "the pinned issuer key reaches the gate");
+  assert.equal((await redeem(junkHex(), "support", s.helper.fp)).status, 403, "and so does the helper's");
+  Object.assign(s.row(), { status: "ended", endReason: "user_stop", endedAt: new Date() });
+  hits.set("appbridge:redeem-failed:all", 600);
+  assert.equal((await redeem(junkHex(), "support-client", issuer.key.fp)).status, 429, "once the session is over, it is shed like any key");
+  assert.equal((await redeem(junkHex(), "support", s.helper.fp)).status, 429);
 });
