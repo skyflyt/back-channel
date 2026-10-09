@@ -10,6 +10,8 @@
 // code or pass be used twice.
 import assert from 'node:assert/strict';
 import {createHash,generateKeyPairSync,randomBytes,randomInt,randomUUID,sign} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {PrismaClient} from '@prisma/client';
 import {NextRequest} from 'next/server';
 import {prisma} from '../src/lib/db.ts';
 import * as ab from '../src/lib/appbridge.ts';
@@ -192,6 +194,116 @@ try{
  assert.equal((await ab.issueAgentPass(call('POST','/relay/agent-passes',host.credential,{sessionId:remoteSession.id}))).status,403,'a stopped session never reopens');
  assert.equal(await leases('session'),phonesBefore,'and the phones were never touched');
  console.log('PASS: agent leases keep their own budget under contention, and a stop racing renewals leaves none alive');
+
+ // Remote support (docs/remote-support.md): one code, five temporary clients redeeming it at once, each with its
+ // own fresh key. Exactly one wins, with a session pinned to its key; every other one gets the uniform answer (never
+ // a 503 or a second session). Then the winner's signed Allow, its "support" lease, and the person's Stop racing the
+ // relay's renewals: no lease outlives the stop.
+ process.env.ADMIN_EMAILS=account.email!;
+ const {supportRoute}=await import('../src/lib/remote-support.ts');
+ const supportAgent=await prisma.agentToken.create({data:{accountId:account.id,keyHash:sha(randomUUID()),name:'Support agent'}});
+ const supportCode=`BCS-${part()}-${part()}`,mintedAt=new Date();
+ const invite=await prisma.supportInvite.create({data:{accountId:account.id,agentTokenId:supportAgent.id,forName:'Integration',task:'Integration check',minutes:20,
+  status:'minted',codeHash:sha(supportCode),mintedAt,codeExpiresAt:new Date(mintedAt.getTime()+15*60_000)}});
+ const supportCall=(path:string[],body:unknown,credential?:string)=>supportRoute(new NextRequest(`https://back-channel.app/api/support/${path.join('/')}`,
+  {method:'POST',headers:{'content-type':'application/json',...(credential?{authorization:`Bearer ${credential}`}:{})},body:JSON.stringify(body)}),path);
+ const racers=[p256(),p256(),p256(),p256(),p256()];
+ const redemptions=await Promise.all(racers.map(k=>supportCall(['redeem'],{code:supportCode,keySpki:k.spki,proof:k.sign(`bc-support-redeem-v1:${supportCode}`)})));
+ assert.deepEqual(statuses(redemptions),[200,410,410,410,410],'one code raced by five clients: exactly one redeems it');
+ const winner=redemptions.findIndex(r=>r.status===200);
+ const losers=await Promise.all(redemptions.filter((_,i)=>i!==winner).map(r=>r.json() as Promise<{error:string}>));
+ assert.ok(losers.every(l=>l.error==='code_invalid'),'every loser gets the uniform answer');
+ const helper=await redemptions[winner].json() as {sessionId:string;credential:string};
+ const supportSessions=await prisma.remoteAppSession.findMany({where:{accountId:account.id,kind:'support'}});
+ assert.equal(supportSessions.length,1,'one session');
+ assert.equal(supportSessions[0].supportKeySha256,racers[winner].fp,'pinned to the winning key');
+ const redeemedInvite=await prisma.supportInvite.findUniqueOrThrow({where:{id:invite.id}});
+ assert.deepEqual([redeemedInvite.status,redeemedInvite.sessionId],['redeemed',helper.sessionId]);
+ assert.equal(await prisma.accountAudit.count({where:{accountId:account.id,eventType:'support.redeemed'}}),1);
+ console.log('PASS: one support code raced by five clients is redeemed exactly once, pinned to the first key, no 503');
+ assert.equal((await supportCall(['client','allow'],{proof:racers[winner].sign(`bc-support-allow-v1:${helper.sessionId}`)},helper.credential)).status,200);
+ const supportPass=async()=>{const r=await ab.issueSupportPass(call('POST','/relay/support-passes',helper.credential,{}));assert.equal(r.status,200);return (await r.json()).pass as string;};
+ const supportRedeemed=await Promise.all((await together(3,()=>supportPass())).map(p=>redeem(p,'support',racers[winner].fp)));
+ assert.deepEqual(statuses(supportRedeemed),[200,200,409],'the support budget (2) holds under contention');
+ const supportLeaseIds=await Promise.all(supportRedeemed.filter(r=>r.status===200).map(async r=>(await r.json()).leaseId as string));
+ const supportStopReq=new NextRequest(`https://back-channel.app/api/support/invites/${invite.id}/stop`,{method:'POST',headers:{'content-type':'application/json',cookie:`bc_session=${rawCookie}; bc_csrf=tok`,'x-bc-csrf':'tok'}});
+ const [renewedDuringStop,supportStopped]=await Promise.all([together(4,i=>ab.renewLease(relayCall('renew',{leaseId:supportLeaseIds[i%2]}))),supportRoute(supportStopReq,['invites',invite.id,'stop'])]);
+ assert.equal(supportStopped.status,200,'the stop commits');
+ assert.ok(renewedDuringStop.every(r=>[200,403,404].includes(r.status)),`renewals racing a support stop never 503: ${statuses(renewedDuringStop)}`);
+ assert.equal(await leases('support'),0,'no support lease outlives the stop');
+ assert.equal((await prisma.remoteAppSession.findUniqueOrThrow({where:{id:helper.sessionId}})).endReason,'user_stop');
+ assert.equal((await ab.issueSupportPass(call('POST','/relay/support-passes',helper.credential,{}))).status,403,'a stopped support session never reopens');
+ console.log('PASS: the helper\'s support lease keeps its own budget, and the person\'s Stop racing renewals leaves none alive');
+
+ // The job's schema comes from `prisma db push`, which carries none of the hand-written CHECKs. Replay the shipped
+ // Phase A and support migrations into a scratch schema (the AppBridge pass and lease tables stubbed as the
+ // 20260924030000 migration left them), so the SQL that ships is the SQL under test, and probe the constraints that
+ // keep support rows honest. Comments are stripped before splitting: they contain semicolons.
+ {
+  await prisma.$executeRawUnsafe('DROP SCHEMA IF EXISTS support_migration CASCADE');
+  await prisma.$executeRawUnsafe('CREATE SCHEMA support_migration');
+  const scratch=new PrismaClient({datasources:{db:{url:`${process.env.DATABASE_URL}?schema=support_migration`}}});
+  try{
+   for(const t of ['AppBridgePass','AppBridgeLease'])await scratch.$executeRawUnsafe(`CREATE TABLE "${t}" ("id" TEXT PRIMARY KEY,"purpose" TEXT NOT NULL,"accountId" TEXT NOT NULL,
+    "hostDeviceId" TEXT NOT NULL,"remoteDeviceId" TEXT,"enrollmentId" TEXT,"expiresAt" TIMESTAMP(3) NOT NULL,CONSTRAINT "${t}_purpose_check" CHECK ("purpose" IN ('session','presence')))`);
+   for(const name of ['20261009220000_remote_app_sessions','20261010090000_remote_support']){
+    const sql=readFileSync(new URL(`../prisma/migrations/${name}/migration.sql`,import.meta.url),'utf8').split('\n').map(l=>l.replace(/--.*$/,'')).join('\n');
+    for(const stmt of sql.split(';').map(x=>x.trim()).filter(Boolean))await scratch.$executeRawUnsafe(stmt);
+   }
+   console.log('PASS: the remote_app_sessions and remote_support migrations apply to PostgreSQL');
+   const fp='AB'.repeat(32),cred='c'.repeat(64),relayId=`support_${'A'.repeat(22)}`;
+   const session=(over:Record<string,string>={})=>{
+    const v:Record<string,string>={id:`'${randomUUID()}'`,accountId:"'a'",kind:"'support'",hostDeviceId:`'${relayId}'`,agentTokenId:"'g'",goal:"'Fix the printer'",appAllowList:"'{}'",
+     status:"'awaiting_consent'",minutes:'30',supportKeySha256:`'${fp}'`,supportKeySpki:"'spki'",supportCredentialHash:`'${cred}'`,supportCredentialExpiresAt:'now()',helperLabel:"'Mom'",...over};
+    const cols=Object.keys(v).filter(k=>v[k]!=='DEFAULT');
+    return `INSERT INTO "RemoteAppSession" (${cols.map(c=>`"${c}"`).join(',')}) VALUES (${cols.map(c=>v[c]).join(',')})`;
+   };
+   const agent={kind:"'agent'",hostDeviceId:"'pcShop000000000000000A'",appAllowList:"'{QuickBooks}'",supportKeySha256:'DEFAULT',supportKeySpki:'DEFAULT',
+    supportCredentialHash:'DEFAULT',supportCredentialExpiresAt:'DEFAULT',helperLabel:'DEFAULT'};
+   const running={status:"'active'",consentVia:"'helper'",startedAt:'now()',expiresAt:"now() + interval '30 minutes'"};
+   const ok=async(sql:string,why:string)=>{try{await scratch.$executeRawUnsafe(sql);}catch(e){assert.fail(`${why}: ${e instanceof Error?e.message:e}`);}};
+   const no=async(sql:string,why:string)=>{await assert.rejects(scratch.$executeRawUnsafe(sql),/23514|check constraint/,why);};
+   await ok(session(),'a support session waiting for Allow');
+   await ok(session({...running,supportCredentialHash:`'${'d'.repeat(64)}'`}),'a support session allowed on the helped screen');
+   await ok(session({status:"'ended'",endReason:"'reported'",endedAt:'now()',supportCredentialHash:`'${'e'.repeat(64)}'`,removal:"'unconfirmed'",removalAt:'now()'}),'reported, with a receipt');
+   await ok(session(agent),'an agent session is unchanged');
+   await no(session({minutes:'46'}),'support is capped at 45 minutes');
+   await no(session({...running,minutes:'45',expiresAt:"now() + interval '46 minutes'"}),'and so is its running window');
+   await no(session({hostDeviceId:"'pcShop000000000000000A'"}),'a support session never names a device');
+   await no(session({appAllowList:"'{Printers}'"}),'a support session has no app list');
+   await no(session({...agent,appAllowList:"'{}'"}),'an agent session still needs 1 to 8 apps');
+   await no(session({...running,consentVia:"'web'"}),'support consent is on the helped screen, never the dashboard');
+   await no(session({...agent,...running,consentVia:"'helper'"}),'and an agent session is never helper-approved');
+   await no(session({...running,status:"'blocked'"}),'a support session never pauses');
+   await no(session({supportCredentialHash:'DEFAULT'}),'a support session is always pinned to a credential');
+   await no(session({...agent,helperLabel:"'Mom'"}),'support columns are for support sessions only');
+   await no(session({supportKeySha256:`'${'ab'.repeat(32)}'`}),'the key fingerprint is uppercase hex');
+   const invite=(over:Record<string,string>={})=>{
+    const v:Record<string,string>={id:`'${randomUUID()}'`,accountId:"'a'",agentTokenId:"'g'",forName:"'Mom'",task:"'Fix the printer'",minutes:'30',status:"'requested'",...over};
+    return `INSERT INTO "SupportInvite" (${Object.keys(v).map(c=>`"${c}"`).join(',')}) VALUES (${Object.values(v).join(',')})`;
+   };
+   const mintedCols=(h:string)=>({status:"'minted'",codeHash:`'${h.repeat(64)}'`,mintedAt:"'2026-10-10T14:00:00Z'",codeExpiresAt:"'2026-10-10T14:15:00Z'"});
+   await ok(invite(),'a request');
+   await ok(invite(mintedCols('1')),'a minted code, 15 minutes');
+   await ok(invite({...mintedCols('2'),status:"'withdrawn'"}),'withdrawn after minting keeps its hash');
+   await ok(invite({...mintedCols('3'),status:"'redeemed'",redeemedAt:'now()',sessionId:`'${randomUUID()}'`}),'redeemed, naming its session');
+   await no(invite({...mintedCols('4'),codeExpiresAt:"'2026-10-10T14:16:00Z'"}),'a code works 15 minutes at most');
+   await no(invite({...mintedCols('5'),status:"'redeemed'",redeemedAt:'now()'}),'redeemed always names its session');
+   await no(invite({codeHash:`'${'6'.repeat(64)}'`}),'a request has no code');
+   await no(invite({...mintedCols('7'),codeHash:"'BCS-ABCD-EFGH'"}),'never a readable code, only its hash');
+   await no(invite({minutes:'46'}),'45 minutes at most');
+   await no(invite({task:"''"}),'a task is never empty');
+   await ok(`INSERT INTO "RemoteAppActionLog" ("sessionId","action","target","outcome") VALUES ('s','invoke','Remove device','declined')`,'declined is an outcome');
+   await no(`INSERT INTO "RemoteAppActionLog" ("sessionId","action","outcome") VALUES ('s','observe','maybe')`,'and outcomes are still fixed');
+   await ok(`INSERT INTO "AppBridgePass" ("id","purpose","accountId","hostDeviceId","remoteAppSessionId","expiresAt") VALUES ('p1','support','a','${relayId}','s',now())`,'a support pass names its session');
+   await no(`INSERT INTO "AppBridgePass" ("id","purpose","accountId","hostDeviceId","expiresAt") VALUES ('p2','support','a','${relayId}',now())`,'always');
+   await no(`INSERT INTO "AppBridgeLease" ("id","purpose","accountId","hostDeviceId","remoteAppSessionId","expiresAt") VALUES ('l1','presence','a','h','s',now())`,'and nothing else does');
+   console.log('PASS: the support CHECK constraints hold: 45 minutes, pinned keys, helper consent, no app list, hashed codes, bound passes');
+  }finally{
+   await scratch.$disconnect();
+   await prisma.$executeRawUnsafe('DROP SCHEMA IF EXISTS support_migration CASCADE');
+  }
+ }
 
  // A rotated credential's first requests arrive together: each ends the predecessor, once.
  const rotated=await ab.rotateCredential(call('POST','/devices/self/credential',host.credential));assert.equal(rotated.status,200);
