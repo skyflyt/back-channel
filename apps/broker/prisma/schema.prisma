@@ -122,10 +122,31 @@ model AgentToken {
   dispatchSigningKey String?
   dispatchSent DispatchTask[] @relation("DispatchSender")
   dispatchReceived DispatchTask[] @relation("DispatchTarget")
+  mailboxEncryptionKey String?
+  mailboxSigningKey String?
+  messagesSent AgentMessage[] @relation("MessageSender")
+  messagesReceived AgentMessage[] @relation("MessageTarget")
   account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([keyHash])
   @@index([accountId, revokedAt])
+}
+
+// Ordinary mail, never execution tasks. Only sender/target can read ciphertext.
+model AgentMessage {
+  id String @id
+  senderAgentId String
+  targetAgentId String
+  sealed String
+  senderSealed String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  readAt DateTime?
+  sender AgentToken @relation("MessageSender", fields: [senderAgentId], references: [id], onDelete: Cascade)
+  target AgentToken @relation("MessageTarget", fields: [targetAgentId], references: [id], onDelete: Cascade)
+  @@index([targetAgentId, readAt, expiresAt])
+  @@index([senderAgentId, createdAt, id])
+  @@index([targetAgentId, createdAt, id])
 }
 
 // Opaque authenticated encrypted envelopes only. A lost execution lease is never requeued.

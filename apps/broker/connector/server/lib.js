@@ -37,6 +37,8 @@ import { homedir } from "node:os";
 import { createKeyStore } from "./keystore.js";
 import { prepareOutgoing, processIncoming, afterSessionEstablished, canonicalizeThreadCall } from "./e2e.js";
 import { fetchPending, describePending } from "./inbox.js";
+import { createMailbox, SEND_AGENT_TOOL } from "./mailbox.js";
+import { PANEL_TOOL, PANEL_INBOX_TOOL, answerResourceRequest, clientRendersUi, declarePanel, panelToolResult, panelDataResult, panelThreads, markPanelCallable, inboxAsText } from "./panel.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
 const MAX_CHECK_INBOX_WAIT_S = 120; // hard cap on bc_check_inbox wait_seconds -- MCP clients time out tool calls well before Cloud Run does
@@ -53,6 +55,8 @@ export const DEFAULT_TOKEN_FILE = join(homedir(), ".bc", "token");
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
 const CONNECT_URL_HINT = "back-channel.app → Account → Connect a new agent";
+const REJECTED_CONFIGURED =
+  "Back Channel rejected the token (revoked or mistyped). Generate a fresh one at back-channel.app → Account → Connect a new agent and update the extension settings.";
 const NOT_CONNECTED =
   `Back Channel isn't connected on this machine yet. Ask the user to open ${CONNECT_URL_HINT}, generate a one-time connect code ` +
   "(it looks like BCX-XXXX-XXXX), and give it to you; then call bc_connect with that code. Never ask for the bc_ key itself.";
@@ -197,6 +201,10 @@ export function createBridge({
   let resolvedToken = configuredToken;
   let exchangeError = null; // set once if code redemption fails; surfaced to every request until fixed
   let rejectedFallback = ""; // a fallback key the server already refused — don't pick it up again
+  let uiClient = false; // the host said in `initialize` that it renders MCP Apps (panel.js)
+  let mailboxAvailable = false; // advertise only after the broker lists mailbox tools
+  /** The bridge's own tools, added to whatever catalog is being returned. */
+  const ownTools = () => (uiClient ? [PANEL_TOOL, PANEL_INBOX_TOOL] : [PANEL_TOOL]);
 
   /**
    * With nothing configured, look for a key this machine already holds: one a
@@ -265,11 +273,17 @@ export function createBridge({
       case "ping":
         return rpcResult(id, {});
       case "tools/list":
-        return rpcResult(id, { tools: [BC_CONNECT_TOOL] });
+        return rpcResult(id, { tools: [...markPanelCallable([BC_CONNECT_TOOL]), ...ownTools()] });
       case "tools/call":
+        // The panel opens unconnected too: it shows a "connect" form that calls bc_connect.
+        if (msg.params?.name === PANEL_TOOL.name) return panelToolResult(id, { text: NOT_CONNECTED, data: { connected: false } });
+        if (msg.params?.name === PANEL_INBOX_TOOL.name) return panelDataResult(id, { connected: false });
         return toolText(id, NOT_CONNECTED, true);
       default:
-        return rpcError(id, -32001, NOT_CONNECTED);
+        // Method not found, like any server. A host probing for a method we do
+        // not have (server/discover, prompts/list, ...) must hear exactly that,
+        // not an application error about being unconnected.
+        return rpcError(id, -32601, `Method not supported: ${String(msg.method).slice(0, 80)}`);
     }
   }
 
@@ -306,6 +320,90 @@ export function createBridge({
     exchangeError = null;
     log("bc_connect: connected");
     return connected(true, "Connected. The Back Channel tools (bc_check_inbox, bc_read_messages, bc_send_message, …) are available now; if they don't appear, restart the session once.");
+  }
+
+  // ── Panel: the in-host UI (panel.js) ────────────────────────────────────────
+
+  /** The JSON a broker tool returned as its text content, or null if it failed or was not JSON. */
+  async function callBrokerTool(name, args = {}) {
+    try {
+      const resp = await post({ jsonrpc: "2.0", id: `panel-${name}`, method: "tools/call", params: { name, arguments: args } });
+      if (resp?.error || resp?.result?.isError) return null;
+      return JSON.parse(resp.result.content[0].text);
+    } catch {
+      return null;
+    }
+  }
+  const mailbox = createMailbox({ call: callBrokerTool, keystore });
+
+  /**
+   * The thread list for the panel, read with no side effects: the REST listing
+   * with frames off, not bc_check_inbox (which also delivers and marks anything
+   * queued for the agent). `{ inbox }`, `{ rejected: true }` when the server
+   * refused the key, or `{ inbox: null }` when it could not be read.
+   */
+  async function panelInbox() {
+    try {
+      const res = await fetchImpl(new URL("/api/sessions/active?frames=0", url).toString(), {
+        method: "GET",
+        headers: { authorization: `Bearer ${resolvedToken}` },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.status === 401) return { rejected: true };
+      if (!res.ok) return { inbox: null };
+      const body = await res.json();
+      return {
+        inbox: {
+          sessions: panelThreads(body?.sessions),
+          agent_payloads_pending: Number.isInteger(body?.agent_payloads_pending) ? body.agent_payloads_pending : 0,
+        },
+      };
+    } catch {
+      return { inbox: null };
+    }
+  }
+
+  /**
+   * What the panel shows on open or refresh: `data` for the view, `text` for the
+   * model (and for a host with no view), and `relist` when the tool catalog changed.
+   * A failed lookup still opens the panel; it can refresh for itself.
+   */
+  async function panelState() {
+    const [who, list, directory] = await Promise.all([callBrokerTool("bc_whoami"), panelInbox(), callBrokerTool("bc_list_agents")]);
+    if (list.rejected) {
+      log("401 from server on the panel's read — bad/revoked token");
+      const ours = forgetRejectedKey();
+      return ours
+        ? { relist: true, text: `Back Channel rejected the saved key (revoked or expired). ${NOT_CONNECTED}`,
+            data: { connected: false, can_connect: true, problem: "Back Channel no longer accepts the key saved on this computer (revoked or expired). Connect again with a new code." } }
+        : { text: REJECTED_CONFIGURED,
+            data: { connected: false, can_connect: false, problem: "Back Channel rejected the key in this extension's settings (revoked or mistyped). Create a new one at back-channel.app, under Account, Connect a new agent, and update the settings." } };
+    }
+    const data = { connected: true, local_encryption: true, handle: who?.handle ?? null, agent_name: who?.agent_name ?? null, inbox: list.inbox };
+    if (Array.isArray(directory?.agents)) data.agent_directory = { self_agent_id: directory.self_agent_id,
+      agents: directory.agents.map(a => ({ id: a.id, name: a.name, runtime: a.runtime, ready: a.ready, unread_count: a.unread_count ?? 0 })) };
+    return { data, text: data.inbox ? inboxAsText(data.inbox) : "Back Channel is connected, but the inbox could not be loaded just now." };
+  }
+
+  /**
+   * The server refused our key. Forget it. True if it was one we picked up
+   * ourselves (bc_connect or the installer's token file), in which case we go
+   * back to offering bc_connect rather than replaying a dead key on every call.
+   */
+  function forgetRejectedKey() {
+    // Clear any cached exchange-code result: if the user pastes a fresh code
+    // into settings, a stale resolved key must not shadow it on next start.
+    try {
+      const state = keystore.load();
+      if (state[RESOLVED_TOKEN_KEY]) {
+        delete state[RESOLVED_TOKEN_KEY];
+        keystore.save(state);
+      }
+    } catch { /* best-effort cleanup */ }
+    if (configuredToken) return false;
+    rejectedFallback = resolvedToken;
+    resolvedToken = "";
+    return true;
   }
 
   // ── Channel: push "you have mail" into the session ─────────────────────────
@@ -444,6 +542,15 @@ export function createBridge({
     const isNotification = id === undefined || id === null;
 
     adoptFallbackToken();
+    if (msg?.method === "initialize") uiClient = clientRendersUi(msg);
+
+    // The panel's UI resources are the bridge's own: answered here whether or
+    // not we are connected, and never forwarded (the broker serves none).
+    const resourceAnswer = answerResourceRequest(msg);
+    if (resourceAnswer) {
+      if (!isNotification) writeLine(resourceAnswer);
+      return;
+    }
 
     // bc_connect is the bridge's own tool: never forwarded, and only offered
     // while unconnected (see answerUnconnected), but honored whenever called.
@@ -458,7 +565,7 @@ export function createBridge({
     if (!resolvedToken) {
       if (!isNotification) {
         const local = answerUnconnected(msg);
-        if (msg.method === "initialize") declareChannel(local.result);
+        if (msg.method === "initialize") { declareChannel(local.result); declarePanel(local.result); }
         writeLine(local);
       }
       if (msg.method === "initialize") startChannelWatcher();
@@ -466,8 +573,33 @@ export function createBridge({
     }
 
     if (looksLikeExchangeCode(resolvedToken)) await ensureToken();
+    // bc_open_panel and the panel's own refresh call are the bridge's tools:
+    // answered here, never forwarded. Always as a tool result the panel can
+    // draw, including when the key is the problem; a protocol error would
+    // leave the user looking at a panel that cannot say what is wrong.
+    const panelTool = msg?.method === "tools/call" ? [PANEL_TOOL.name, PANEL_INBOX_TOOL.name].indexOf(msg.params?.name) : -1;
+    if (panelTool !== -1) {
+      if (isNotification) return; // nothing to answer, so nothing to look up
+      const state = exchangeError
+        // A connect code in this app's settings that did not redeem. A code typed into the panel would not be used.
+        ? { data: { connected: false, can_connect: false, problem: exchangeError }, text: exchangeError }
+        : await panelState();
+      writeLine(panelTool === 0 ? panelToolResult(id, state) : panelDataResult(id, state.data));
+      if (state.relist) writeLine({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+      return;
+    }
+
     if (exchangeError) {
       if (!isNotification) writeLine(rpcError(id, -32001, exchangeError));
+      return;
+    }
+
+    if (msg?.method === "tools/call" && ["bc_list_agents", "bc_read_agent_messages", "bc_send_agent_message"].includes(msg.params?.name)) {
+      const name = msg.params.name, args = msg.params.arguments ?? {};
+      try {
+        const data = await (name === "bc_list_agents" ? mailbox.list() : name === "bc_read_agent_messages" ? mailbox.read(args) : mailbox.send(args));
+        writeLine(panelDataResult(id, data));
+      } catch (e) { writeLine({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: e.message }], isError: true } }); }
       return;
     }
 
@@ -499,8 +631,14 @@ export function createBridge({
     // itself failing), we still fall through to the normal instant forward --
     // that alone decides the actual response shape/content.
     let waitedSeconds = null;
+    let agentInbox = null;
     if (msg?.method === "tools/call" && msg.params?.name === "bc_check_inbox") {
       const rawWait = msg.params?.arguments?.wait_seconds;
+      if (rawWait !== undefined && (!Number.isInteger(Number(rawWait)) || Number(rawWait) < 0 || Number(rawWait) > MAX_CHECK_INBOX_WAIT_S)) {
+        if (!isNotification) writeLine(rpcError(id, -32602, `wait_seconds must be an integer between 0 and ${MAX_CHECK_INBOX_WAIT_S}`));
+        return;
+      }
+      if (mailboxAvailable) { try { agentInbox = await mailbox.read({ mark_read: false, unread_only: true }); } catch { /* friend inbox still works */ } }
       if (rawWait !== undefined) {
         const waitSeconds = Number(rawWait);
         if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > MAX_CHECK_INBOX_WAIT_S) {
@@ -510,7 +648,7 @@ export function createBridge({
         const { wait_seconds: _drop, ...restArgs } = msg.params.arguments;
         const strippedMsg = { ...msg, params: { ...msg.params, arguments: restArgs } };
         outgoingLine = JSON.stringify(strippedMsg);
-        if (waitSeconds > 0) {
+        if (waitSeconds > 0 && !agentInbox?.messages?.some(m => m.target_agent_id === agentInbox.self_agent_id && !m.read_at)) {
           const doorbell = await checkInboxDoorbell(waitSeconds);
           if (doorbell.error) {
             log(`doorbell wait failed, falling back to an un-waited check: ${doorbell.error}`);
@@ -558,26 +696,12 @@ export function createBridge({
 
     if (res.status === 401) {
       log("401 from server — bad/revoked token");
-      // Clear any cached exchange-code result: if the user pastes a fresh code
-      // into settings, a stale resolved key must not shadow it on next start.
-      try {
-        const state = keystore.load();
-        if (state[RESOLVED_TOKEN_KEY]) {
-          delete state[RESOLVED_TOKEN_KEY];
-          keystore.save(state);
-        }
-      } catch { /* best-effort cleanup */ }
-      if (!configuredToken) {
-        // The refused key was one we picked up ourselves (bc_connect or the
-        // installer's token file). Forget it and go back to offering bc_connect
-        // rather than replaying a dead key on every call.
-        rejectedFallback = resolvedToken;
-        resolvedToken = "";
+      if (forgetRejectedKey()) {
         if (!isNotification) writeLine(rpcError(id, -32001, `Back Channel rejected the saved key (revoked or expired). ${NOT_CONNECTED}`));
         writeLine({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
         return;
       }
-      if (!isNotification) writeLine(rpcError(id, -32001, "Back Channel rejected the token (revoked or mistyped). Generate a fresh one at back-channel.app → Account → Connect a new agent and update the extension settings."));
+      if (!isNotification) writeLine(rpcError(id, -32001, REJECTED_CONFIGURED));
       return;
     }
 
@@ -599,6 +723,13 @@ export function createBridge({
     }
 
     const name = msg.method === "tools/call" ? msg.params?.name : null;
+    if (mailboxAvailable && name === "bc_check_inbox" && respObj?.result?.content?.[0]?.type === "text" && !respObj.result.isError) {
+      try {
+        const inner = JSON.parse(respObj.result.content[0].text);
+        inner.agent_inbox = agentInbox ?? { available: false, note: "Agent mailboxes could not be loaded. Friend inbox results are still available." };
+        respObj.result.content[0].text = JSON.stringify(inner);
+      } catch { /* preserve original result */ }
+    }
     if (name === "bc_read_messages") {
       try {
         respObj = await processIncoming(msg, respObj, e2eCtx);
@@ -619,7 +750,12 @@ export function createBridge({
         /* non-JSON tool text (e.g. an error string) -- leave it as-is */
       }
     }
-    if (msg.method === "initialize") declareChannel(respObj.result);
+    if (msg.method === "initialize") { declareChannel(respObj.result); declarePanel(respObj.result); }
+    // The panel tool is ours, so it is added to the broker's catalog here.
+    if (msg.method === "tools/list" && Array.isArray(respObj?.result?.tools)) {
+      mailboxAvailable = respObj.result.tools.some(t => t.name === "bc_list_agents");
+      respObj.result.tools = [...markPanelCallable(respObj.result.tools.filter(t => !["bc_mailbox_enroll", PANEL_TOOL.name, PANEL_INBOX_TOOL.name].includes(t.name)).map(t => t.name === SEND_AGENT_TOOL.name ? SEND_AGENT_TOOL : t)), ...ownTools()];
+    }
     writeLine(respObj);
     if (msg.method === "initialize") startChannelWatcher();
 

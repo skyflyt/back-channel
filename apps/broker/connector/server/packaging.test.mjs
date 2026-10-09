@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeHostId } from "./keystore.js";
+import { hookHost } from "./session-start.js";
 
 const connector = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(connector, "..", "..", "..");
@@ -50,12 +52,28 @@ test("Codex plugin: its MCP config and skills directory exist and start the same
   assert.ok(existsSync(mcpFile), `${codex.mcpServers} is missing`);
   const server = JSON.parse(readFileSync(mcpFile, "utf8")).mcpServers["back-channel"];
   assert.equal(server.command, "node");
-  assert.deepEqual(server.args, [mcpb.server.entry_point]);
+  assert.deepEqual(server.args, [mcpb.server.entry_point, "--host=codex"]);
   assert.equal(server.cwd, ".", "the entry point is relative, so cwd must be the plugin root");
   assert.ok(existsSync(join(connector, codex.skills)));
   // Codex has no install-time secret prompt: the token can only arrive from the
   // user's environment, the installer's token file, or bc_connect.
   for (const name of ["BC_TOKEN", "BC_TOKEN_FILE"]) assert.ok(server.env_vars.includes(name), name);
+});
+
+test("every host names itself, no two hosts share a keystore, and the hook's guess agrees with the plugins", () => {
+  // The bridge keys its keystore on this id (keystore.js resolveKeystorePath).
+  // A host that names nobody falls back to the shared file and can take over
+  // another app's agent — the bug this exists to prevent.
+  const codexServer = json(connector, codex.mcpServers).mcpServers["back-channel"];
+  const declared = {
+    "claude-desktop": normalizeHostId(mcpb.server.mcp_config.env.BC_HOST),
+    "claude-code": normalizeHostId(claude.mcpServers["back-channel"].env.BC_HOST),
+    codex: normalizeHostId(codexServer.args.find((a) => a.startsWith("--host="))?.slice("--host=".length)),
+  };
+  assert.deepEqual(declared, { "claude-desktop": "claude-desktop", "claude-code": "claude-code", codex: "codex" });
+  // The two hosts that run hooks/hooks.json: the hook must read the keystore its own host's bridge writes.
+  assert.equal(hookHost({ CLAUDECODE: "1" }), declared["claude-code"]);
+  assert.equal(hookHost({}), declared.codex);
 });
 
 test("skill: named so it cannot shadow the installer's REST skill, and steers to the tools", () => {

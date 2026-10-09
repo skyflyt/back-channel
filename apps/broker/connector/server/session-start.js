@@ -19,8 +19,21 @@
 
 import { storedToken, optionEnabled } from "./lib.js";
 import { fetchPending, describePending } from "./inbox.js";
+import { normalizeHostId } from "./keystore.js";
 
 const DEFAULT_MCP_URL = "https://back-channel.app/api/mcp";
+
+/**
+ * Which host is running this hook, so it reads that host's keystore and
+ * reports that agent's mail. hooks/hooks.json is shared by Claude Code and
+ * Codex (the Desktop extension has no hooks) and neither can hand the hook an
+ * argument of its own, so: BC_HOST if the user set one, else Claude Code —
+ * which exports CLAUDECODE=1 to everything it starts — else Codex. Must name
+ * the same ids the plugin manifests declare; packaging.test.mjs checks that.
+ */
+export function hookHost(env = process.env) {
+  return normalizeHostId(env.BC_HOST) || (String(env.CLAUDECODE ?? "").trim() === "1" ? "claude-code" : "codex");
+}
 
 /**
  * @returns {Promise<string|null>} the JSON line to print for the host, or null to print nothing.
