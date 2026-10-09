@@ -98,6 +98,25 @@ reported to `/api/remote-app/sessions/{id}/actions` with no values or screen tex
 the process tree, as a lost Dispatch lease does. The result is `completed` only when the runtime reports
 completion and the agent ended the session as finished. A stop, expiry or lost lease is `interrupted`.
 
+## The `lists` profile
+
+`run --lists` adds a second loop to the worker: an always-on agent that works the Lists tasks assigned to it
+(`docs/lists.md`, "Worker: always-on agent"). It is not a Dispatch payload. Nothing is sealed or sent between
+agents: the worker reads its own plate (`/api/lists/plate`) with its own key after the inbox doorbell rings, claims
+one open task assigned to it whose `agent_may_act.ok` is true, and runs the CLI of the local profile named `lists`.
+
+That profile takes no `allowedSenders`, so no Dispatch sender can run work with it. It is read-only unless the owner
+sets `sandbox: "workspace-write"` (claude only, with `permissionMode: "manual"`; the web stays refused). Codex is
+allowed read-only only, when the profile says so. As with Dispatch, the task never supplies an executable, flags,
+tools, environment or working directory: its title and notes reach the CLI only as data on stdin. The CLI gets one
+worker-owned MCP server (`task_progress`, `task_comment`, `task_block`, `task_done`, `task_release`) bound to that
+task; the worker makes each call with its key. The CLI's own output is never posted.
+
+The worker never OKs a task (no `ok_from`), renews a claim only near its lapse while the CLI still runs, kills the
+CLI's process tree when the claim is lost, and lets the task go with a fixed reason when the CLI stops without
+finishing. A task interrupted by a crash is let go on restart and never replayed. Cleanup it can't confirm sets
+the same recovery block as Dispatch.
+
 ## Acceptance
 
 Verify same-account and per-agent isolation, revocation, duplicate send/claim,

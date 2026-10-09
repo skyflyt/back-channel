@@ -99,6 +99,42 @@ server (`remote_sessions`, `remote_open`, `remote_observe`, `remote_act`, `remot
 reports every step, and stops the CLI when the session is stopped, runs out of time or loses its lease. See
 `docs/remote-app-sessions.md` ("Executor").
 
+### Lists: an always-on agent
+
+`run --lists` also makes this worker an always-on agent for Back Channel Lists. Assign a task to this agent (in
+the dashboard, "Give to…" this agent) and it starts on it: it waits on the inbox doorbell, reads its plate, claims
+one open task assigned to it that its person wrote or OK'd, and runs the CLI from the local profile named `lists`.
+It works one task at a time and reports with progress lines, a summary when it finishes, or a plain reason when it
+lets go. See `docs/lists.md` ("Worker: always-on agent").
+
+1. Use an agent key of its own (`BC_AGENT_TOKEN` at `init`), and give that agent `work` access on the lists it
+   should work, in the dashboard. Lists mode needs no `enroll` or `trust`. Without Dispatch enrollment, `run --lists`
+   works Lists only.
+2. Install the profile. It takes no `allowedSenders` (no Dispatch sender may use it) and is read-only by default:
+
+   ```json
+   {
+     "adapter": "claude",
+     "executable": "C:/absolute/path/to/claude.exe",
+     "cwd": "C:/absolute/path/to/a/folder/it/may/read",
+     "maxRuntimeMs": 3600000
+   }
+   ```
+
+   `profile --name lists --file lists.json`. Claude runs with shell, file writes and the web refused. To let it
+   change files and run commands in `cwd`, add `"sandbox": "workspace-write"` and `"permissionMode": "manual"`; the
+   web stays refused. Codex is allowed only with `"sandbox": "read-only"` written in the profile. Its sandbox can
+   still run read-only shell commands, and Back Channel hears only what it reports. `"takeUnassigned": true` also
+   takes unassigned tasks this agent could claim (default: only tasks assigned to it). Set `maxRuntimeMs` (up to an
+   hour) to cover the work you give it; the default is 5 minutes.
+3. Run `run --lists` (the daemon) or `run --lists --once` (read the plate once, work at most one task).
+
+The CLI gets the task's title and notes as data, after a fixed preamble, and one extra capability: the worker's
+own MCP server (`task_progress`, `task_comment`, `task_block`, `task_done`, `task_release`), bound to that one task.
+The worker keeps the claim alive only near its 60-minute lapse while the CLI still runs. It kills the CLI when the
+claim is lost (you took the task back or gave it to someone else) and lets the task go when the CLI stops without
+finishing. A task it has worked isn't picked again until someone changes it.
+
 ## Failure and recovery
 
 The worker signs routing IDs, expiry and task/result purpose with Ed25519 and
@@ -133,5 +169,7 @@ Run `npm test --prefix packages/worker`. Tests use a deterministic real child
 fixture and an in-memory relay, including the encrypted roundtrip and sender
 continuation, route/purpose replay, tampering, rejected profiles/peers, duplicate
 polling, restart, lease cancellation, outbox retry and local exclusivity.
+`test/lists.test.mjs` covers lists mode against a loopback broker that uses the broker's own Lists rules and a
+fixture agent CLI that speaks MCP.
 Real broker integration and installed-CLI acceptance are separate integration
 checks; passing a fixture test does not claim a remote machine was enrolled.
