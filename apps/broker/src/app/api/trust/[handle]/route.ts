@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { endListSharing } from "@/lib/lists";
 
 export const runtime = "nodejs";
 
@@ -19,6 +20,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ h
   const peer = await prisma.account.findUnique({ where: { handle } });
   if (peer) {
     await prisma.trustedPeer.deleteMany({ where: { accountId: account.id, trustedAccountId: peer.id } });
+    // Lists shared between the two end with the friendship: the member comes off, their agents'
+    // access ends and their claims are released, with activity lines. Access already failed closed
+    // above (membership is checked against trust on every request); this is the visible cleanup.
+    await endListSharing(account.id, peer.id);
     await prisma.accountAudit.create({ data: { accountId: account.id, eventType: "trust.revoked", detail: { peer: handle } } });
   }
   // Opaque OK regardless (don't reveal whether the handle/row existed).

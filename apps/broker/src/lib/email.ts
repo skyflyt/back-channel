@@ -362,3 +362,37 @@ export async function sendFriendAcceptedEmail(args: { to: string; inviterHandle:
     return true;
   } catch (e) { console.error("Resend send failed (friend-accepted):", e instanceof Error ? e.message : e); return false; }
 }
+
+/**
+ * Lists: an opt-in nudge for one person on a shared list (src/lib/lists.ts
+ * decides when: a mention of them, a finished task for them to check, or a
+ * friend's task for their agents that needs their OK; at most one an hour).
+ * Says who and which list and task, nothing else, and links straight to the
+ * task with a one-time sign-in. The log line never carries list content.
+ */
+export async function sendListNudgeEmail(args: { to: string; handle: string; kind: "mention" | "review" | "ok"; by: string; listName: string; taskTitle: string; url: string }): Promise<boolean> {
+  const resend = client();
+  if (!resend) { console.log(`[lists-nudge] (log-only) to=${args.handle} kind=${args.kind}`); return false; }
+  const task = `"${args.taskTitle}"`;
+  const subject =
+    args.kind === "mention" ? `${args.by} mentioned you in ${args.listName}`
+      : args.kind === "review" ? `${args.by} finished something for you to check in ${args.listName}`
+        : `${args.by} added a task for your agents in ${args.listName}`;
+  const line =
+    args.kind === "mention" ? `${args.by} mentioned you on ${task} in ${args.listName}.`
+      : args.kind === "review" ? `${args.by} finished ${task} in ${args.listName}. It's ready for your look.`
+        : `${args.by} added ${task} for your agents in ${args.listName}. They won't start it until you OK it.`;
+  const html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <p style="font-size:16px">${escapeHtml(line)}</p>
+  <p style="margin:24px 0"><a href="${args.url}" style="display:inline-block;background:#0f172a;color:#fff;padding:10px 20px;border-radius:9px;text-decoration:none;font-weight:600">Open the task</a></p>
+  <p style="font-size:13px;color:#94a3b8">You turned on email for this list. You get at most one of these an hour, and you can turn them off in the list's settings.</p>
+</body></html>`.trim();
+  const text = `${line}\n\nOpen the task: ${args.url}\n\n(You turned on email for this list. At most one an hour; turn it off in the list's settings.)`;
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [args.to], subject, html, text });
+    if (res.error) { console.error("Resend error (lists-nudge):", res.error); return false; }
+    return true;
+  } catch (e) { console.error("Resend send failed (lists-nudge):", e instanceof Error ? e.message : e); return false; }
+}
