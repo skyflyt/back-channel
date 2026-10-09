@@ -162,5 +162,19 @@ test("tools/list: bc_dashboard_link is offered to a full-scope key and left out 
   const names = await list();
   assert.equal(names.includes("bc_dashboard_link"), false);
   assert.ok(names.includes("bc_check_inbox") && names.includes("bc_send_message"), "everything else is still there");
-  assert.equal(names.length, 9);
+  assert.equal(names.length, new Set(names).size, "each tool appears once");
+  assert.ok(names.includes("bc_open_panel") && names.includes("bc_list_agents"));
+});
+
+test("remote MCP serves the interactive panel and peeks without delivering queued agent payloads", async () => {
+  const { POST } = await import("@/app/api/mcp/route");
+  const rpc = async (method: string, params: any = {}) => (await (await POST(new Request("https://back-channel.app/api/mcp", { method: "POST", headers: { authorization: "Bearer good", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }) as never)).json());
+  const resources = await rpc("resources/list");
+  assert.equal(resources.result.resources[0].mimeType, "text/html;profile=mcp-app");
+  const page = await rpc("resources/read", { uri: resources.result.resources[0].uri });
+  assert.match(page.result.contents[0].text, /My agents/);
+  const opened = await rpc("tools/call", { name: "bc_open_panel", arguments: {} });
+  assert.equal(opened.result.structuredContent.local_encryption, false);
+  assert.equal(opened.result._meta.ui.resourceUri, resources.result.resources[0].uri);
+  assert.equal(opened.result.structuredContent.inbox.sessions[0].session_id, "sess-1");
 });

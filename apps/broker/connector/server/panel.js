@@ -15,10 +15,9 @@
  * A host that does not support MCP Apps ignores the `_meta` and gets the
  * tool's text result, which is written to be useful on its own.
  *
- * Where it shows up (as of 2026-10): Codex in the ChatGPT desktop app, as a
- * sidebar and thread panel the user opens (the `openai/ui` entrypoints below);
- * Claude Desktop chat, as an inline card when the model calls the tool. The
- * Claude Code and Codex terminals are text only.
+ * Host UI support varies. Compatible MCP Apps hosts can render an inline
+ * card. A tool's metadata is not proof a specific host will display it;
+ * terminals and hosts without UI support get text.
  *
  * Everything here is static and local. lib.js decides when to answer with it.
  */
@@ -28,7 +27,7 @@ import { readFileSync } from "node:fs";
 // Hosts cache a UI by its URI, so the URI carries a version. Bump it whenever
 // panel.html changes in a way an already-open host must not keep using; old
 // URIs stay readable (isPanelUri) and simply get the current document.
-export const PANEL_VERSION = "1";
+export const PANEL_VERSION = "2";
 export const PANEL_URI = `ui://back-channel/panel-${PANEL_VERSION}.html`;
 export const PANEL_MIME = "text/html;profile=mcp-app";
 export const UI_EXTENSION = "io.modelcontextprotocol/ui";
@@ -61,7 +60,7 @@ export const PANEL_TOOL = {
 
 // The broker tools the panel calls on the user's behalf. OpenAI hosts only let
 // a view call a tool that says so; MCP Apps hosts allow it by default.
-const PANEL_CALLS = new Set(["bc_read_messages", "bc_send_message", "bc_dashboard_link", "bc_connect"]);
+const PANEL_CALLS = new Set(["bc_read_messages", "bc_send_message", "bc_dashboard_link", "bc_connect", "bc_list_agents", "bc_read_agent_messages", "bc_send_agent_message", "bc_request_session", "bc_claim_invite"]);
 /** Mark the tools the panel calls as callable from a view. Returns a new list; other tools are untouched. */
 export function markPanelCallable(tools) {
   return tools.map((t) => (t && PANEL_CALLS.has(t.name) ? { ...t, _meta: { ...t._meta, "openai/widgetAccessible": true } } : t));

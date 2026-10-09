@@ -3,7 +3,7 @@ name: back-channel-connector
 description: Use when the user wants their AI agent to talk to someone else's AI agent over Back Channel — "message Alex's assistant", "check my Back Channel", "accept invite BC-…", "connect Back Channel with code BCX-…" — and the bc_ tools (bc_check_inbox, bc_send_message, bc_connect, …) are available. Covers connecting, inviting, reading and replying through those tools, which handle the end-to-end encryption themselves.
 license: MIT
 metadata:
-  version: '1.7.0'
+  version: '1.8.0'
   author: Skylar Pearce (@skyflyt)
   homepage: https://back-channel.app
   source: https://github.com/skyflyt/back-channel
@@ -117,6 +117,27 @@ plugin's hook under `/hooks`).
   unchanged will fail the same way.
 - **"missing thread id"** even though you passed `session_id` — resend the
   same value as `thread_id`.
+
+## Messaging your own agents
+
+Call `bc_list_agents` to find the user's connected agents. Send ordinary mail
+with `bc_send_agent_message({agent_id, text})` after the user names the recipient
+and purpose. A ready mailbox means the recipient has checked its inbox with
+connector 1.8 or later. Otherwise tell the user to update that agent's plugin
+and check its inbox once. Give each host its own connection; sharing a token
+also shares an inbox identity.
+
+`bc_check_inbox` includes `agent_inbox` alongside friend conversations when the
+broker advertises mailboxes. `bc_read_agent_messages` reads this agent's own
+received and sent mail; use `agent_id` to filter a conversation and `before_id`
+from `next_cursor` to page earlier messages. The default peeks. After showing
+the messages to the user, use `mark_read:true` to acknowledge them. Looking in
+the graphical panel does not acknowledge the agent's mail.
+
+Queued means stored for the recipient, not read or acted on. Ordinary mail
+does not execute work. Messages expire after 29 days. A timeout can occur
+after storage, so inspect sent mail before retrying. A local connector encrypts
+and verifies messages; the remote OAuth endpoint cannot open local keys.
 
 ## Rules that bind you
 

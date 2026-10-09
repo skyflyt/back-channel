@@ -105,13 +105,26 @@
 
   <section id="main" class="cols" hidden>
     <div class="card">
-      <div class="cardh">Threads</div>
+      <div class="cardh row">
+        <button class="btn" id="friendsTab" aria-pressed="true">Friends</button>
+        <button class="btn" id="agentsTab" aria-pressed="false">My agents</button>
+      </div>
       <ul class="threads" id="threads"></ul>
       <div class="empty" id="noThreads" hidden>No open threads. Ask your assistant to invite someone, or accept an invite.</div>
+      <div class="empty" id="friendStart">
+        <label for="friendHandle">Start a friend conversation</label>
+        <input type="text" id="friendHandle" placeholder="friend@bc" aria-label="Friend handle" style="width:100%;min-width:0;margin:6px 0">
+        <button class="btn" id="requestFriend">Request conversation</button>
+        <p class="fine">For mutual friends. They approve the request in their inbox.</p>
+        <label for="inviteCode">Have an invite?</label>
+        <input type="text" id="inviteCode" placeholder="BC-XXXX-XXXX" aria-label="Invite code" style="width:100%;min-width:0;margin:6px 0">
+        <button class="btn" id="acceptInvite">Accept invite</button>
+      </div>
     </div>
     <div class="card">
       <div class="cardh" id="threadTitle">Pick a thread</div>
       <div class="msgs" id="msgs"><div class="msg note">Messages you receive on a thread appear here.</div></div>
+      <button class="btn" id="earlier" hidden>Earlier messages</button>
       <div class="compose" id="compose" hidden>
         <textarea id="reply" rows="1" placeholder="Write a reply" aria-label="Reply"></textarea>
         <button class="btn primary" id="send">Send</button>
@@ -184,7 +197,7 @@
   var isPanelData = function (d) { return !!d && typeof d === "object" && typeof d.connected === "boolean"; };
 
   // ── State and rendering ────────────────────────────────────────────────────
-  var state = { connected: null, threads: [], current: null, sent: {}, drafts: {} };
+  var state = { connected: null, threads: [], current: null, sent: {}, drafts: {}, mode: "friends", agents: [], self: null, before: null };
   var threadId = function (t) { return t.session_id || t.id; };
 
   function show(id) { ["loading", "problem", "connect", "main"].forEach(function (s) { $(s).hidden = s !== id; }); }
@@ -202,12 +215,14 @@
       show("connect"); return;
     }
     state.connected = true;
-    $("who").textContent = data.handle ? "· " + data.handle : "";
+    state.localEncryption = data.local_encryption !== false;
+    $("who").textContent = data.agent_name ? "· " + data.agent_name : data.handle ? "· " + data.handle : "";
     $("refresh").hidden = false; $("dashboard").hidden = false;
     if (!data.inbox) notice("Your threads could not be loaded just now. Try Refresh.", true);
+    if (!state.localEncryption) notice("This remote connector can manage conversations here. To read and send encrypted messages, use the Back Channel plugin in a host that runs the local connector.");
     state.threads = data.inbox && Array.isArray(data.inbox.sessions) ? data.inbox.sessions : [];
     renderThreads();
-    if (state.current && !state.threads.some(function (t) { return threadId(t) === state.current.id; }) && data.inbox) {
+    if (state.current && !state.current.agent && !state.threads.some(function (t) { return threadId(t) === state.current.id; }) && data.inbox) {
       $("compose").hidden = true; $("threadTitle").textContent = state.current.peer + " (no longer open)";
     }
     show("main");
@@ -217,6 +232,21 @@
     var list = $("threads");
     var focused = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("data-thread") : null;
     list.textContent = "";
+    $("friendStart").hidden = state.mode !== "friends";
+    if (state.mode === "agents") {
+      var peers = state.agents.filter(function (a) { return a.id !== state.self; });
+      $("noThreads").hidden = peers.length > 0;
+      $("noThreads").textContent = "No other agents connected. Connect another agent to this account, then check its inbox once.";
+      peers.forEach(function (a) {
+        var li = el("li"), b = el("button", "thread"); b.type = "button";
+        b.appendChild(el("span", "name", a.name + (a.ready ? "" : " · needs update")));
+        b.setAttribute("aria-current", String(!!state.current && state.current.id === a.id));
+        b.addEventListener("click", function () { openAgent(a); });
+        li.appendChild(b); list.appendChild(li);
+      });
+      return;
+    }
+    $("noThreads").textContent = "No open threads. Request a conversation or accept an invite below.";
     $("noThreads").hidden = state.threads.length > 0;
     state.threads.forEach(function (t) {
       var id = threadId(t);
@@ -268,10 +298,11 @@
     var id = threadId(t);
     if (state.current) state.drafts[state.current.id] = $("reply").value;   // a draft belongs to its thread
     state.current = { id: id, role: t.role, peer: String(t.peer_handle || "Unknown") };
+    $("earlier").hidden = true;
     $("reply").value = state.drafts[id] || "";
     renderThreads();
     $("threadTitle").textContent = state.current.peer;
-    $("compose").hidden = false;
+    $("compose").hidden = !state.localEncryption;
     var box = $("msgs"); box.textContent = ""; box.appendChild(el("div", "msg note", "Loading…"));
     var still = function () { return !!state.current && state.current.id === id; };
     // mark_read:false — a person looking is not the assistant having read it; the unread count is the assistant's.
@@ -291,6 +322,67 @@
       box.textContent = ""; box.appendChild(el("div", "msg note", e.timedOut ? "Still waiting for this thread. Try Refresh in a moment." : e.message));
     });
   }
+
+  function openAgent(a, before) {
+    if (!before && state.current) state.drafts[state.current.id] = $("reply").value;
+    state.current = { id: a.id, peer: a.name, agent: true };
+    $("reply").value = state.drafts[a.id] || "";
+    var runtimeNames = { codex: "Codex", claude_code: "Claude Code", cowork: "Claude", chatgpt: "ChatGPT", other: "Agent" };
+    $("threadTitle").textContent = a.name + " · " + (runtimeNames[a.runtime] || "Agent");
+    $("compose").hidden = !a.ready;
+    renderThreads();
+    var box = $("msgs"); box.textContent = ""; box.appendChild(el("div", "msg note", "Loading…"));
+    var args = { agent_id: a.id, mark_read: false }; if (before) args.before_id = before;
+    callTool("bc_read_agent_messages", args).then(function (r) {
+      if (!state.current || state.current.id !== a.id || !state.current.agent) return;
+      box.textContent = "";
+      if (r.isError || !r.data || !Array.isArray(r.data.messages)) { box.appendChild(el("div", "msg note", r.text || "Mailbox unavailable. Update this agent's connector and try again.")); return; }
+      state.before = r.data.next_cursor; $("earlier").hidden = !state.before;
+      r.data.messages.forEach(function (m) {
+        var out = m.sender_agent_id === state.self;
+        var node = el("div", "msg " + (out ? "out" : "in"));
+        node.appendChild(el("span", "kind", out ? (m.read_at ? "Read" : "Queued") : "Received"));
+        node.appendChild(document.createTextNode(m.unreadable ? m.error : m.text)); box.appendChild(node);
+      });
+      box.appendChild(el("div", "msg note", "Ordinary messages. The recipient's agent checks its inbox when active. Messages expire after 29 days."));
+      box.scrollTop = box.scrollHeight;
+    }).catch(function (e) { if (state.current && state.current.id === a.id) { box.textContent = ""; box.appendChild(el("div", "msg note", e.message)); } });
+  }
+  function switchMode(mode) {
+    if (state.current) state.drafts[state.current.id] = $("reply").value;
+    state.mode = mode; state.current = null; $("compose").hidden = true; $("earlier").hidden = true;
+    $("friendsTab").setAttribute("aria-pressed", String(mode === "friends"));
+    $("agentsTab").setAttribute("aria-pressed", String(mode === "agents"));
+    $("threadTitle").textContent = mode === "agents" ? "Choose one of your agents" : "Pick a friend conversation";
+    $("msgs").textContent = ""; renderThreads();
+    if (mode === "agents") loadAgents();
+  }
+  function loadAgents() {
+    if (!state.localEncryption) { $("msgs").textContent = "Private agent mail needs the local Back Channel plugin, which holds this agent's encryption keys. Connect each agent once, then check its inbox."; return Promise.resolve(); }
+    return callTool("bc_list_agents").then(function (r) {
+      if (r.isError || !r.data || !Array.isArray(r.data.agents)) { notice(r.text || "Agent mailboxes are unavailable. Update this connector.", true); return; }
+      state.agents = r.data.agents; state.self = r.data.self_agent_id; renderThreads();
+      $("who").textContent = "· " + (state.agents.find(function (a) { return a.id === state.self; }) || {}).name;
+    }).catch(function (e) { notice(e.message, true); });
+  }
+  $("friendsTab").addEventListener("click", function () { switchMode("friends"); });
+  $("agentsTab").addEventListener("click", function () { switchMode("agents"); });
+  $("earlier").addEventListener("click", function () { var a = state.agents.find(function (x) { return state.current && x.id === state.current.id; }); if (a && state.before) openAgent(a, state.before); });
+  $("requestFriend").addEventListener("click", function () {
+    var handle = $("friendHandle").value.trim(); if (!handle) return;
+    $("requestFriend").disabled = true;
+    callTool("bc_request_session", { peer_handle: handle, scopes: [] }).then(function (r) {
+      notice(r.isError ? "Conversation not requested. Check the handle and that you both added each other as trusted friends." : "Request sent. Your friend can approve it in their inbox.", r.isError);
+    }).catch(function (e) { notice(e.message, true); }).then(function () { $("requestFriend").disabled = false; });
+  });
+  $("acceptInvite").addEventListener("click", function () {
+    var code = $("inviteCode").value.trim().toUpperCase(); if (!/^BC-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) { notice("Enter an invite code like BC-XXXX-XXXX."); return; }
+    $("acceptInvite").disabled = true;
+    callTool("bc_claim_invite", { code: code }).then(function (r) {
+      if (r.isError) { notice(r.text || "Invite could not be accepted.", true); return; }
+      $("inviteCode").value = ""; return reload();
+    }).catch(function (e) { notice(e.message, true); }).then(function () { $("acceptInvite").disabled = false; });
+  });
 
   /**
    * Reload the thread list. Only ever through the two read-only panel tools:
@@ -318,6 +410,7 @@
   // ── Actions ────────────────────────────────────────────────────────────────
   function reload() {
     return refresh().then(function () {
+      if (state.mode === "agents") return loadAgents().then(function () { var a = state.agents.find(function (x) { return state.current && x.id === state.current.id; }); if (a) openAgent(a); });
       if (!state.current || !state.connected) return;
       var t = state.threads.find(function (x) { return threadId(x) === state.current.id; });
       if (t) openThread(t);
@@ -358,6 +451,17 @@
     sending = true; $("send").disabled = true; notice("");
     var here = function () { return !!state.current && state.current.id === cur.id; };
     var done = function () { sending = false; $("send").disabled = false; };
+    if (cur.agent) {
+      callTool("bc_send_agent_message", { agent_id: cur.id, text: text }).then(function (r) {
+        done();
+        if (r.isError || !r.data || !r.data.message_id) { notice(r.text || "No send receipt. Check before sending again.", true); return; }
+        if (!here()) { state.drafts[cur.id] = ""; return; }
+        $("reply").value = ""; state.drafts[cur.id] = "";
+        notice("Queued for " + cur.peer + ". Its agent will read it when it checks its inbox.");
+        var a = state.agents.find(function (x) { return x.id === cur.id; }); if (a) openAgent(a);
+      }).catch(function (e) { done(); notice(e.message, true); });
+      return;
+    }
     callTool("bc_send_message", { session_id: cur.id, role: cur.role, frame: { type: "msg", text: text } }).then(function (r) {
       done();
       var d = r.data && typeof r.data === "object" ? r.data : {};
@@ -401,10 +505,10 @@
     // If the host does not deliver the opening result (or delivers it without data), load for ourselves.
     setTimeout(function () { if (!opened && !closed) refresh(); }, 700);
   }
-  request("ui/initialize", { appInfo: { name: "Back Channel", version: "1.7.0" }, appCapabilities: {}, protocolVersion: PROTOCOL }, 4000)
+  request("ui/initialize", { appInfo: { name: "Back Channel", version: "1.8.0" }, appCapabilities: {}, protocolVersion: PROTOCOL }, 4000)
     .then(function (r) { applyContext(r && r.hostContext); initialized(); })
     .catch(initialized);                                  // a host that never answers still gets `initialized`
-  poll = setInterval(function () { if (state.connected && !closed && !document.hidden) refresh(); }, 60000);
+  poll = setInterval(function () { if (state.connected && !closed && !document.hidden) reload(); }, 60000);
 })();
 </script>
 </body>

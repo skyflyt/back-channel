@@ -35,6 +35,7 @@ COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/server.mjs ./server.mjs
 COPY --from=build /app/src ./src
+COPY --from=build /app/connector ./connector
 COPY --from=build /app/next.config.mjs ./next.config.mjs
 
 # The skill content (served by /skill route at runtime)

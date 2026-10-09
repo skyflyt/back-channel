@@ -16,6 +16,10 @@ import {
 import { TOOLS, getTool, normalizeToolArgs, validateToolArgs } from "@/lib/mcp/tools.mjs";
 import { wwwAuthenticate } from "@/lib/oauth.mjs";
 import { hasFullScope } from "@/lib/agent-scope";
+import { agentMailbox } from "@/lib/agent-mailbox";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { answerResourceRequest, declarePanel, panelThreads, panelToolResult, panelDataResult, markPanelCallable, inboxAsText } from "../../../../connector/server/panel.js";
 
 // The wrapped route handlers — tools dispatch to these IN-PROCESS (no HTTP
 // round-trip, no duplicated logic). Each keeps enforcing its own participant/
@@ -271,6 +275,10 @@ async function dispatchTool(
       return fromResponse(
         await viewTokenSelfPOST(synth(req, "/api/account/view-token-self", "POST", args.purpose ? { purpose: args.purpose } : {})),
       );
+    case "bc_mailbox_enroll": return fromResponse(await agentMailbox(req, "enroll", args));
+    case "bc_list_agents": return fromResponse(await agentMailbox(req, "agents", args));
+    case "bc_read_agent_messages": return fromResponse(await agentMailbox(req, "read", args));
+    case "bc_send_agent_message": return fromResponse(await agentMailbox(req, "send", args));
     default:
       throw new Error(`unhandled tool: ${name}`); // unreachable — getTool() gates
   }
@@ -315,9 +323,21 @@ export async function POST(req: NextRequest) {
   // Notifications (no id) get 202 + empty body — including notifications/initialized.
   if (isNotification(msg)) return new NextResponse(null, { status: 202 });
 
+  const resource = answerResourceRequest(msg, { readHtml: () => readFileSync(join(process.cwd(), "connector/server/panel.html"), "utf8") });
+  if (resource) return json(resource);
+
+  if (msg.method === "tools/call" && ["bc_open_panel", "bc_panel_inbox"].includes(String(msg.params?.name))) {
+    const response = await sessionsActiveGET(synth(req, "/api/sessions/active?frames=0", "GET"));
+    const body = response.ok ? await response.json() : null;
+    const data = { connected: true, handle: ctx.account.handle, local_encryption: false, inbox: body ? { sessions: panelThreads(body.sessions) } : null };
+    return json(msg.params?.name === "bc_open_panel" ? panelToolResult(msg.id, { data, text: body ? inboxAsText(data.inbox) : "Inbox unavailable. Try again shortly." }) : panelDataResult(msg.id, data));
+  }
+
   switch (msg.method) {
-    case "initialize":
-      return json(rpcResult(msg.id, initializeResult(msg.params?.protocolVersion)));
+    case "initialize": {
+      const result = initializeResult(msg.params?.protocolVersion); declarePanel(result);
+      return json(rpcResult(msg.id, result));
+    }
     case "ping":
       // ping is a REQUEST — it needs an empty result, not a 202 (clients poll it for liveness).
       return json(rpcResult(msg.id, {}));
@@ -325,7 +345,7 @@ export async function POST(req: NextRequest) {
       // A connector key is refused by the dashboard-link route itself
       // (view-token-self); leaving the tool out of its catalog just keeps the
       // model from offering something that will not work.
-      return json(rpcResult(msg.id, { tools: hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link") }));
+      return json(rpcResult(msg.id, { tools: markPanelCallable(hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link")) }));
     case "tools/call": {
       const name = msg.params?.name;
       const tool = typeof name === "string" ? getTool(name) : null;

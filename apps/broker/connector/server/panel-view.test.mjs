@@ -285,7 +285,7 @@ test("keyboard focus survives the list being redrawn, and teardown stops the pol
   assert.equal(p.intervals.length, 1);
   p.intervals[0].fn();
   await settle();
-  assert.equal(p.names().at(-1), "bc_panel_inbox", "the poll refreshes the list");
+  assert.deepEqual(p.names().slice(-2), ["bc_panel_inbox", "bc_read_messages"], "the poll refreshes the list and peeks at the selected conversation");
   const before = p.calls.length;
   p.deliver({ id: 99, method: "ui/resource-teardown", params: {} });
   await settle();
@@ -309,4 +309,35 @@ test("only the host may speak to the panel", async () => {
   assert.equal(p.posted.length, posted, "and it got no answer");
   p.deliver({ id: 5, method: "ping" });
   assert.deepEqual(p.posted.at(-1), { jsonrpc: "2.0", id: 5, result: {} }, "the host does");
+});
+
+test("my agents: pick a named recipient, preserve drafts, send once and show queued receipt", async () => {
+  const agents = { self_agent_id: "self", agents: [{ id: "self", name: "Laptop", ready: true }, { id: "home", name: "Home", runtime: "codex", ready: true }, { id: "old", name: "Old", ready: false }] };
+  let release;
+  const p = mount({ opening: withData(INBOX), tools: (name) => {
+    if (name === "bc_list_agents") return text(agents);
+    if (name === "bc_read_agent_messages") return text({ messages: [{ sender_agent_id: "home", text: "<script>untrusted text</script>" }] });
+    if (name === "bc_send_agent_message") return new Promise(r => { release = r; });
+    return withData(INBOX);
+  } });
+  await settle(); p.$("agentsTab").click(); await settle();
+  assert.equal(p.$("threads").children.length, 2);
+  p.threadButton(0).click(); await settle();
+  assert.ok(p.$("msgs").textContent.includes("<script>untrusted text</script>"));
+  p.$("reply").value = "remember this draft"; p.threadButton(1).click(); await settle();
+  assert.equal(p.$("compose").hidden, true, "unready mailbox cannot compose");
+  p.threadButton(0).click(); await settle(); assert.equal(p.$("reply").value, "remember this draft");
+  p.$("send").click(); p.$("send").click(); await settle();
+  assert.equal(p.calls.filter(c => c.name === "bc_send_agent_message").length, 1);
+  assert.deepEqual(p.calls.find(c => c.name === "bc_send_agent_message").arguments, { agent_id: "home", text: "remember this draft" });
+  release(text({ message_id: "mail-1", status: "queued" })); await settle();
+  assert.equal(p.$("reply").value, ""); assert.match(p.$("notice").textContent, /Queued for Home/);
+  assert.ok(p.calls.filter(c => c.name === "bc_read_agent_messages").every(c => c.arguments.mark_read === false));
+});
+
+test("friend request asks for ordinary conversation with no extra scopes", async () => {
+  const p = mount({ opening: withData(INBOX), tools: () => text({ status: "pending" }) });
+  await settle(); p.$("friendHandle").value = "friend@bc"; p.$("requestFriend").click(); await settle();
+  assert.deepEqual(p.calls[0], { name: "bc_request_session", arguments: { peer_handle: "friend@bc", scopes: [] } });
+  assert.match(p.$("notice").textContent, /approve/);
 });

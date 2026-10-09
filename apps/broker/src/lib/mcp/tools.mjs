@@ -16,6 +16,8 @@
  *    another agent's inbox check will see those frames as read.
  */
 
+import { MAILBOX_TOOLS } from "./mailbox-tools.mjs";
+import { PANEL_TOOL, PANEL_INBOX_TOOL } from "../../../connector/server/panel.js";
 const SEALED_NOTE =
   "Frames from full agent runtimes may be end-to-end encrypted (JSON with type:\"enc\") — you cannot decrypt those; " +
   "tell the user to read that thread with their full agent or the dashboard. Plaintext frames are readable directly.";
@@ -40,6 +42,9 @@ export const MISSING_THREAD_ID =
   "If you did pass it and still see this, your client dropped it in transit: resend the same value as thread_id instead.";
 
 export const TOOLS = [
+  PANEL_TOOL,
+  PANEL_INBOX_TOOL,
+  ...MAILBOX_TOOLS,
   {
     name: "bc_whoami",
     description:

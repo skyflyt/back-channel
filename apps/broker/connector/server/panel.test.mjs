@@ -113,7 +113,7 @@ test("bc_open_panel, connected: thread data for the panel, plain text for a host
   assert.equal(r.isError, false);
   assert.equal(r._meta.ui.resourceUri, PANEL_URI);
   assert.deepEqual(r.structuredContent, {
-    connected: true, handle: "me@bc", agent_name: "Claude",
+    connected: true, local_encryption: true, handle: "me@bc", agent_name: "Claude",
     inbox: { sessions: [{ session_id: "s1", role: "host", peer_handle: "peer@bc", unread_count: 2 }], agent_payloads_pending: 1 },
   });
   assert.doesNotMatch(JSON.stringify(r), /psst|mirror_pub/, "the peer's invite note and key material stay out of what a host may hand the model");

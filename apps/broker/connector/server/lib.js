@@ -37,6 +37,7 @@ import { homedir } from "node:os";
 import { createKeyStore } from "./keystore.js";
 import { prepareOutgoing, processIncoming, afterSessionEstablished, canonicalizeThreadCall } from "./e2e.js";
 import { fetchPending, describePending } from "./inbox.js";
+import { createMailbox, SEND_AGENT_TOOL } from "./mailbox.js";
 import { PANEL_TOOL, PANEL_INBOX_TOOL, answerResourceRequest, clientRendersUi, declarePanel, panelToolResult, panelDataResult, panelThreads, markPanelCallable, inboxAsText } from "./panel.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
@@ -201,6 +202,7 @@ export function createBridge({
   let exchangeError = null; // set once if code redemption fails; surfaced to every request until fixed
   let rejectedFallback = ""; // a fallback key the server already refused — don't pick it up again
   let uiClient = false; // the host said in `initialize` that it renders MCP Apps (panel.js)
+  let mailboxAvailable = false; // advertise only after the broker lists mailbox tools
   /** The bridge's own tools, added to whatever catalog is being returned. */
   const ownTools = () => (uiClient ? [PANEL_TOOL, PANEL_INBOX_TOOL] : [PANEL_TOOL]);
 
@@ -332,6 +334,7 @@ export function createBridge({
       return null;
     }
   }
+  const mailbox = createMailbox({ call: callBrokerTool, keystore });
 
   /**
    * The thread list for the panel, read with no side effects: the REST listing
@@ -376,7 +379,7 @@ export function createBridge({
         : { text: REJECTED_CONFIGURED,
             data: { connected: false, can_connect: false, problem: "Back Channel rejected the key in this extension's settings (revoked or mistyped). Create a new one at back-channel.app, under Account, Connect a new agent, and update the settings." } };
     }
-    const data = { connected: true, handle: who?.handle ?? null, agent_name: who?.agent_name ?? null, inbox: list.inbox };
+    const data = { connected: true, local_encryption: true, handle: who?.handle ?? null, agent_name: who?.agent_name ?? null, inbox: list.inbox };
     return { data, text: data.inbox ? inboxAsText(data.inbox) : "Back Channel is connected, but the inbox could not be loaded just now." };
   }
 
@@ -589,6 +592,15 @@ export function createBridge({
       return;
     }
 
+    if (msg?.method === "tools/call" && ["bc_list_agents", "bc_read_agent_messages", "bc_send_agent_message"].includes(msg.params?.name)) {
+      const name = msg.params.name, args = msg.params.arguments ?? {};
+      try {
+        const data = await (name === "bc_list_agents" ? mailbox.list() : name === "bc_read_agent_messages" ? mailbox.read(args) : mailbox.send(args));
+        writeLine(panelDataResult(id, data));
+      } catch (e) { writeLine({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: e.message }], isError: true } }); }
+      return;
+    }
+
     let outgoingLine = line;
 
     // Per-thread tools: settle the thread id BEFORE anything else touches the
@@ -617,8 +629,14 @@ export function createBridge({
     // itself failing), we still fall through to the normal instant forward --
     // that alone decides the actual response shape/content.
     let waitedSeconds = null;
+    let agentInbox = null;
     if (msg?.method === "tools/call" && msg.params?.name === "bc_check_inbox") {
       const rawWait = msg.params?.arguments?.wait_seconds;
+      if (rawWait !== undefined && (!Number.isInteger(Number(rawWait)) || Number(rawWait) < 0 || Number(rawWait) > MAX_CHECK_INBOX_WAIT_S)) {
+        if (!isNotification) writeLine(rpcError(id, -32602, `wait_seconds must be an integer between 0 and ${MAX_CHECK_INBOX_WAIT_S}`));
+        return;
+      }
+      if (mailboxAvailable) { try { agentInbox = await mailbox.read({ mark_read: false, unread_only: true }); } catch { /* friend inbox still works */ } }
       if (rawWait !== undefined) {
         const waitSeconds = Number(rawWait);
         if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > MAX_CHECK_INBOX_WAIT_S) {
@@ -628,7 +646,7 @@ export function createBridge({
         const { wait_seconds: _drop, ...restArgs } = msg.params.arguments;
         const strippedMsg = { ...msg, params: { ...msg.params, arguments: restArgs } };
         outgoingLine = JSON.stringify(strippedMsg);
-        if (waitSeconds > 0) {
+        if (waitSeconds > 0 && !agentInbox?.messages?.some(m => m.target_agent_id === agentInbox.self_agent_id && !m.read_at)) {
           const doorbell = await checkInboxDoorbell(waitSeconds);
           if (doorbell.error) {
             log(`doorbell wait failed, falling back to an un-waited check: ${doorbell.error}`);
@@ -703,6 +721,13 @@ export function createBridge({
     }
 
     const name = msg.method === "tools/call" ? msg.params?.name : null;
+    if (mailboxAvailable && name === "bc_check_inbox" && respObj?.result?.content?.[0]?.type === "text" && !respObj.result.isError) {
+      try {
+        const inner = JSON.parse(respObj.result.content[0].text);
+        inner.agent_inbox = agentInbox ?? { available: false, note: "Agent mailboxes could not be loaded. Friend inbox results are still available." };
+        respObj.result.content[0].text = JSON.stringify(inner);
+      } catch { /* preserve original result */ }
+    }
     if (name === "bc_read_messages") {
       try {
         respObj = await processIncoming(msg, respObj, e2eCtx);
@@ -725,7 +750,10 @@ export function createBridge({
     }
     if (msg.method === "initialize") { declareChannel(respObj.result); declarePanel(respObj.result); }
     // The panel tool is ours, so it is added to the broker's catalog here.
-    if (msg.method === "tools/list" && Array.isArray(respObj?.result?.tools)) respObj.result.tools = [...markPanelCallable(respObj.result.tools), ...ownTools()];
+    if (msg.method === "tools/list" && Array.isArray(respObj?.result?.tools)) {
+      mailboxAvailable = respObj.result.tools.some(t => t.name === "bc_list_agents");
+      respObj.result.tools = [...markPanelCallable(respObj.result.tools.filter(t => !["bc_mailbox_enroll", PANEL_TOOL.name, PANEL_INBOX_TOOL.name].includes(t.name)).map(t => t.name === SEND_AGENT_TOOL.name ? SEND_AGENT_TOOL : t)), ...ownTools()];
+    }
     writeLine(respObj);
     if (msg.method === "initialize") startChannelWatcher();
 

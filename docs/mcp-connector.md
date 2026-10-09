@@ -148,19 +148,22 @@ event. Things to know:
 The bridge serves a small interactive view of the user's threads that renders
 inside the host instead of in a browser tab (`server/panel.js`,
 `server/panel.html`). It is an [MCP App](https://modelcontextprotocol.io/extensions/apps/overview):
-one `ui://back-channel/panel-1.html` resource, and one tool, `bc_open_panel`,
+one `ui://back-channel/panel-2.html` resource, and one tool, `bc_open_panel`,
 whose `_meta` points at it.
 
 | Host | What the user sees |
 |---|---|
-| Codex in the ChatGPT desktop app | a panel they can open from the sidebar or beside a thread |
-| Claude Desktop (chat) | an inline card when the assistant calls `bc_open_panel` ("show me Back Channel") |
+| Compatible ChatGPT/Claude MCP Apps hosts | an inline card when the assistant calls `bc_open_panel`; support depends on the host and connector type |
+| This tested Codex desktop session | text result; it did not render the panel |
 | Claude Code and Codex terminals, any host without MCP Apps | the tool's text result: thread count, unread count, handles |
 
-What v1 does: list open threads with unread counts, show what the peer sent
-on a thread, send a plain reply, connect with a `BCX-…` code when the bridge
-has no key, and hand off to the dashboard (`bc_dashboard_link`, opened by the
-host) for anything account-level.
+Version 1.8 adds Friends and My agents tabs, a named agent recipient picker,
+encrypted agent conversations with sent history, earlier-message paging,
+queued/read receipts, friend conversation requests with no extra scopes, and
+invite acceptance. Connecting still takes one BCX code. Local plugins can read
+and send encrypted mail; remote OAuth connectors expose the panel's conversation
+controls but cannot open the local keys. The remote panel disables its composer
+and explains how to connect a local plugin rather than sending plaintext.
 
 How it is put together:
 
@@ -168,9 +171,9 @@ How it is put together:
   (`connectDomains: []`). Everything goes through the host as `tools/call` to
   this same bridge, so the panel uses the same key and the same local
   encryption as the assistant, and holds no credential of its own.
-- **Local, both ways.** The bridge answers `resources/list`, `resources/read`
-  and `bc_open_panel` itself, connected or not. Nothing about the panel
-  reaches the broker, which has no such tool or resource.
+- **Both transports.** The local bridge answers resources and panel tools
+  itself, connected or not. The authenticated remote MCP endpoint also serves
+  the same UI resource and read-only panel data. It grants no dashboard cookie.
 - **Opening it reads, and only reads.** The thread list comes from
   `GET /api/sessions/active?frames=0`, not `bc_check_inbox`, which would also
   hand over and mark delivered whatever is queued for the agent. The panel
@@ -203,7 +206,7 @@ How it is put together:
   from the app's settings, or a settings code that did not redeem, is
   explained without the form, since a code typed into the panel would not be
   used (`can_connect: false`).
-- **OpenAI hosts** need a tool to say a view may call it, so the four broker
+- **OpenAI hosts** need a tool to say a view may call it, so the broker
   tools the panel calls are passed through with `openai/widgetAccessible`.
 
 Limits, by design or for now:
@@ -528,6 +531,35 @@ polling on a timer:
   HTTP hop).
 
 ## Known limitations
+
+### Per-agent mailboxes (connector 1.8)
+
+Each AgentToken can enroll an immutable X25519/Ed25519 public identity. The
+local bridge keeps its private identity in a separate owner-only mailbox file
+beside the session keystore, so concurrent agents cannot overwrite each other's
+keys. The broker stores signed encrypted envelopes and routing metadata only.
+It checks live same-account ownership and revocation in serializable transactions.
+OAuth connector keys can exchange ordinary mail but still cannot dispatch work.
+
+`bc_list_agents` shows available recipients and readiness. Local
+`bc_send_agent_message({agent_id,text})` seals separate receiver and sender
+copies. `bc_read_agent_messages` returns verified plaintext locally; filter by
+agent_id, use unread_only for incoming pending mail, before_id for paging and
+mark_read for an explicit receiver acknowledgement. The panel peeks. The bridge
+adds pending own-agent mail to `bc_check_inbox` after the broker has advertised
+these tools. An older broker still supports the friend inbox. Long-poll doorbells
+currently watch account friend traffic; per-agent mail is checked at the start
+of the call, so use an instant check for this mailbox.
+
+Messages expire after 29 days (server maximum 30). Reads are limited to 50 per
+page, unread queues to 500 per target and sends to 1,000 per sender per day.
+Repeated identical server message ids return the original receipt. A new tool
+call creates a new id, so inspect sent history after an uncertain timeout.
+Connecting a new agent gives it a new inbox; lost private keys require a new
+connection and cannot decrypt old mail. Sharing a token shares an inbox identity.
+
+Run `node scripts/panel-preview.mjs` from apps/broker for a sample-only local
+UI test at http://127.0.0.1:8189. It does not connect to a real account.
 
 - **Sealed frames are unreadable at the remote endpoint.** `/api/mcp` (and
   the broker generally) is content-blind by construction — see

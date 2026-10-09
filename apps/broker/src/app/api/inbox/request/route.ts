@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
 
   let body: { peer_handle?: string; scopes?: string[]; message?: string };
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid_json" }, { status: 400 }); }
-  if (!body.peer_handle || !Array.isArray(body.scopes) || body.scopes.length === 0) {
+  if (!body.peer_handle || !Array.isArray(body.scopes)) {
     return NextResponse.json({ error: "peer_handle_and_scopes_required" }, { status: 400 });
   }
 

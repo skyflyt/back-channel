@@ -168,5 +168,21 @@ export function createKeyStore({
     }
   }
 
-  return { load, save };
+  function mailboxIdentity(agentId, generate) {
+    if (!/^[0-9a-f-]{36}$/i.test(agentId)) throw Error("Invalid mailbox identity");
+    // Separate immutable files prevent two different connector processes from
+    // overwriting each other's long-lived mailbox keys in the session snapshot.
+    const target = `${path}.mailbox-${agentId}.json`;
+    fs.mkdirSync(join(target, ".."), { recursive: true, mode: 0o700 });
+    if (!fs.existsSync(target)) {
+      const candidate = generate();
+      try { fs.writeFileSync(target, JSON.stringify(candidate), { encoding: "utf8", mode: 0o600, flag: "wx" }); }
+      catch (e) { if (e?.code !== "EEXIST") throw e; }
+    }
+    if (isWindows) hardenWindowsAcl(target, { execFileSyncImpl, log });
+    const value = JSON.parse(fs.readFileSync(target, "utf8"));
+    if (!value.encryptionPrivateKey || !value.signingPrivateKey) throw Error("Mailbox key file is incomplete; reconnect as a new agent.");
+    return value;
+  }
+  return { load, save, mailboxIdentity };
 }
