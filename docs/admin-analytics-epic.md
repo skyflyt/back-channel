@@ -77,6 +77,7 @@ The broker MUST NOT collect, derive, or expose any of:
 - **Any plaintext that's supposed to be encrypted** — if a plaintext content frame is seen (Phase A telemetry), count its *type* only, never its body.
 - **IP addresses tied to user identity** — aggregate IP stats (e.g. unique-IP counts, rate-limit hotspots) are fine; **per-account IP history is NOT**. Don't join IPs to handles in any stored metric or admin view.
 - **Email subjects / bodies** — only send/delivery *counts + status* from the provider webhook, never content.
+- **List and task content** (added 2026-10-09 with Lists, [`lists.md`](lists.md)): list names, task titles, notes, progress, comments, summaries and activity text are stored readable on purpose, which makes this line matter more, not less. Analytics may count lists and tasks (and group them by status); they never select, group by or display any of that text. `route-tests/admin.routetest.mts` checks this.
 
 These are written into the admin UI footer and the public privacy statement (§5).
 

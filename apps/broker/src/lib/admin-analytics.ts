@@ -13,7 +13,8 @@
  *
  * Every query is an aggregate (count / groupBy / _max) or bounded by an id list
  * of at most one page. Nothing selects a key hash, credential, cookie, connector
- * key, message, payload or artifact.
+ * key, message, payload, artifact, or list or task text (lists are stored
+ * readable, so they are on the NEVER-track list: docs/admin-analytics-epic.md §2).
  */
 import { prisma } from "@/lib/db";
 
