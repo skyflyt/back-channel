@@ -64,8 +64,9 @@ async function resendDelivery7d(): Promise<unknown> {
  * dashboard session, ADMIN_EMAILS, verified email; bearer keys refused); 401/403
  * with nothing but {error} otherwise. METADATA ONLY by construction: counts,
  * aggregates and timestamps. NEVER message content (the broker holds no session
- * keys; sealed blobs are unreadable here and never returned), never key hashes,
- * credentials, cookies or connector keys, never peer handles in pairs.
+ * keys; sealed blobs are unreadable here and never returned), never list or task
+ * text (stored readable, so never read here: docs/admin-analytics-epic.md §2),
+ * never key hashes, credentials, cookies or connector keys, never peer handles in pairs.
  * "Active" comes only from timestamps the broker already keeps (see
  * src/lib/admin-analytics.ts); nothing here adds tracking.
  */
@@ -258,7 +259,7 @@ export async function GET(req: NextRequest) {
       email_delivery: emailDelivery, // pulled from Resend's /emails list, tallied over 7d
     },
     recent: { signups: recentSignupRows, sessions: recentSessionRows },
-    privacy_note: "Owner-only. Metadata only: counts, timestamps, handles and emails. Message content is end-to-end encrypted and unreadable here. No key hashes, credentials, cookies, connector keys, payloads or artifacts are returned, and peer pairs are never listed.",
+    privacy_note: "Owner-only. Metadata only: counts, timestamps, handles and emails. Message content is end-to-end encrypted and unreadable here. No key hashes, credentials, cookies, connector keys, payloads, artifacts or list content are returned, and peer pairs are never listed.",
   };
   analyticsCache.at = Date.now(); analyticsCache.payload = payload;
   return adminJson(payload);

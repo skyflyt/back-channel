@@ -289,6 +289,23 @@ test("taskView: stale person claims, review and send-back windows", () => {
   assert.equal(taskView(review, { actor: person(), names, list, mayAct: OK, now: NOW }).needs_review_by.handle, "alex@bc");
 });
 
+test("taskView with lines: the latest progress and what a blocked task is waiting on, no extra requests", () => {
+  const list = { id: "l1", name: "Work", shared: false };
+  const held = task({ status: "blocked", ...claimPatch(task(), agent(), NOW), status: "blocked" });
+  const lines = {
+    progress: { body: "Renewed in portal", authorAccountId: ME, authorAgentId: AGENT, createdAt: NOW },
+    blocked: { body: "marked this blocked: waiting on DNS", eventType: "blocked" },
+  };
+  const v = taskView(held, { actor: person(), names, list, mayAct: OK, now: NOW, lines });
+  assert.equal(v.last_progress.text, "Renewed in portal");
+  assert.equal(v.last_progress.by.agent, "Claude Code");
+  assert.equal(v.blocked_reason, "waiting on DNS");
+  const quiet = taskView(task({ status: "in_progress", claimAccountId: ME, claimedAt: NOW }), { actor: person(), names, list, mayAct: OK, now: NOW, lines: {} });
+  assert.equal(quiet.last_progress, null);
+  assert.equal("blocked_reason" in quiet, false, "only blocked tasks carry a reason");
+  assert.equal("last_progress" in taskView(task(), { actor: person(), names, list, mayAct: OK, now: NOW }), false, "absent unless asked for");
+});
+
 test("entryView: who said it and when", () => {
   const e = entryView({ id: "e1", kind: "progress", authorAccountId: ME, authorAgentId: AGENT, body: "Checked expiry", eventType: null, createdAt: NOW }, { actor: person(), names });
   assert.deepEqual(e, { id: "e1", kind: "progress", by: who(names, ME, AGENT, person()), text: "Checked expiry", at: NOW.toISOString() });

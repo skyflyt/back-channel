@@ -8,6 +8,7 @@
  * reading view for Inbox threads, and a ⌘K command palette. Tabs:
  *   Overview  — greeting, metrics, approvals, conversations, agent fleet
  *   Inbox     — thread list + reading pane (turn state, in-browser decryption)
+ *   Lists     — task lists worked with your agents (./lists/*); My plate card on Overview
  *   Friends   — people cards + per-friend page (?friend=)
  *   Toolkit   — saved tools, shared-with-you, discoverable in circle
  *   Agents    — registered agents + connect-a-new-agent flows (MCP primary)
@@ -25,6 +26,9 @@ import { ArtifactEditor, ArtifactInspector, type EditorArtifact, LINK_HUMAN_WARN
 import { LINK_HUMAN_WARNING_LEAD, LINK_HUMAN_WARNING_REST } from "@/lib/link-warnings";
 import { Composer, type ComposerPrefill } from "./composer";
 import { FriendPage } from "./friend-page";
+import { ListsPane } from "./lists/lists-pane";
+import { PlateCard } from "./lists/plate-card";
+import { openListsAt } from "./lists/api";
 import { AppShell, type ShellTab } from "@/components/ui/shell";
 import { type PaletteItem } from "@/components/ui/command-palette";
 import { Chip, EmptyState, HealthDot, MetricCard, PersonAvatar, SkeletonRows, agoShort, shortHandle, initialsOf } from "@/components/ui/primitives";
@@ -78,10 +82,11 @@ function threadTurn(x: { unread_count?: number; peer_handle: string; peer_ever_c
     next: x.peer_present ? `${peer}'s agent is online — a reply should come through shortly.` : "Their agent will surface your message on its next inbox check (~10 min)." };
 }
 
-type NavKey = "overview" | "agents" | "friends" | "skills" | "messages" | "settings";
+type NavKey = "overview" | "agents" | "friends" | "skills" | "messages" | "settings" | "lists";
 const NAV: { key: NavKey; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "messages", label: "Inbox" },
+  { key: "lists", label: "Lists" },
   { key: "friends", label: "Friends" },
   { key: "skills", label: "Toolkit" },
   { key: "agents", label: "Agents" },
@@ -653,6 +658,7 @@ export default function AccountPage() {
     items.push({ id: "act-compose", group: "Actions", label: "New message…", icon: "✎", onSelect: () => { setNav("messages"); setInboxSel({ kind: "compose" }); } });
     items.push({ id: "act-invite", group: "Actions", label: "Invite a friend…", icon: "＋", onSelect: () => { setNav("friends"); setFriendView(null); setFiErr(""); setFiOpen(true); } });
     items.push({ id: "act-connect", group: "Actions", label: "Connect a new agent…", icon: "⚡", onSelect: () => { setNav("agents"); setAgentName(""); setMcpClient("claude_desktop"); setAgentFormOpen(true); } });
+    items.push({ id: "act-newlist", group: "Actions", label: "New list…", icon: "☑", onSelect: () => { openListsAt({ newList: true }); setNav("lists"); setFriendView(null); } });
     for (const t of vActive) items.push({ id: `t-${t.session_id}`, group: "Threads", label: shortHandle(t.peer_handle), meta: t.goal ?? undefined, icon: "💬", onSelect: () => { setNav("messages"); setInboxSel({ kind: "thread", id: t.session_id }); } });
     for (const f of vTrust) items.push({ id: `f-${f.handle}`, group: "Friends", label: shortHandle(f.handle), meta: f.mutual ? "mutual friend" : "invite pending", icon: "☺", onSelect: () => openFriend(f.handle) });
     for (const sk of vSkills) items.push({ id: `s-${sk.id}`, group: "Toolkit", label: sk.name, meta: sk.description ?? undefined, icon: "⚒", onSelect: () => { setNav("skills"); setFriendView(null); } });
@@ -832,6 +838,7 @@ export default function AccountPage() {
               </div>
             ))}
           </div>
+          <PlateCard demoMode={demoMode} onOpen={() => setNav("lists")} />
         </div>
         <div className="ds-col">
           <div className="ds-card">
@@ -1646,6 +1653,7 @@ export default function AccountPage() {
       <div className="ds-wrap">
         {nav === "overview" && overview}
         {nav === "messages" && inboxPane}
+        {nav === "lists" && <ListsPane demoMode={demoMode} />}
         {nav === "friends" && friendsPane}
         {nav === "skills" && toolkitPane}
         {nav === "agents" && agentsPane}
