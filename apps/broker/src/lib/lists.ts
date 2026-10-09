@@ -745,6 +745,9 @@ export async function listsRoute(req: NextRequest, path: string[]): Promise<Next
     else if (b === "agents" && m === "PUT") route = ["setAgentAccess", async () => withList(await body())];
     else if (b === "tasks") route = m === "GET" ? ["tasks", { ...query, list_id: a }] : m === "POST" ? ["addTasks", async () => withList(await body())] : null;
   }
+  // Each endpoint has a fixed depth. A longer path is an unknown endpoint, not the shorter one:
+  // GET /api/lists/:id/tasks/:taskId must not quietly answer with the whole list.
+  if (path.length > (a === "tasks" ? 3 : 2)) route = null;
   if (!route) return respond({ error: "not_found", message: "No such lists endpoint." }, 404);
   try {
     const [op, input] = route;
