@@ -40,6 +40,8 @@ import { isSerializationFailure, withSerializableRetry } from "@/lib/serializabl
 import { remoteAccessSource } from "@/lib/remote-entitlement";
 import { listsInTx } from "@/lib/lists";
 import { REMOTE_TOOL_NAMES } from "@/lib/mcp/remote-tools.mjs";
+// Remote support (bc_support_*, docs/remote-support.md) shares the bc_remote_* gating and is dispatched from remoteTool().
+import { isSupportTool, supportTool } from "@/lib/remote-support";
 import * as R from "@/lib/remote-app/rules.mjs";
 
 type Tx = Prisma.TransactionClient;
@@ -120,10 +122,13 @@ async function settleInTx(tx: Tx, s: Session, now: Date): Promise<Session> {
   return (await tx.remoteAppSession.findFirst({ where: { id: s.id } }))!;
 }
 
-/** One session the caller may see: the person sees every one in the account; an agent, the ones it asked for or drives. */
+/**
+ * One session the caller may see: the person sees every one in the account; an agent, the ones it asked for or
+ * drives. Agent sessions only: a support session (kind "support") lives behind /api/support, never here.
+ */
 async function loadSession(tx: Tx, caller: Caller, id: unknown, now: Date): Promise<Session> {
   if (typeof id !== "string" || !UUID.test(id)) return NOT_FOUND();
-  const s = await tx.remoteAppSession.findFirst({ where: { id, accountId: caller.accountId } });
+  const s = await tx.remoteAppSession.findFirst({ where: { id, accountId: caller.accountId, kind: "agent" } });
   if (!s) return NOT_FOUND();
   if (caller.agentId && caller.agentId !== s.agentTokenId && caller.agentId !== R.executorOf(s)) return NOT_FOUND();
   return settleInTx(tx, s, now);
@@ -324,7 +329,7 @@ async function opStart({ tx, caller, input, now, origin }: Ctx): Promise<Outcome
 async function opList({ tx, caller, now }: Ctx): Promise<Outcome> {
   if (caller.agentId) {
     const rows = await tx.remoteAppSession.findMany({
-      where: { accountId: caller.accountId, OR: [{ agentTokenId: caller.agentId }, { executorAgentId: caller.agentId }] }, orderBy: { createdAt: "desc" }, take: 20,
+      where: { accountId: caller.accountId, kind: "agent", OR: [{ agentTokenId: caller.agentId }, { executorAgentId: caller.agentId }] }, orderBy: { createdAt: "desc" }, take: 20,
     });
     const settled: Session[] = [];
     for (const r of rows) settled.push(await settleInTx(tx, r, now));
@@ -615,6 +620,7 @@ export function isRemoteTool(name: string): boolean {
 
 /** One bc_remote_* tool call: the same operations and rules as /api/remote-app, with the caller's own key. */
 export async function remoteTool(req: NextRequest, name: string, args: Input): Promise<{ status: number; text: string }> {
+  if (isSupportTool(name)) return supportTool(req, name, args);
   const id = typeof args.remote_session_id === "string" ? args.remote_session_id.trim() : undefined;
   let res: NextResponse;
   switch (name) {
