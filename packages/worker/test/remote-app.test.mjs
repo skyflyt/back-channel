@@ -387,7 +387,9 @@ test('the payload can never pick an executable, arguments or anything else', asy
     assert.ok(!JSON.stringify(args).includes('dangerously'));
     assert.ok(prompt.includes(JSON.stringify(hostile)), 'the words are data in the prompt');
     // The local profile must be read-only.
-    assert.throws(() => validateRemoteAppProfile({ ...s.profile, adapter: 'codex', sandbox: 'workspace-write' }), /must be read-only/);
+    assert.throws(() => validateRemoteAppProfile({ ...s.profile, adapter: 'codex', sandbox: 'workspace-write' }), /needs the claude adapter/);
+  // v1: codex is refused even read-only, because its shell could open the PC's pipe without a report.
+  assert.throws(() => validateRemoteAppProfile({ ...s.profile, adapter: 'codex', sandbox: 'read-only' }), /needs the claude adapter/);
 });
 
 test('remote-app runtime arguments are fixed: only the worker MCP server, no shell, writes or web', () => {

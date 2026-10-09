@@ -36,11 +36,18 @@ function bounded(value, max) {
 }
 const inAllowList = (apps, name) => !!name && (apps ?? []).some(a => String(a).trim().toLowerCase() === String(name).trim().toLowerCase());
 
-/** The local profile named "remote-app": an ordinary approved profile that must also be read-only. */
+/**
+ * The local profile named "remote-app": an ordinary approved profile that must also be read-only,
+ * and in v1 must use the claude adapter. Claude runs with shell, file writes and the web denied, so
+ * the only way it reaches the PC is the worker's own MCP bridge, which reports every step. Codex's
+ * read-only sandbox can still run shell commands as this user, and one could open the agent-control
+ * pipe directly: the host would still enforce scope, but those steps would never be reported. Codex
+ * comes back once the pipe takes an executor secret only the worker holds.
+ */
 export function validateRemoteAppProfile(profile) {
     validateProfile(profile);
-    if (profile.adapter === 'codex' && (profile.sandbox ?? 'read-only') !== 'read-only')
-        throw Error('The remote-app profile must be read-only (sandbox "read-only")');
+    if (profile.adapter === 'codex')
+        throw Error('The remote-app profile needs the claude adapter in v1: codex can run shell commands that would reach the PC without being reported');
     return profile;
 }
 
