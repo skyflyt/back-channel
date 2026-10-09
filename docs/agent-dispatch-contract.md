@@ -79,6 +79,25 @@ delivery without rerunning work. Sender-side result processing uses a locally
 configured continuation profile and marks result consumption durably before
 launch; interrupted continuations require explicit recovery, not blind replay.
 
+## The `remote-app` profile
+
+A payload with `profile: "remote-app"` hands an approved remote app session to the worker on that PC
+(`docs/remote-app-sessions.md`, "Executor"). Its encrypted request carries the routing binding, `profile`,
+`remoteAppSessionId` (a UUID) and, optionally, the words `objective`, `acceptance` and `acceptanceCriteria`.
+Nothing else is accepted: any other field rejects the task without running anything.
+Conversely, `remoteAppSessionId` on any other profile is refused. The local profile named `remote-app`
+chooses the runtime and must be read-only (codex `read-only` sandbox). The sender's `allowedSenders` entry
+there decides whether it may hand sessions over at all.
+
+After claiming the task, the worker treats Back Channel's session as the authority. It runs nothing unless the
+session is `active`, is driven by this agent, is inside its minutes cap, and is listed by the PC's AppBridge
+agent-control pipe. Otherwise it returns `waiting_user` or `failed` with a plain reason.
+
+When it does run, the configured CLI gets fixed arguments plus one worker-owned MCP server. Every open and act is
+reported to `/api/remote-app/sessions/{id}/actions` with no values or screen text. A session stop or expiry kills
+the process tree, as a lost Dispatch lease does. The result is `completed` only when the runtime reports
+completion and the agent ended the session as finished. A stop, expiry or lost lease is `interrupted`.
+
 ## Acceptance
 
 Verify same-account and per-agent isolation, revocation, duplicate send/claim,
