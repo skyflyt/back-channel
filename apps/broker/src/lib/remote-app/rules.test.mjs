@@ -224,3 +224,16 @@ test("rotating the executor secret: only its reader's, while running, never for 
   refused(() => R.executorSecretRotateCheck(running({ executorSecretHash: h }), at(31)), "session_over", 409);
   refused(() => R.executorSecretRotateCheck(running({ executorSecretHash: h, status: "ended", endReason: "user_stop" }), at(2)), "session_over", 409);
 });
+
+test("v1.1: a new session is born with its executor secret's hash; the executor is told it is shown once, and how to recover it", () => {
+  const s = R.newSession({ accountId: "acct", hostDeviceId: "pc-1", agentId: "agent-a", executorAgentId: "agent-b", goal: "g", apps: ["Excel"], minutes: 5, executorSecretHash: "e".repeat(64) });
+  assert.equal(s.executorSecretHash, "e".repeat(64)); assert.equal(s.status, "awaiting_consent");
+  assert.ok(!("executorSecretIssuedAt" in s), "born, never handed out yet");
+  const names = { pc: "Shop-PC", startedBy: "Claude Code", drivenBy: "Shop agent" };
+  const plain = R.sessionView(running({ executorAgentId: "agent-b" }), { now: at(1), ...names });
+  assert.doesNotMatch(R.nextStep(plain, { role: "driver", sameAgent: false }), /executor-secret|shown this once/);
+  const handed = { ...plain, executorSecret: "abx_" + "Q".repeat(43) };
+  const next = R.nextStep(handed, { role: "driver", sameAgent: false });
+  assert.match(next, /shown this once/); assert.match(next, /hello on the PC's agent-control pipe/);
+  assert.match(next, new RegExp(`POST /api/remote-app/sessions/${plain.id}/executor-secret`));
+});

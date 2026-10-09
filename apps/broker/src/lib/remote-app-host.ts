@@ -3,7 +3,8 @@
  * credential only (appbridge.ts hostDevice()), the same fixed error shape and no-store as every AppBridge
  * route, and nothing about the caller's network stored.
  *
- *   GET  /api/appbridge/v1/hosts/self/agent-sessions            the running sessions bound to this PC
+ *   GET  /api/appbridge/v1/hosts/self/agent-sessions            the running sessions bound to this PC, each with its
+ *                                                               executorSecretSha256 (v1.1; null for a v1 session)
  *   POST /api/appbridge/v1/hosts/self/agent-sessions/{id}/stop  Stop on the PC: final, and the session's agent
  *                                                               leases are deleted in the same transaction
  *

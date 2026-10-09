@@ -250,6 +250,7 @@ async function tool(key: string, name: string, args: Row) {
   const text: string = j.result.content[0].text;
   return { isError: j.result.isError as boolean, text, json: (() => { try { return JSON.parse(text.replace(/^HTTP \d+: /, "")); } catch { return null; } })() };
 }
+const SECRET = /^abx_[A-Za-z0-9_-]{43}$/;
 const REMOTE_TOOLS = ["bc_remote_machines", "bc_remote_session_start", "bc_remote_session_status", "bc_remote_app_open", "bc_remote_observe", "bc_remote_act", "bc_remote_session_end"];
 
 // ── Tests ──
@@ -552,16 +553,21 @@ test("the whole Phase A loop with a fake executor: start, approve, Dispatch hand
   const handOff = await api("GET", `sessions/${id}`, { as: KEY.starter });
   assert.match(handOff.body.next, /Dispatch/); assert.match(handOff.body.next, new RegExp(`targetAgentId ${A.exec}`));
   assert.match(handOff.body.next, new RegExp(`remoteAppSessionId "${id}"`)); assert.match(handOff.body.next, /profile "remote-app"/);
+  assert.ok(!("executorSecret" in handOff.body.session), "the agent that asked never gets the executor's secret");
   // (Here the starter submits the sealed Dispatch task: dispatch.routetest.mts covers that path. The broker
   // can't seal for agents, so the payload's reference to this session is the starter's to write.)
   // 4. The fake executor reads its session, as the driver.
   const mine = await api("GET", `sessions/${id}`, { as: KEY.exec });
   assert.equal(mine.status, 200); assert.deepEqual(mine.body.session.apps, ["QuickBooks"]); assert.match(mine.body.next, /Work only in QuickBooks on Shop-PC/);
+  // v1.1: its first read hands it the executor secret, once, for the hello on the PC's agent-control pipe.
+  const secret: string = mine.body.session.executorSecret;
+  assert.match(secret, SECRET); assert.match(mine.body.next, /shown this once/);
   assert.deepEqual((await api("GET", "sessions", { as: KEY.exec })).body.sessions.map((s: any) => s.id), [id]);
   // 5. The PC sees the running session for its banner, and holds an agent lease for it.
   const banner = await hostSessions();
   assert.equal(banner.status, 200);
-  assert.deepEqual(Object.keys(banner.body.sessions[0]).sort(), ["apps", "drivenBy", "expiresAt", "goal", "id", "startedAt", "startedBy", "status", "task"]);
+  assert.deepEqual(Object.keys(banner.body.sessions[0]).sort(), ["apps", "drivenBy", "executorSecretSha256", "expiresAt", "goal", "id", "startedAt", "startedBy", "status", "task"]);
+  assert.equal(banner.body.sessions[0].executorSecretSha256, sha(secret), "the PC checks the executor's hello against its hash");
   assert.deepEqual([banner.body.sessions[0].id, banner.body.sessions[0].task, banner.body.sessions[0].drivenBy], [id, "Enter this week's supplier invoices", "Shop agent"]);
   assert.deepEqual((await hostSessions(CRED2)).body, { sessions: [] }, "another PC sees nothing");
   const bcKey = await (await import("@/app/api/appbridge/v1/hosts/self/agent-sessions/route")).GET(deviceReq("hosts/self/agent-sessions", KEY.exec, undefined, "GET"));
@@ -686,4 +692,84 @@ test("a conflict re-runs the whole start once: one session, one approval link, o
   limited = true;
   const shut = await api("GET", "machines", { as: KEY.starter });
   assert.equal(shut.status, 429); assert.equal(shut.headers.get("retry-after"), "7");
+});
+
+// ── v1.1: the executor secret (vault design/support-relay-contract.md §2.3 and §5) ──
+
+test("v1.1 executor secret: born as a hash, handed out once to the executor while the session runs; the PC's list carries the hash; rotation recovers a lost reply", async () => {
+  const started = await start({ executor: A.exec });
+  const id = started.body.session.id;
+  const born = sessionRow(id).executorSecretHash;
+  assert.match(born, /^[0-9a-f]{64}$/); assert.equal(sessionRow(id).executorSecretIssuedAt ?? null, null);
+  assert.ok(!JSON.stringify(started.body).includes("abx_"), "never at start");
+  assert.ok(!("executorSecret" in (await api("GET", `sessions/${id}`, { as: KEY.exec })).body.session), "nothing before approval");
+  await person(`sessions/${id}/approve`);
+  // The agent that asked (another drives) and the person never get it, and their reads never spend it.
+  for (const o of [{ as: KEY.starter }, { cookie: "cs_a" }]) {
+    const r = await api("GET", `sessions/${id}`, o);
+    assert.equal(r.status, 200); assert.ok(!JSON.stringify(r.body).includes("abx_"));
+  }
+  assert.ok(!JSON.stringify((await api("GET", "sessions", { cookie: "cs_a" })).body).includes("abx_"));
+  assert.equal(sessionRow(id).executorSecretIssuedAt ?? null, null);
+  // The PC sees the hash the session was born with (no hello can match it) until the executor is handed its own.
+  assert.equal((await hostSessions()).body.sessions[0].executorSecretSha256, born);
+  const first = await api("GET", `sessions/${id}`, { as: KEY.exec });
+  const secret: string = first.body.session.executorSecret;
+  assert.match(secret, SECRET);
+  assert.equal(sessionRow(id).executorSecretHash, sha(secret)); assert.notEqual(sha(secret), born);
+  assert.ok(sessionRow(id).executorSecretIssuedAt instanceof Date);
+  assert.equal((await hostSessions()).body.sessions[0].executorSecretSha256, sha(secret));
+  // Once means once: the same read, the MCP tool and the executor's list never show it again.
+  assert.ok(!("executorSecret" in (await api("GET", `sessions/${id}`, { as: KEY.exec })).body.session));
+  const viaTool = await tool(KEY.exec, "bc_remote_session_status", { remote_session_id: id });
+  assert.equal(viaTool.isError, false); assert.ok(!viaTool.text.includes("abx_"));
+  assert.ok(!JSON.stringify((await api("GET", "sessions", { as: KEY.exec })).body).includes("abx_"));
+  assert.ok(!JSON.stringify(tables, (_, v) => typeof v === "bigint" ? String(v) : v).includes(secret), "never stored");
+  // A lost reply: only the executor rotates it.
+  assert.equal((await api("POST", `sessions/${id}/executor-secret`, { as: KEY.starter })).body.error, "not_driver");
+  assert.equal((await person(`sessions/${id}/executor-secret`)).body.error, "agent_key_required");
+  assert.equal((await api("POST", `sessions/${id}/executor-secret`, { as: KEY.plain })).status, 404);
+  assert.equal((await api("POST", `sessions/${id}/executor-secret`, { as: KEY.conn })).body.error, "not_available_to_connectors");
+  assert.equal(sessionRow(id).executorSecretHash, sha(secret), "no refusal changed it");
+  const rotated = await api("POST", `sessions/${id}/executor-secret`, { as: KEY.exec });
+  assert.equal(rotated.status, 200); assert.equal(rotated.headers.get("cache-control"), "no-store");
+  const fresh: string = rotated.body.session.executorSecret;
+  assert.match(fresh, SECRET); assert.notEqual(fresh, secret);
+  assert.match(rotated.body.next, /shown this once/);
+  assert.equal((await hostSessions()).body.sessions[0].executorSecretSha256, sha(fresh), "the old one stops working at the PC's next read");
+  assert.deepEqual(tables.accountAudit.filter(a => a.eventType === "remote_app.executor_secret_rotated").map(a => a.detail), [{ sessionId: id }]);
+  assert.ok(!("executorSecret" in (await api("GET", `sessions/${id}`, { as: KEY.exec })).body.session));
+  // Paused is still running; over is over; a request not approved yet has nothing to rotate.
+  assert.equal((await step(id, { action: "blocked", outcome: "needs_user" })).body.session.status, "blocked");
+  assert.equal((await api("POST", `sessions/${id}/executor-secret`, { as: KEY.exec })).status, 200);
+  await person(`sessions/${id}/stop`);
+  assert.equal((await api("POST", `sessions/${id}/executor-secret`, { as: KEY.exec })).body.error, "session_over");
+  const waiting = (await start({ taskId: undefined })).body.session.id;
+  assert.equal((await api("POST", `sessions/${waiting}/executor-secret`, { as: KEY.starter })).body.error, "not_approved");
+});
+
+test("v1.1: an agent driving its own session is its executor; a v1 session (no hash) never gets a secret, and its PC asks for none", async () => {
+  const own = await startApproved({ taskId: undefined });
+  const read = await api("GET", `sessions/${own}`, { as: KEY.starter });
+  assert.match(read.body.session.executorSecret, SECRET);
+  assert.equal(sessionRow(own).executorSecretHash, sha(read.body.session.executorSecret));
+  await person(`sessions/${own}/stop`);
+  // A session created before the migration: no hash. Reads never upgrade it; the PC's list says null (v1: no secret).
+  const v1 = await startApproved({ executor: A.exec, taskId: undefined });
+  Object.assign(sessionRow(v1), { executorSecretHash: null, executorSecretIssuedAt: null });
+  const old = await api("GET", `sessions/${v1}`, { as: KEY.exec });
+  assert.equal(old.status, 200); assert.ok(!("executorSecret" in old.body.session)); assert.doesNotMatch(old.body.next, /executor-secret/);
+  assert.equal(sessionRow(v1).executorSecretHash, null);
+  assert.equal((await hostSessions()).body.sessions[0].executorSecretSha256, null);
+  assert.equal((await api("POST", `sessions/${v1}/executor-secret`, { as: KEY.exec })).body.error, "no_executor_secret");
+  assert.equal(sessionRow(v1).executorSecretHash, null);
+});
+
+test("v1.1: a conflict re-runs the hand-out whole: handed out once, and the reply carries the value that committed", async () => {
+  const id = await startApproved({ executor: A.exec });
+  transactionFaults = [abort()]; transactionCalls = 0;
+  const r = await api("GET", `sessions/${id}`, { as: KEY.exec });
+  assert.equal(r.status, 200); assert.equal(transactionCalls, 2);
+  assert.equal(sessionRow(id).executorSecretHash, sha(r.body.session.executorSecret));
+  assert.equal((await hostSessions()).body.sessions[0].executorSecretSha256, sha(r.body.session.executorSecret));
 });

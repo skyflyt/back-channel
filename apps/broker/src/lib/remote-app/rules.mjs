@@ -214,8 +214,10 @@ export function startCheck(liveCount) {
 }
 
 /**
- * The row to create for a new request. Never active: only the person's approval starts it.
- * @param {{ accountId: string, hostDeviceId: string, agentId: string, executorAgentId: string | null, taskId?: string, goal: string, apps: string[], minutes: number }} p
+ * The row to create for a new request. Never active: only the person's approval starts it. It is born with an
+ * executor secret's hash (agent-control v1.1: newExecutorSecret below; the raw value is discarded), so the PC's
+ * agent-control pipe never admits a hello for it before its executor has been handed its own value.
+ * @param {{ accountId: string, hostDeviceId: string, agentId: string, executorAgentId: string | null, taskId?: string, goal: string, apps: string[], minutes: number, executorSecretHash: string }} p
  */
 export function newSession(p) {
   return {
@@ -229,6 +231,7 @@ export function newSession(p) {
     appAllowList: p.apps,
     minutes: p.minutes,
     status: "awaiting_consent",
+    executorSecretHash: p.executorSecretHash,
   };
 }
 
@@ -549,7 +552,11 @@ export function nextStep(view, { role, sameAgent }) {
       }
       return `Approved until ${view.expiresAt}. Work only in ${view.apps.join(", ")} on ${view.pc.label}, only toward the goal, and stop and ask if anything is unexpected. ` +
         "bc_remote_app_open, bc_remote_observe and bc_remote_act answer not_available_yet until the Back Channel Remote agent component is installed on that PC. " +
-        "Finish with bc_remote_session_end and a summary of what you did.";
+        "Finish with bc_remote_session_end and a summary of what you did." +
+        (view.executorSecret
+          ? " session.executorSecret is shown this once: send it in the hello on the PC's agent-control pipe (v1.1) and keep it nowhere else. " +
+            `If it gets lost, POST /api/remote-app/sessions/${view.id}/executor-secret for a new one; the old one stops working.`
+          : "");
     case "blocked":
       return `Paused: ${view.pausedBecause}. Your person decides on the Remote page whether it goes on. Don't work around it; wait, or end the session.`;
     default:
