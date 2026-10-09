@@ -971,3 +971,35 @@ model TaskListEvent {
 
   @@index([listId, createdAt])
 }
+
+// ── Lists Phase 3: templates and the daily digest (docs/lists.md) ───────────
+// Both tables belong to one person. Neither declares a Prisma relation, so
+// Account stays untouched; the migration (20261009230000_task_lists_phase3)
+// adds the foreign keys to "Account" with ON DELETE CASCADE, so deleting an
+// account deletes its templates and its preference.
+
+// A list someone saved to start new lists from. Seen only by its owner and the
+// owner's agents. items: [{ title, notes }], 1 to 200: the unfinished tasks the
+// owner (or one of their agents) wrote when they saved it.
+model TaskListTemplate {
+  id             String   @id @default(uuid())
+  ownerAccountId String
+  name           String
+  emoji          String?
+  items          Json
+  createdAt      DateTime @default(now())
+
+  @@index([ownerAccountId])
+}
+
+// One person's Lists settings that aren't about any one list: the opt-in daily
+// digest email, sent at digestHour in their timezone, at most once a local day.
+model ListsPreference {
+  accountId    String    @id
+  digest       String    @default("off") // off | daily
+  digestHour   Int       @default(8)     // 0 to 23, the person's local hour
+  timezone     String?                   // IANA name, e.g. America/Denver; UTC when null
+  lastDigestAt DateTime?                 // when the last digest was claimed for sending
+
+  @@index([digest])
+}
