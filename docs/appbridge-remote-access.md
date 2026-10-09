@@ -89,6 +89,9 @@ All routes are under `/api/appbridge/v1`.
 | `DELETE /hosts/self/pairings/{enrollmentId}` | `appbridge.host.relay` | — | `204`. Host devices only. |
 | `POST /relay/presence-passes` | `appbridge.relay.presence` | `{}` | `{ pass, expiresAt, relay }` |
 | `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId, takeover? }` | `{ pass, expiresAt, relay }`, or `409 devices_busy` with the busy devices: see **Device limit and takeover** below. |
+| `POST /relay/agent-passes` | `appbridge.relay.presence` | `{ sessionId }` | `{ pass, expiresAt, relay }` for an "agent" lease: a PC's standing to let an agent use an app on it, for one remote app session its owner approved. `403 session_inactive` unless that session is approved, running, not paused and in time; `404` if it is not this PC's. Host devices only. See docs/remote-app-sessions.md. |
+| `GET /hosts/self/agent-sessions` | `appbridge.relay.presence` | — | `{ sessions }`: the running remote app sessions bound to this PC (apps, goal, until when, which agents, which task), for its banner and allow-list. Host devices only. |
+| `POST /hosts/self/agent-sessions/{id}/stop` | `appbridge.relay.presence` | — | `204`. Stop on the PC: final, and the session's agent leases are deleted in the same transaction. |
 
 Scopes:
 - **host:** `appbridge.device`, `appbridge.host.relay`, `appbridge.relay.presence`.
@@ -204,6 +207,13 @@ dashboard cookie all get `401`.
   presence leases (one per PC, plus spares for a PC that reconnects before the relay has released its
   old lease). Checked in the same serializable transaction as the other caps; the pass is still
   consumed.
+- **Agent leases** (`purpose: "agent"`, docs/remote-app-sessions.md): presented with the **PC's** key, like
+  presence. The grant adds `remoteAppSessionId`. The gate also re-reads the remote app session (approved,
+  running, not paused, in time, this PC, live full-scope agents) at redemption and every renewal, and the
+  lease is never extended past the session's end. Their own cap: at most 2 live agent leases per account
+  (`409` beyond), never counted with, displacing or displaced by session or presence leases or takeover. No
+  connection-log row. Stopping, pausing or ending the session deletes its agent leases in the same
+  transaction, so the next renewal is `404`. The relay must accept `"agent"` for this to work end to end.
 - A session redemption writes one connection-log row: a record that the broker admitted the attempt,
   written even if the relay then fails to complete the pair.
 - Any other refusal is `403 { "error": "refused" }`, with no detail.
@@ -252,3 +262,7 @@ hand.
 `20260924210000_appbridge_credential_rotation_grace` adds one nullable column,
 `AppBridgeCredential.replacesKeyHash` (the credential a rotated one replaced; cleared at first use).
 Apply it before deploying the code that uses it.
+
+`20261009220000_remote_app_sessions` adds the remote app session tables, a nullable
+`remoteAppSessionId` on `AppBridgePass` and `AppBridgeLease`, and widens their purpose check to admit
+`'agent'` (docs/remote-app-sessions.md). Apply it before deploying the code that uses it.
