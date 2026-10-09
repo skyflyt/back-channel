@@ -10,15 +10,18 @@ plain transcript.
 This has the shape of a tech-support scam, so the safe path is the easy one and the dangerous ones are
 structurally hard. It is deliberately not Phase A pointed at a stranger: the helped person is the one in control.
 
-This document is the broker side. The temporary client itself (design chunk B3, in the AppBridge repo), the relay's
-routing for it, and code signing and publishing are **not built here**: see [What is not built](#what-is-not-built).
+This document is the broker side, including its part of the support relay path (the issuer connector's relay pass,
+the pins and the executor secret). The temporary client itself (design chunk B3, in the AppBridge repo), the relay's
+routing for it, the issuer connector, the worker's profile, and code signing and publishing are **not built here**:
+see [What is not built](#what-is-not-built).
 
 Code: `apps/broker/src/lib/remote-support/rules.mjs` (every decision, pure, `node --test`),
 `src/lib/remote-support/proof.mjs` (the helper's key and signatures), `src/lib/remote-support.ts` (I/O),
-`src/lib/appbridge.ts` (the "support" relay lease), `src/lib/mcp/remote-tools.mjs` (the MCP catalog),
+`src/lib/appbridge.ts` (the "support" and "support-client" relay leases), `src/lib/mcp/remote-tools.mjs` (the MCP catalog),
 `src/app/support/[code]/page.tsx` and `src/app/support/page.tsx` (the landing pages),
 `src/app/account/remote/support-sessions.tsx` (the dashboard card). Tests: `src/lib/remote-support/*.test.mjs`,
-`route-tests/remote-support.routetest.mts`, and the redeem race in `scripts/appbridge-integration.mts`.
+`route-tests/remote-support.routetest.mts`, the support-client tests in `route-tests/appbridge.routetest.mts`, and the
+redeem and issuer-pin races in `scripts/appbridge-integration.mts`.
 
 ## The flow
 
@@ -145,14 +148,82 @@ later. Instead the support session itself is the client's identity:
   live support leases per account (the one session plus a reconnect spare), never counted with or displacing device,
   presence or agent leases; no connection-log row. Every way a session ends deletes its leases in the same
   transaction, so the relay's next renewal is a `404` and the helper is cut off within about a minute.
-- Under a redeem flood, a presented key that belongs to a running support session gets through like a registered
-  device's.
+- Under a redeem flood, a presented key that is pinned on a running support session (the helper's, or the issuer
+  connector's below) gets through like a registered device's: one indexed read covers both.
 
-**Not admitted yet: the other end of the pipe.** The agent's side (an AppBridge component on one of the issuer's
-own enrolled devices, connecting to the helper's relay identity as a client) needs the AppBridge Agent runtime
-(design chunk A6) and a decision on which of the issuer's devices may connect. The proposed shape: a support
-*client* pass for one of the issuer's own enrolled devices, bound to the session and pinned at its first use, gated
-by the same support gate. Until it exists, the helper's lease only holds its place at the relay.
+## The other end of the pipe: the issuer connector
+
+Binding contract: **"Remote support relay path, contract v1"** (the vault's `design/support-relay-contract.md`; this
+section is its §2, the broker's part). The agent never connects to the helper itself. One of the issuer's own
+enrolled AppBridge devices, on the same machine as the Back Channel worker that does the task, is the **issuer
+connector**: it reaches the helper's relay identity as a relay *client*, runs pinned mutual TLS inside the relay with
+the helper, and bridges the worker's local pipe to it. The broker admits that leg and is the pin authority for both
+ends; it never sees what runs inside.
+
+- **The "support-client" pass.** `POST /api/appbridge/v1/relay/support-client-passes { sessionId }` with the device's
+  own `ab_` credential (scope `appbridge.relay.pass`, so a remote-role device; a PC's credential is `403 scope`, and a
+  `bc_` key, the cookie or an `abs_` credential is `401`). In one serializable transaction:
+  1. the session must be a support session of the device's account (`404 not_found` otherwise, including another
+     account's session or a remote app session);
+  2. **pin at first use:** the first device to take a pass is pinned on the session (`supportClientDeviceId` and its
+     connector key `supportClientKeySha256`); a session pinned to another key is `409 support_client_pinned`. The pin
+     is the key, so a device that rotates its connector key is no longer the pinned one;
+  3. the gate (below): `403 rollout_off`, `not_entitled` or `session_inactive` (before Allow, after any ending, out of
+     time).
+
+  Every refusal rolls the whole transaction back, so a refused request never pins anyone. The answer:
+  ```jsonc
+  { "pass": "<64 hex>", "expiresAt": "ISO", "relay": "wss://relay.back-channel.app/v1/connect",
+    "host": "<supportKeySha256, 64 uppercase hex>",       // the helper's key: relay target and inner-TLS server pin
+    "executorSecretSha256": "<64 lowercase hex>" }       // the connector checks the worker's hello against it (see below)
+  ```
+  `executorSecretSha256` is the hash stored *now*: it changes when the secret is handed out or rotated, so a
+  connector whose hello check fails takes a fresh pass and checks again before it refuses. It is `null` only for a
+  session created before the secret existed, and then no hello is ever admitted on the support pipe.
+- **The gate** (`appbridge.ts gate()`, the one authority, at every pass, redemption and renewal): the rollout switch,
+  the issuer's Remote entitlement; the binding names the device, no enrollment, and the session; the session is
+  `kind: "support"`, this account's, at this relay identity, with a helper key; the device is this account's, live and
+  enabled (`device_revoked`); the session's pin is this device's current key (`support_client_pinned`); and
+  `admitsSupportLease` holds (allowed, running, in time).
+- **Redeem.** The relay redeems with `purpose: "support-client"`, presenting the **device's** key. The grant:
+  `{ leaseId, accountId, hostDeviceId: <the relay identity>, clientDeviceId: <the device>, enrollmentId: null,
+  hostConnectorSpkiSha256: <the helper's key>, clientConnectorSpkiSha256: <the device's key>, remoteAppSessionId }`;
+  renew returns the same two keys. The lease never outlives the session.
+- **Budget.** At most 2 live support-client leases per account (the one session's leg, plus a reconnect spare),
+  `409` beyond. Never counted with, displacing or displaced by any other purpose, never listed in `devices_busy`, and
+  no connection-log row.
+- **Endings.** Every way the session ends (either Stop, the agent's end, a report, the removal receipt, the cap)
+  deletes all its leases, this one included, in the same transaction: the relay's next renewal is `404`. Revoking the
+  device deletes its legs in the revoking transaction; switching the device off, the relay switch or the entitlement
+  ends them at the next renewal. Revoking the device does not end the helped person's session.
+- **`peer`, the helper's pin.** `GET /api/support/client/session` (and every response that carries the helped
+  person's session view) has `session.peer`: `null` until the issuer's device has taken its pass, then
+  `{ "connectorSpkiSha256": "<supportClientKeySha256>" }`. The helper accepts only that client certificate. The broker
+  is the pin authority: the helper never trusts a client key on first use. The device id never reaches the helper.
+
+### The executor secret
+
+The issuer connector's local pipe admits the worker's `hello` only with the session's **executor secret**
+(`abx_` + 43 base64url characters), so another process of the same user can't drive the helped computer.
+
+- **Born at redemption, as a hash.** The session is created with a secret's SHA-256 (`executorSecretHash`), and that
+  first value is thrown away: nobody holds it, so nothing is admitted on the pipe before the agent that asked has its
+  own.
+- **Handed out once, to the agent that asked.** Its first `GET /api/support/invites/{id}` (`bc_support_status`)
+  after the helped person pressed Allow carries `support.session.executorSecret`: a fresh value, whose hash replaces
+  the stored one (`executorSecretIssuedAt` records when). No later read shows it again: not that call, not
+  `bc_support_status`, not the agent's list. The person's reads (the invite, the dashboard card) never show it and
+  never spend it; the helper, audit rows and the Lists task never see it. Only the hash is stored.
+- **Where it goes.** Only into the sealed Dispatch request that hands the session to the agent's worker (profile
+  `remote-support`, with `remoteAppSessionId`), which sends it in the pipe's `hello`. The connector checks it against
+  `executorSecretSha256` from its pass. The `next` text says so in the response that carries it.
+- **A lost reply.** If the reply (or the worker's copy) is lost, the agent that asked calls
+  `POST /api/support/invites/{id}/executor-secret` (its own full-scope key; no body): a fresh value, in that reply only,
+  whose hash replaces the old one, so the old value stops working as soon as the connector takes its next pass. Only
+  while the session runs: `409 not_allowed_yet` before Allow, `409 not_running` when nothing was redeemed,
+  `409 session_over` after it ended. Another agent is `404`; the person (cookie) is `401 agent_key_required`. Audited
+  as `support.executor_secret_rotated`, without the secret. This is the one recovery path: explicit, by the one party
+  that holds the secret, and it never re-shows an old value.
 
 ## Endpoints
 
@@ -166,8 +237,9 @@ Serializable conflicts that outlast the retry budget are `503 { error: "busy", r
 |---|---|---|---|
 | `POST /invites` | agent (full key) | `{ for, task, minutes, taskId? }` | `{ support, approvalUrl, approvalUrlExpiresAt, next }`; `support.status` is `requested` |
 | `GET /invites` | agent: its own (20); person: the dashboard card | | agent: `{ support: [...] }`; person: `{ available, remoteAccess, limits, pending, codes, live, recent, reports }` (non-owner: `{ available: false, reason: "owner_only" }`) |
-| `GET /invites/{id}` | the agent that asked, or the person | | `{ support, steps?, transcript?, next? }` |
+| `GET /invites/{id}` | the agent that asked, or the person | | `{ support, steps?, transcript?, next? }`; the agent's first read after Allow also carries `support.session.executorSecret`, once (see [The executor secret](#the-executor-secret)) |
 | `POST /invites/{id}/end` | the agent that asked | `{ finished? }` | withdraws a request or an unused code; ends a session (`done` when finished, else `agent_stop`); `{ support, transcript?, task, next }` |
+| `POST /invites/{id}/executor-secret` | the agent that asked | | a fresh executor secret, in this reply only (`support.session.executorSecret`), the old one stops working: `{ support, next }`; only while running |
 | `POST /invites/{id}/approve` | person (owner) | | `{ support, code, url, codeExpiresAt, note }`: **the only response that ever carries the code** |
 | `POST /invites/{id}/deny` | person | | `{ support }` |
 | `POST /invites/{id}/void` | person | | cancels an unused code: `{ support }` |
@@ -175,8 +247,9 @@ Serializable conflicts that outlast the retry budget are `503 { error: "busy", r
 
 `support` (a view) is `{ id, status, statusText, for, task, minutes, requestedBy, listTask, requestedAt,
 approvalExpiresAt, codeExpiresAt, redeemedAt, closedAt, reported, session }`, where `session` is `null` or
-`{ id, status, statusText, allowBy, startedAt, expiresAt, endedAt, endReason, removal, removalText }`. It never
-contains the code or its hash.
+`{ id, status, statusText, allowBy, startedAt, expiresAt, endedAt, endReason, removal, removalText, executorSecret? }`
+(`executorSecret` only in the one reply that hands it out). It never contains the code, its hash, the executor
+secret's hash or the issuer connector's pin.
 
 ### The helped person: no account
 
@@ -184,7 +257,7 @@ contains the code or its hash.
 |---|---|---|---|
 | `POST /api/support/redeem` | the code | `{ code, keySpki, proof }` | `{ sessionId, issuer: { name, handle }, task, minutes, allowBy, credential, credentialExpiresAt }`; `409 issuer_busy` (code not spent) |
 | `POST /api/support/report` | the code | `{ code }` | the landing page's "I didn't ask for this": the code stops working, a report is filed: `{ reported: true, message }` |
-| `GET /api/support/client/session` | `abs_` | | `{ session, steps }` (steps as the helped person's phrases) |
+| `GET /api/support/client/session` | `abs_` | | `{ session, steps }` (steps as the helped person's phrases); `session.peer` is `null` or `{ connectorSpkiSha256 }`, the issuer connector's pinned key |
 | `POST /api/support/client/allow` | `abs_` + signature | `{ proof }` | `{ session }`; idempotent; `410 too_late` after 10 minutes |
 | `POST /api/support/client/stop` | `abs_` | | before Allow: `denied`; after: `ended` (`host_stop`); idempotent |
 | `POST /api/support/client/report` | `abs_` | | "I didn't ask for this": ends the session (`reported`), marks the code reported, files a report; idempotent |
@@ -192,6 +265,12 @@ contains the code or its hash.
 | `POST /api/support/client/receipt` | `abs_` + signature | `{ removal, proof }` | `removal` is `removed`, `in_memory` or `unconfirmed`; once per session (the same again is a no-op, another is `409`); ends a session still running: `{ removal, transcript }` |
 | `GET /api/support/client/transcript` | `abs_` | | `{ transcript: { lines, text } }` |
 | `POST /api/appbridge/v1/relay/support-passes` | `abs_` | `{}` | `{ pass, expiresAt, relay }`, see above |
+
+### The issuer connector: one of the issuer's own devices
+
+| Method and path | Auth | Body | Result |
+|---|---|---|---|
+| `POST /api/appbridge/v1/relay/support-client-passes` | the device's `ab_` (scope `appbridge.relay.pass`) | `{ sessionId }` | `{ pass, expiresAt, relay, host, executorSecretSha256 }`; pins the device at first use; `409 support_client_pinned`, `403 session_inactive` / `not_entitled` / `rollout_off`, `404 not_found`. See [The other end of the pipe](#the-other-end-of-the-pipe-the-issuer-connector) |
 
 **Uniform answers.** Redeem and report answer every code that can't be used right now (unknown, malformed,
 mistyped, used, cancelled, reported, expired) with the same `410 { error: "code_invalid", message }`, and the landing
@@ -272,7 +351,8 @@ out for anything but a full-scope agent key, and a call from a connector key is 
 
 | # | Threat | Mitigation here |
 |---|---|---|
-| T2 | Session hijack | The helper's lease is re-gated on every renewal and presented with the key pinned at redemption; its credential is bound to that key (Allow and the receipt are signed by it). Every ending deletes the lease in the same transaction. A rotated credential (same-key re-redeem) ends the old one. |
+| T2 | Session hijack | The helper's lease is re-gated on every renewal and presented with the key pinned at redemption; its credential is bound to that key (Allow and the receipt are signed by it). The issuer connector's lease is pinned to one device's key at its first pass, re-gated on every renewal, and the helper pins that key (`peer`) for the inner TLS. Every ending deletes both leases in the same transaction. A rotated credential (same-key re-redeem) ends the old one. |
+| T10 | An injected agent or rogue process of the issuer's own | Codes are minted by people only; the issuer connector's pipe admits only the session's executor secret, handed out once to the agent that asked (hash-only at rest, rotatable only by that agent), so another process of the same user can't drive the helped computer. |
 | T3 | Code interception or forwarding | Single use, 15 minutes, bound to the issuer and the exact task, minted only for the person and shown once, stored hashed; the agent never sees it; pinned to the first key (a second key gets the uniform answer); the consent screen shows the real issuer; "I didn't ask for this" voids it. The page sends no Referer. A code in a request log (the path) is still single-use and short-lived, and whoever redeems it sees the consent screen, not the helped person's machine. |
 | T5 | Privilege escalation, UAC | `needs_user` is recorded and the helped person answers the real Windows prompt; the client (B3) can't bypass or auto-accept it. |
 | T6 | Persistence | No device enrollment, no `AppBridgeDevice`, a credential that can't be renewed and expires on its own, a relay identity that dies with the session, and a signed removal receipt; an unconfirmed removal is said plainly. |
@@ -283,9 +363,10 @@ out for anything but a full-scope agent key, and a call from a connector key is 
 ## Privacy
 
 Stored: which agent asked and for which account, `for` (the agent's words, issuer-only), the task text, the minutes,
-the code's hash and its times, the helper's public key, its credential's hash, the session's times, each step's kind,
+the code's hash and its times, the helper's public key, its credential's hash, the issuer connector's device id and
+key fingerprint (once pinned), the executor secret's hash and when it was handed out, the session's times, each step's kind,
 control name (at most 120 characters) and outcome, the removal receipt, and reports (which code, page or helper,
-when). Not stored: the code, the credential, anything on the helped person's screen, anything typed, a screenshot,
+when). Not stored: the code, the credential, the executor secret, anything on the helped person's screen, anything typed, a screenshot,
 an IP address or a user agent. Nothing identifies the helped person beyond what the issuer's agent wrote in `for`.
 No retention rule yet; a deleted account's rows must be removed by `accountId` by hand (no foreign keys).
 
@@ -306,9 +387,13 @@ No retention rule yet; a deleted account's rows must be removed by `accountId` b
 - **Code signing and publishing (B0, Skylar's).** A publicly trusted signature (Azure Trusted Signing) is a hard
   blocker: the pilot `LocalMachine\Root` certificate must never reach a stranger's machine. Publishing the build and
   setting `SUPPORT_CLIENT_URL` are Skylar's too.
-- **The relay** (backchannel-relay): accepting `purpose: "support"` at redeem, holding the helper at its `support_`
-  relay identity, and routing the agent's side to it.
-- **The agent's side of the pipe** (see above): needs the AppBridge Agent runtime (A6) and a support client pass.
+- **The relay** (the AppBridge repo's `src/relay-cloudflare`, contract PR-3, deployed by Skylar): the `support-host`
+  and `support-client` roles mapping to `purpose: "support"` and `"support-client"` at redeem, and joining the issuer
+  connector's leg to the helper's presence.
+- **The issuer connector** (the AppBridge repo, contract PR-4): the `AppBridge.SupportConnector` pipe server with the
+  executor-secret `hello`, the support-client pass, the inner-TLS client pinned to `host`, and the frame bridge. Its
+  broker side (the pass, the gate, the pin, `peer` and the executor secret) is built here.
+- **The worker's `remote-support` profile** (`packages/worker`, contract PR-5).
 - **Pricing (B5)**, a retention rule, and opening issuance beyond the owner (which needs verified display names or
   relationships).
 
@@ -320,3 +405,11 @@ support columns to `RemoteAppSession` (with a unique index on the credential has
 only), `RemoteAppActionLog.outcome` (+ `declined`), and the `AppBridgePass`/`AppBridgeLease` purpose (+ `support`) and
 session binding. `hostDeviceId` stays `NOT NULL` (it holds the relay identity for support). Apply it before deploying
 the code; its header has the order, rollback and the production notice.
+
+`prisma/migrations/20261011090000_support_relay_path` (the support relay path) adds four nullable columns to
+`RemoteAppSession`: the issuer connector's pin (`supportClientDeviceId`, `supportClientKeySha256`, indexed) and the
+executor secret (`executorSecretHash`, `executorSecretIssuedAt`, shared with remote app sessions), with new checks
+(only a support session is pinned, device and key together, uppercase and lowercase hex). It **widens** the
+`AppBridgePass`/`AppBridgeLease` purpose (+ `support-client`) and session binding (a support-client pass or lease
+names its session), and adds a check that one names the issuer's device and no enrollment. Apply it before deploying
+the code; its header has the order and rollback.

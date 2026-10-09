@@ -91,6 +91,7 @@ All routes are under `/api/appbridge/v1`.
 | `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId, takeover? }` | `{ pass, expiresAt, relay }`, or `409 devices_busy` with the busy devices: see **Device limit and takeover** below. |
 | `POST /relay/agent-passes` | `appbridge.relay.presence` | `{ sessionId }` | `{ pass, expiresAt, relay }` for an "agent" lease: a PC's standing to let an agent use an app on it, for one remote app session its owner approved. `403 session_inactive` unless that session is approved, running, not paused and in time; `404` if it is not this PC's. Host devices only. See docs/remote-app-sessions.md. |
 | `POST /relay/support-passes` | none: the temporary support client's own `abs_` credential (never a device's) | `{}` | `{ pass, expiresAt, relay }` for a "support" lease: the helper's standing at the relay for the one support session it redeemed, while the helped person has allowed it. `403 session_inactive` before Allow, after Stop or once time is up. See docs/remote-support.md. |
+| `POST /relay/support-client-passes` | `appbridge.relay.pass` | `{ sessionId }` | `{ pass, expiresAt, relay, host, executorSecretSha256 }` for a "support-client" lease: the **issuer connector**, one of the account's own devices, reaching the helper of one of its support sessions. The first device to take one is pinned on the session (`409 support_client_pinned` for any other); `host` is the helper's key (the relay target and the inner-TLS server pin) and `executorSecretSha256` the session's executor secret hash. `403 session_inactive` unless the helped person allowed it and it is running; `404` if it is not this account's support session. Remote-role devices only (`403 scope`). See docs/remote-support.md. |
 | `GET /hosts/self/agent-sessions` | `appbridge.relay.presence` | — | `{ sessions }`: the running remote app sessions bound to this PC (apps, goal, until when, which agents, which task), for its banner and allow-list. Host devices only. |
 | `POST /hosts/self/agent-sessions/{id}/stop` | `appbridge.relay.presence` | — | `204`. Stop on the PC: final, and the session's agent leases are deleted in the same transaction. |
 
@@ -216,6 +217,16 @@ dashboard cookie all get `401`.
   running, in time) at redemption and every renewal, and the lease never outlives the session. Its own cap: at most 2
   live support leases per account, never counted with or displacing any other lease. No connection-log row. Every way
   the session ends deletes its lease in the same transaction. The relay must accept `"support"` for this to work.
+- **Support-client leases** (`purpose: "support-client"`, docs/remote-support.md and the vault's "Remote support relay
+  path, contract v1"): the issuer connector's leg to the helper. The pass names the session and the issuer's device; it is
+  presented with **that device's** key, which must be the one pinned on the session. The grant's `hostDeviceId` is the
+  helper's relay identity and `hostConnectorSpkiSha256` the helper's pinned key; `clientDeviceId` and
+  `clientConnectorSpkiSha256` are the issuer's device and key; `enrollmentId` is `null`; it adds `remoteAppSessionId`.
+  The gate re-reads the rollout switch, the entitlement, the device (live, enabled, this account), the pin and the
+  session (allowed, running, in time) at redemption and every renewal, and the lease never outlives the session. Its
+  own cap: at most 2 live support-client leases per account, never counted with or displacing any other lease, never
+  in `devices_busy`. No connection-log row. Every way the session ends deletes it in the same transaction, and so does
+  revoking the device. The relay must accept `"support-client"` for this to work.
 - **Agent leases** (`purpose: "agent"`, docs/remote-app-sessions.md): presented with the **PC's** key, like
   presence. The grant adds `remoteAppSessionId`. The gate also re-reads the remote app session (approved,
   running, not paused, in time, this PC, live full-scope agents) at redemption and every renewal, and the
@@ -241,7 +252,7 @@ bucket such a flood made renewals fail and tore down every live session.
 |---|---|
 | `POST /relay/renew`, `POST /relay/release` | 30 per lease. Nothing else spends it; the relay renews each lease about once a minute. |
 | `POST /relay/redeem`, every attempt | 60 per presented `connectorSpkiSha256` (pass issuance allows 30 per device). |
-| `POST /relay/redeem`, refusals (`403`, malformed `400`) | 10 per presented key and 600 globally, checked before any database work; a success spends neither. Once the global budget is spent, a redemption gets through only if its presented key belongs to a live registered device (one indexed read), so a flood is shed while real devices keep connecting. The relay checks that the client holds the presented key, so only its holder can spend a key's budget. |
+| `POST /relay/redeem`, refusals (`403`, malformed `400`) | 10 per presented key and 600 globally, checked before any database work; a success spends neither. Once the global budget is spent, a redemption gets through only if its presented key belongs to a live registered device, or is pinned on a running support session (the helper's or the issuer connector's key: one more indexed read), so a flood is shed while real devices keep connecting. The relay checks that the client holds the presented key, so only its holder can spend a key's budget. |
 | `POST /devices/exchange` | Only failed exchanges count: 1000 globally. Registrations are never blocked by others' failures until that whole budget is spent, and a shed request never burns its code. Codes are one of 31^8, one-use and live 10 minutes; minting stays limited to 15 per account per hour. |
 | Device routes | 60 per device; passes 30 per device. |
 | `POST /relay/passes` with a `takeover` that happens | 6 per taking device per **hour**; only a takeover that happens counts. |
@@ -275,3 +286,7 @@ Apply it before deploying the code that uses it.
 `20261009220000_remote_app_sessions` adds the remote app session tables, a nullable
 `remoteAppSessionId` on `AppBridgePass` and `AppBridgeLease`, and widens their purpose check to admit
 `'agent'` (docs/remote-app-sessions.md). Apply it before deploying the code that uses it.
+
+`20261011090000_support_relay_path` adds the issuer connector's pin and the executor secret's hash to
+`RemoteAppSession`, and widens the pass and lease purpose check and session binding to admit `'support-client'`
+(docs/remote-support.md). Apply it before deploying the code that uses it.
