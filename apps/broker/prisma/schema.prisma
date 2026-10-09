@@ -605,12 +605,12 @@ model AppBridgeEntitlement {
 // A one-use relay pass (about 60 s). Only its hash is stored; swept minutes after expiry.
 model AppBridgePass {
   passHash       String    @id
-  purpose        String // "session" | "presence" | "agent" | "support"
+  purpose        String // "session" | "presence" | "agent" | "support" | "support-client"
   accountId      String
-  hostDeviceId   String // "support": the helper's ephemeral relay identity, not a device
-  remoteDeviceId String?
+  hostDeviceId   String // "support", "support-client": the helper's ephemeral relay identity, not a device
+  remoteDeviceId String? // "session": the remote; "support-client": the issuer connector's device
   enrollmentId   String?
-  // "agent" and "support" passes only: the RemoteAppSession it is for (no FK, see RemoteAppSession).
+  // "agent", "support" and "support-client" passes only: the RemoteAppSession it is for (no FK, see RemoteAppSession).
   remoteAppSessionId String?
   createdAt      DateTime  @default(now())
   expiresAt      DateTime
@@ -627,7 +627,7 @@ model AppBridgeLease {
   hostDeviceId   String
   remoteDeviceId String?
   enrollmentId   String?
-  // "agent" and "support" leases only: the RemoteAppSession it belongs to. Ending the session deletes these.
+  // "agent", "support" and "support-client" leases only: the RemoteAppSession it belongs to. Ending the session deletes these.
   remoteAppSessionId String?
   createdAt      DateTime @default(now())
   expiresAt      DateTime
@@ -691,11 +691,20 @@ model RemoteAppSession {
   supportCredentialExpiresAt DateTime? // fixed at redemption, never renewed
   removal                    String? // removed | in_memory | unconfirmed: the client's signed removal receipt
   removalAt                  DateTime?
+  // The issuer connector (support relay path contract v1, §2.3): the one AppBridge device of the account that may
+  // reach the helper through the relay, pinned at its first support-client pass. Both null until then.
+  supportClientDeviceId      String?
+  supportClientKeySha256     String? // that device's connector key (uppercase hex SHA-256), the helper's inner-TLS client pin
+  // ── Both kinds: the executor secret (agent-control v1.1). Only its sha256 is stored. Generated when the session is
+  // created; handed out once (executorSecretIssuedAt), and again only by an explicit rotation. null hash: a v1 session.
+  executorSecretHash         String?
+  executorSecretIssuedAt     DateTime?
 
   @@index([accountId, status])
   @@index([agentTokenId])
   @@index([hostDeviceId, status])
   @@index([supportKeySha256])
+  @@index([supportClientKeySha256])
 }
 
 // One step of a remote app session, as fixed metadata: a kind of action, a
