@@ -56,7 +56,7 @@ function mount({ tools = () => text({}), opening, fireLongTimers = false } = {})
     if (m.method === "ui/initialize") return deliver({ id: m.id, result: { hostContext: { theme: "dark" } } });
     if (m.method === "ui/notifications/initialized") { if (opening !== undefined) deliver({ method: "ui/notifications/tool-result", params: opening }); return; }
     if (m.method === "ui/open-link") { links.push(m.params.url); return deliver({ id: m.id, result: {} }); }
-    if (m.method === "ui/message") return deliver({ id: m.id, result: {} });
+    if (m.method === "ui/message" || m.method === "ui/update-model-context") return deliver({ id: m.id, result: {} });
     if (m.method === "tools/call") {
       calls.push(m.params);
       Promise.resolve(tools(m.params.name, m.params.arguments)).then((r) => deliver(r?.rpcError ? { id: m.id, error: r.rpcError } : { id: m.id, result: r }));
@@ -338,7 +338,10 @@ test("my agents: pick a named recipient, preserve drafts, send once and show que
   p.$("askAssistant").click(); await settle();
   const request = p.posted.find(m => m.method === "ui/message");
   assert.equal(request.params.role, "user");
-  assert.match(request.params.content.text, /bc_read_agent_messages/);
+  const selection = p.posted.find(m => m.method === "ui/update-model-context");
+  assert.equal(selection.params.structuredContent.back_channel_selection.tool, "bc_read_agent_messages");
+  assert.equal(selection.params.structuredContent.back_channel_selection.arguments.agent_id, "home");
+  assert.ok(!request.params.content.text.includes("agent_id"), "internal routing stays out of the visible chat request");
   assert.ok(!request.params.content.text.includes("<script>untrusted text"), "peer content stays out of user-role instructions");
 });
 

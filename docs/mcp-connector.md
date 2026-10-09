@@ -161,7 +161,8 @@ Version 1.8 adds Friends and My agents tabs, a named agent recipient picker,
 encrypted agent conversations with sent history, earlier-message paging,
 queued/read receipts, friend conversation requests with no extra scopes, and
 invite acceptance. “Ask my assistant” asks the current chat to help with the
-selected conversation via `ui/message`, using a fixed request and route metadata;
+selected conversation via `ui/message`, using a fixed request. Routing metadata
+goes through `ui/update-model-context` rather than into the visible chat message;
 peer content stays tool data. Host color and font variables adapt the appearance.
 Connecting still takes one BCX code. Local plugins can read
 and send encrypted mail; remote OAuth connectors expose the panel's conversation
