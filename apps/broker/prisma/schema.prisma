@@ -605,11 +605,13 @@ model AppBridgeEntitlement {
 // A one-use relay pass (about 60 s). Only its hash is stored; swept minutes after expiry.
 model AppBridgePass {
   passHash       String    @id
-  purpose        String // "session" | "presence"
+  purpose        String // "session" | "presence" | "agent"
   accountId      String
   hostDeviceId   String
   remoteDeviceId String?
   enrollmentId   String?
+  // "agent" passes only: the RemoteAppSession the PC holds it for (no FK, see RemoteAppSession).
+  remoteAppSessionId String?
   createdAt      DateTime  @default(now())
   expiresAt      DateTime
   consumedAt     DateTime?
@@ -625,10 +627,13 @@ model AppBridgeLease {
   hostDeviceId   String
   remoteDeviceId String?
   enrollmentId   String?
+  // "agent" leases only: the RemoteAppSession it belongs to. Stopping the session deletes these.
+  remoteAppSessionId String?
   createdAt      DateTime @default(now())
   expiresAt      DateTime
 
   @@index([expiresAt])
+  @@index([remoteAppSessionId])
 }
 
 // "Device A connected to PC B at time T" — the owner's 7-day connection log.
@@ -643,6 +648,57 @@ model AppBridgeConnectionEvent {
 
   @@index([accountId, at])
   @@index([at])
+}
+
+// ── Remote app sessions: an agent uses an app on one of its person's own PCs ─
+// docs/remote-app-sessions.md. One agent, one named PC, an app allow-list, a
+// time limit (at most 60 minutes) and usually one Lists task. A session becomes
+// active only when its person approves it in the dashboard. While it is active
+// (and only then) the PC may hold an "agent" relay lease for it; stopping it
+// deletes those leases in the same transaction. Metadata only: never what was
+// on the screen, what was typed or a screenshot (evidence stays on the PC).
+// hostDeviceId, agentTokenId, executorAgentId and listTaskId carry no foreign
+// key on purpose: removing a PC or an agent ends a session, and must never
+// delete the record of what happened. No back-relations on Account/AgentToken.
+model RemoteAppSession {
+  id              String    @id @default(uuid())
+  accountId       String
+  kind            String    @default("agent") // "agent" (Phase A); "support" is reserved for Phase B
+  hostDeviceId    String // the PC: an AppBridgeDevice with role "host"
+  agentTokenId    String // the agent that asked for the session
+  executorAgentId String? // the agent on the PC that drives the app; null = the agent that asked
+  listTaskId      String? // the Lists task this session works on
+  goal            String
+  appAllowList    String[] // app names as the person approved them; the PC enforces the list
+  status          String    @default("awaiting_consent") // awaiting_consent | active | blocked | ended | denied | lapsed
+  consentBy       String? // the account that approved or denied it
+  consentVia      String? // "web": the dashboard (the only way in v1)
+  minutes         Int // 1..60
+  startedAt       DateTime?
+  expiresAt       DateTime? // startedAt + minutes; never extended
+  endedAt         DateTime?
+  endReason       String? // done | user_stop | host_stop | agent_stop | lapsed | fail_closed | revoked
+  summary         String? // the agent's own words when it ended the session
+  evidenceRef     String? // a pointer into the PC's own evidence store, never the evidence
+  createdAt       DateTime  @default(now())
+
+  @@index([accountId, status])
+  @@index([agentTokenId])
+  @@index([hostDeviceId, status])
+}
+
+// One step of a remote app session, as fixed metadata: a kind of action, a
+// bounded control or app name, and an outcome. Never a value, text or pixels.
+model RemoteAppActionLog {
+  id          BigInt   @id @default(autoincrement())
+  sessionId   String // RemoteAppSession.id (no FK: see above)
+  at          DateTime @default(now())
+  action      String // open | observe | invoke | set_value | toggle | select | scroll | key | screenshot | blocked
+  target      String? // a control or app name, at most 120 characters
+  outcome     String // ok | credential_field | not_in_scope | needs_user | fail_closed
+  evidenceRef String? // a pointer into the PC's own evidence store
+
+  @@index([sessionId, at])
 }
 
 // ── Back Channel Remote paid tier (Stripe) ──────────────────────────────────
