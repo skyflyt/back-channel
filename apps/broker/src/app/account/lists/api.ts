@@ -1,13 +1,15 @@
 "use client";
 /**
  * Lists in the browser: types for what /api/lists returns, one fetch helper
- * per endpoint (cookie auth, CSRF on writes), the 10-second freshness poll,
- * and the small wording helpers the Lists tab and the My plate card share.
+ * per endpoint (cookie auth, CSRF on writes), freshness (the live stream, with
+ * the 10-second poll as its fallback: live.mjs), and the small wording helpers
+ * the Lists tab and the My plate card share.
  *
  * Shapes follow src/lib/lists.ts (the op* functions) and taskView/entryView in
  * src/lib/lists/rules.mjs. Errors carry the server's plain-sentence `message`.
  */
 import { useEffect, useRef } from "react";
+import { createListsFeed, createSharedFeed, STREAM_URL } from "./live.mjs";
 
 /* ---------------------------------- types ---------------------------------- */
 
@@ -165,6 +167,31 @@ export interface TrustPeer {
   established_at: string | null;
 }
 
+/**
+ * A template a list can start from: one of the four built-ins ("builtin:<slug>")
+ * or one the person saved. `preview` is its first five task titles.
+ */
+export interface TemplateView {
+  id: string;
+  kind: "builtin" | "saved";
+  name: string;
+  emoji: string | null;
+  count: number;
+  preview: string[];
+  created_at?: string | null;
+}
+
+/** The person's own Lists settings: the opt-in daily summary email. */
+export interface ListsPreferences {
+  digest: "off" | "daily";
+  /** 0 to 23, in `timezone`. */
+  digest_hour: number;
+  timezone: string | null;
+  last_digest_at: string | null;
+  /** False when the account has no verified email to send it to. */
+  email_ready: boolean;
+}
+
 /** An agent as /api/account/agents lists it (for the new-list form). */
 export interface AccountAgent {
   id: string;
@@ -214,8 +241,12 @@ const enc = encodeURIComponent;
 
 export const listsApi = {
   lists: () => call<{ lists: ListSummary[] }>("GET", "/api/lists"),
-  createList: (body: { name: string; emoji?: string; agents?: string[] }) =>
-    call<{ list: { id: string; name: string; emoji: string | null } }>("POST", "/api/lists", body),
+  /**
+   * A new list: blank, from a template (`template`: a built-in "builtin:<slug>" or a saved template's id; name and
+   * emoji default to the template's), or a copy of a list you can see (`duplicate`: its unfinished tasks).
+   */
+  createList: (body: { name?: string; emoji?: string; agents?: string[]; template?: string; duplicate?: string }) =>
+    call<{ list: { id: string; name: string; emoji: string | null }; tasks_added?: number }>("POST", "/api/lists", body),
   plate: () => call<Plate>("GET", "/api/lists/plate"),
   changes: (since: string | null) => call<{ at: string; changed: boolean }>("GET", `/api/lists/changes${since ? `?since=${enc(since)}` : ""}`),
   getList: (id: string) => call<ListDetail>("GET", `/api/lists/${enc(id)}`),
@@ -251,6 +282,18 @@ export const listsApi = {
   react: (taskId: string, emoji: ReactionEmoji) => call<{ task: TaskView }>("POST", `/api/lists/tasks/${enc(taskId)}/react`, { emoji }),
   /** Your friends and would-be friends (the member picker offers the mutual ones). */
   friends: () => call<{ peers: TrustPeer[] }>("GET", "/api/trust"),
+
+  /* Phase 3: templates and the daily summary. Saving, deleting and the summary are cookie-only. */
+
+  /** The four built-ins, then the templates you saved. */
+  templates: () => call<{ templates: TemplateView[] }>("GET", "/api/lists/templates"),
+  /** Save a list's unfinished tasks that you or your agents wrote. `skipped`: unfinished tasks other people wrote, left out. */
+  saveTemplate: (listId: string, body: { name?: string; emoji?: string | null } = {}) =>
+    call<{ template: TemplateView; skipped: number }>("POST", "/api/lists/templates", { list_id: listId, ...body }),
+  deleteTemplate: (id: string) => call<{ deleted: true }>("DELETE", `/api/lists/templates/${enc(id)}`),
+  preferences: () => call<{ preferences: ListsPreferences }>("GET", "/api/lists/preferences"),
+  updatePreferences: (body: { digest?: "off" | "daily"; digest_hour?: number; timezone?: string | null }) =>
+    call<{ preferences: ListsPreferences }>("PATCH", "/api/lists/preferences", body),
 };
 
 export const errorText = (e: unknown) => (e instanceof ListsError ? e.message : "Something went wrong. Try again.");
@@ -258,43 +301,37 @@ export const errorText = (e: unknown) => (e instanceof ListsError ? e.message : 
 /* -------------------------------- freshness -------------------------------- */
 
 /**
- * Poll /api/lists/changes every 10 seconds while the page is visible and call
- * `onChange` when anything the person can see changed. The first poll runs
- * even in a background tab and always counts as a change, so the hook also
- * does the initial load. Phase 3 swaps this for a live stream.
+ * The page's one feed: the live stream (GET /api/lists/stream, cookie-only
+ * SSE) when the browser has EventSource, falling back to polling
+ * /api/lists/changes every 10 seconds while the page is visible whenever the
+ * stream isn't there. Shared by everything on the page, so a tab holds one
+ * stream however many components listen (the server allows two per account).
+ */
+const sharedFeed = createSharedFeed((onChange) =>
+  createListsFeed({
+    onChange,
+    fetchChanges: (since) => listsApi.changes(since),
+    openStream: typeof window !== "undefined" && typeof window.EventSource === "function" ? () => new EventSource(STREAM_URL) : null,
+    isVisible: () => typeof document === "undefined" || document.visibilityState === "visible",
+    watchVisibility: (fn) => {
+      document.addEventListener("visibilitychange", fn);
+      return () => document.removeEventListener("visibilitychange", fn);
+    },
+  }),
+);
+
+/**
+ * Call `onChange` whenever anything the person can see changed, through the
+ * live stream or, when it isn't available, the 10-second poll. It also runs
+ * once at the start, even in a background tab, so the hook does the initial
+ * load.
  */
 export function useListChanges(onChange: () => void, enabled = true) {
   const latest = useRef(onChange);
   useEffect(() => { latest.current = onChange; }, [onChange]);
   useEffect(() => {
     if (!enabled) return;
-    let since: string | null = null;
-    let busy = false;
-    let stopped = false;
-    const tick = async () => {
-      // The first call always runs (it's the initial load); after that, only while someone can see the page.
-      if (busy || stopped || (since && document.visibilityState !== "visible")) return;
-      busy = true;
-      try {
-        const r = await listsApi.changes(since);
-        if (!stopped && (r.changed || !since)) latest.current();
-        since = r.at;
-      } catch {
-        // Offline or signed out: keep what's on screen and try again next tick.
-        if (!since && !stopped) latest.current();
-      } finally {
-        busy = false;
-      }
-    };
-    void tick();
-    const timer = window.setInterval(tick, 10_000);
-    const onVisible = () => { if (document.visibilityState === "visible") void tick(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      stopped = true;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
+    return sharedFeed.subscribe(() => latest.current());
   }, [enabled]);
 }
 

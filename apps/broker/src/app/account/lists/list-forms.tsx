@@ -1,14 +1,15 @@
 "use client";
 /**
- * The Lists tab's forms: start a list, change a list's settings (name, emoji,
- * who is on it, your own settings there, archive or leave, which of your
- * agents may work it), and quick add.
+ * The Lists tab's forms: start a list (blank or from a template), change a
+ * list's settings (name, emoji, who is on it, your own settings there, which
+ * of your agents may work it, duplicate it or save it as a template, archive
+ * or leave), and quick add.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Chip, HealthDot } from "@/components/ui/primitives";
 import {
   listsApi, errorText, agentActivity, dueInfo, RUNTIME_LABEL,
-  type AccountAgent, type Access, type ListDetail, type MemberView, type YourAgent,
+  type AccountAgent, type Access, type ListDetail, type MemberView, type TemplateView, type YourAgent,
 } from "./api";
 import { parseQuickAdd, assigneeParam, assigneeChip, agentSlug, bareHandle } from "./quick-add.mjs";
 import { MembersPanel, MySettings, LeaveList } from "./members";
@@ -37,8 +38,50 @@ export function NewListForm({ onCreated, onCancel }: { onCreated: (id: string) =
   const [emoji, setEmoji] = useState("");
   const [agents, setAgents] = useState<AccountAgent[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [templates, setTemplates] = useState<TemplateView[] | null>(null);
+  const [templateId, setTemplateId] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    listsApi.templates()
+      .then((r) => { if (live) setTemplates(r.templates); })
+      .catch(() => { if (live) setTemplates([]); });
+    return () => { live = false; };
+  }, []);
+
+  const chosen = templates?.find((t) => t.id === templateId) ?? null;
+  const builtins = (templates ?? []).filter((t) => t.kind === "builtin");
+  const saved = (templates ?? []).filter((t) => t.kind === "saved");
+
+  // A template names the list (and picks its emoji) unless you've already typed your own.
+  const pick = (id: string) => {
+    const next = templates?.find((t) => t.id === id) ?? null;
+    if (!name.trim() || (chosen && name === chosen.name)) setName(next?.name ?? "");
+    if (!emoji || (chosen && emoji === (chosen.emoji ?? ""))) setEmoji(next?.emoji ?? "");
+    setTemplateId(id);
+    setConfirmDelete(false);
+    setErr("");
+  };
+
+  const deleteTemplate = async () => {
+    if (!chosen || chosen.kind !== "saved") return;
+    setBusy(true); setErr("");
+    try {
+      await listsApi.deleteTemplate(chosen.id);
+      setTemplates((ts) => ts?.filter((t) => t.id !== chosen.id) ?? ts);
+      if (name === chosen.name) setName("");
+      if (emoji === (chosen.emoji ?? "")) setEmoji("");
+      setTemplateId("");
+      setConfirmDelete(false);
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   useEffect(() => {
     let live = true;
@@ -65,7 +108,9 @@ export function NewListForm({ onCreated, onCancel }: { onCreated: (id: string) =
     if (!name.trim()) { setErr("Give the list a name."); return; }
     setBusy(true); setErr("");
     try {
-      const r = await listsApi.createList({ name: name.trim(), ...(emoji.trim() ? { emoji: emoji.trim() } : {}), agents: [...picked] });
+      const r = await listsApi.createList({
+        name: name.trim(), emoji: emoji.trim(), agents: [...picked], ...(templateId ? { template: templateId } : {}),
+      });
       onCreated(r.list.id);
     } catch (e) {
       setErr(errorText(e));
@@ -76,7 +121,36 @@ export function NewListForm({ onCreated, onCancel }: { onCreated: (id: string) =
 
   return (
     <form className="ds-lists-newform" onSubmit={(e) => { e.preventDefault(); void create(); }}>
-      <label className="ds-label" htmlFor="ds-newlist-name" style={{ marginTop: 0 }}>Name</label>
+      <label className="ds-label" htmlFor="ds-newlist-template" style={{ marginTop: 0 }}>Start from</label>
+      <select id="ds-newlist-template" className="ds-select" style={{ width: "100%" }} value={templateId} disabled={templates === null} onChange={(e) => pick(e.target.value)}>
+        <option value="">A blank list</option>
+        {builtins.length > 0 && (
+          <optgroup label="Templates">
+            {builtins.map((t) => <option key={t.id} value={t.id}>{t.emoji ? `${t.emoji} ` : ""}{t.name}</option>)}
+          </optgroup>
+        )}
+        {saved.length > 0 && (
+          <optgroup label="Your templates">
+            {saved.map((t) => <option key={t.id} value={t.id}>{t.emoji ? `${t.emoji} ` : ""}{t.name}</option>)}
+          </optgroup>
+        )}
+      </select>
+      {chosen && (
+        <p className="ds-fine" style={{ margin: "6px 0 0" }}>
+          {chosen.count} {chosen.count === 1 ? "task" : "tasks"}: {chosen.preview.join(", ")}{chosen.count > chosen.preview.length ? ", and more" : ""}.
+          {chosen.kind === "saved" && !confirmDelete && <> <button type="button" className="ds-link" style={{ fontSize: 12 }} onClick={() => setConfirmDelete(true)}>Delete this template</button></>}
+        </p>
+      )}
+      {chosen?.kind === "saved" && confirmDelete && (
+        <div className="ds-inline-form" role="alert">
+          <p style={{ margin: 0, fontSize: 13 }}>Delete the template &ldquo;{chosen.name}&rdquo;? Lists you already started from it stay as they are.</p>
+          <div className="ds-actions">
+            <button type="button" className="ds-btn danger ds-sm" disabled={busy} onClick={() => void deleteTemplate()}>{busy ? "Deleting…" : "Delete template"}</button>
+            <button type="button" className="ds-btn ghost ds-sm" disabled={busy} onClick={() => setConfirmDelete(false)}>Keep it</button>
+          </div>
+        </div>
+      )}
+      <label className="ds-label" htmlFor="ds-newlist-name">Name</label>
       <input id="ds-newlist-name" className="ds-input" autoFocus maxLength={80} placeholder="e.g. House, Work, Vegas trip" value={name} onChange={(e) => setName(e.target.value)} />
       <label className="ds-label" htmlFor="ds-newlist-emoji">Emoji</label>
       <EmojiPicker id="ds-newlist-emoji" value={emoji} onChange={setEmoji} />
@@ -107,6 +181,78 @@ export function NewListForm({ onCreated, onCancel }: { onCreated: (id: string) =
   );
 }
 
+/* ------------------------- duplicate, save as template ------------------------ */
+
+/**
+ * "Duplicate list" (anyone on the list: a new list of your own with its
+ * unfinished tasks, each still credited to whoever wrote it) and "Save as
+ * template" (the unfinished tasks you or your agents wrote).
+ */
+function CopyList({ detail, onDuplicated }: { detail: ListDetail; onDuplicated: (id: string) => void }) {
+  const l = detail.list;
+  const [saving, setSaving] = useState(false);
+  const [templateName, setTemplateName] = useState(l.name);
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+  const shared = detail.members.length > 1;
+
+  const duplicate = async () => {
+    setBusy("duplicate"); setErr(""); setNote("");
+    try {
+      const r = await listsApi.createList({ duplicate: l.id });
+      onDuplicated(r.list.id);
+    } catch (e) {
+      setErr(errorText(e));
+      setBusy("");
+    }
+  };
+
+  const save = async () => {
+    if (!templateName.trim()) { setErr("Give the template a name."); return; }
+    setBusy("save"); setErr(""); setNote("");
+    try {
+      const r = await listsApi.saveTemplate(l.id, { name: templateName.trim() });
+      const left = r.skipped ? ` ${r.skipped} ${r.skipped === 1 ? "task" : "tasks"} other people wrote stayed out: a template keeps only your own.` : "";
+      setNote(`Saved “${r.template.name}” with ${r.template.count} ${r.template.count === 1 ? "task" : "tasks"}. Pick it under Start from when you make a new list.${left}`);
+      setSaving(false);
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <>
+      <div className="ds-label" style={{ marginTop: 18 }}>Copy this list</div>
+      <p className="ds-fine" style={{ margin: "0 0 8px" }}>
+        Duplicate makes a new list of your own with the tasks that aren&apos;t finished: titles, notes and order, not who they&apos;re for, comments or history.
+        {shared ? " Each task still shows who wrote it, so a friend's task still needs your OK before your agents take it." : ""}
+      </p>
+      <div className="ds-actions">
+        <button className="ds-btn ghost ds-sm" disabled={!!busy} onClick={() => void duplicate()}>{busy === "duplicate" ? "Duplicating…" : "Duplicate list"}</button>
+        {!saving && <button className="ds-btn ghost ds-sm" disabled={!!busy} onClick={() => { setSaving(true); setTemplateName(l.name); setNote(""); }}>Save as template</button>}
+      </div>
+      {saving && (
+        <form className="ds-inline-form" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+          <label className="ds-label" htmlFor={`tpl-${l.id}`} style={{ marginTop: 0 }}>Template name</label>
+          <input id={`tpl-${l.id}`} className="ds-input" maxLength={80} autoFocus value={templateName} onChange={(e) => setTemplateName(e.target.value)} />
+          <p className="ds-fine" style={{ margin: "6px 0 0" }}>
+            Saves the unfinished tasks you or your agents wrote, with their notes.{shared ? " Tasks other people wrote stay out." : ""} Only you and your agents can use it.
+          </p>
+          <div className="ds-actions">
+            <button className="ds-btn ds-sm" type="submit" disabled={!!busy}>{busy === "save" ? "Saving…" : "Save template"}</button>
+            <button className="ds-btn ghost ds-sm" type="button" disabled={!!busy} onClick={() => setSaving(false)}>Cancel</button>
+          </div>
+        </form>
+      )}
+      {err && <p className="ds-err" role="alert">{err}</p>}
+      {note && !err && <p className="ds-fine" role="status" style={{ color: "var(--ds-ok)" }}>{note}</p>}
+    </>
+  );
+}
+
 /* ------------------------------- list settings ------------------------------ */
 
 const ACCESS_OPTIONS: { value: Access; label: string; title: string }[] = [
@@ -115,8 +261,8 @@ const ACCESS_OPTIONS: { value: Access; label: string; title: string }[] = [
   { value: "work", label: "Work", title: "Can add, pick up and finish tasks" },
 ];
 
-export function ListSettings({ detail, focusMembers, onChanged, onLeft }: {
-  detail: ListDetail; focusMembers?: boolean; onChanged: () => void; onLeft: () => void;
+export function ListSettings({ detail, focusMembers, onChanged, onLeft, onDuplicated }: {
+  detail: ListDetail; focusMembers?: boolean; onChanged: () => void; onLeft: () => void; onDuplicated: (id: string) => void;
 }) {
   const l = detail.list;
   const isOwner = l.your_role === "owner";
@@ -187,6 +333,8 @@ export function ListSettings({ detail, focusMembers, onChanged, onLeft }: {
           </div>
         );
       })}
+
+      <CopyList detail={detail} onDuplicated={onDuplicated} />
 
       {isOwner && (
         <>
