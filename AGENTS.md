@@ -47,3 +47,9 @@ Always pass `_CLOUDSQL_INSTANCE` (omitting it strips the DB binding). In
 PowerShell, quote the whole `--substitutions=...` value or the comma splits it.
 `--set-env-vars` in `cloudbuild.yaml` **replaces** the whole Cloud Run env every
 deploy, so keep the full required set listed there.
+
+The image build checks the skill files against `apps/broker/public/skill.sha256`
+(`generate-skill-manifest.mjs --check`) and fails if they differ. On a Windows
+checkout made before `.gitattributes` pinned `skill/*.md` to LF, git leaves the
+old CRLF copies in place and reports them clean, so the build fails there. Refresh
+them once with `Remove-Item skill\*.md; git checkout -- skill` and re-run.

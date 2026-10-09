@@ -12,14 +12,14 @@
 // the artifact host (back-channel.app / Cloud Run). A same-origin hash (e.g.
 // serving a hash file from back-channel.app right next to the content it
 // hashes) gives near-zero protection: an attacker who can rewrite the served
-// skill content can trivially rewrite the served hash to match. This repo`'s
+// skill content can trivially rewrite the served hash to match. This repo's
 // public GitHub mirror (raw.githubusercontent.com/skyflyt/back-channel) is a
 // genuinely separate origin/infra -- compromising Cloud Run does not give an
 // attacker write access to GitHub, and vice versa. install.sh fetches the
 // expected hash from GitHub raw and the content from back-channel.app, then
 // cross-checks: compromising either origin ALONE is no longer sufficient.
 //
-// This script is the "regenerate, don`'t hand-maintain" half of that story. It
+// This script is the "regenerate, don't hand-maintain" half of that story. It
 // hashes the CANONICAL skill source files (skill/SKILL.md, skill/REFERENCE.md
 // at the repo root -- the exact files apps/broker/src/app/skill/route.ts and
 // .../skill/reference/route.ts read verbatim with no transform) and writes
@@ -32,13 +32,22 @@
 // PR description for SEC-4): generating the file locally or in CI is not
 // enough -- the manifest must be committed and pushed to the `main` branch on
 // GitHub so raw.githubusercontent.com serves the fresh hash. That push is a
-// manual (or CI-on-merge) release step; there`'s no way to make GitHub publish
-// a file this repo hasn`'t pushed there. Until that push lands, install.sh`'s
+// manual (or CI-on-merge) release step; there's no way to make GitHub publish
+// a file this repo hasn't pushed there. Until that push lands, install.sh's
 // cross-origin check will see a stale GitHub hash and refuse to install,
 // which is the fail-closed behavior we want -- but it means: whoever bumps
 // skill/SKILL.md or skill/REFERENCE.md MUST run this script and push
 // apps/broker/public/skill.sha256 to main as part of that same change (or in
 // immediate CI-driven follow-up) or installs will start failing loudly.
+//
+// LINE ENDINGS (2026-10-09): the manifest must hash the git blob bytes, which
+// are LF. .gitattributes pins skill/*.md to `text eol=lf`, but a checkout made
+// before that rule existed keeps its CRLF working files (git does not rewrite
+// them, and `git status` reports clean). Hashing those produced a CRLF manifest
+// that only a Windows-built image could satisfy. So this script refuses any CR
+// byte in the skill files, in both modes; the Dockerfile runs --check before
+// `npm run build`, so an image can't ship skill bytes the committed manifest
+// doesn't describe, whichever machine builds it.
 //
 // Usage: node apps/broker/scripts/generate-skill-manifest.mjs [--check]
 //   (no flags)  regenerate apps/broker/public/skill.sha256 from the current
@@ -84,6 +93,17 @@ for (const f of files) {
     process.exit(1);
   }
   const buf = readFileSync(f.path); // raw bytes -- must match what the routes serve
+  if (buf.includes(0x0d)) {
+    console.error(
+      `[generate-skill-manifest] ${f.path} contains CR bytes (CRLF line endings).\n` +
+        "The skill is served byte-for-byte and the published manifest must hash the LF\n" +
+        "git blob. This checkout predates the `skill/*.md text eol=lf` rule in\n" +
+        ".gitattributes, so git left the old CRLF copy in place. Refresh it from git:\n" +
+        "  PowerShell:  Remove-Item skill\\*.md; git checkout -- skill\n" +
+        "  sh:          rm skill/*.md && git checkout -- skill",
+    );
+    process.exit(1);
+  }
   const hash = sha256Hex(buf);
   // sha256sum-compatible format: "<hash>  <name>" (two spaces, text mode)
   lines.push(`${hash}  ${f.key}`);

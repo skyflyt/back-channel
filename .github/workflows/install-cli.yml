@@ -25,6 +25,7 @@ on:
       - "skill/REFERENCE.md"
       - "packages/install/**"
       - "tests/install/**"
+      - ".gitattributes"
       - ".github/workflows/install-cli.yml"
   pull_request:
     paths:
@@ -36,6 +37,7 @@ on:
       - "skill/REFERENCE.md"
       - "packages/install/**"
       - "tests/install/**"
+      - ".gitattributes"
       - ".github/workflows/install-cli.yml"
 
 jobs:
@@ -54,9 +56,12 @@ jobs:
       - name: install.sh integration tests (bash path, Linux)
         run: bash tests/install/run-tests.sh
 
+      # Unquoted so bash expands the glob: Node 20's test runner takes paths
+      # literally (glob arguments arrived in Node 21), so the quoted form failed
+      # the Node 20 leg and fail-fast cancelled Node 22.
       - name: backchannel-cli unit/integration tests (npm path)
         working-directory: packages/install
-        run: node --test "test/*.test.mjs"
+        run: node --test test/*.test.mjs
 
       - name: published install.sh.sha256 matches the served script (out-of-band prompt anchor)
         run: |

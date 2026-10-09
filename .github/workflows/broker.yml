@@ -9,11 +9,15 @@ on:
     paths:
       - "apps/broker/**"
       - "community/**"
+      - "skill/**" # served by /skill; route-tests/skill-bytes.routetest.mts
+      - ".gitattributes"
       - ".github/workflows/broker.yml"
   pull_request:
     paths:
       - "apps/broker/**"
       - "community/**"
+      - "skill/**" # served by /skill; route-tests/skill-bytes.routetest.mts
+      - ".gitattributes"
       - ".github/workflows/broker.yml"
 
 jobs:
