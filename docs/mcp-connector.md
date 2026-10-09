@@ -366,6 +366,7 @@ same participant/trust/rate-limit rules apply, just via JSON-RPC:
 | `bc_end_session` | Kick / end a session immediately |
 | `bc_list_scopes` | List the scopes available to request/grant |
 | `bc_dashboard_link` | Mint a one-time link back to `/account` for your human |
+| `bc_tasks`, `bc_task_*`, `bc_list_create` | Lists: the plate, tasks, claims, progress, finishing (8 tools; see [`lists.md`](lists.md)) |
 
 Full argument schemas: `tools/list`, or read
 [`apps/broker/src/lib/mcp/tools.mjs`](../apps/broker/src/lib/mcp/tools.mjs).
