@@ -226,13 +226,37 @@ try{
  const supportRedeemed=await Promise.all((await together(3,()=>supportPass())).map(p=>redeem(p,'support',racers[winner].fp)));
  assert.deepEqual(statuses(supportRedeemed),[200,200,409],'the support budget (2) holds under contention');
  const supportLeaseIds=await Promise.all(supportRedeemed.filter(r=>r.status===200).map(async r=>(await r.json()).leaseId as string));
+ // The support relay path (vault design/support-relay-contract.md §2): two of the account's own devices race four requests
+ // for the issuer connector's pass to this running session. Exactly one device is pinned (its two requests get passes,
+ // the other's two get 409 support_client_pinned), never a 503 or a half pin; then its passes redeemed at once admit
+ // exactly the support-client budget (2), beside the helper's own legs.
+ const issuers:{deviceId:string;credential:string;key:Key}[]=[];
+ for(let i=0;i<2;i++){const key=p256(),res=await exchange(await deviceCode('remote'),'remote',key);assert.equal(res.status,200);issuers.push({...(await res.json()) as {deviceId:string;credential:string},key});}
+ const clientPass=(d:typeof issuers[number])=>ab.issueSupportClientPass(call('POST','/relay/support-client-passes',d.credential,{sessionId:helper.sessionId}));
+ const pinRace=await together(4,i=>clientPass(issuers[i%2]));
+ assert.deepEqual(statuses(pinRace),[200,200,409,409],'two devices racing for one session: one is pinned, the other refused, no 503');
+ const pinned=await prisma.remoteAppSession.findUniqueOrThrow({where:{id:helper.sessionId}});
+ const pinnedAt=issuers.findIndex(d=>d.deviceId===pinned.supportClientDeviceId);
+ assert.ok(pinnedAt>=0,'pinned to one of the two devices');
+ assert.equal(pinned.supportClientKeySha256,issuers[pinnedAt].key.fp,'its key, with it');
+ const raceBodies=await Promise.all(pinRace.map(r=>r.json() as Promise<{pass?:string;host?:string;executorSecretSha256?:string|null;error?:string}>));
+ assert.ok(pinRace.every((r,i)=>r.status===200?i%2===pinnedAt:raceBodies[i].error==='support_client_pinned'),'every pass went to the pinned device');
+ assert.ok(raceBodies.filter(b=>b.pass).every(b=>b.host===racers[winner].fp&&b.executorSecretSha256===pinned.executorSecretHash),"each names the helper's key and the session's secret hash");
+ const issuerPasses=[...raceBodies.flatMap(b=>b.pass?[b.pass]:[]),(await (await clientPass(issuers[pinnedAt])).json()).pass as string];
+ const clientRedeemed=await Promise.all(issuerPasses.map(p=>redeem(p,'support-client',issuers[pinnedAt].key.fp)));
+ assert.deepEqual(statuses(clientRedeemed),[200,200,409],'the support-client budget (2) holds under contention');
+ assert.equal(await leases('support-client'),2);
+ assert.equal(await leases('support'),2,"and the helper's legs are never touched");
+ console.log('PASS: two devices racing for the issuer pin pin exactly one, no 503; the support-client budget holds under contention');
  const supportStopReq=new NextRequest(`https://back-channel.app/api/support/invites/${invite.id}/stop`,{method:'POST',headers:{'content-type':'application/json',cookie:`bc_session=${rawCookie}; bc_csrf=tok`,'x-bc-csrf':'tok'}});
  const [renewedDuringStop,supportStopped]=await Promise.all([together(4,i=>ab.renewLease(relayCall('renew',{leaseId:supportLeaseIds[i%2]}))),supportRoute(supportStopReq,['invites',invite.id,'stop'])]);
  assert.equal(supportStopped.status,200,'the stop commits');
  assert.ok(renewedDuringStop.every(r=>[200,403,404].includes(r.status)),`renewals racing a support stop never 503: ${statuses(renewedDuringStop)}`);
  assert.equal(await leases('support'),0,'no support lease outlives the stop');
+ assert.equal(await leases('support-client'),0,"nor any of the issuer connector's");
  assert.equal((await prisma.remoteAppSession.findUniqueOrThrow({where:{id:helper.sessionId}})).endReason,'user_stop');
  assert.equal((await ab.issueSupportPass(call('POST','/relay/support-passes',helper.credential,{}))).status,403,'a stopped support session never reopens');
+ assert.equal((await clientPass(issuers[pinnedAt])).status,403,'not for the issuer either');
  console.log('PASS: the helper\'s support lease keeps its own budget, and the person\'s Stop racing renewals leaves none alive');
 
  // The job's schema comes from `prisma db push`, which carries none of the hand-written CHECKs. Replay the shipped
@@ -246,11 +270,11 @@ try{
   try{
    for(const t of ['AppBridgePass','AppBridgeLease'])await scratch.$executeRawUnsafe(`CREATE TABLE "${t}" ("id" TEXT PRIMARY KEY,"purpose" TEXT NOT NULL,"accountId" TEXT NOT NULL,
     "hostDeviceId" TEXT NOT NULL,"remoteDeviceId" TEXT,"enrollmentId" TEXT,"expiresAt" TIMESTAMP(3) NOT NULL,CONSTRAINT "${t}_purpose_check" CHECK ("purpose" IN ('session','presence')))`);
-   for(const name of ['20261009220000_remote_app_sessions','20261010090000_remote_support']){
+   for(const name of ['20261009220000_remote_app_sessions','20261010090000_remote_support','20261011090000_support_relay_path']){
     const sql=readFileSync(new URL(`../prisma/migrations/${name}/migration.sql`,import.meta.url),'utf8').split('\n').map(l=>l.replace(/--.*$/,'')).join('\n');
     for(const stmt of sql.split(';').map(x=>x.trim()).filter(Boolean))await scratch.$executeRawUnsafe(stmt);
    }
-   console.log('PASS: the remote_app_sessions and remote_support migrations apply to PostgreSQL');
+   console.log('PASS: the remote_app_sessions, remote_support and support_relay_path migrations apply to PostgreSQL');
    const fp='AB'.repeat(32),cred='c'.repeat(64),relayId=`support_${'A'.repeat(22)}`;
    const session=(over:Record<string,string>={})=>{
     const v:Record<string,string>={id:`'${randomUUID()}'`,accountId:"'a'",kind:"'support'",hostDeviceId:`'${relayId}'`,agentTokenId:"'g'",goal:"'Fix the printer'",appAllowList:"'{}'",
@@ -299,6 +323,26 @@ try{
    await no(`INSERT INTO "AppBridgePass" ("id","purpose","accountId","hostDeviceId","expiresAt") VALUES ('p2','support','a','${relayId}',now())`,'always');
    await no(`INSERT INTO "AppBridgeLease" ("id","purpose","accountId","hostDeviceId","remoteAppSessionId","expiresAt") VALUES ('l1','presence','a','h','s',now())`,'and nothing else does');
    console.log('PASS: the support CHECK constraints hold: 45 minutes, pinned keys, helper consent, no app list, hashed codes, bound passes');
+   // 20261011090000_support_relay_path: the issuer pin, the executor secret's hash, and 'support-client' passes and leases.
+   const issuerId="'issuerLaptop0000000000'",issuerKey=`'${'CD'.repeat(32)}'`,secretHash=`'${'5'.repeat(64)}'`;
+   await ok(session({supportClientDeviceId:issuerId,supportClientKeySha256:issuerKey,executorSecretHash:secretHash,supportCredentialHash:`'${'9'.repeat(64)}'`}),'a support session with its issuer pinned and a secret hash');
+   await ok(session({...running,executorSecretHash:secretHash,executorSecretIssuedAt:'now()',supportCredentialHash:`'${'8'.repeat(64)}'`}),'a secret handed out');
+   await ok(session({...agent,executorSecretHash:secretHash}),'an agent session (v1.1) has a secret hash too');
+   await no(session({...agent,supportClientDeviceId:issuerId,supportClientKeySha256:issuerKey}),'only a support session has an issuer pin');
+   await no(session({supportClientKeySha256:issuerKey}),'the pin is a device and its key together');
+   await no(session({supportClientDeviceId:issuerId}),'never a device without its key');
+   await no(session({supportClientDeviceId:issuerId,supportClientKeySha256:`'${'cd'.repeat(32)}'`}),'the issuer key is uppercase hex');
+   await no(session({executorSecretHash:`'${'5'.repeat(63)}'`}),'the secret hash is a sha256 hex digest');
+   await no(session({executorSecretHash:`'${'E'.repeat(64)}'`}),'in lowercase hex');
+   await no(session({executorSecretHash:`'${['abx','x'.repeat(43)].join('_')}'`}),'never the secret itself');
+   await no(session({...running,executorSecretIssuedAt:'now()'}),'a secret handed out always has a hash');
+   await ok(`INSERT INTO "AppBridgePass" ("id","purpose","accountId","hostDeviceId","remoteDeviceId","remoteAppSessionId","expiresAt") VALUES ('p3','support-client','a','${relayId}',${issuerId},'s',now())`,'a support-client pass names its session and the issuer device');
+   await ok(`INSERT INTO "AppBridgeLease" ("id","purpose","accountId","hostDeviceId","remoteDeviceId","remoteAppSessionId","expiresAt") VALUES ('l2','support-client','a','${relayId}',${issuerId},'s',now())`,'and so does its lease');
+   await no(`INSERT INTO "AppBridgePass" ("id","purpose","accountId","hostDeviceId","remoteDeviceId","expiresAt") VALUES ('p4','support-client','a','${relayId}',${issuerId},now())`,'always its session');
+   await no(`INSERT INTO "AppBridgeLease" ("id","purpose","accountId","hostDeviceId","remoteAppSessionId","expiresAt") VALUES ('l3','support-client','a','${relayId}','s',now())`,'always the issuer device');
+   await no(`INSERT INTO "AppBridgePass" ("id","purpose","accountId","hostDeviceId","remoteDeviceId","enrollmentId","remoteAppSessionId","expiresAt") VALUES ('p5','support-client','a','${relayId}',${issuerId},'enr','s',now())`,'never an enrollment');
+   await no(`INSERT INTO "AppBridgeLease" ("id","purpose","accountId","hostDeviceId","remoteDeviceId","remoteAppSessionId","expiresAt") VALUES ('l4','support-host','a','${relayId}',${issuerId},'s',now())`,'purposes are still fixed');
+   console.log('PASS: the support relay path CHECK constraints hold: support-only issuer pins, key and device together, hashed secrets, bound support-client passes and leases');
   }finally{
    await scratch.$disconnect();
    await prisma.$executeRawUnsafe('DROP SCHEMA IF EXISTS support_migration CASCADE');
