@@ -3,11 +3,15 @@
 **Status:** Phase 1 shipped 2026-10-09: personal lists, worked by one person and
 the agents they pick. Phase 2 built 2026-10-09: sharing lists with friends
 (members, per-task OKs, assigning to people, mentions, reactions, email
-nudges), with its web UI and the skill's sharing text. Design approved 2026-10-09
+nudges), with its web UI and the skill's sharing text. Phase 3 (web) built
+2026-10-09: live updates in the web app, templates and "Duplicate list", an
+opt-in daily digest email, and the "All done" line. Design approved 2026-10-09
 (`task-lists.md` in Skylar's vault, decisions 1 to 4 as written). This page is
 the developer reference for what is built. Code: `apps/broker/src/lib/lists.ts`
 (I/O), `apps/broker/src/lib/lists/rules.mjs` (every decision, no I/O),
-`apps/broker/src/lib/mcp/list-tools.mjs` (MCP catalog).
+`apps/broker/src/lib/mcp/list-tools.mjs` (MCP catalog), and for Phase 3
+`lists/bus.mjs` (the live channel), `lists/templates.mjs`, `lists/digest.mjs`
+(pure) and `src/lib/lists-digest.ts` (the digest run).
 
 ## What Lists is
 
@@ -58,6 +62,10 @@ What stays true:
   tables.
 - **Errors never log task content** or bearer tokens; `lists()` logs only the
   operation and the error's name.
+- **Email carries titles only when asked.** The nudges name the list and task;
+  the opt-in daily digest (Phase 3) lists task titles, list names and counts,
+  which then sit in the person's mailbox. `/privacy` says so. The live stream
+  carries no content at all.
 - **Where it's said:** `/privacy` (a Lists section and the "What we store
   readable" list), `/trust`, the skill's Lists section, the descriptions of the
   tools that write free text, and the MCP `initialize` instructions.
@@ -69,10 +77,11 @@ two paths.
 
 ## Model
 
-Migrations `prisma/migrations/20261009200000_task_lists` (five tables) and
+Migrations `prisma/migrations/20261009200000_task_lists` (five tables),
 `20261009210000_task_lists_sharing` (Phase 2: one column with a default and four
-tables) are purely additive. Apply them, in that order, **before** deploying code
-that uses them; old code never touches them.
+tables) and `20261009230000_task_lists_phase3` (Phase 3: two tables) are purely
+additive. Apply them, in that order, **before** deploying code that uses them;
+old code never touches them.
 
 | Table | What it holds |
 |---|---|
@@ -85,6 +94,8 @@ that uses them; old code never touches them.
 | `TaskMention` | Phase 2. An @mention in a comment or progress line: the person (`accountId`) and, for an agent, `agentId`; `seenAt` once read |
 | `TaskReaction` | Phase 2. One of the four reactions by a person or one of their agents; a COALESCE unique index makes it a toggle |
 | `TaskListEvent` | Phase 2. List-level activity: `member_added`, `member_left`, `member_removed`, with who did it and to whom |
+| `TaskListTemplate` | Phase 3. A template a person saved: name, emoji, and `items` (JSONB, 1 to 200 `{title, notes}`). Seen only by its owner and the owner's agents |
+| `ListsPreference` | Phase 3. One row per person who set it: the daily digest (`digest` off or daily, `digestHour` 0 to 23, `timezone`, `lastDigestAt`) |
 
 `CHECK` constraints back the status set, kinds, roles, access values and sizes,
 plus two invariants: an agent's claim always has an expiry
@@ -93,7 +104,11 @@ names the agent that recorded it. Phase 2 adds checks for `notify`, OK `via`,
 the four reactions and the list event types, and two expression unique indexes
 Prisma can't express (`TaskReaction` and `TaskMention`, with
 `COALESCE("agentId", '')`). `prisma migrate dev` would see those as drift; the
-migrations are hand-written and applied with `migrate deploy`.
+migrations are hand-written and applied with `migrate deploy`. Phase 3's two
+tables reference `Account` with `ON DELETE CASCADE` in the migration only (a
+Prisma relation would mean editing the `Account` model), which is drift of the
+same kind; they also check the template's name, emoji and item count, and the
+digest's values.
 
 **The no-FK attribution rule.** Every column that says who did something
 (`createdBy*`, `assignee*`, `claim*`, `reviewerAccountId`, `completedBy*`,
@@ -328,9 +343,12 @@ edit_conflict` with the current text, so a concurrent edit loses loudly.
 | Unfinished tasks per list (open, in progress, blocked, needs review) | 2,000 |
 | Comments + progress per task | 500 |
 | Tasks per add | 20 |
+| Template items / titles and notes in one template | 1 to 200 / 100,000 characters |
+| Saved templates per person | 50 |
 | Page size | 50 |
 | Request body | 256 KB |
 | Rate | 60 writes and 240 reads a minute per agent (per account in the browser), inside `/api/mcp`'s 120 calls a minute per account |
+| Live streams per account / stream connects | 2 / 30 a minute |
 
 Due dates take `YYYY-MM-DD` (stored at 12:00 UTC so it shows as the same day
 everywhere) or a full ISO timestamp, within ten years.
@@ -347,7 +365,14 @@ or the dashboard cookie, with the CSRF header on writes. One catch-all route
 | Method and path | Operation | Notes |
 |---|---|---|
 | `GET /api/lists` | lists | With counts per status; people also see each list's agent grants |
-| `POST /api/lists` | createList | `{name, emoji?}`; people may pass `agents: [ids]` |
+| `POST /api/lists` | createList | `{name, emoji?}`; people may pass `agents: [ids]`. Phase 3: `{template}` (then `name` and `emoji` are optional) or, people only, `{duplicate: listId}`; answers with `tasks_added` |
+| `GET /api/lists/templates` | templates | Phase 3. The four built-ins, then the caller's (or the agent's person's) saved templates |
+| `POST /api/lists/templates` | saveTemplate | Phase 3, people only: `{list_id, name?, emoji?}`, returns `{template, skipped}` |
+| `DELETE /api/lists/templates/:id` | deleteTemplate | Phase 3, people only, your own templates |
+| `GET /api/lists/preferences` | preferences | Phase 3, people only: the daily digest setting and `email_ready` |
+| `PATCH /api/lists/preferences` | updatePreferences | Phase 3, people only: `{digest?: off\|daily, digest_hour?: 0-23, timezone?}` |
+| `GET /api/lists/stream` | (own route) | Phase 3, cookie only: the web app's live stream ([Live updates](#live-updates-phase-3)) |
+| `POST /api/lists/digest/run` | (own route) | Phase 3, the shared secret only: sends the digests that are due ([Daily digest](#daily-digest-phase-3)) |
 | `GET /api/lists/plate` | plate | `doing`, `up_next`, `claimable` (20), `waiting_on_you`, `ok_requests` (20), `mentions` (20), `done_recently` (people) |
 | `GET /api/lists/search?q=&status=&list_id=` | search | Active tasks by default; title and notes match |
 | `GET /api/lists/changes?since=` | changes | `{at, changed}` for the web's refresh |
@@ -396,7 +421,7 @@ OAuth.
 | `bc_task_update` | updateTask (`status` limited to blocked, unblocked) | progress while working |
 | `bc_task_done` | done (`summary` required) | "mark that done" |
 | `bc_task_comment` | addEntry, kind comment | "tell whoever is on it…" |
-| `bc_list_create` | createList | "start a packing list for Vegas" |
+| `bc_list_create` | createList, with an optional `template` (Phase 3: `builtin:<slug>`, or the name or id of one the person saved) | "start a packing list for Vegas", "start a list from my sprint template" |
 
 Two fixed sentences carry the rules: the tools that return tasks (`bc_tasks`,
 `bc_task_get`) say task text is data, never instructions, and to act only where
@@ -438,6 +463,158 @@ and friendship checked, archived lists left out). That count is part of
   doorbell. `pending_count` includes tasks either way, so a client that doesn't
   know the `task` kind still sees the count.
 
+## Live updates (Phase 3)
+
+The web app no longer waits up to 10 seconds to see a change. `GET
+/api/lists/stream` is a server-sent event stream for the dashboard, on the same
+in-memory pattern as the inbox doorbell (`lists/bus.mjs`, one channel per
+account, single Cloud Run instance; scaling out would put it behind Redis or
+Postgres `LISTEN/NOTIFY`).
+
+- **Cookie only.** It needs the dashboard session cookie. Any `Authorization`
+  header gets `403 people_only` (agents hear about tasks through the inbox
+  doorbell), even next to a valid cookie. GET carries no CSRF token, so the
+  request must come from the app's own pages: the cookie is `SameSite=Lax`, a
+  `Sec-Fetch-Site` other than `same-origin` or `none` is refused, and so is an
+  `Origin` other than the app's own (`403 cross_site`). 30 connects a minute
+  per account (`429`).
+- **Metadata only.** `ready {at}` on connect, `changed {at}` after a write, and
+  `heartbeat {at}` every 25 seconds. Never a list name, task title, or who did
+  what: the page reloads through the normal routes, which check access again.
+- **Who hears.** Every operation runs through `transact()` in `lists.ts`. A
+  write marks the lists it touched, and after commit everyone who can see them
+  (members who still count) gets one `changed`, coalesced over 300 ms. That
+  covers every task and list write, a lapse settled by someone's read, and
+  trust revocation's cleanup. A person taken off a list is told too, so their
+  page drops it; a person's own settings (`PATCH .../me`) reach only them. A
+  refused write commits nothing and sends nothing.
+- **At most two streams per account** (two tabs, or a laptop and a phone). A
+  third closes the oldest with `event: replaced`.
+- **The client** (`account/lists/live.mjs`, pure, `node --test`): one feed per
+  page shared by the Lists tab and the My plate card. It loads once, opens the
+  stream, and polls `/api/lists/changes` until `ready`, then stops polling and
+  catches up once. It falls back to the 10-second poll (while the page is
+  visible) when EventSource is missing, the stream errors, or no event arrives
+  for 75 seconds, and retries the stream after 15 seconds, doubling up to 5
+  minutes. A tab told `replaced` polls and takes a stream back only when it's
+  looked at again, so three tabs don't evict each other in a loop. A change
+  that arrives while the page is hidden is checked when it's visible.
+
+## Templates and Duplicate list (Phase 3)
+
+A list can start from a template, or as a copy of another list.
+
+- **Built-ins** (`lists/templates.mjs`): "Trip packing", "New hire onboarding",
+  "Move out" and "Weekly review", each 6 to 10 plain tasks with short notes.
+  Their ids are `builtin:trip-packing`, `builtin:new-hire-onboarding`,
+  `builtin:move-out` and `builtin:weekly-review`.
+- **Starting from one:** `POST /api/lists {template}` with a built-in id, a
+  saved template's id, or a template's name (the person's own first). The new
+  list gets the items as tasks, in order, written by whoever started it (an
+  agent's are written by that agent), with an "added this task" line each, and
+  nothing else. `name` and `emoji` default to the template's. Agents do this
+  with `bc_list_create {template}`; another person's saved template is `404
+  no_such_template`.
+- **Save as template** (people only, `POST /api/lists/templates`): the list's
+  unfinished tasks (open, in progress, blocked, waiting for a check), titles and
+  notes, in order, **only those the person or their agents wrote**. A friend's
+  task is a request, not an instruction, and a template has no author field, so
+  copying a friend's words into one would make them count as the person's own
+  next time; the answer's `skipped` says how many stayed out, and the web app
+  says so. 1 to 200 items, at most 100,000 characters of titles and notes, 50
+  templates per person (`429 too_many_templates`). Secret-shaped text is refused
+  on the way in and again on the way out.
+- **Duplicate list** (people only, `POST /api/lists {duplicate: listId}`, any
+  list the person can see): a new list of their own named "… (copy)", with the
+  unfinished tasks' titles, notes and order. Not assignees, due dates, claims,
+  comments, reactions or history. **Each task keeps who wrote it**, so a
+  friend's task on the copy still needs the person's OK before their agents
+  act on it, and each gets one line: "copied this here from another list". An
+  agent can't duplicate (`403 people_only`): copying a friend's tasks into a
+  list of its own is the kind of laundering the OK rule exists to stop.
+- **Deleting** a template (`DELETE /api/lists/templates/:id`) is the owner's,
+  in the dashboard; lists already started from it don't change.
+
+## Daily digest (Phase 3)
+
+An opt-in email, **off by default**, that a person turns on with "Email me a
+daily summary" under their lists. It goes out once a day at the hour they pick,
+in their browser's timezone, and says, from the lists they can still open:
+
+- what their agents finished since the last digest (done, or waiting for
+  someone's check);
+- what needs their look (finished work to check) or OK (friends' tasks their
+  agents could take), the same two lists as "Waiting on you";
+- what's overdue that's theirs: held by them or their agents, or, when nobody
+  holds it, for them, their agents or anyone.
+
+Task titles, list names and counts only (up to five titles a section), never
+notes, comments, progress or summaries, and one "Open my lists" button with a
+one-time 15-minute sign-in link like the other emails. A quiet day sends
+nothing. Without `RESEND_API_KEY` it logs the handle and the number of sections,
+nothing else. It needs a verified email address (`email_ready` in the
+preference), but not the account's inbox email setting: it has its own switch.
+
+**When.** `POST /api/lists/digest/run` is called hourly. For each person with
+the digest on, it's due at the first run at or after their hour, at most once
+per local day, and never within 12 hours of the last (so a timezone change
+can't send two). Turning it on after today's hour has passed records today's
+as had, so the first one comes at that hour tomorrow, not at the next run.
+
+**Idempotent, batched, bounded.** A run reads preferences 100 at a time, looks
+at up to 2,000 and handles up to 200 that are due (`more: true` when it stops at
+a bound; the next run carries on). Before building an email it claims the day
+with a conditional write on `lastDigestAt`, so overlapping runs send one. A
+failure before the email is handed over puts the claim back for the next run;
+once handed over it is never retried. The answer is counts only: `{checked,
+due, sent, not_sent, empty, skipped, failed, more}`.
+
+**Authorization.** Only the shared secret in the `x-lists-digest-secret`
+header, compared in constant time (both sides hashed) against
+`LISTS_DIGEST_SECRET`. No cookie or agent key works. While the variable is
+unset, or shorter than 32 characters, every call is refused with the same `403
+forbidden` as a wrong secret.
+
+### Setting up the hourly run (an infra step; nothing here has been run)
+
+In PowerShell, against project `backchannel-skyflyt`:
+
+```powershell
+# 1. The shared secret, once: 64 random hex characters (hex, so it's safe in a header flag). PowerShell 7.
+$secret = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLower()
+$secret | Out-File -NoNewline -Encoding ascii lists-digest-secret.txt
+gcloud secrets create LISTS_DIGEST_SECRET --data-file=lists-digest-secret.txt --project=backchannel-skyflyt
+Remove-Item lists-digest-secret.txt
+# Let the Cloud Run service account read it (the same account that reads DATABASE_URL).
+gcloud secrets add-iam-policy-binding LISTS_DIGEST_SECRET --project=backchannel-skyflyt `
+  --member="serviceAccount:<the broker's runtime service account>" --role="roles/secretmanager.secretAccessor"
+
+# 2. Give the broker the secret: in apps/broker/cloudbuild.yaml, append
+#    ,LISTS_DIGEST_SECRET=LISTS_DIGEST_SECRET:latest
+#    to the --set-secrets line (only once the secret exists, or the deploy fails), then deploy as usual.
+
+# 3. The hourly job, five minutes past each hour.
+$secret = gcloud secrets versions access latest --secret=LISTS_DIGEST_SECRET --project=backchannel-skyflyt
+gcloud scheduler jobs create http lists-digest-hourly `
+  --project=backchannel-skyflyt `
+  --location=us-west1 `
+  --schedule="5 * * * *" `
+  --time-zone="Etc/UTC" `
+  --uri="https://back-channel.app/api/lists/digest/run" `
+  --http-method=POST `
+  --headers="x-lists-digest-secret=$secret" `
+  --attempt-deadline=300s
+
+# Check it once by hand: a 200 with counts means the secret matches.
+gcloud scheduler jobs run lists-digest-hourly --project=backchannel-skyflyt --location=us-west1
+```
+
+The header value is stored in the job's configuration, readable by anyone who
+can view Cloud Scheduler jobs in the project. To rotate: add a new secret
+version, redeploy (or wait for the next deploy to pick up `latest`), then
+`gcloud scheduler jobs update http lists-digest-hourly --update-headers=...`
+with the new value. Retrying a run is harmless: it's idempotent.
+
 ## Testing
 
 - **Pure rules:** `src/lib/lists/rules.test.mjs` (`node --test`) covers
@@ -454,6 +631,18 @@ and friendship checked, archived lists left out). That count is part of
   dispatch-integration workflow) on tables rebuilt from both shipped migrations,
   including Phase 2's friends-only add, the OK rule across two accounts,
   mentions, reactions and revocation through the trust route.
+- **Phase 3:** `lists-phase3.routetest.mts` runs the stream route (cookie only,
+  cross-site refusals, `changed` to exactly the people on the list after each
+  kind of write, the two-stream cap), templates and duplicate (including over
+  MCP), the preference, the digest route's secret, the digest's content, its
+  idempotency under overlapping runs, its bounds and its failure path. Pure
+  tests: `lists/bus.test.mjs`, `lists/templates.test.mjs`,
+  `lists/digest.test.mjs` (due times across timezones, the 12-hour gap, what
+  the email says), and in the web app `live.test.mjs` (the stream and its
+  polling fallback, with fake timers and a fake EventSource) and
+  `celebrate.test.mjs`. `lists-integration.mts` applies the third migration
+  and covers templates as JSONB, duplicate, the account cascade and the
+  digest's once-a-day claim against PostgreSQL.
 - **Skill revision:** `src/lib/skill-revision.test.mjs` keeps SKILL.md, the
   relay's announced revision and the `/skill/revision` changelog in step.
 - **Content-blind analytics:** `route-tests/admin.routetest.mts` fails if
@@ -492,12 +681,35 @@ card on Overview, and two pure modules with `node --test` coverage,
   person's avatar and an agent badge. A shared list's header says "Everyone on
   this list, and the agents they allow, can see it."
 
+Phase 3 in the web app:
+
+- **Live:** the Lists tab and My plate update as soon as something changes,
+  through the stream, and quietly go back to the 10-second poll when it isn't
+  there ([Live updates](#live-updates-phase-3)).
+- **Start from:** the new-list form offers a blank list, the four built-ins
+  and your own templates, with the first few titles as a preview; picking one
+  fills in the name and emoji unless you typed your own. A saved template can
+  be deleted from there.
+- **List settings** gain "Duplicate list" (opens the copy) and "Save as
+  template" (with a name, and a note when tasks other people wrote stayed out).
+- **Daily summary:** "Email me a daily summary" under the lists, with the hour
+  and this browser's timezone ([Daily digest](#daily-digest-phase-3)).
+- **All done:** when a list's last unfinished task is finished while you're
+  looking at it, the header says "All done. Alex finished 4 and your agents
+  finished 6." for eight seconds, counted from the week's finished tasks the
+  page already has (`celebrate.mjs`). It eases in, and simply appears under
+  `prefers-reduced-motion`. No confetti, no sound.
+
 ## What Phase 2 and 3 add
 
 **Phase 2, shared with friends:** built: the backend above, the web app's
 sharing, and the skill's Lists section on sharing (revision `2026-10-09-2`).
 
-**Phase 3, delight and reach:** a Lists tab in the MCP Apps panel, hand-off to
-an always-on Dispatch worker ("start now on my always-on agent"), a
-cookie-authenticated live stream for the web instead of the 10-second refresh,
-a daily digest, and list templates.
+**Phase 3, delight and reach:** built for the web: the cookie-authenticated
+live stream (with the 10-second refresh as its fallback), templates and
+"Duplicate list" (`bc_list_create {template}` for agents, revision
+`2026-10-09-3`), the opt-in daily digest, and the "All done" line. Still to
+come: a Lists tab in the MCP Apps panel, and hand-off to an always-on Dispatch
+worker ("start now on my always-on agent"), built separately. The digest needs
+its hourly Cloud Scheduler job and `LISTS_DIGEST_SECRET` before it sends
+anything ([setup](#setting-up-the-hourly-run-an-infra-step-nothing-here-has-been-run)).

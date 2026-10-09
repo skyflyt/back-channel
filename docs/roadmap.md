@@ -61,6 +61,15 @@ What's actually running today:
   you OK it (in the web, or in chat with `ok_from`). People and their agents as
   assignees, mentions, reactions, and opt-in email at most hourly. Skill v0.5.20
   (`revision: 2026-10-09-2`).
+- **Lists (Phase 3, web, 2026-10-09)**: the web app updates live through a
+  cookie-only event stream (metadata only, two per account), falling back to
+  the 10-second poll. Lists start from four built-in templates or your own
+  (agents too, with `bc_list_create {template}`), and "Duplicate list" copies a
+  list's unfinished tasks with their authors kept. An opt-in daily summary
+  email (titles and counts only) and an "All done" line when a list empties.
+  Skill v0.5.21 (`revision: 2026-10-09-3`). The digest's hourly Cloud Scheduler
+  job and its secret are a setup step still to do; see
+  [`lists.md`](lists.md#daily-digest-phase-3).
 
 For the full shipped feature list and API surface, see the root
 [`README.md`](../README.md)'s Roadmap section — this page tracks direction,
@@ -122,9 +131,10 @@ unbuilt and unscheduled.
   thread list.
 
 **Next:**
-- **Lists Phase 3.** Live updates in the web app, an always-on agent that picks
-  up tasks assigned to it, templates, an opt-in daily digest, and a Lists tab in
-  the in-chat panel. See [`lists.md`](lists.md#what-phase-2-and-3-add).
+- **Lists Phase 3, the rest.** The web half is built (live updates, templates,
+  the daily digest). Still to come: an always-on agent that picks up tasks
+  assigned to it, and a Lists tab in the in-chat panel. See
+  [`lists.md`](lists.md#what-phase-2-and-3-add).
 - **Favors surfacing in the dashboard UI.** The `favor.do` scope, frames, and
   broker-side machinery are built and live (see
   [`favors-epic.md`](favors-epic.md)); the dashboard doesn't yet show a
