@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as R from "./rules.mjs";
 
 const T0 = new Date("2026-10-09T18:00:00.000Z");
@@ -183,4 +184,43 @@ test("views and next steps say what to do, honestly", () => {
   const row = { at: at(2), action: "invoke", target: "Save", outcome: "ok", evidenceRef: "ev:1", id: 7n };
   assert.deepEqual(R.actionView(row), { at: at(2).toISOString(), action: "invoke", target: "Save", outcome: "ok", text: "Clicked 'Save'.", evidenceRef: "ev:1" });
   assert.doesNotThrow(() => JSON.stringify(R.actionView(row)), "no BigInt id leaks into a view");
+});
+
+test("the executor secret: abx_ and 43 base64url characters, stored as its sha256 only", () => {
+  const bytes = new Uint8Array(32).fill(7);
+  const { secret, hash } = R.newExecutorSecret(bytes);
+  assert.match(secret, R.EXECUTOR_SECRET);
+  assert.equal(secret, "abx_" + Buffer.from(bytes).toString("base64url"));
+  assert.equal(hash, createHash("sha256").update(secret).digest("hex"));
+  assert.match(hash, /^[0-9a-f]{64}$/);
+  assert.notEqual(R.newExecutorSecret(new Uint8Array(32).fill(8)).secret, secret);
+  for (const bad of [new Uint8Array(31), new Uint8Array(33), "x".repeat(32), null]) assert.throws(() => R.newExecutorSecret(bad), TypeError);
+  assert.deepEqual(R.executorSecretPatch(hash, at(3)), { executorSecretHash: hash, executorSecretIssuedAt: at(3) });
+});
+
+test("the executor secret is due once, while the session runs, and never for a v1 session", () => {
+  const h = "e".repeat(64);
+  assert.equal(R.executorSecretDue(running({ executorSecretHash: h }), at(1)), true, "approved and running");
+  assert.equal(R.executorSecretDue(running({ executorSecretHash: h, status: "blocked" }), at(1)), true, "paused is still running");
+  assert.equal(R.executorSecretDue(running({ executorSecretHash: h, executorSecretIssuedAt: at(1) }), at(2)), false, "handed out already: never again");
+  assert.equal(R.executorSecretDue(session({ executorSecretHash: h }), at(1)), false, "not before approval");
+  assert.equal(R.executorSecretDue(running({ executorSecretHash: h }), at(31)), false, "not once time is up");
+  assert.equal(R.executorSecretDue(running({ executorSecretHash: h, status: "ended", endReason: "done" }), at(2)), false);
+  assert.equal(R.executorSecretDue(running({ executorSecretHash: null }), at(1)), false, "a v1 session (no hash) never gets one");
+  assert.equal(R.executorSecretDue(running({ executorSecretHash: undefined }), at(1)), false);
+  // Support: only once the helped person has allowed it (support sessions never pause).
+  const support = (over = {}) => running({ kind: "support", executorSecretHash: h, ...over });
+  assert.equal(R.executorSecretDue(support(), at(1)), true);
+  assert.equal(R.executorSecretDue(support({ status: "awaiting_consent", startedAt: null, expiresAt: null }), at(1)), false);
+});
+
+test("rotating the executor secret: only its reader's, while running, never for a v1 session", () => {
+  const h = "e".repeat(64);
+  assert.doesNotThrow(() => R.executorSecretRotateCheck(running({ executorSecretHash: h, executorSecretIssuedAt: at(1) }), at(2)));
+  assert.doesNotThrow(() => R.executorSecretRotateCheck(running({ executorSecretHash: h }), at(2)), "before the first hand-out it hands the first one out");
+  refused(() => R.executorSecretRotateCheck(running({ executorSecretHash: null }), at(2)), "no_executor_secret", 409);
+  refused(() => R.executorSecretRotateCheck(session({ executorSecretHash: h }), at(2)), "not_approved", 409);
+  refused(() => R.executorSecretRotateCheck(session({ kind: "support", executorSecretHash: h }), at(2)), "not_allowed_yet", 409);
+  refused(() => R.executorSecretRotateCheck(running({ executorSecretHash: h }), at(31)), "session_over", 409);
+  refused(() => R.executorSecretRotateCheck(running({ executorSecretHash: h, status: "ended", endReason: "user_stop" }), at(2)), "session_over", 409);
 });

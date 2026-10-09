@@ -69,7 +69,7 @@ function table(name: string, defaults: () => Row = () => ({}), unique: string[] 
 let logSeq = 0n;
 const SESSION_DEFAULTS = () => ({ id: crypto.randomUUID(), createdAt: new Date(), executorAgentId: null, listTaskId: null, consentBy: null, consentVia: null, startedAt: null,
   expiresAt: null, endedAt: null, endReason: null, summary: null, evidenceRef: null, helperLabel: null, supportKeySha256: null, supportKeySpki: null, supportCredentialHash: null,
-  supportCredentialExpiresAt: null, removal: null, removalAt: null });
+  supportCredentialExpiresAt: null, removal: null, removalAt: null, supportClientDeviceId: null, supportClientKeySha256: null, executorSecretHash: null, executorSecretIssuedAt: null });
 const db: any = {
   account: table("account"),
   accountAudit: table("accountAudit", () => ({ createdAt: new Date() })),
@@ -159,6 +159,11 @@ const OWNER_EMAIL = "owner@example.invalid";
 const PC1 = "pcShop000000000000000A";
 const CRED1 = "ab_" + "A".repeat(43);
 const FP1 = "A1".repeat(32);
+// The issuer connector: one of Skylar's own enrolled devices (a "remote": it asks for relay passes), and a second one.
+const ISSUER = "issuerLaptop0000000000", ISSUER2 = "issuerDesktop000000000";
+const CRED_ISS = "ab_" + "D".repeat(43), CRED_ISS2 = "ab_" + "E".repeat(43);
+const FP_ISS = "D4".repeat(32), FP_ISS2 = "E5".repeat(32);
+const REMOTE_SCOPES = ["appbridge.device", "appbridge.relay.pass"];
 const LIST = "b0000000-0000-4000-8000-000000000001", TASK = "c0000000-0000-4000-8000-000000000001";
 const relayKeys = generateKeyPairSync("ed25519");
 const RELAY_PUBLIC_KEY = relayKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64");
@@ -186,6 +191,10 @@ function reset() {
   for (const accountId of ["acct-a", "acct-b"]) tables.entitlement.push({ accountId, feature: "appbridge.remote_access", active: true, updatedAt: now });
   tables.device.push({ id: PC1, accountId: "acct-a", role: "host", label: "Shop-PC", connectorSpki: "", connectorSpkiSha256: FP1, enabled: true, relayEnabled: true, createdAt: now, revokedAt: null });
   tables.credential.push({ keyHash: sha(CRED1), deviceId: PC1, accountId: "acct-a", scopes: [...HOST_SCOPES], createdAt: now, expiresAt: new Date(Date.now() + 86_400_000), revokedAt: null, replacesKeyHash: null });
+  for (const [id, label, fp, cred] of [[ISSUER, "Skylar's laptop", FP_ISS, CRED_ISS], [ISSUER2, "Skylar's desktop", FP_ISS2, CRED_ISS2]]) {
+    tables.device.push({ id, accountId: "acct-a", role: "remote", label, connectorSpki: "", connectorSpkiSha256: fp, enabled: true, relayEnabled: false, createdAt: now, revokedAt: null });
+    tables.credential.push({ keyHash: sha(cred), deviceId: id, accountId: "acct-a", scopes: [...REMOTE_SCOPES], createdAt: now, expiresAt: new Date(Date.now() + 86_400_000), revokedAt: null, replacesKeyHash: null });
+  }
   tables.taskList.push({ id: LIST, ownerAccountId: "acct-a", name: "Family", emoji: null, archivedAt: null, createdAt: now, updatedAt: now });
   tables.taskListMember.push({ listId: LIST, accountId: "acct-a", role: "owner", agentsTakeFrom: "me", addedByAccountId: "acct-a", joinedAt: now });
   tables.taskListAgentGrant.push({ listId: LIST, agentTokenId: A.starter, accountId: "acct-a", access: "work", createdAt: now });
@@ -257,6 +266,20 @@ async function supportLease(cred: string, fp: string): Promise<Res> {
   return { status: r.status, body: await r.json(), headers: r.headers };
 }
 async function renew(leaseId: string) { return (await (await import("@/app/api/appbridge/v1/relay/renew/route")).POST(relayReq("renew", { leaseId }))).status; }
+/** The issuer connector's pass (its own ab_ device credential), and its leg redeemed with its own key. */
+async function supportClientPass(sessionId: string, cred = CRED_ISS): Promise<Res> {
+  const req = new NextRequest("https://back-channel.app/api/appbridge/v1/relay/support-client-passes", { method: "POST",
+    headers: { authorization: `Bearer ${cred}`, "content-type": "application/json" }, body: JSON.stringify({ sessionId }) });
+  const r = await (await import("@/app/api/appbridge/v1/relay/support-client-passes/route")).POST(req);
+  return { status: r.status, body: await r.json(), headers: r.headers };
+}
+async function supportClientLease(sessionId: string, cred = CRED_ISS, fp = FP_ISS): Promise<Res> {
+  const issued = await supportClientPass(sessionId, cred);
+  if (issued.status !== 200) return issued;
+  const r = await (await import("@/app/api/appbridge/v1/relay/redeem/route")).POST(relayReq("redeem", { pass: issued.body.pass, purpose: "support-client", connectorSpkiSha256: fp }));
+  return { status: r.status, body: await r.json(), headers: r.headers };
+}
+const SECRET = /^abx_[A-Za-z0-9_-]{43}$/;
 async function mcp(key: string, method: string, params?: unknown) {
   const { POST } = await import("@/app/api/mcp/route");
   const res = await POST(new NextRequest("https://back-channel.app/api/mcp", { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
@@ -777,4 +800,133 @@ test("the dashboard card: pending requests, unused codes with their deadline, li
   assert.deepEqual(card.body.limits, { outstanding: 2, maxOutstanding: 3, mintedToday: 3, mintsPerDay: 5, maxMinutes: 45 });
   assert.equal(card.body.remoteAccess, "available");
   assert.deepEqual((await api("GET", "invites")).status, 401);
+});
+
+// ── The support relay path (vault design/support-relay-contract.md §2.3): the executor secret, peer, the issuer's leg ──
+
+test("the executor secret: born at redemption as a hash only, handed out once to the agent that asked after Allow; never to the helper, the person or a record", async () => {
+  const x = await redeemed({ taskId: TASK });
+  const born = sessionRow(x.sessionId).executorSecretHash;
+  assert.match(born, /^[0-9a-f]{64}$/); assert.equal(sessionRow(x.sessionId).executorSecretIssuedAt ?? null, null);
+  assert.ok(!JSON.stringify(x.reply).includes("abx_"), "never in the helper's redemption");
+  // Before Allow, the agent's reads hand nothing out.
+  const waiting = await api("GET", `invites/${x.id}`, { as: KEY.starter });
+  assert.equal(waiting.body.support.session.status, "awaiting_consent"); assert.ok(!("executorSecret" in waiting.body.support.session));
+  assert.equal((await allow(x)).status, 200);
+  // The person's reads (the invite and the dashboard card) never show it, and never spend it.
+  const theirs = [await api("GET", `invites/${x.id}`, { cookie: "cs_a" }), await api("GET", "invites", { cookie: "cs_a" })];
+  for (const r of theirs) { assert.equal(r.status, 200); assert.ok(!JSON.stringify(r.body).includes("abx_")); }
+  assert.deepEqual([sessionRow(x.sessionId).executorSecretHash, sessionRow(x.sessionId).executorSecretIssuedAt ?? null], [born, null]);
+  // The agent that asked, on its first read after Allow: handed out, a fresh value (the one the session was born with was never kept).
+  const first = await api("GET", `invites/${x.id}`, { as: KEY.starter });
+  assert.equal(first.status, 200);
+  const secret: string = first.body.support.session.executorSecret;
+  assert.match(secret, SECRET);
+  assert.equal(sessionRow(x.sessionId).executorSecretHash, sha(secret)); assert.notEqual(sha(secret), born);
+  assert.ok(sessionRow(x.sessionId).executorSecretIssuedAt instanceof Date);
+  assert.match(first.body.next, /shown this once/); assert.match(first.body.next, /profile "remote-support"/);
+  // Once means once: the same read, the MCP tool and the agent's list never show it again, and change nothing.
+  const second = await api("GET", `invites/${x.id}`, { as: KEY.starter });
+  assert.equal(second.status, 200); assert.ok(!("executorSecret" in second.body.support.session));
+  assert.match(second.body.next, new RegExp(`POST /api/support/invites/${x.id}/executor-secret`), "it says how to recover a lost one");
+  const viaTool = await tool(KEY.starter, "bc_support_status", { support_id: x.id });
+  assert.equal(viaTool.isError, false); assert.ok(!viaTool.text.includes("abx_"));
+  assert.ok(!JSON.stringify((await api("GET", "invites", { as: KEY.starter })).body).includes("abx_"));
+  assert.equal(sessionRow(x.sessionId).executorSecretHash, sha(secret));
+  // Never stored, never in an audit row or on the task; the helper never sees it or its hash.
+  assert.ok(!everything().includes(secret));
+  const helper = await client("GET", "session", x.cred);
+  assert.ok(!JSON.stringify(helper.body).includes("abx_") && !JSON.stringify(helper.body).includes(sha(secret)));
+  // The issuer connector learns only its hash, from its pass, to check the worker's hello.
+  const pass = await supportClientPass(x.sessionId);
+  assert.equal(pass.status, 200); assert.equal(pass.body.executorSecretSha256, sha(secret)); assert.equal(pass.body.host, x.key.fp);
+});
+
+test("a lost reply: the agent that asked rotates the executor secret, handed out in that reply only; the old one stops working; nobody else can", async () => {
+  const x = await allowed();
+  const lost: string = (await api("GET", `invites/${x.id}`, { as: KEY.starter })).body.support.session.executorSecret;
+  assert.match(lost, SECRET);
+  const r = await api("POST", `invites/${x.id}/executor-secret`, { as: KEY.starter });
+  assert.equal(r.status, 200); assert.equal(r.headers.get("cache-control"), "no-store");
+  const fresh: string = r.body.support.session.executorSecret;
+  assert.match(fresh, SECRET); assert.notEqual(fresh, lost);
+  assert.equal(sessionRow(x.sessionId).executorSecretHash, sha(fresh), "the old one's hash is gone: the connector refuses it once it reads the new one");
+  assert.match(r.body.next, /shown this once/);
+  assert.equal((await supportClientPass(x.sessionId)).body.executorSecretSha256, sha(fresh));
+  assert.ok(!("executorSecret" in (await api("GET", `invites/${x.id}`, { as: KEY.starter })).body.support.session), "and the next read shows nothing");
+  const audits = tables.accountAudit.filter(a => a.eventType === "support.executor_secret_rotated");
+  assert.deepEqual(audits.map(a => a.detail), [{ inviteId: x.id, sessionId: x.sessionId }]);
+  assert.ok(!everything().includes(fresh) && !everything().includes(lost));
+  // Only the agent that asked: not the person (cookie, with or without CSRF), not another agent, not a connector key, not the helper.
+  assert.equal((await person(`invites/${x.id}/executor-secret`)).body.error, "agent_key_required");
+  assert.equal((await api("POST", `invites/${x.id}/executor-secret`, { as: KEY.plain })).status, 404);
+  assert.equal((await api("POST", `invites/${x.id}/executor-secret`, { as: KEY.other })).status, 404);
+  assert.equal((await api("POST", `invites/${x.id}/executor-secret`, { as: KEY.conn })).body.error, "not_available_to_connectors");
+  assert.equal((await api("POST", `invites/${x.id}/executor-secret`, { as: x.cred })).status, 401);
+  assert.equal(sessionRow(x.sessionId).executorSecretHash, sha(fresh), "no refusal changed it");
+  // Only while it runs.
+  await person(`invites/${x.id}/stop`);
+  assert.equal((await api("POST", `invites/${x.id}/executor-secret`, { as: KEY.starter })).body.error, "session_over");
+  const waiting = await redeemed();
+  assert.equal((await api("POST", `invites/${waiting.id}/executor-secret`, { as: KEY.starter })).body.error, "not_allowed_yet");
+  await client("POST", "stop", waiting.cred);
+  const unused = await minted();
+  assert.equal((await api("POST", `invites/${unused.id}/executor-secret`, { as: KEY.starter })).body.error, "not_running");
+});
+
+test("a conflict re-runs the hand-out whole: the secret is handed out once, and the reply carries the value that committed", async () => {
+  const x = await allowed();
+  transactionFaults = [abort()]; transactionCalls = 0;
+  const r = await api("GET", `invites/${x.id}`, { as: KEY.starter });
+  assert.equal(r.status, 200); assert.equal(transactionCalls, 2);
+  assert.equal(sessionRow(x.sessionId).executorSecretHash, sha(r.body.support.session.executorSecret));
+  assert.ok(!("executorSecret" in (await api("GET", `invites/${x.id}`, { as: KEY.starter })).body.support.session));
+});
+
+test("peer: the helper learns the issuer connector's key from the broker once that device has taken its pass; never on first use", async () => {
+  const x = await redeemed();
+  assert.equal((await client("GET", "session", x.cred)).body.session.peer, null);
+  // Before Allow the issuer's pass is refused, and nobody is pinned.
+  const early = await supportClientPass(x.sessionId);
+  assert.deepEqual([early.status, early.body.error], [403, "session_inactive"]);
+  const allowedNow = await allow(x);
+  assert.equal(allowedNow.body.session.peer, null);
+  // The issuer's device takes its pass: pinned, and that key is now the helper's client pin.
+  const issued = await supportClientPass(x.sessionId);
+  assert.equal(issued.status, 200); assert.equal(issued.body.host, x.key.fp);
+  assert.deepEqual([sessionRow(x.sessionId).supportClientDeviceId, sessionRow(x.sessionId).supportClientKeySha256], [ISSUER, FP_ISS]);
+  const seen = await client("GET", "session", x.cred);
+  assert.deepEqual(seen.body.session.peer, { connectorSpkiSha256: FP_ISS });
+  assert.ok(!JSON.stringify(seen.body).includes(ISSUER), "the key only, never the device");
+  // Another of the issuer's devices can't take the pin over; the helper's peer never moves.
+  const other = await supportClientPass(x.sessionId, CRED_ISS2);
+  assert.deepEqual([other.status, other.body.error], [409, "support_client_pinned"]);
+  assert.deepEqual((await client("GET", "session", x.cred)).body.session.peer, { connectorSpkiSha256: FP_ISS });
+  // The agent's and the person's views carry neither the pin nor the device.
+  const views = JSON.stringify([(await api("GET", `invites/${x.id}`, { as: KEY.starter })).body, (await api("GET", "invites", { cookie: "cs_a" })).body]);
+  assert.ok(!views.includes(FP_ISS) && !views.includes(ISSUER));
+});
+
+test("every way a support session ends deletes the issuer connector's leg with the helper's, in the same transaction", async () => {
+  const receipt = (x: Awaited<ReturnType<typeof allowed>>) => client("POST", "receipt", x.cred, { removal: "removed", proof: x.key.sign(`bc-support-receipt-v1:${x.sessionId}:removed`) });
+  const endings: Array<[string, (x: Awaited<ReturnType<typeof allowed>>) => Promise<Res>]> = [
+    ["the person's Stop", x => person(`invites/${x.id}/stop`)],
+    ["the helped person's Stop", x => client("POST", "stop", x.cred)],
+    ["the agent's end", x => api("POST", `invites/${x.id}/end`, { as: KEY.starter, body: { finished: true } })],
+    ["I didn't ask for this", x => client("POST", "report", x.cred)],
+    ["the removal receipt", receipt],
+    ["the 45-minute cap", async x => { Object.assign(sessionRow(x.sessionId), { startedAt: new Date(Date.now() - 31 * 60_000), expiresAt: new Date(Date.now() - 1) }); return client("GET", "session", x.cred); }],
+  ];
+  for (const [how, end] of endings) {
+    const x = await allowed();
+    const issuer = await supportClientLease(x.sessionId); assert.equal(issuer.status, 200, how);
+    const helper = await supportLease(x.cred, x.key.fp); assert.equal(helper.status, 200, how);
+    assert.equal((await end(x)).status, 200, how);
+    assert.equal(sessionRow(x.sessionId).status, "ended", how);
+    assert.equal(tables.lease.filter(l => l.remoteAppSessionId === x.sessionId).length, 0, `${how}: both legs deleted with it`);
+    assert.equal(await renew(issuer.body.leaseId), 404, `${how}: the relay's next renewal ends the issuer's leg`);
+    assert.deepEqual([(await supportClientPass(x.sessionId)).body.error, (await supportPass(x.cred)).body.error], ["session_inactive", "session_inactive"], `${how}: never reopens`);
+    // Codes are capped at 5 a day; age this one out so the next ending gets a fresh code.
+    for (const i of tables.supportInvite) if (i.mintedAt) i.mintedAt = new Date(Date.now() - 25 * 3_600_000);
+  }
 });

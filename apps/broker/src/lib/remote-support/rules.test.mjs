@@ -213,6 +213,33 @@ test("views: an agent never sees a code; the helped person never sees who it's '
   assert.equal(withSession.session.status, "awaiting_consent"); assert.equal(withSession.session.allowBy, at(12).toISOString());
   assert.match(S.nextStep(withSession), /press Allow/);
   const h = S.helpedView(running(), { now: at(5), issuer: { name: "Skylar", handle: "skylar@bc" } });
-  assert.deepEqual(Object.keys(h).sort(), ["allowBy", "endReason", "endedAt", "expiresAt", "id", "issuer", "minutes", "removal", "startedAt", "status", "statusText", "task"]);
+  assert.deepEqual(Object.keys(h).sort(), ["allowBy", "endReason", "endedAt", "expiresAt", "id", "issuer", "minutes", "peer", "removal", "startedAt", "status", "statusText", "task"]);
   assert.ok(!JSON.stringify(h).includes("Mom") && !JSON.stringify(h).includes("agent-a"));
+});
+
+test("peer: the helper learns the issuer connector's pinned key from the broker, never on first use; null until a device is pinned", () => {
+  const issuer = { name: "Skylar", handle: "skylar@bc" };
+  assert.equal(S.helpedView(running(), { now: at(5), issuer }).peer, null);
+  const pinned = running({ supportClientDeviceId: "dev".padEnd(22, "x"), supportClientKeySha256: "EF".repeat(32) });
+  assert.deepEqual(S.helpedView(pinned, { now: at(5), issuer }).peer, { connectorSpkiSha256: "EF".repeat(32) });
+  assert.ok(!JSON.stringify(S.helpedView(pinned, { now: at(5), issuer })).includes("dev".padEnd(22, "x")), "the device id never reaches the helper");
+});
+
+test("the executor secret: born with the session (hash only), shown to the agent that asked in its view only when handed out", () => {
+  const s = S.newSupportSession({ invite: minted(), relayHostId: "support_" + "B".repeat(22), keySha256: "CD".repeat(32), keySpki: "spki", credentialHash: "c".repeat(64),
+    executorSecretHash: "e".repeat(64), now: at(2) });
+  assert.equal(s.executorSecretHash, "e".repeat(64));
+  assert.ok(!("executorSecretIssuedAt" in s) || s.executorSecretIssuedAt == null, "born, never handed out yet");
+  const live = running({ executorSecretHash: "e".repeat(64) });
+  const redeemed = minted({ status: "redeemed", redeemedAt: at(1), sessionId: live.id });
+  const plain = S.inviteView(redeemed, { now: at(5), requestedBy: "Claude Code", session: live });
+  assert.ok(!("executorSecret" in plain.session), "not in an ordinary view");
+  assert.ok(!JSON.stringify(plain).includes("e".repeat(64)), "and never the hash");
+  assert.doesNotMatch(S.nextStep(plain), /shown this once/);
+  assert.match(S.nextStep(plain), new RegExp(`POST /api/support/invites/${plain.id}/executor-secret`), "how to recover a lost one");
+  const value = "abx_" + "Q".repeat(43);
+  const handed = S.inviteView(redeemed, { now: at(5), requestedBy: "Claude Code", session: live, executorSecret: value });
+  assert.equal(handed.session.executorSecret, value);
+  assert.match(S.nextStep(handed), /shown this once/); assert.match(S.nextStep(handed), /profile "remote-support"/);
+  assert.match(S.nextStep(handed), new RegExp(`remoteAppSessionId "${live.id}"`));
 });
