@@ -13,6 +13,14 @@ import { useEffect, useRef } from "react";
 
 export type TaskStatus = "open" | "in_progress" | "blocked" | "needs_review" | "done" | "dropped";
 export type Access = "none" | "view" | "work";
+/** Whose tasks a person's agents may take without an OK, on one list (their own setting). */
+export type AgentsTakeFrom = "me" | "anyone";
+/** Email nudges for one person on one list: off, or mentions, results to check and OK requests (at most one an hour). */
+export type ListNotify = "off" | "mentions_reviews";
+/** The only reactions there are, in display order. */
+export const REACTIONS = ["\u{1F44D}", "\u{1F389}", "\u{1F64F}", "✅"] as const;
+export type ReactionEmoji = (typeof REACTIONS)[number];
+export interface ReactionCount { emoji: ReactionEmoji; count: number; you: boolean }
 
 /** A person, or an agent and its person. */
 export interface PersonRef {
@@ -21,6 +29,8 @@ export interface PersonRef {
   agent: string | null;
   agent_id: string | null;
   is_you: boolean;
+  /** Only when an agent is asking. */
+  is_this_agent?: boolean;
 }
 
 export interface ListRef { id: string; name: string; shared: boolean }
@@ -36,7 +46,10 @@ export interface TaskView {
   created_by: PersonRef | null;
   assignee: (PersonRef & { kind: "person" | "their_agents" | "agent" }) | null;
   claim: { by: PersonRef | null; since: string | null; lapses_at: string | null; stale?: boolean } | null;
+  /** The OK rule for the caller's own agents. false on a friend's task until the caller OKs it (POST .../ok). */
   agent_may_act: { ok: boolean; why: string };
+  /** Only reactions someone gave, in REACTIONS order. `you`: the caller reacted. */
+  reactions: ReactionCount[];
   created_at: string | null;
   updated_at: string | null;
   completed_at?: string;
@@ -81,10 +94,47 @@ export interface YourAgent {
   access: Access;
 }
 
+/** Someone on a list, as everyone on it sees them. Owner first, then by when they joined. */
+export interface MemberView {
+  handle: string | null;
+  display_name: string | null;
+  role: "owner" | "member";
+  joined_at: string | null;
+  is_you: boolean;
+  /** What to type to mention them in a comment ("@alex"). */
+  mention: string | null;
+  /** Their agents with access to this list, and the mention that reaches each ("@claude-code"). */
+  agents: { name: string; access: Exclude<Access, "none">; mention: string }[];
+}
+
+/** A list-level activity line: "Skylar added Alex", "Alex left the list", "Skylar took Alex off the list". */
+export interface ListEventView {
+  id: string;
+  event: "member_added" | "member_left" | "member_removed";
+  by: PersonRef | null;
+  subject: PersonRef | null;
+  /** Read as "<whoName(by)> <text>". */
+  text: string;
+  at: string | null;
+}
+
 export interface ListDetail {
-  list: ListRef & { emoji: string | null; archived: boolean; your_role: string | null; agents_take_from: string };
+  list: ListRef & { emoji: string | null; archived: boolean; your_role: string | null; agents_take_from: AgentsTakeFrom; notify: ListNotify };
+  /** Everyone on the list who still counts (a friend who untrusted the owner drops out at once). */
+  members: MemberView[];
+  /** The last 20 list-level events, oldest first. */
+  activity: ListEventView[];
   tasks: TaskView[];
   your_agents?: YourAgent[];
+}
+
+/** A comment or progress line that mentions you (or, for an agent, it or its person). */
+export interface MentionView {
+  id: string;
+  /** Who was mentioned: you, or (for an agent asking) it or its person. */
+  of: PersonRef | null;
+  entry: EntryView;
+  task: TaskView;
 }
 
 export interface Plate {
@@ -92,7 +142,16 @@ export interface Plate {
   doing: TaskView[];
   up_next: TaskView[];
   claimable: TaskView[];
+  /** Finished work for you to check (needs_review with you as the reviewer). */
   waiting_on_you: TaskView[];
+  /**
+   * "OK for my agents?": friends' tasks (for you, for your agents, or unassigned on a list where one of your
+   * agents has work access) that your agents can't act on until you OK them. Up to 20, by due date. A task
+   * can also be in up_next.
+   */
+  ok_requests: TaskView[];
+  /** Unread mentions of you, newest first, up to 20. Opening the task (GET /api/lists/tasks/:id) marks them read. */
+  mentions: MentionView[];
   done_recently: TaskView[];
   hint?: string;
 }
@@ -120,7 +179,7 @@ export class ListsError extends Error {
 
 const OFFLINE = "Couldn't reach Back Channel. Check your connection and try again.";
 
-async function call<T>(method: "GET" | "POST" | "PATCH" | "PUT", path: string, body?: unknown): Promise<T> {
+async function call<T>(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, {
@@ -165,6 +224,22 @@ export const listsApi = {
   entries: (taskId: string) => call<{ entries: EntryView[]; more?: boolean }>("GET", `/api/lists/tasks/${enc(taskId)}/entries`),
   addEntry: (taskId: string, kind: "comment" | "progress", text: string) => call<{ task: TaskView }>("POST", `/api/lists/tasks/${enc(taskId)}/entries`, { kind, text }),
   accountAgents: () => call<{ agents: AccountAgent[] }>("GET", "/api/account/agents"),
+
+  /* Sharing (Phase 2). Members, settings and OKs are cookie-only. */
+
+  /** Owner only. A non-friend and an unknown handle both fail with 403 not_a_friend ("You can only add friends to a list."). */
+  addMember: (listId: string, handle: string) => call<{ members: MemberView[] }>("POST", `/api/lists/${enc(listId)}/members`, { handle }),
+  /** The owner takes someone off. Returns the members left. */
+  removeMember: (listId: string, handle: string) => call<{ members: MemberView[] }>("DELETE", `/api/lists/${enc(listId)}/members/${enc(handle)}`),
+  /** Leave a list you don't own (pass your own handle). The owner gets 409 owner_cant_leave. */
+  leaveList: (listId: string, yourHandle: string) => call<{ left: true }>("DELETE", `/api/lists/${enc(listId)}/members/${enc(yourHandle)}`),
+  /** Your own settings on one list. */
+  updateMe: (listId: string, body: { agents_take_from?: AgentsTakeFrom; notify?: ListNotify }) =>
+    call<{ me: { agents_take_from: AgentsTakeFrom; notify: ListNotify } }>("PATCH", `/api/lists/${enc(listId)}/me`, body),
+  /** "OK for my agents": your agents may act on this friend's task. Harmless to repeat. 409 bad_status unless open, in progress or blocked. */
+  okTask: (taskId: string) => call<{ task: TaskView }>("POST", `/api/lists/tasks/${enc(taskId)}/ok`, {}),
+  /** Toggle one of REACTIONS on a task. */
+  react: (taskId: string, emoji: ReactionEmoji) => call<{ task: TaskView }>("POST", `/api/lists/tasks/${enc(taskId)}/react`, { emoji }),
 };
 
 export const errorText = (e: unknown) => (e instanceof ListsError ? e.message : "Something went wrong. Try again.");
@@ -261,13 +336,17 @@ export function assigneeLabel(t: Pick<TaskView, "assignee">): string | null {
   return a.is_you ? "For you" : `For ${short(a.person)}`;
 }
 
-/** The assignee picker's value for a task: "nobody", "me", "my_agents" or an agent id. */
+/**
+ * The assignee value for a task, in the vocabulary PATCH accepts: "nobody", "me", "my_agents", one of your
+ * agent ids, or for someone else on a shared list "@alex" / "@alex's agents".
+ */
 export function assigneeValue(t: Pick<TaskView, "assignee">): string {
   const a = t.assignee;
   if (!a) return "nobody";
   if (a.kind === "agent") return a.agent_id ?? "nobody";
-  if (a.kind === "their_agents") return "my_agents";
-  return "me";
+  const other = !a.is_you && a.handle ? `@${short(a.handle)}` : null;
+  if (a.kind === "their_agents") return other ? `${other}'s agents` : "my_agents";
+  return other ?? "me";
 }
 
 /** "just now", "6 min ago", "3 h ago", "2 days ago", then a date. */

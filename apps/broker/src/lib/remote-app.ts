@@ -39,6 +39,9 @@ import * as limits from "@/lib/rate-limit";
 import { isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
 import { remoteAccessSource } from "@/lib/remote-entitlement";
 import { listsInTx } from "@/lib/lists";
+import { AsyncLocalStorage } from "node:async_hooks";
+// Effects a Lists operation owes (doorbells, email) collected per transaction attempt and run only after it commits.
+const effects = new AsyncLocalStorage<Array<() => void>>();
 import { REMOTE_TOOL_NAMES } from "@/lib/mcp/remote-tools.mjs";
 // Remote support (bc_support_*, docs/remote-support.md) shares the bc_remote_* gating and is dispatched from remoteTool().
 import { isSupportTool, supportTool } from "@/lib/remote-support";
@@ -157,7 +160,7 @@ async function audit(tx: Tx, accountId: string, eventType: string, detail: Recor
 async function mirror(tx: Tx, s: Session, by: "person" | "starter", text: string, now: Date): Promise<boolean> {
   if (!s.listTaskId) return false;
   const as = { accountId: s.accountId, agentId: by === "person" ? null : s.agentTokenId };
-  const r = await listsInTx(tx, as, "addEntry", { task_id: s.listTaskId, kind: "progress", text }, now);
+  const r = await listsInTx(tx, as, "addEntry", { task_id: s.listTaskId, kind: "progress", text }, now, effects.getStore());
   return r.ok;
 }
 
@@ -253,7 +256,7 @@ async function resolveExecutor(tx: Tx, accountId: string, me: AgentToken, value:
 
 /** A task named at start must be one this agent is on right now (bc_task_claim first). */
 async function claimedTask(tx: Tx, caller: Caller, taskId: string, now: Date) {
-  const r = await listsInTx(tx, { accountId: caller.accountId, agentId: caller.agentId }, "getTask", { task_id: taskId }, now);
+  const r = await listsInTx(tx, { accountId: caller.accountId, agentId: caller.agentId }, "getTask", { task_id: taskId }, now, effects.getStore());
   if (!r.ok) return fail(r.code === "not_available" ? 404 : 409, r.code, r.message);
   const task = r.result.task as { id: string; title: string; claim?: { by?: { is_this_agent?: boolean } } | null };
   if (!task.claim?.by?.is_this_agent) {
@@ -477,7 +480,7 @@ async function opEnd({ tx, caller, input, now, id }: Ctx): Promise<Outcome> {
     const as = { accountId: s.accountId, agentId: s.agentTokenId };
     if (patch.endReason === "done") {
       // The Lists done path, as the agent that holds the claim, with the same rules bc_task_done has.
-      const r = await listsInTx(tx, as, "done", { task_id: s.listTaskId, summary, ...(evidenceRef ? { evidence: `kept on ${pc}: ${evidenceRef}` } : {}) }, now);
+      const r = await listsInTx(tx, as, "done", { task_id: s.listTaskId, summary, ...(evidenceRef ? { evidence: `kept on ${pc}: ${evidenceRef}` } : {}) }, now, effects.getStore());
       task = r.ok ? { done: true, status: (r.result.task as { status?: string }).status ?? null } : { done: false, why: r.message };
     } else {
       const text = s.status === "awaiting_consent" ? `Withdrew the request to use ${appList(s.appAllowList)} on ${pc}: ${summary}`
@@ -538,17 +541,20 @@ async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input
     }
     const body = typeof input === "function" ? await input() : input;
     const origin = (process.env.PUBLIC_APP_URL ?? new URL(req.url).origin).replace(/\/$/, "");
+    let after: Array<() => void> = [];
     const result = await withSerializableRetry(
-      () => prisma.$transaction(async (tx: Tx): Promise<Outcome | { refusal: InstanceType<typeof R.RemoteRuleError> }> => {
+      () => effects.run((after = []), () => prisma.$transaction(async (tx: Tx): Promise<Outcome | { refusal: InstanceType<typeof R.RemoteRuleError> }> => {
         try {
           return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin });
         } catch (e) {
           if (e instanceof R.RemoteRuleError && !(e instanceof RollBack)) return { refusal: e };
           throw e;
         }
-      }, { isolationLevel: "Serializable" }),
+      }, { isolationLevel: "Serializable" })),
       { retryable: conflict },
     );
+    // The transaction committed (a refusal commits too): now ring the doorbells and send the email it owes.
+    for (const fn of after) fn();
     if ("refusal" in result) throw result.refusal;
     if (op === "start") limits.rateLimit("remote-app:start", key, START_PER_HOUR, 60 * 60_000);
     return respond(result.body, result.status ?? 200);

@@ -24,7 +24,22 @@ export const LIMITS = Object.freeze({
   entriesPerTask: 500,
   batchAdd: 20,
   pageSize: 50,
+  membersPerList: 20,
+  mentionsPerEntry: 10,
+  /** Each of the plate's ok_requests and mentions, and a list's recent member activity. */
+  plateExtras: 20,
 });
+
+/** Whose tasks a person's agents may take without an OK, per list. */
+export const AGENTS_TAKE_FROM = Object.freeze(["me", "anyone"]);
+/** Email nudges, per person per list: off, or mentions, reviews and OK requests. */
+export const NOTIFY = Object.freeze(["off", "mentions_reviews"]);
+/** How an OK was given: in the dashboard, by the person saying yes in chat, or by their list setting. */
+export const OK_VIA = Object.freeze(["web", "user_in_chat", "list_setting"]);
+/** The only reactions there are. */
+export const REACTIONS = Object.freeze(["👍", "🎉", "🙏", "✅"]);
+/** At most one email nudge per person per hour, across all their lists. */
+export const NUDGE_EVERY_MS = 60 * 60_000;
 
 export const STATUSES = Object.freeze(["open", "in_progress", "blocked", "needs_review", "done", "dropped"]);
 /** Statuses that still need something from someone. */
@@ -117,16 +132,27 @@ export function parseDue(value, now) {
   return d;
 }
 
+const ASSIGNEE_HELP = "assignee must be nobody, me, my_agents, this_agent, one of your agents' ids, \"@handle\" or \"@handle's agents\"";
+const HANDLE = /^@?([a-z0-9][a-z0-9._-]*(?:@bc)?)$/i;
+
 /**
- * Who a task is for. Phase 1 accepts nobody, the person ("me": for an agent,
- * that's its person), the person's agents, the calling agent, or one agent by id.
+ * Who a task is for:
+ *   "nobody"              anyone allowed may pick it up
+ *   "me"                  the person (for an agent, that's its person)
+ *   "my_agents"           any of the person's agents with work access
+ *   "this_agent"          the calling agent
+ *   an agent id           one of the caller's own agents
+ *   "@alex"               a person on the list (Alex, or any of Alex's agents once Alex OKs it)
+ *   "@alex's agents"      that person's agents; only Alex picks which one
+ * "@alex/claude-code" (someone's specific agent) is refused: each person picks their own agents.
  * @param {unknown} value
- * @returns {undefined | { kind: "nobody" } | { kind: "me" } | { kind: "my_agents" } | { kind: "this_agent" } | { kind: "agent", agentId: string }}
+ * @returns {undefined | { kind: "nobody" } | { kind: "me" } | { kind: "my_agents" } | { kind: "this_agent" } | { kind: "agent", agentId: string }
+ *   | { kind: "person", handle: string } | { kind: "person_agents", handle: string }}
  */
 export function parseAssignee(value) {
   if (value === undefined) return undefined;
   if (value === null) return { kind: "nobody" };
-  if (typeof value !== "string") fail(400, "invalid_assignee", "assignee must be nobody, me, my_agents, this_agent or an agent id");
+  if (typeof value !== "string") fail(400, "invalid_assignee", ASSIGNEE_HELP);
   const v = value.trim();
   const lower = v.toLowerCase();
   if (lower === "" || lower === "nobody" || lower === "none" || lower === "anyone") return { kind: "nobody" };
@@ -134,7 +160,61 @@ export function parseAssignee(value) {
   if (lower === "my_agents" || lower === "my agents") return { kind: "my_agents" };
   if (lower === "this_agent" || lower === "this agent") return { kind: "this_agent" };
   if (/^[0-9a-f-]{8,64}$/i.test(v)) return { kind: "agent", agentId: v };
-  return fail(400, "invalid_assignee", "assignee must be nobody, me, my_agents, this_agent or an agent id");
+  if (v.startsWith("@")) {
+    const agents = /^(.+?)['’]s\s+agents$/i.exec(v);
+    if (agents) {
+      const h = HANDLE.exec(agents[1].trim());
+      if (h) return { kind: "person_agents", handle: h[1] };
+    }
+    const slash = /^@([^/\s]+)\/\S+$/.exec(v);
+    if (slash) {
+      return fail(400, "invalid_assignee", `Give it to "@${slash[1]}" or "@${slash[1]}'s agents". Each person picks which of their own agents works on something; for one of yours, use its id.`);
+    }
+    const h = HANDLE.exec(v);
+    if (h) return { kind: "person", handle: h[1] };
+  }
+  return fail(400, "invalid_assignee", ASSIGNEE_HELP);
+}
+
+/**
+ * The handles an account might be stored under for what someone typed: "@Alex",
+ * "alex" and "alex@bc" all find alex@bc. Empty when it can't be a handle.
+ * @param {unknown} typed
+ * @returns {string[]}
+ */
+export function handleCandidates(typed) {
+  if (typeof typed !== "string") return [];
+  const m = HANDLE.exec(typed.trim());
+  if (!m) return [];
+  const h = m[1];
+  const lower = h.toLowerCase();
+  const out = [h, lower];
+  if (!/@bc$/i.test(h)) out.push(`${h}@bc`, `${lower}@bc`);
+  return [...new Set(out)];
+}
+
+/**
+ * Does this stored handle answer to what was typed? "alex", "@Alex" and "alex@bc" all match
+ * alex@bc (and an older handle stored without "@bc").
+ * @param {string} handle @param {string} typed
+ */
+export function handleMatches(handle, typed) {
+  if (!handle || !handleCandidates(typed).length) return false;
+  const bare = (h) => String(h).trim().toLowerCase().replace(/^@/, "").replace(/@bc$/, "");
+  return bare(handle) === bare(typed);
+}
+
+/**
+ * How an agent is mentioned: "Claude Code" is @claude-code, "Alex's Codex" is @alexs-codex.
+ * Kept in step with agentSlug in src/app/account/lists/quick-add.mjs.
+ * @param {string} name
+ */
+export function agentSlug(name) {
+  return String(name)
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 // ── Permissions ─────────────────────────────────────────────────────────────
@@ -156,6 +236,45 @@ export function canManage(actor) {
   return actor?.role === "owner" && !actor.agentId;
 }
 
+// ── Sharing: membership follows friendship ───────────────────────────────────
+
+/**
+ * Friends are mutual trust: both directed TrustedPeer rows exist. `edges` holds
+ * them as "from>to". Revoking is one-sided, so one missing row ends it.
+ * @param {Set<string>} edges @param {string} a @param {string} b
+ */
+export function mutualFriends(edges, a, b) {
+  return a !== b && edges.has(`${a}>${b}`) && edges.has(`${b}>${a}`);
+}
+
+/**
+ * Does this membership row still count? The owner always does. Anyone else only
+ * while they and the owner are still friends: fail closed, so a revoked friend and
+ * their agents lose the list on their very next request, cleanup or not.
+ * @param {{ accountId: string, role: string }} member @param {string} ownerAccountId @param {Set<string>} edges
+ */
+export function memberCounts(member, ownerAccountId, edges) {
+  if (!member) return false;
+  if (member.role === "owner") return member.accountId === ownerAccountId;
+  return mutualFriends(edges, member.accountId, ownerAccountId);
+}
+
+/**
+ * Taking someone off a list, or leaving it. Cookie-only checks happen in the caller.
+ * @param {any} actor the person asking @param {string} targetAccountId @param {string | null} targetRole
+ * @returns {{ ok: true, how: "left" | "removed" } | { ok: false, status: number, code: string, why: string }}
+ */
+export function removalCheck(actor, targetAccountId, targetRole) {
+  if (actor.agentId) return { ok: false, status: 403, code: "people_only", why: "Only a person, in the Back Channel dashboard, can change who is on a list." };
+  if (targetAccountId === actor.accountId) {
+    if (actor.role === "owner") return { ok: false, status: 409, code: "owner_cant_leave", why: "You own this list, so you can't leave it. Archive it instead." };
+    return { ok: true, how: "left" };
+  }
+  if (!canManage(actor)) return { ok: false, status: 403, code: "not_allowed", why: "Only the list's owner can take people off it." };
+  if (!targetRole) return { ok: false, status: 404, code: "not_a_member", why: "Nobody by that handle is on this list." };
+  return { ok: true, how: "removed" };
+}
+
 /**
  * The OK rule: may this account's agents act on this task without asking?
  * A task someone else wrote is a request, not an instruction.
@@ -168,6 +287,26 @@ export function agentMayAct(task, accountId, { agentsTakeFrom = "me", okAccountI
   if (okAccountIds.includes(accountId)) return { ok: true, why: "you OK'd it for your agents" };
   if (agentsTakeFrom === "anyone") return { ok: true, why: "your setting on this list lets your agents take anyone's tasks" };
   return { ok: false, why: `${authorName} wrote this, so your agents need your OK before acting on it.` };
+}
+
+/**
+ * Can this person OK a task for their own agents now, and is there anything to record?
+ * An OK is per person: it only ever lets the OK-giver's own agents act.
+ * @param {any} task @param {any} actor @param {Date} now @param {boolean} alreadyOk this person already OK'd it
+ * @returns {{ ok: true, needed: boolean } | { ok: false, code: string, why: string }}
+ */
+export function okCheck(task, actor, now, alreadyOk) {
+  if (!canView(actor)) return { ok: false, code: "not_allowed", why: "You can't see this task." };
+  const status = effectiveStatus(task, now);
+  if (status !== "open" && status !== "in_progress" && status !== "blocked") {
+    return { ok: false, code: "bad_status", why: `This task is ${statusLabel(status)}, so there's nothing to OK.` };
+  }
+  return { ok: true, needed: task.createdByAccountId !== actor.accountId && !alreadyOk };
+}
+
+/** The activity line for an OK. @param {"web" | "user_in_chat" | "list_setting"} via @param {string | null} [agentName] */
+export function okLine(via, agentName) {
+  return via === "user_in_chat" ? `${EVENT_PHRASES.ok} (via ${agentName || "an agent"})` : EVENT_PHRASES.ok;
 }
 
 // ── Claims and status ───────────────────────────────────────────────────────
@@ -400,7 +539,23 @@ export const EVENT_PHRASES = Object.freeze({
   restored: "restored this",
   assigned: "changed who this is for",
   edited: "edited this",
+  ok: "OK'd this for their agents",
+  member_left: "left the list",
 });
+
+/**
+ * The line on a task when the person holding it, or the person it was for, is no longer on the list.
+ * Their past work stays attributed to them; only what was in flight is let go.
+ * @param {string} title @param {"left" | "removed"} how @param {boolean} released they (or their agent) held it
+ */
+export function memberLeftLine(title, how, released) {
+  const t = `"${String(title).slice(0, 200)}"`;
+  const who = how === "left" ? "left the list" : "was taken off the list";
+  return released ? `${who} and released ${t}` : `${who}, so ${t} is for anyone again`;
+}
+
+/** List-level activity: who joined, left or was taken off. Shown as "<text>". */
+export const LIST_EVENTS = Object.freeze(["member_added", "member_left", "member_removed"]);
 
 // ── Views ───────────────────────────────────────────────────────────────────
 
@@ -441,9 +596,10 @@ const iso = (d) => (d ? new Date(d).toISOString() : null);
  * @param {any} task
  * `lines`, when given, is the task's latest progress entry and latest "blocked" event, so a list
  * can show what an agent is doing without one request per task.
- * @param {{ actor: any, names: Names, list: { id: string, name: string, shared: boolean }, mayAct: { ok: boolean, why: string }, now: Date, lines?: { progress?: any, blocked?: any } }} ctx
+ * `reactions` are the task's reaction rows; the view carries counts and whether the caller reacted.
+ * @param {{ actor: any, names: Names, list: { id: string, name: string, shared: boolean }, mayAct: { ok: boolean, why: string }, now: Date, lines?: { progress?: any, blocked?: any }, reactions?: any[] }} ctx
  */
-export function taskView(task, { actor, names, list, mayAct, now, lines }) {
+export function taskView(task, { actor, names, list, mayAct, now, lines, reactions }) {
   const status = effectiveStatus(task, now);
   const live = hasLiveClaim(task, now);
   const assignee = task.assigneeAgentId
@@ -465,6 +621,7 @@ export function taskView(task, { actor, names, list, mayAct, now, lines }) {
       ? { by: who(names, task.claimAccountId, task.claimAgentId, actor), since: iso(task.claimedAt), lapses_at: iso(task.claimExpiresAt) }
       : null,
     agent_may_act: mayAct,
+    reactions: reactionSummary(reactions ?? [], actor),
     created_at: iso(task.createdAt),
     updated_at: iso(task.updatedAt),
   };
@@ -505,6 +662,124 @@ export function entryView(entry, { actor, names }) {
     text: entry.body,
     at: iso(entry.createdAt),
   };
+}
+
+// ── Reactions ───────────────────────────────────────────────────────────────
+
+/**
+ * One of the four reactions, or a 400. A trailing variation selector (what many
+ * keyboards add) is ignored.
+ * @param {unknown} value
+ */
+export function cleanEmoji(value) {
+  const v = typeof value === "string" ? value.trim().replace(/️/g, "") : "";
+  if (!REACTIONS.includes(v)) fail(400, "invalid_emoji", `emoji must be one of ${REACTIONS.join(" ")}`);
+  return v;
+}
+
+/**
+ * Counts per reaction, in the fixed order, and whether the caller (this person,
+ * or this agent) reacted. Reactions nobody gave are left out.
+ * @param {Array<{ accountId: string, agentId?: string | null, emoji: string }>} rows @param {any} actor
+ */
+export function reactionSummary(rows, actor) {
+  return REACTIONS.map((emoji) => {
+    const mine = rows.filter((r) => r.emoji === emoji);
+    return {
+      emoji,
+      count: mine.length,
+      you: !!actor && mine.some((r) => r.accountId === actor.accountId && (r.agentId ?? null) === (actor.agentId ?? null)),
+    };
+  }).filter((r) => r.count > 0);
+}
+
+// ── Mentions ────────────────────────────────────────────────────────────────
+
+// "@alex", "@alex@bc", "@claude-code", "@alex/claude-code". Not inside an email address or a path.
+const MENTION = /(^|[^A-Za-z0-9._@\/-])@([A-Za-z0-9][A-Za-z0-9._-]*(?:@bc)?)(?:\/([A-Za-z0-9][A-Za-z0-9._'’-]*))?/g;
+
+/**
+ * Who a comment or progress line mentions. People are the list's members, by
+ * handle (@alex). Agents are members' agents with access to this list, by name
+ * (@claude-code for "Claude Code"), or qualified by their person
+ * (@alex/claude-code) when more than one agent answers to that name. An
+ * unqualified agent name prefers the writer's own agent; one that still matches
+ * several agents mentions none of them. Unknown names are ordinary text. Nobody
+ * is mentioned by their own words.
+ * @param {string} text
+ * @param {{ people: Array<{ accountId: string, handle: string }>, agents: Array<{ id: string, accountId: string, name: string }>, author: { accountId: string, agentId: string | null } }} ctx
+ * @returns {Array<{ accountId: string, agentId: string | null }>}
+ */
+export function parseMentions(text, { people, agents, author }) {
+  const found = new Map();
+  if (typeof text !== "string" || !text.includes("@")) return [];
+  const add = (accountId, agentId) => {
+    if (accountId === author.accountId && (agentId ?? null) === (author.agentId ?? null)) return;
+    const key = `${accountId}|${agentId ?? ""}`;
+    if (!found.has(key) && found.size < LIMITS.mentionsPerEntry) found.set(key, { accountId, agentId: agentId ?? null });
+  };
+  const trim = (s) => s.replace(/[._-]+$/, "");
+  for (const m of text.matchAll(MENTION)) {
+    const token = trim(m[2]);
+    const sub = m[3] ? trim(m[3]) : null;
+    const person = people.find((p) => handleMatches(p.handle, token));
+    if (sub) {
+      if (!person) continue;
+      const slug = agentSlug(sub);
+      const hits = agents.filter((a) => a.accountId === person.accountId && agentSlug(a.name) === slug);
+      if (hits.length === 1) add(person.accountId, hits[0].id);
+      continue;
+    }
+    if (person) {
+      add(person.accountId, null);
+      continue;
+    }
+    const slug = agentSlug(token);
+    if (!slug) continue;
+    const hits = agents.filter((a) => agentSlug(a.name) === slug);
+    const own = hits.filter((a) => a.accountId === author.accountId);
+    const chosen = own.length ? own : hits;
+    if (chosen.length === 1) add(chosen[0].accountId, chosen[0].id);
+  }
+  return [...found.values()];
+}
+
+// ── Members and list activity ───────────────────────────────────────────────
+
+/**
+ * One person on a list, as everyone on it sees them. `agents` are that person's
+ * agents with access to this list, with the mention that reaches each.
+ * @param {{ accountId: string, role: string, joinedAt: Date }} member @param {Names} names @param {any} actor
+ * @param {Array<{ id: string, name: string, access: string }>} [agents]
+ */
+export function memberView(member, names, actor, agents = []) {
+  const acct = names.accounts.get(member.accountId);
+  const handle = acct?.handle ?? null;
+  return {
+    handle,
+    display_name: acct?.displayName ?? null,
+    role: member.role,
+    joined_at: iso(member.joinedAt),
+    is_you: !!actor && actor.accountId === member.accountId,
+    mention: handle ? `@${handle.replace(/@bc$/, "")}` : null,
+    agents: agents.map((a) => ({ name: a.name, access: a.access, mention: `@${agentSlug(a.name)}` })),
+  };
+}
+
+/**
+ * A list-level activity line ("Skylar added Alex", "Alex left the list").
+ * @param {{ id: string, eventType: string, actorAccountId: string, subjectAccountId: string, createdAt: Date }} event
+ * @param {{ actor: any, names: Names }} ctx
+ */
+export function listEventView(event, { actor, names }) {
+  const by = who(names, event.actorAccountId, null, actor);
+  const subject = who(names, event.subjectAccountId, null, actor);
+  const name = (ref) => (ref?.is_you ? "you" : ref?.person ?? "someone");
+  const text =
+    event.eventType === "member_added" ? `added ${name(subject)}`
+      : event.eventType === "member_left" ? "left the list"
+        : `took ${name(subject)} off the list`;
+  return { id: event.id, event: event.eventType, by, subject, text, at: iso(event.createdAt) };
 }
 
 // ── My plate ────────────────────────────────────────────────────────────────
@@ -562,4 +837,38 @@ export function plateSections(tasks, actor, now, canClaimFn) {
   waitingOnYou.sort((a, b) => ms(a.completedAt) - ms(b.completedAt));
   doneRecently.sort((a, b) => ms(b.completedAt) - ms(a.completedAt));
   return { doing, up_next: upNext, claimable: claimable.slice(0, 20), waiting_on_you: waitingOnYou, done_recently: doneRecently.slice(0, 20) };
+}
+
+/**
+ * "OK for my agents?": tasks someone else wrote that this person's agents could
+ * take but can't act on yet. That is a task for the person or their agents, or an
+ * unassigned one on a list where their agents have work access, that's open (or
+ * blocked) and unheld, with no OK and no list setting covering it. For an agent
+ * asking, only what that agent itself could take once its person says yes.
+ * @param {any[]} tasks rows the actor can see
+ * @param {any} actor
+ * @param {Date} now
+ * @param {{ mayAct: (t: any) => { ok: boolean }, agentsCanWork: (listId: string) => boolean }} fns
+ */
+export function okRequests(tasks, actor, now, { mayAct, agentsCanWork }) {
+  const out = [];
+  for (const t of tasks) {
+    if (t.createdByAccountId === actor.accountId) continue;
+    const status = effectiveStatus(t, now);
+    if ((status !== "open" && status !== "blocked") || hasLiveClaim(t, now)) continue;
+    if (t.assigneeAccountId && t.assigneeAccountId !== actor.accountId) continue;
+    if (actor.agentId && t.assigneeAgentId && t.assigneeAgentId !== actor.agentId) continue;
+    if ((!t.assigneeAccountId || actor.agentId) && !agentsCanWork(t.listId)) continue;
+    if (mayAct(t).ok) continue;
+    out.push(t);
+  }
+  return out.sort(dueOrder).slice(0, LIMITS.plateExtras);
+}
+
+/**
+ * May this person get an email nudge now? At most one an hour, across every list.
+ * @param {number | undefined} lastSentMs @param {number} nowMs
+ */
+export function nudgeDue(lastSentMs, nowMs) {
+  return lastSentMs === undefined || nowMs - lastSentMs >= NUDGE_EVERY_MS;
 }
