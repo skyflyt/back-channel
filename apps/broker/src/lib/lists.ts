@@ -788,6 +788,29 @@ export async function listsTool(req: NextRequest, name: string, args: Input): Pr
 }
 
 /**
+ * For remote app sessions (src/lib/remote-app.ts): one Lists operation, run as
+ * the given person or agent, INSIDE the caller's transaction, with exactly the
+ * rules /api/lists applies. A Lists refusal comes back as a value, never
+ * thrown, so the session's own write still commits; anything else (a
+ * serialization abort) propagates and the caller's whole transaction re-runs.
+ */
+export async function listsInTx(
+  tx: Tx,
+  as: { accountId: string; agentId: string | null },
+  op: "getTask" | "addEntry" | "done",
+  input: Input,
+  now: Date,
+): Promise<{ ok: true; result: Row } | { ok: false; code: string; message: string }> {
+  try {
+    const result = await OPS[op]({ tx, caller: { accountId: as.accountId, agentId: as.agentId, viaCookie: false }, input, now, after: [] });
+    return { ok: true, result: result as Row };
+  } catch (e) {
+    if (e instanceof R.ListRuleError) return { ok: false, code: e.code, message: e.message };
+    throw e;
+  }
+}
+
+/**
  * Doorbell helper for bc_check_inbox: open tasks waiting for this account's
  * agents that none of them has seen yet. Best effort: a failure reads as 0.
  */

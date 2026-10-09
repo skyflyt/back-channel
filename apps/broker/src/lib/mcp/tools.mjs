@@ -22,6 +22,8 @@ const SEALED_NOTE =
 
 // Lists (bc_task*): own catalog module, appended at the end of TOOLS below.
 import { LIST_TOOLS } from "./list-tools.mjs";
+// Remote app sessions (bc_remote_*): own catalog module, appended right after LIST_TOOLS. Full-scope keys only.
+import { REMOTE_TOOLS } from "./remote-tools.mjs";
 
 // The thread id is the one argument every per-thread tool needs, and it is the
 // one that goes missing in the field: a client reported bc_read_messages
@@ -203,6 +205,7 @@ export const TOOLS = [
     },
   },
   ...LIST_TOOLS,
+  ...REMOTE_TOOLS,
 ];
 
 const takesThreadId = (tool) => !!tool.inputSchema.properties?.session_id;
