@@ -17,6 +17,32 @@ function fakeFs(initialFiles = {}) {
   };
 }
 
+test("mailbox keys stay in separate immutable owner-only files across session saves", () => {
+  const fs = fakeFs(), store = createKeyStore({ path: "/test/sessions.json", fs, isWindows: false });
+  const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
+  let generated = 0;
+  const generate = () => ({ encryptionPrivateKey: "local-private-" + ++generated, signingPrivateKey: "local-signing" });
+  const one = store.mailboxIdentity(ids[0], generate), two = store.mailboxIdentity(ids[1], generate);
+  store.save({ session: { updatedAt: Date.now() } });
+  assert.deepEqual(store.mailboxIdentity(ids[0], generate), one); assert.deepEqual(store.mailboxIdentity(ids[1], generate), two);
+  assert.equal(generated, 2);
+  assert.equal(fs.modes.get("/test/sessions.json.mailbox-" + ids[0] + ".json"), 0o600);
+  assert.throws(() => store.mailboxIdentity("../elsewhere", generate), /Invalid/);
+});
+
+test("concurrent mailbox creation keeps the winner's key; corrupt files cannot leak their contents", () => {
+  const fs = fakeFs(), id = "11111111-1111-4111-8111-111111111111", target = "/test/sessions.json.mailbox-" + id + ".json";
+  fs.writeFileSync = (path, _data, options) => {
+    assert.equal(options.flag, "wx");
+    fs.files.set(path, JSON.stringify({ encryptionPrivateKey: "winner", signingPrivateKey: "winner-signing" }));
+    throw Object.assign(new Error("exists"), { code: "EEXIST" });
+  };
+  const store = createKeyStore({ path: "/test/sessions.json", fs, isWindows: false });
+  assert.equal(store.mailboxIdentity(id, () => ({ encryptionPrivateKey: "loser" })).encryptionPrivateKey, "winner");
+  fs.files.set(target, "private-secret-but-invalid-json");
+  assert.throws(() => store.mailboxIdentity(id, () => ({})), e => /could not be read/.test(e.message) && !e.message.includes("private-secret"));
+});
+
 test("load(): missing file returns empty state, no throw", () => {
   const store = createKeyStore({ path: "/x/keys.json", fs: fakeFs() });
   assert.deepEqual(store.load(), {});

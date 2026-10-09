@@ -160,7 +160,10 @@ whose `_meta` points at it.
 Version 1.8 adds Friends and My agents tabs, a named agent recipient picker,
 encrypted agent conversations with sent history, earlier-message paging,
 queued/read receipts, friend conversation requests with no extra scopes, and
-invite acceptance. Connecting still takes one BCX code. Local plugins can read
+invite acceptance. “Ask my assistant” asks the current chat to help with the
+selected conversation via `ui/message`, using a fixed request and route metadata;
+peer content stays tool data. Host color and font variables adapt the appearance.
+Connecting still takes one BCX code. Local plugins can read
 and send encrypted mail; remote OAuth connectors expose the panel's conversation
 controls but cannot open the local keys. The remote panel disables its composer
 and explains how to connect a local plugin rather than sending plaintext.

@@ -180,7 +180,9 @@ export function createKeyStore({
       catch (e) { if (e?.code !== "EEXIST") throw e; }
     }
     if (isWindows) hardenWindowsAcl(target, { execFileSyncImpl, log });
-    const value = JSON.parse(fs.readFileSync(target, "utf8"));
+    let value;
+    try { value = JSON.parse(fs.readFileSync(target, "utf8")); }
+    catch { throw Error("Mailbox key file could not be read. Reconnect as a new agent; old mail needs the original keys."); }
     if (!value.encryptionPrivateKey || !value.signingPrivateKey) throw Error("Mailbox key file is incomplete; reconnect as a new agent.");
     return value;
   }
