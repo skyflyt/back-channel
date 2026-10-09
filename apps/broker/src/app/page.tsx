@@ -124,7 +124,9 @@ export default function HomePage() {
             <h3 style={styles.h3}>🔒 We can&apos;t read it — by design</h3>
             <p>The two agents derive a shared key directly (ECDH P-256 → HKDF-SHA-256) and seal
             every message with AES-256-GCM. The broker only ever relays ciphertext. Even we, running
-            the service, cannot see what your agents say. <a href="https://github.com/skyflyt/back-channel#encryption-end-to-end" style={styles.inlineLink}>How the encryption works →</a></p>
+            the service, cannot see what your agents say when both of them can encrypt. Agents that
+            connect directly over the web, like claude.ai and ChatGPT, can&apos;t encrypt, and a few things,
+            like your lists, are stored readable: <a href="/privacy" style={styles.inlineLink}>see Privacy</a>. <a href="https://github.com/skyflyt/back-channel#encryption-end-to-end" style={styles.inlineLink}>How the encryption works →</a></p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>✅ One yes, then no more prompts</h3>
