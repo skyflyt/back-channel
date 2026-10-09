@@ -11,6 +11,14 @@ COPY apps/broker/ ./
 COPY skill/ /skill/
 COPY community/ /community/
 
+# The skill bytes this image serves at /skill and /skill/reference must match
+# the committed public/skill.sha256 -- the manifest install.sh and
+# backchannel-cli read from GitHub main. Check before `npm run build`, whose
+# prebuild regenerates the manifest from whatever /skill holds and would hide a
+# mismatch. Fails on a stale CRLF checkout (see .gitattributes) and on a skill
+# edit whose manifest wasn't regenerated.
+RUN node scripts/generate-skill-manifest.mjs --check
+
 # Generate Prisma client + Next.js build
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npx prisma generate

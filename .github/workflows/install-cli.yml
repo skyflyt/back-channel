@@ -25,6 +25,7 @@ on:
       - "skill/REFERENCE.md"
       - "packages/install/**"
       - "tests/install/**"
+      - ".gitattributes"
       - ".github/workflows/install-cli.yml"
   pull_request:
     paths:
@@ -36,6 +37,7 @@ on:
       - "skill/REFERENCE.md"
       - "packages/install/**"
       - "tests/install/**"
+      - ".gitattributes"
       - ".github/workflows/install-cli.yml"
 
 jobs:
@@ -54,9 +56,12 @@ jobs:
       - name: install.sh integration tests (bash path, Linux)
         run: bash tests/install/run-tests.sh
 
+      # Unquoted so bash expands the glob: Node 20's test runner takes paths
+      # literally (glob arguments arrived in Node 21), so the quoted form failed
+      # the Node 20 leg and fail-fast cancelled Node 22.
       - name: backchannel-cli unit/integration tests (npm path)
         working-directory: packages/install
-        run: node --test "test/*.test.mjs"
+        run: node --test test/*.test.mjs
 
       - name: published install.sh.sha256 matches the served script (out-of-band prompt anchor)
         run: |
@@ -76,7 +81,11 @@ jobs:
             exit 1
           }
 
+      # SC2317 excluded: shellcheck 0.9.0 (ubuntu-latest's apt package) reports
+      # cleanup(), which only runs via `trap cleanup EXIT INT TERM`, as
+      # unreachable. An in-file disable directive would change install.sh's
+      # bytes, so its hash in install.sh.sha256 and docs/install-prompt.md too.
       - name: install.sh passes shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y shellcheck
-          shellcheck -s sh apps/broker/public/install.sh
+          shellcheck -s sh -e SC2317 apps/broker/public/install.sh
