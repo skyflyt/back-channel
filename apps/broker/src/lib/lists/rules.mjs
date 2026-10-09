@@ -541,6 +541,8 @@ export const EVENT_PHRASES = Object.freeze({
   edited: "edited this",
   ok: "OK'd this for their agents",
   member_left: "left the list",
+  // Phase 3: a task copied by "Duplicate list". It keeps who wrote it; this line says who copied it.
+  copied: "copied this here from another list",
 });
 
 /**
