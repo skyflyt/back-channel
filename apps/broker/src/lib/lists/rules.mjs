@@ -439,9 +439,11 @@ const iso = (d) => (d ? new Date(d).toISOString() : null);
  * to act safely is here: who wrote it, who it's for, who holds it, and whether
  * this agent may act on it.
  * @param {any} task
- * @param {{ actor: any, names: Names, list: { id: string, name: string, shared: boolean }, mayAct: { ok: boolean, why: string }, now: Date }} ctx
+ * `lines`, when given, is the task's latest progress entry and latest "blocked" event, so a list
+ * can show what an agent is doing without one request per task.
+ * @param {{ actor: any, names: Names, list: { id: string, name: string, shared: boolean }, mayAct: { ok: boolean, why: string }, now: Date, lines?: { progress?: any, blocked?: any } }} ctx
  */
-export function taskView(task, { actor, names, list, mayAct, now }) {
+export function taskView(task, { actor, names, list, mayAct, now, lines }) {
   const status = effectiveStatus(task, now);
   const live = hasLiveClaim(task, now);
   const assignee = task.assigneeAgentId
@@ -474,12 +476,23 @@ export function taskView(task, { actor, names, list, mayAct, now }) {
     view.completed_by = who(names, task.completedByAccountId, task.completedByAgentId, actor);
     if (task.summary) view.summary = task.summary;
   }
+  if (lines) {
+    const p = lines.progress;
+    view.last_progress = p ? { text: p.body, by: who(names, p.authorAccountId, p.authorAgentId, actor), at: iso(p.createdAt) } : null;
+    if (status === "blocked") view.blocked_reason = lines.blocked ? blockedReason(lines.blocked.body) : null;
+  }
   if (status === "needs_review") view.needs_review_by = who(names, task.reviewerAccountId, null, actor);
   if (status === "done" && task.completedByAgentId && task.completedAt) {
     const until = ms(task.completedAt) + SEND_BACK_MS;
     if (until > now.getTime()) view.send_back_until = new Date(until).toISOString();
   }
   return view;
+}
+
+/** The reason out of a "blocked" activity line ("marked this blocked: waiting on DNS" → "waiting on DNS"). @param {string} body */
+export function blockedReason(body) {
+  const prefix = `${EVENT_PHRASES.blocked}: `;
+  return typeof body === "string" && body.startsWith(prefix) ? body.slice(prefix.length) : null;
 }
 
 /** @param {any} entry @param {{ actor: any, names: Names }} ctx */

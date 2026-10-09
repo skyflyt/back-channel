@@ -44,6 +44,10 @@ export interface TaskView {
   summary?: string;
   needs_review_by?: PersonRef | null;
   send_back_until?: string;
+  /** On list and plate views, for tasks being worked: the latest progress line. */
+  last_progress?: { text: string; by: PersonRef | null; at: string | null } | null;
+  /** On list and plate views, for blocked tasks: what it's blocked on. */
+  blocked_reason?: string | null;
 }
 
 export interface EntryView {

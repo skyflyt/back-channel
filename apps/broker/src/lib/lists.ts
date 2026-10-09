@@ -142,8 +142,31 @@ function holderLabel(names: Names, actor: Actor) {
 }
 
 type ListRef = { id: string; name: string; shared: boolean };
-function viewOf(task: Row, ctx: { actor: Actor; names: Names; list: ListRef; member: Row | null; now: Date }) {
-  return R.taskView(task, { actor: ctx.actor, names: ctx.names as never, list: ctx.list, mayAct: mayActFor(task, ctx.actor.accountId, ctx.member, ctx.names), now: ctx.now });
+type Lines = Map<string, { progress?: Row; blocked?: Row }>;
+function viewOf(task: Row, ctx: { actor: Actor; names: Names; list: ListRef; member: Row | null; now: Date; lines?: Lines }) {
+  return R.taskView(task, {
+    actor: ctx.actor, names: ctx.names as never, list: ctx.list, mayAct: mayActFor(task, ctx.actor.accountId, ctx.member, ctx.names), now: ctx.now,
+    ...(ctx.lines ? { lines: ctx.lines.get(task.id) ?? {} } : {}),
+  });
+}
+
+/** The latest progress line and "blocked" event of every task being worked, in one query, so a page never fetches per task. */
+async function latestLines(tx: Tx, tasks: Row[]): Promise<{ lines: Lines; authors: Row[] }> {
+  const ids = tasks.filter((t) => t.status === "in_progress" || t.status === "blocked").map((t) => t.id);
+  const lines: Lines = new Map();
+  if (!ids.length) return { lines, authors: [] };
+  const rows = (await tx.taskEntry.findMany({
+    where: { taskId: { in: ids }, OR: [{ kind: "progress" }, { kind: "event", eventType: "blocked" }] },
+    orderBy: { createdAt: "desc" },
+    take: 500,
+  })) as Row[];
+  for (const e of rows) {
+    const cur = lines.get(e.taskId) ?? {};
+    if (e.kind === "progress" && !cur.progress) cur.progress = e;
+    if (e.kind === "event" && !cur.blocked) cur.blocked = e;
+    lines.set(e.taskId, cur);
+  }
+  return { lines, authors: [...lines.values()].flatMap((l) => [l.progress, l.blocked]).filter(Boolean) as Row[] };
 }
 
 // ── writes shared by every operation ───────────────────────────────────────
@@ -283,11 +306,12 @@ async function opGetList({ tx, caller, input, now }: Ctx) {
   });
   const settled: Row[] = [];
   for (const t of rows as Row[]) settled.push(await settleLapse(tx, t, now));
-  const names = await loadNames(tx, settled);
+  const { lines, authors } = await latestLines(tx, settled);
+  const names = await loadNames(tx, [...settled, ...authors]);
   const ref = listRef(s);
   const result: Row = {
     list: { ...ref, emoji: s.list.emoji ?? null, archived: !!s.list.archivedAt, your_role: s.member.role, agents_take_from: s.member.agentsTakeFrom },
-    tasks: settled.map((t) => viewOf(t, { actor: s.actor, names, list: ref, member: s.member, now })),
+    tasks: settled.map((t) => viewOf(t, { actor: s.actor, names, list: ref, member: s.member, now, lines })),
   };
   if (!caller.agentId) {
     // The access editor: every one of this person's live agents and what it may do here.
@@ -364,7 +388,8 @@ async function opPlate({ tx, caller, now }: Ctx) {
   });
   const settled: Row[] = [];
   for (const t of rows as Row[]) settled.push(await settleLapse(tx, t, now));
-  const names = await loadNames(tx, settled);
+  const { lines, authors } = await latestLines(tx, settled);
+  const names = await loadNames(tx, [...settled, ...authors]);
   const byList = new Map((lists as Row[]).map((l) => [l.id, l]));
   const actorFor = (listId: string): Actor => {
     const m = (members as Row[]).find((x) => x.listId === listId && x.accountId === caller.accountId);
@@ -388,7 +413,7 @@ async function opPlate({ tx, caller, now }: Ctx) {
     const unseen = sections.up_next.filter((t: Row) => !t.agentSeenAt).map((t: Row) => t.id);
     if (unseen.length) await tx.taskItem.updateMany({ where: { id: { in: unseen }, agentSeenAt: null }, data: { agentSeenAt: now } });
   }
-  const view = (t: Row) => viewOf(t, { actor: actorFor(t.listId), names, list: refFor(t.listId), member: memberFor(t.listId), now });
+  const view = (t: Row) => viewOf(t, { actor: actorFor(t.listId), names, list: refFor(t.listId), member: memberFor(t.listId), now, lines });
   return {
     lists: (lists as Row[]).map((l) => ({ id: l.id, name: l.name, emoji: l.emoji ?? null, shared: shared(l.id) })),
     doing: sections.doing.map(view),

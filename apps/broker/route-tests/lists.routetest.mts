@@ -1000,3 +1000,18 @@ test("taking an agent's work access away releases what it holds on that list, wi
   assert.match(String(released?.body), /work access on this list was removed/);
   refused(await claim(t.id, as(A1)), 403, "not_allowed", "a view-only agent can't claim it back");
 });
+test("list and plate views carry each worked task's latest progress and blocked reason in one go", async () => {
+  const id = await makeList("Work", [A1]);
+  const t = await addTask(id, as(A1), { title: "Renew the cert" });
+  ok(await claim(t.id, as(A1)), "claim");
+  ok(await rest("PATCH", `/tasks/${t.id}`, as(A1), { progress: "Checked expiry: Oct 28" }), "progress 1");
+  ok(await rest("PATCH", `/tasks/${t.id}`, as(A1), { progress: "Renewed in portal" }), "progress 2");
+  let view = ok(await rest("GET", `/${id}`, SKYLAR)).tasks.find((x: Row) => x.id === t.id);
+  assert.equal(view.last_progress.text, "Renewed in portal");
+  assert.equal(view.last_progress.by.agent_id, A1);
+  ok(await rest("PATCH", `/tasks/${t.id}`, as(A1), { status: "blocked", reason: "waiting on DNS" }), "block");
+  view = ok(await rest("GET", `/${id}`, SKYLAR)).tasks.find((x: Row) => x.id === t.id);
+  assert.equal(view.blocked_reason, "waiting on DNS");
+  const plate = ok(await rest("GET", "/plate", as(A1)));
+  assert.equal(plate.doing.find((x: Row) => x.id === t.id)?.last_progress?.text, "Renewed in portal");
+});

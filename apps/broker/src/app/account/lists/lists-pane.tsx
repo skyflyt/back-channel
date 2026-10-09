@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chip, EmptyState, SkeletonRows } from "@/components/ui/primitives";
 import {
-  listsApi, errorText, useListChanges, whoName, ago, elapsed, lapsesIn, assigneeLabel, blockedReason,
+  listsApi, errorText, useListChanges, whoName, ago, elapsed, lapsesIn, assigneeLabel,
   LISTS_OPEN_EVENT, type ListsTarget, type ListDetail, type ListSummary, type Plate, type TaskView, type EntryView,
 } from "./api";
 import { WhoAvatar, DueChip, PlainText } from "./bits";
@@ -87,23 +87,13 @@ function LiveLists() {
     }
   }, []);
 
-  // The latest progress line (or blocked reason) for each task being worked.
-  // Fetched per task, and only again when that task changed.
+  // The latest progress line (or blocked reason) for each task being worked arrives with
+  // the task itself (last_progress / blocked_reason), so nothing is fetched per task.
   const loadLines = useCallback(async (tasks: TaskView[]) => {
-    const stale = tasks.filter(isDoing).filter((t) => linesRef.current[t.id]?.updated_at !== t.updated_at).slice(0, 12);
-    if (!stale.length) return;
-    const got = await Promise.all(stale.map(async (t) => {
-      try {
-        const { entries } = await listsApi.entries(t.id);
-        const progress = [...entries].reverse().find((e) => e.kind === "progress");
-        const blocked = [...entries].reverse().map(blockedReason).find((r) => r !== null) ?? null;
-        return [t.id, { updated_at: t.updated_at, progress: progress ? { text: progress.text, by: progress.by, at: progress.at } : null, blocked }] as const;
-      } catch {
-        return null;
-      }
-    }));
     const next = { ...linesRef.current };
-    for (const g of got) if (g) next[g[0]] = g[1];
+    for (const t of tasks.filter(isDoing)) {
+      next[t.id] = { updated_at: t.updated_at, progress: t.last_progress ?? null, blocked: t.blocked_reason ?? null };
+    }
     linesRef.current = next;
     setLines(next);
   }, []);
