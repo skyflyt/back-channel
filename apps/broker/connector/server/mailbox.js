@@ -26,7 +26,10 @@ export function createMailbox({ call, keystore }) {
     const agents = directory.agents.map(a => a.id === id ? registered.agent : a);
     return { self_agent_id: id, agents, local };
   }
-  async function list() { const { local: _private, ...directory } = await enrolled(); return directory; }
+  async function list() {
+    const directory = await enrolled();
+    return { self_agent_id: directory.self_agent_id, agents: directory.agents.map(a => ({ id: a.id, name: a.name, runtime: a.runtime, ready: a.ready, unread_count: a.unread_count ?? 0 })) };
+  }
   async function read(args = {}) {
     const d = await enrolled();
     const result = await call("bc_read_agent_messages", args);

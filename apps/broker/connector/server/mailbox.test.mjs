@@ -21,6 +21,7 @@ function setup() {
 test("ordinary mail is sealed, recipient-specific, signed and readable after connector restart", async () => {
   const s = setup(), a = s.agent("one"), b = s.agent("two");
   await b.list(); await a.send({ agent_id: "two", text: "private hello" });
+  assert.equal((await a.list()).agents[0].signingKey, undefined, "the model and panel need labels, not public-key material");
   assert.ok(!s.records[0].sealed.includes("private hello"));
   assert.equal((await s.agent("two").read()).messages[0].text, "private hello");
   assert.equal((await a.read()).messages[0].text, "private hello", "sender's sealed copy survives restart");

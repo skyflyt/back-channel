@@ -118,7 +118,7 @@ test("bc_open_panel, connected: thread data for the panel, plain text for a host
   });
   assert.doesNotMatch(JSON.stringify(r), /psst|mirror_pub/, "the peer's invite note and key material stay out of what a host may hand the model");
   assert.equal(r.content[0].text, "Back Channel: 1 open thread, 2 unread.\n- peer@bc — 2 unread");
-  assert.deepEqual([...b.seen].sort(), ["GET /api/sessions/active?frames=0", "call bc_whoami"]);
+  assert.deepEqual([...b.seen].sort(), ["GET /api/sessions/active?frames=0", "call bc_list_agents", "call bc_whoami"]);
   assert.ok(!b.seen.includes("call bc_check_inbox"), "opening a view must not deliver and ack the agent's queued mail");
   assert.ok(!b.seen.includes("call bc_open_panel"), "the broker has no such tool; it is never forwarded");
 });

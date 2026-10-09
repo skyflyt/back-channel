@@ -42,7 +42,11 @@ export async function agentMailbox(req: NextRequest, operation: string, body: Re
         }
         return { agent: view(await tx.agentToken.update({ where: { id: caller.id }, data: { mailboxEncryptionKey: encryptionKey, mailboxSigningKey: signingKey } })) };
       }
-      if (operation === "agents") return { self_agent_id: caller.id, agents: (await tx.agentToken.findMany({ where: active, orderBy: { createdAt: "asc" }, take: 100 })).map(view) };
+      if (operation === "agents") {
+        const pending = await tx.agentMessage.groupBy({ by: ["senderAgentId"], where: { targetAgentId: caller.id, sender: active, readAt: null, expiresAt: { gt: new Date() } }, _count: { _all: true } });
+        const counts = new Map(pending.map(m => [m.senderAgentId, m._count._all]));
+        return { self_agent_id: caller.id, agents: (await tx.agentToken.findMany({ where: active, orderBy: { createdAt: "asc" }, take: 100 })).map(a => ({ ...view(a), unread_count: counts.get(a.id) ?? 0 })) };
+      }
       const now = new Date();
       const visible = { sender: active, target: active, expiresAt: { gt: now }, OR: [{ senderAgentId: caller.id }, { targetAgentId: caller.id }] };
       if (operation === "read") {

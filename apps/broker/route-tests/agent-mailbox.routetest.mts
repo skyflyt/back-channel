@@ -30,6 +30,10 @@ const db: any = {
     update: async ({ where, data }: any) => Object.assign(agents.find(a => matches(a, where)), data),
   },
   agentMessage: {
+    groupBy: async ({ where }: any) => {
+      const counts = new Map<string, number>(); messages.filter(m => matches(m, where)).forEach(m => counts.set(m.senderAgentId, (counts.get(m.senderAgentId) ?? 0) + 1));
+      return [...counts].map(([senderAgentId, count]) => ({ senderAgentId, _count: { _all: count } }));
+    },
     findUnique: async ({ where }: any) => messages.find(m => matches(m, where)) ?? null,
     findFirst: async ({ where }: any) => messages.find(m => matches(m, where)) ?? null,
     findMany: async ({ where, take }: any) => messages.filter(m => matches(m, where)).sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)).slice(0, take),
@@ -77,8 +81,10 @@ test("receiver-specific acknowledgement and sender copies preserve independent i
   assert.equal((await (await run("read")).json()).messages[0].sealed, "sender ciphertext");
   assert.equal((await (await run("read", {}, ids[1])).json()).messages[0].sealed, "recipient ciphertext");
   assert.equal(messages[0].readAt, null);
+  assert.equal((await (await run("agents", {}, ids[1])).json()).agents.find((a: any) => a.id === ids[0]).unread_count, 1);
   await run("read", { mark_read: true }); assert.equal(messages[0].readAt, null, "sender cannot acknowledge receiver's mail");
   await run("read", { mark_read: true }, ids[1]); assert.ok(messages[0].readAt instanceof Date);
+  assert.equal((await (await run("agents", {}, ids[1])).json()).agents.find((a: any) => a.id === ids[0]).unread_count, 0);
 });
 test("enrollment is immutable and accepts only correct public key types", async () => {
   assert.equal((await run("enroll", { encryption_key: encryptionKey, signing_key: signingKey })).status, 200);

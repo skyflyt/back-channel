@@ -369,7 +369,7 @@ export function createBridge({
    * A failed lookup still opens the panel; it can refresh for itself.
    */
   async function panelState() {
-    const [who, list] = await Promise.all([callBrokerTool("bc_whoami"), panelInbox()]);
+    const [who, list, directory] = await Promise.all([callBrokerTool("bc_whoami"), panelInbox(), callBrokerTool("bc_list_agents")]);
     if (list.rejected) {
       log("401 from server on the panel's read — bad/revoked token");
       const ours = forgetRejectedKey();
@@ -380,6 +380,8 @@ export function createBridge({
             data: { connected: false, can_connect: false, problem: "Back Channel rejected the key in this extension's settings (revoked or mistyped). Create a new one at back-channel.app, under Account, Connect a new agent, and update the settings." } };
     }
     const data = { connected: true, local_encryption: true, handle: who?.handle ?? null, agent_name: who?.agent_name ?? null, inbox: list.inbox };
+    if (Array.isArray(directory?.agents)) data.agent_directory = { self_agent_id: directory.self_agent_id,
+      agents: directory.agents.map(a => ({ id: a.id, name: a.name, runtime: a.runtime, ready: a.ready, unread_count: a.unread_count ?? 0 })) };
     return { data, text: data.inbox ? inboxAsText(data.inbox) : "Back Channel is connected, but the inbox could not be loaded just now." };
   }
 

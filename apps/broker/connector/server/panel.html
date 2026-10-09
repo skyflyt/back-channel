@@ -227,6 +227,7 @@
     if (!data.inbox) notice("Your threads could not be loaded just now. Try Refresh.", true);
     if (!state.localEncryption) notice("This remote connector can manage conversations here. To read and send encrypted messages, use the Back Channel plugin in a host that runs the local connector.");
     state.threads = data.inbox && Array.isArray(data.inbox.sessions) ? data.inbox.sessions : [];
+    if (data.agent_directory && Array.isArray(data.agent_directory.agents)) { state.agents = data.agent_directory.agents; state.self = data.agent_directory.self_agent_id; }
     renderThreads();
     if (state.current && !state.current.agent && !state.threads.some(function (t) { return threadId(t) === state.current.id; }) && data.inbox) {
       $("compose").hidden = true; $("threadTitle").textContent = state.current.peer + " (no longer open)";
@@ -238,6 +239,8 @@
     var list = $("threads");
     var focused = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("data-thread") : null;
     list.textContent = "";
+    var ownUnread = state.agents.reduce(function (n, a) { return n + (Number.isInteger(a.unread_count) && a.unread_count > 0 ? a.unread_count : 0); }, 0);
+    $("agentsTab").textContent = "My agents" + (ownUnread ? " (" + ownUnread + ")" : "");
     $("friendStart").hidden = state.mode !== "friends";
     if (state.mode === "agents") {
       var peers = state.agents.filter(function (a) { return a.id !== state.self; });
@@ -246,6 +249,7 @@
       peers.forEach(function (a) {
         var li = el("li"), b = el("button", "thread"); b.type = "button";
         b.appendChild(el("span", "name", a.name + (a.ready ? "" : " · needs update")));
+        if (a.unread_count > 0) b.appendChild(el("span", "badge", String(a.unread_count)));
         b.setAttribute("aria-current", String(!!state.current && state.current.id === a.id));
         b.addEventListener("click", function () { openAgent(a); });
         li.appendChild(b); list.appendChild(li);
