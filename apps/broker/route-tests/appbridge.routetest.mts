@@ -48,6 +48,10 @@ const db: any = {
   appBridgeConnectionEvent: table("connection", () => ({ id: crypto.randomUUID(), at: new Date() })),
   // The gate also reads Remote subscriptions (remote-entitlement.ts); billing.routetest.mts covers them.
   remoteSubscription: table("remoteSubscription"),
+  // Remote app sessions (docs/remote-app-sessions.md): the gate reads one, and its agents, for an "agent"
+  // lease, and revoking a PC ends the sessions bound to it. remote-app.routetest.mts covers the sessions.
+  remoteAppSession: table("remoteAppSession", () => ({ kind: "agent", executorAgentId: null, listTaskId: null, createdAt: new Date(), endedAt: null, endReason: null })),
+  agentToken: table("agentToken", () => ({ revokedAt: null, scope: "full" })),
 };
 const credentialFind = db.appBridgeCredential.findUnique;
 db.appBridgeCredential.findUnique = async (args: any) => {
@@ -111,6 +115,7 @@ const routes = {
   pairing: () => import("@/app/api/appbridge/v1/hosts/self/pairings/[enrollmentId]/route"),
   presence: () => import("@/app/api/appbridge/v1/relay/presence-passes/route"),
   passes: () => import("@/app/api/appbridge/v1/relay/passes/route"),
+  agentPasses: () => import("@/app/api/appbridge/v1/relay/agent-passes/route"),
   redeem: () => import("@/app/api/appbridge/v1/relay/redeem/route"),
   renew: () => import("@/app/api/appbridge/v1/relay/renew/route"),
   release: () => import("@/app/api/appbridge/v1/relay/release/route"),
@@ -185,6 +190,17 @@ async function redeem(pass: string, purpose: string, connectorSpkiSha256: string
 }
 async function renew(leaseId: string, o: SignOpts = {}) { return (await routes.renew()).POST(relayReq("renew", { leaseId }, o)); }
 async function release(leaseId: string) { return (await routes.release()).POST(relayReq("release", { leaseId })); }
+/** An approved, running remote app session bound to this PC (the dashboard approval itself is remote-app.routetest.mts's). */
+function agentSession(host: { deviceId: string }, over: Record<string, unknown> = {}) {
+  for (const id of ["agent-1", "agent-2"]) if (!tables.agentToken.some(a => a.id === id)) tables.agentToken.push({ id, accountId: "acct-a", revokedAt: null, scope: "full" });
+  const s = { id: crypto.randomUUID(), accountId: "acct-a", kind: "agent", hostDeviceId: host.deviceId, agentTokenId: "agent-1", executorAgentId: null, listTaskId: null,
+    goal: "Enter this week's invoices", appAllowList: ["QuickBooks"], status: "active", minutes: 30, createdAt: new Date(), startedAt: new Date(),
+    expiresAt: new Date(Date.now() + 30 * 60_000), endedAt: null, endReason: null, ...over };
+  tables.remoteAppSession.push(s); return s;
+}
+async function agentPass(host: { credential: string }, sessionId: string, extra: Record<string, unknown> = {}) {
+  return (await routes.agentPasses()).POST(req("POST", { sessionId, ...extra }, bearer(host.credential)));
+}
 
 // ── Tests ──
 test("device routes accept only an ab_ credential: bc_ keys, cookies, garbage and revoked credentials are 401", async () => {
@@ -772,6 +788,33 @@ const cases: Case[] = [
   { name: "dashboard revoke", status: 204, arrange: ready,
     act: async ({ remote }) => (await routes.device()).DELETE(req("DELETE", undefined, cookie("a")), params({ id: remote.deviceId })),
     committed: async ({ remote }) => { assert.ok(tables.device.find(d => d.id === remote.deviceId)!.revokedAt); assert.equal(audits("appbridge.device_revoked"), 1); } },
+  { name: "agent pass issue", status: 200,
+    arrange: async () => { const c = await ready(); return { ...c, session: agentSession(c.host) }; },
+    act: ({ host, session }) => agentPass(host, session.id),
+    committed: async ({ session }, r) => { assert.deepEqual(tables.pass.map(p => [p.passHash, p.purpose, p.remoteAppSessionId]), [[sha((await r.json()).pass), "agent", session.id]]); } },
+  { name: "agent redeem", status: 200,
+    arrange: async () => { const c = await ready(); const session = agentSession(c.host); return { ...c, session, pass: (await (await agentPass(c.host, session.id)).json()).pass }; },
+    act: ({ host, pass }) => redeem(pass, "agent", host.key.fp),
+    committed: async ({ pass, session }, r) => {
+      assert.ok(tables.pass.find(p => p.passHash === sha(pass))!.consumedAt);
+      assert.deepEqual(tables.lease.map(l => [l.id, l.purpose, l.remoteAppSessionId]), [[(await r.json()).leaseId, "agent", session.id]], "exactly one agent lease");
+      assert.equal(tables.connection.length, 0, "an agent lease is not a device connection");
+    } },
+  { name: "agent lease renewal", status: 200,
+    arrange: async () => {
+      const c = await ready(); const session = agentSession(c.host);
+      const { leaseId } = await (await redeem((await (await agentPass(c.host, session.id)).json()).pass, "agent", c.host.key.fp)).json();
+      tables.lease[0].expiresAt = new Date(Date.now() + 5_000); return { ...c, leaseId };
+    },
+    act: ({ leaseId }) => renew(leaseId),
+    committed: async () => { assert.equal(tables.lease.length, 1); assert.ok(tables.lease[0].expiresAt.getTime() > Date.now() + 100_000, "extended"); } },
+  { name: "dashboard revoke of a PC with a running agent session", status: 204,
+    arrange: async () => { const c = await ready(); const session = agentSession(c.host); await redeem((await (await agentPass(c.host, session.id)).json()).pass, "agent", c.host.key.fp); return { ...c, session }; },
+    act: async ({ host }) => (await routes.device()).DELETE(req("DELETE", undefined, cookie("a")), params({ id: host.deviceId })),
+    committed: async ({ session }) => {
+      assert.deepEqual(tables.remoteAppSession.filter(s => s.id === session.id).map(s => [s.status, s.endReason]), [["ended", "revoked"]]);
+      assert.equal(tables.lease.length, 0);
+    } },
 ];
 
 test("every AppBridge transaction re-runs whole on a conflict, in every abort shape, and commits exactly once", async () => {
@@ -1165,4 +1208,143 @@ test("redeem's 3-remote limit still holds as the backstop for passes issued conc
   assert.equal((await redeem((await back.json()).pass, "session", a.key.fp)).status, 200);
   assert.equal((await redeem((await taken.json()).pass, "session", fifth.key.fp)).status, 409, "never a fourth remote");
   assert.equal(new Set(tables.lease.filter(l => l.purpose === "session").map(l => l.remoteDeviceId)).size, 3);
+});
+
+// ── The "agent" purpose (docs/remote-app-sessions.md): a PC's lease for one approved remote app session ──
+
+test("agent purpose: a PC's pass for its approved, running session redeems with the PC's key; the lease never outlives the session", async () => {
+  const { host } = await ready();
+  const s = agentSession(host);
+  const issued = await agentPass(host, s.id);
+  assert.equal(issued.status, 200); assert.equal(issued.headers.get("cache-control"), "no-store");
+  const { pass } = await issued.json();
+  assert.equal(tables.pass[0].purpose, "agent"); assert.equal(tables.pass[0].remoteAppSessionId, s.id); assert.equal(tables.pass[0].remoteDeviceId, null);
+  const r = await redeem(pass, "agent", host.key.fp);
+  assert.equal(r.status, 200);
+  const grant = await r.json();
+  assert.deepEqual({ ...grant, leaseId: undefined }, { leaseId: undefined, accountId: "acct-a", hostDeviceId: host.deviceId, clientDeviceId: null, enrollmentId: null,
+    hostConnectorSpkiSha256: host.key.fp, clientConnectorSpkiSha256: null, remoteAppSessionId: s.id });
+  assert.equal(tables.connection.length, 0, "an agent lease is not a device connection: the 7-day log is unchanged");
+  assert.deepEqual(await (await renew(grant.leaseId)).json(), { hostConnectorSpkiSha256: host.key.fp, clientConnectorSpkiSha256: null });
+  // Thirty seconds left on the session: the renewal stops there, not 120 s on.
+  s.expiresAt = new Date(Date.now() + 30_000);
+  assert.equal((await renew(grant.leaseId)).status, 200);
+  assert.ok(tables.lease[0].expiresAt.getTime() <= s.expiresAt.getTime(), "never past the session's end");
+  // A fresh lease for a session ending soon is capped the same way at redemption.
+  const second = await redeem((await (await agentPass(host, s.id)).json()).pass, "agent", host.key.fp);
+  assert.equal(second.status, 200);
+  assert.ok(tables.lease.every(l => l.expiresAt.getTime() <= s.expiresAt.getTime()));
+});
+
+test("agent purpose: refused unless the session is approved, running, unpaused, in time and this PC's, with live full-scope agents", async () => {
+  const { host, remote } = await ready();
+  const refusal = async (sessionId: string) => { const r = await agentPass(host, sessionId); return [r.status, (await r.json()).error]; };
+  for (const status of ["awaiting_consent", "blocked", "ended", "denied", "lapsed"]) {
+    assert.deepEqual(await refusal(agentSession(host, { status, ...(status === "ended" ? { endReason: "user_stop" } : {}) }).id), [403, "session_inactive"], status);
+  }
+  assert.deepEqual(await refusal(agentSession(host, { expiresAt: new Date(Date.now() - 1) }).id), [403, "session_inactive"], "out of time");
+  assert.deepEqual(await refusal(agentSession(host, { kind: "support" }).id), [403, "session_inactive"], "Phase B sessions never ride this path");
+  const otherPc = await register("host"); await setRelay(otherPc, true);
+  assert.deepEqual(await refusal(agentSession(otherPc).id), [404, "not_found"], "another PC's session");
+  assert.deepEqual(await refusal(agentSession(host, { accountId: "acct-b" }).id), [404, "not_found"], "another account's session");
+  assert.deepEqual(await refusal(crypto.randomUUID()), [404, "not_found"], "no such session");
+  // The agents behind it: revoked, or a connector key, or the driving agent gone, all refuse.
+  const s = agentSession(host, { executorAgentId: "agent-2" });
+  assert.equal((await agentPass(host, s.id)).status, 200);
+  tables.agentToken.find(a => a.id === "agent-2")!.revokedAt = new Date();
+  assert.deepEqual(await refusal(s.id), [403, "session_inactive"], "the driving agent was revoked");
+  tables.agentToken.find(a => a.id === "agent-2")!.revokedAt = null;
+  tables.agentToken.find(a => a.id === "agent-1")!.scope = "connector";
+  assert.deepEqual(await refusal(s.id), [403, "session_inactive"], "the agent that asked is not full scope");
+  tables.agentToken.find(a => a.id === "agent-1")!.scope = "full";
+  // The usual gate still comes first.
+  await setRelay(host, false);
+  assert.deepEqual(await refusal(s.id), [403, "relay_off"]);
+  await setRelay(host, true);
+  await entitle("skylar", false);
+  assert.deepEqual(await refusal(s.id), [403, "not_entitled"]);
+  await entitle("skylar", true);
+  // Only the PC asks, with exactly { sessionId }.
+  const asRemote = await (await routes.agentPasses()).POST(req("POST", { sessionId: s.id }, bearer(remote.credential)));
+  assert.equal(asRemote.status, 403, "a phone's credential has no host relay scope");
+  for (const body of [{}, { sessionId: s.id, extra: 1 }, { sessionId: "bad id!" }, { sessionId: 7 }]) {
+    assert.equal((await (await routes.agentPasses()).POST(req("POST", body, bearer(host.credential)))).status, 400, JSON.stringify(body));
+  }
+  for (const headers of [{}, bearer("bc_" + "x".repeat(32)), cookie("a")]) {
+    assert.equal((await (await routes.agentPasses()).POST(req("POST", { sessionId: s.id }, headers))).status, 401, "an agent key or the dashboard can never get a pass");
+  }
+});
+
+test("agent purpose: the session is read again at redemption and every renewal; a pause, a stop or the end of time ends the lease", async () => {
+  const { host, remote } = await ready();
+  const s = agentSession(host);
+  const pass = async () => (await (await agentPass(host, s.id)).json()).pass as string;
+  // A pass issued while allowed is refused at redemption once the session stopped (and is still consumed).
+  const early = await pass();
+  s.status = "ended"; s.endReason = "user_stop";
+  assert.equal((await redeem(early, "agent", host.key.fp)).status, 403);
+  assert.equal((await redeem(early, "agent", host.key.fp)).status, 403, "consumed by the refusal");
+  Object.assign(s, { status: "active", endReason: null });
+  // Purpose and presenter are checked like any pass.
+  assert.equal((await redeem(await pass(), "presence", host.key.fp)).status, 403, "an agent pass is not a presence pass");
+  const presence = (await (await (await routes.presence()).POST(req("POST", {}, bearer(host.credential)))).json()).pass;
+  assert.equal((await redeem(presence, "agent", host.key.fp)).status, 403, "nor a presence pass an agent pass");
+  assert.equal((await redeem(await pass(), "agent", remote.key.fp)).status, 403, "only the PC's own key");
+  // Paused (it stopped to ask): the next renewal refuses and deletes the lease.
+  const paused = await (await redeem(await pass(), "agent", host.key.fp)).json();
+  s.status = "blocked";
+  assert.equal((await renew(paused.leaseId)).status, 403);
+  assert.ok(!tables.lease.some(l => l.id === paused.leaseId));
+  s.status = "active";
+  // Out of time: refused, deleted.
+  const timed = await (await redeem(await pass(), "agent", host.key.fp)).json();
+  s.expiresAt = new Date(Date.now() - 1);
+  assert.ok([403, 410].includes((await renew(timed.leaseId)).status));
+  assert.ok(!tables.lease.some(l => l.id === timed.leaseId));
+});
+
+test("agent budget: its own cap of 2 per account, apart from the device cap, takeover and presence", async () => {
+  const { host, remotes: [a, b, c], taker, leases } = await busyAccount();
+  const s = agentSession(host);
+  const agentLease = async () => redeem((await (await agentPass(host, s.id)).json()).pass, "agent", host.key.fp);
+  // Three phones relayed at once (the device cap is full): agent leases are admitted anyway.
+  const one = await agentLease(); const two = await agentLease();
+  assert.equal(one.status, 200); assert.equal(two.status, 200);
+  const third = await agentLease();
+  assert.equal(third.status, 409, "a third agent lease is over the agent budget"); assert.deepEqual(await third.json(), { error: "refused" });
+  const agentIds = [(await one.json()).leaseId, (await two.json()).leaseId];
+  // A waiting phone is told about the three busy phones only: agent leases are never listed, never taken over.
+  const busy = await (await sessionPass(taker, host.deviceId, "enr-busy-3")).json();
+  assert.deepEqual(busy.devices.map((d: any) => d.deviceId).sort(), [a.deviceId, b.deviceId, c.deviceId].sort());
+  assert.equal((await takeoverPass(taker, host.deviceId, b.deviceId)).status, 200);
+  assert.ok(agentIds.every(id => tables.lease.some(l => l.id === id)), "a takeover never touches an agent lease");
+  assert.ok(leases.filter((_, i) => i !== 1).every(id => tables.lease.some(l => l.id === id)), "nor any other phone's");
+  // Presence keeps its own 4.
+  for (let i = 0; i < 4; i++) {
+    const p = (await (await (await routes.presence()).POST(req("POST", {}, bearer(host.credential)))).json()).pass;
+    assert.equal((await redeem(p, "presence", host.key.fp)).status, 200, `presence ${i + 1}`);
+  }
+  assert.equal(tables.lease.filter(l => l.purpose === "agent").length, 2, "and agent leases are still there");
+  // A released agent lease frees its slot at once.
+  noContent(await release(agentIds[0]));
+  assert.equal((await agentLease()).status, 200);
+});
+
+test("revoking or unregistering a PC ends its agent sessions and their leases in the same transaction", async () => {
+  const { host } = await ready();
+  const s = agentSession(host);
+  const waiting = agentSession(host, { status: "awaiting_consent", startedAt: null, expiresAt: null });
+  const done = agentSession(host, { status: "ended", endReason: "done", endedAt: new Date(Date.now() - 1000) });
+  const grant = await (await redeem((await (await agentPass(host, s.id)).json()).pass, "agent", host.key.fp)).json();
+  noContent(await (await routes.device()).DELETE(req("DELETE", undefined, cookie("a")), params({ id: host.deviceId })));
+  assert.deepEqual([s, waiting].map(x => [x.status, x.endReason, x.endedAt instanceof Date]), [["ended", "revoked", true], ["ended", "revoked", true]]);
+  assert.equal(done.endReason, "done", "an ended session keeps its own ending");
+  assert.equal((await renew(grant.leaseId)).status, 404);
+  // The PC unregistering itself does the same.
+  const pc = await register("host"); await setRelay(pc, true);
+  const t = agentSession(pc);
+  await redeem((await (await agentPass(pc, t.id)).json()).pass, "agent", pc.key.fp);
+  noContent(await (await routes.self()).DELETE(req("DELETE", undefined, bearer(pc.credential))));
+  assert.deepEqual([t.status, t.endReason], ["ended", "revoked"]);
+  assert.equal(tables.lease.length, 0);
 });
