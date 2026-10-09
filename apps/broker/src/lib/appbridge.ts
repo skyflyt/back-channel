@@ -24,6 +24,15 @@
  *   running, unpaused, in time, this PC, live full-scope agents) every time, and
  *   stopping the session deletes the lease in the stopping transaction. Agent
  *   leases have their own budget, apart from the device caps and takeover.
+ * - The "support" purpose (docs/remote-support.md): the temporary client's lease
+ *   for one support session, held while the helped person has allowed it. The
+ *   client is NOT a device: it has no AppBridgeDevice row, never counts against
+ *   a device cap, and authenticates with the abs_ credential its redemption
+ *   returned (resolved only by supportClient() here and by remote-support.ts;
+ *   never by deviceContext()). Its relay identity is the
+ *   session's ephemeral hostDeviceId ("support_..."), its key the one pinned at
+ *   redemption. The gate re-reads the session (allowed, running, in time) and
+ *   the issuer's entitlement every time; ending the session deletes the lease.
  */
 import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, verify as verifySignature, type KeyObject } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
@@ -36,6 +45,8 @@ import { REMOTE_ACCESS_FEATURE, remoteAccessSource } from "@/lib/remote-entitlem
 import { isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
 // Remote app sessions (docs/remote-app-sessions.md): the pure rules for the "agent" lease purpose.
 import * as RemoteApp from "@/lib/remote-app/rules.mjs";
+// Remote support (docs/remote-support.md): the pure rules for the "support" lease purpose.
+import * as Support from "@/lib/remote-support/rules.mjs";
 
 export const FEATURE = REMOTE_ACCESS_FEATURE;
 const CREDENTIAL_PREFIX = "ab_";
@@ -53,6 +64,9 @@ const MAX_PRESENCE_PER_ACCOUNT = 4;
 // plus a spare for a PC that reconnects before the relay has released its old lease. Its own budget: never
 // counted with, and never displacing or displaced by, the session (device) or presence caps.
 const MAX_AGENT_LEASES_PER_ACCOUNT = 2;
+// "support" leases: the temporary client of the account's one running support session (remote-support/rules.mjs),
+// plus a spare for a client that reconnects before the relay has released its old lease. Its own budget too.
+const MAX_SUPPORT_LEASES_PER_ACCOUNT = 2;
 // Device takeover at pass issue (Skylar, 2026-09-25): a remote refused as a fourth device may displace
 // one of the busy ones, at most this often per taking device, so two devices cannot ping-pong forever.
 const TAKEOVERS_PER_DEVICE = 6;
@@ -80,7 +94,7 @@ type Role = keyof typeof SCOPES;
 type Scope = "appbridge.device" | "appbridge.host.relay" | "appbridge.relay.presence" | "appbridge.relay.pass";
 type Body = Record<string, unknown>;
 type Refusal = "rollout_off" | "not_entitled" | "relay_off" | "device_revoked" | "not_paired" | "not_found" | "session_inactive";
-type Purpose = "session" | "presence" | "agent";
+type Purpose = "session" | "presence" | "agent" | "support";
 
 export class AppBridgeError extends Error {
   status: number; retryAfter?: number;
@@ -297,15 +311,29 @@ export async function accountContext(req: NextRequest, mutate: boolean) {
 
 // ── The gate ────────────────────────────────────────────────────────────────
 
-// remoteAppSessionId is set for an "agent" pass or lease only: the remote app session the PC holds it for.
+// remoteAppSessionId is set for an "agent" or "support" pass or lease only: the session it is for.
 type Binding = { accountId: string; hostDeviceId: string; remoteDeviceId: string | null; enrollmentId: string | null; remoteAppSessionId: string | null };
-type Admitted = { host: AppBridgeDevice; remote: AppBridgeDevice | null; session: RemoteAppSession | null };
+// hostKey: the fingerprint the host side of the pair presents. A device's connector key, or for "support" the
+// temporary client's key pinned at redemption (host is then null: the client is not a device).
+type Admitted = { host: AppBridgeDevice | null; hostKey: string; remote: AppBridgeDevice | null; session: RemoteAppSession | null };
 
 /** Every condition for relay access, read fresh in the caller's transaction. */
-async function gate(tx: Prisma.TransactionClient, b: Binding): Promise<Admitted | { refused: Refusal }> {
+async function gate(tx: Prisma.TransactionClient, b: Binding, purpose: Purpose): Promise<Admitted | { refused: Refusal }> {
   if (!rolloutOn()) return { refused: "rollout_off" };
-  // An active admin grant OR an entitling Remote subscription, both read in this transaction.
+  // An active admin grant OR an entitling Remote subscription, both read in this transaction. For "support",
+  // the issuer's: support is a capability of a Remote subscriber.
   if (!(await remoteAccessSource(tx, b.accountId))) return { refused: "not_entitled" };
+  if (purpose === "support") {
+    // The temporary client (docs/remote-support.md): its session, pinned to its key, allowed on the helped
+    // person's screen, running and in time, under this relay identity, in this account. No device is involved.
+    if (b.remoteDeviceId !== null || b.enrollmentId !== null || b.remoteAppSessionId === null) return { refused: "not_found" };
+    const session = await tx.remoteAppSession.findUnique({ where: { id: b.remoteAppSessionId } });
+    if (!session || session.kind !== "support" || session.accountId !== b.accountId || session.hostDeviceId !== b.hostDeviceId || !session.supportKeySha256) {
+      return { refused: "not_found" };
+    }
+    if (!Support.admitsSupportLease(session, { accountId: b.accountId, relayHostId: b.hostDeviceId }, new Date())) return { refused: "session_inactive" };
+    return { host: null, hostKey: session.supportKeySha256, remote: null, session };
+  }
   const host = await tx.appBridgeDevice.findUnique({ where: { id: b.hostDeviceId } });
   if (!host || host.accountId !== b.accountId || host.role !== "host") return { refused: "not_found" };
   if (host.revokedAt || !host.enabled) return { refused: "device_revoked" };
@@ -322,16 +350,16 @@ async function gate(tx: Prisma.TransactionClient, b: Binding): Promise<Admitted 
     if (!RemoteApp.admitsAgentLease(session, { accountId: b.accountId, hostDeviceId: host.id }, new Date()) || !RemoteApp.agentsAdmit(session, agents)) {
       return { refused: "session_inactive" };
     }
-    return { host, remote: null, session };
+    return { host, hostKey: host.connectorSpkiSha256, remote: null, session };
   }
-  if (b.remoteDeviceId === null) return { host, remote: null, session: null };
+  if (b.remoteDeviceId === null) return { host, hostKey: host.connectorSpkiSha256, remote: null, session: null };
   const remote = await tx.appBridgeDevice.findUnique({ where: { id: b.remoteDeviceId } });
   if (!remote || remote.accountId !== b.accountId || remote.role !== "remote") return { refused: "not_found" };
   if (remote.revokedAt || !remote.enabled) return { refused: "device_revoked" };
   if (b.enrollmentId === null) return { refused: "not_paired" };
   const pairing = await tx.appBridgePairing.findUnique({ where: { hostDeviceId_enrollmentId: { hostDeviceId: host.id, enrollmentId: b.enrollmentId } } });
   if (!pairing || pairing.withdrawnAt || pairing.remoteDeviceId !== remote.id) return { refused: "not_paired" };
-  return { host, remote, session: null };
+  return { host, hostKey: host.connectorSpkiSha256, remote, session: null };
 }
 function refuse(r: Refusal): never { return r === "not_found" ? fail(404, "not_found") : fail(403, r); }
 
@@ -594,7 +622,7 @@ async function issuePass(req: NextRequest, purpose: Purpose): Promise<NextRespon
   const pass = randomBytes(32).toString("hex").toUpperCase();
   const expiresAt = new Date(Date.now() + PASS_TTL_MS);
   const result = await serializableTx(async (tx): Promise<Issued> => {
-    const g = await gate(tx, binding);
+    const g = await gate(tx, binding, purpose);
     if ("refused" in g) return g;
     let taken: string | null = null;
     if (purpose === "session") {
@@ -628,6 +656,42 @@ export const issueSessionPass = (req: NextRequest) => handle(() => issuePass(req
  */
 export const issueAgentPass = (req: NextRequest) => handle(() => issuePass(req, "agent"));
 
+/**
+ * The temporary client's own credential (docs/remote-support.md): `abs_`, resolved only here and in
+ * remote-support.ts. A device's `ab_` credential, a `bc_` key or the cookie is 401. Its session must be a
+ * support session whose credential has not expired; whether it may hold a lease is the gate's question.
+ */
+async function supportClient(req: NextRequest): Promise<RemoteAppSession> {
+  const m = /^Bearer (\S+)$/.exec(req.headers.get("authorization") ?? "");
+  if (!m || !Support.CREDENTIAL.test(m[1])) fail(401, "unauthorized");
+  const session = await prisma.remoteAppSession.findUnique({ where: { supportCredentialHash: sha256Hex(m![1]) } });
+  if (!session || session.kind !== "support" || !session.supportCredentialExpiresAt || session.supportCredentialExpiresAt.getTime() <= Date.now()) fail(401, "unauthorized");
+  limit("appbridge:support", session!.id, 30, 60_000);
+  return session!;
+}
+
+/**
+ * POST /relay/support-passes {} — the temporary client's pass for its "support" lease: its standing at the relay
+ * for the one support session it redeemed, while the helped person has allowed it. 403 session_inactive before
+ * Allow, after Stop or once time is up. Presented at redeem with the key pinned at redemption.
+ */
+export const issueSupportPass = (req: NextRequest) => handle(async () => {
+  const session = await supportClient(req);
+  exact(await readBody(req), []);
+  const binding: Binding = { accountId: session.accountId, hostDeviceId: session.hostDeviceId, remoteDeviceId: null, enrollmentId: null, remoteAppSessionId: session.id };
+  const pass = randomBytes(32).toString("hex").toUpperCase();
+  const expiresAt = new Date(Date.now() + PASS_TTL_MS);
+  const result = await serializableTx(async (tx): Promise<{ refused: Refusal } | { ok: true }> => {
+    const g = await gate(tx, binding, "support");
+    if ("refused" in g) return g;
+    await tx.appBridgePass.create({ data: { passHash: sha256Hex(pass), purpose: "support", ...binding, expiresAt } });
+    return { ok: true };
+  });
+  if ("refused" in result) refuse(result.refused);
+  void sweep();
+  return json({ pass, expiresAt: expiresAt.toISOString(), relay: relayUrl() });
+});
+
 /** A PC's own `ab_` credential (the host relay scope it asks for passes with): for the agent-session routes in remote-app-host.ts. */
 export async function hostDevice(req: NextRequest): Promise<AppBridgeDevice> {
   const { device } = await deviceContext(req, "appbridge.relay.presence");
@@ -649,14 +713,17 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
   const body = await relayRequest(req);
   const flood = rateLimitPeek("appbridge:redeem-failed", "all", REDEEM_FAILURES);
   const names = Object.keys(body);
-  if (names.length !== 3 || typeof body.pass !== "string" || !HEX64.test(body.pass) || (body.purpose !== "session" && body.purpose !== "presence" && body.purpose !== "agent") ||
+  if (names.length !== 3 || typeof body.pass !== "string" || !HEX64.test(body.pass) ||
+    (body.purpose !== "session" && body.purpose !== "presence" && body.purpose !== "agent" && body.purpose !== "support") ||
     typeof body.connectorSpkiSha256 !== "string" || !HEX64.test(body.connectorSpkiSha256)) {
     spend("appbridge:redeem-failed", "all", REDEEM_FAILURES);
     return fail(400, "invalid_request");
   }
   const passHash = sha256Hex(body.pass); const purpose = body.purpose; const presented = body.connectorSpkiSha256;
   budget("appbridge:redeem-failed", presented, REDEEM_FAILURES_PER_KEY);
-  if (!flood.ok && !(await prisma.appBridgeDevice.findFirst({ where: { connectorSpkiSha256: presented, revokedAt: null }, select: { id: true } }))) fail(429, "rate_limited", flood.retryAfterSec);
+  // Under a flood, only the keys of live registered devices, or of a running support session's temporary client, get through.
+  if (!flood.ok && !(await prisma.appBridgeDevice.findFirst({ where: { connectorSpkiSha256: presented, revokedAt: null }, select: { id: true } })) &&
+    !(await prisma.remoteAppSession.findFirst({ where: { supportKeySha256: presented, kind: "support", status: "active" }, select: { id: true } }))) fail(429, "rate_limited", flood.retryAfterSec);
   limit("appbridge:redeem", presented, REDEEMS_PER_KEY, 60_000);
   const refused = (): NextResponse => {
     spend("appbridge:redeem-failed", "all", REDEEM_FAILURES); spend("appbridge:redeem-failed", presented, REDEEM_FAILURES_PER_KEY);
@@ -675,12 +742,13 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
     const binding: Binding = { accountId: pass.accountId, hostDeviceId: pass.hostDeviceId, remoteDeviceId: pass.remoteDeviceId, enrollmentId: pass.enrollmentId,
       remoteAppSessionId: pass.remoteAppSessionId ?? null };
     if ((purpose === "session") !== (binding.remoteDeviceId !== null)) return null;
-    if ((purpose === "agent") !== (binding.remoteAppSessionId !== null)) return null;
-    const g = await gate(tx, binding);
+    if ((purpose === "agent" || purpose === "support") !== (binding.remoteAppSessionId !== null)) return null;
+    const g = await gate(tx, binding, purpose);
     if ("refused" in g) return null;
-    // A session pass is presented by the remote; a presence or agent pass by the PC itself.
-    const presenter = purpose === "session" ? g.remote! : g.host;
-    if (!sameFingerprint(presenter.connectorSpkiSha256, presented)) return null;
+    // A session pass is presented by the remote; a presence or agent pass by the PC itself; a support pass by
+    // the temporary client, with the key pinned at its redemption.
+    const presenter = purpose === "session" ? g.remote!.connectorSpkiSha256 : g.hostKey;
+    if (!sameFingerprint(presenter, presented)) return null;
     if (purpose === "session") {
       // Cost guard: at most MAX_REMOTES_PER_ACCOUNT remotes relayed at once; each holds at most
       // MAX_PAIRS_PER_REMOTE_HOST connections to one PC and MAX_PAIRS_PER_REMOTE across all its PCs.
@@ -709,13 +777,17 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
       // never read or touched here, so an agent session never displaces a phone and is never displaced.
       const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "agent", expiresAt: { gt: now } }, select: { id: true } });
       if (live.length >= MAX_AGENT_LEASES_PER_ACCOUNT) return "capacity" as const;
+    } else if (purpose === "support") {
+      // The support budget: its own count, of "support" leases only. No device lease is read or touched.
+      const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "support", expiresAt: { gt: now } }, select: { id: true } });
+      if (live.length >= MAX_SUPPORT_LEASES_PER_ACCOUNT) return "capacity" as const;
     } else {
       // Presence cap: each PC keeps one waiting connection; the spares cover a PC reconnecting before
       // the relay has released its old lease. Nothing else bounds presence leases per account.
       const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "presence", expiresAt: { gt: now } }, select: { id: true } });
       if (live.length >= MAX_PRESENCE_PER_ACCOUNT) return "capacity" as const;
     }
-    // An agent lease never outlives its session.
+    // An agent or support lease never outlives its session.
     const leaseExpiry = g.session ? RemoteApp.agentLeaseExpiry(g.session, now, LEASE_TTL_MS) : new Date(now.getTime() + LEASE_TTL_MS);
     const lease = await tx.appBridgeLease.create({ data: { id: newId(), purpose, ...binding, expiresAt: leaseExpiry } });
     // The log records an admitted attempt: it is written here, so a pair the relay then fails to
@@ -724,7 +796,7 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
     return {
       leaseId: lease.id, accountId: binding.accountId, hostDeviceId: binding.hostDeviceId,
       clientDeviceId: binding.remoteDeviceId, enrollmentId: binding.enrollmentId,
-      hostConnectorSpkiSha256: g.host.connectorSpkiSha256, clientConnectorSpkiSha256: g.remote?.connectorSpkiSha256 ?? null,
+      hostConnectorSpkiSha256: g.hostKey, clientConnectorSpkiSha256: g.remote?.connectorSpkiSha256 ?? null,
       ...(g.session ? { remoteAppSessionId: g.session.id } : {}),
     };
   });
@@ -758,14 +830,14 @@ export const renewLease = (req: NextRequest) => handle(async () => {
     if (!lease) return { status: 404 } as const;
     if (lease.expiresAt <= now) { await tx.appBridgeLease.deleteMany({ where: { id: leaseId } }); return { status: 410 } as const; }
     const g = await gate(tx, { accountId: lease.accountId, hostDeviceId: lease.hostDeviceId, remoteDeviceId: lease.remoteDeviceId, enrollmentId: lease.enrollmentId,
-      remoteAppSessionId: lease.remoteAppSessionId ?? null });
+      remoteAppSessionId: lease.remoteAppSessionId ?? null }, lease.purpose as Purpose);
     if ("refused" in g) { await tx.appBridgeLease.deleteMany({ where: { id: leaseId } }); return { status: 403 } as const; }
-    // An agent lease is renewed only up to its session's end (and its session is re-read above: stopped,
-    // paused or out of time is a refusal that deletes the lease).
+    // An agent or support lease is renewed only up to its session's end (and its session is re-read above:
+    // stopped, paused or out of time is a refusal that deletes the lease).
     const until = g.session ? RemoteApp.agentLeaseExpiry(g.session, now, LEASE_TTL_MS) : new Date(now.getTime() + LEASE_TTL_MS);
     const extended = await tx.appBridgeLease.updateMany({ where: { id: leaseId, expiresAt: { gt: now } }, data: { expiresAt: until } });
     if (extended.count !== 1) return { status: 410 } as const;
-    return { keys: { hostConnectorSpkiSha256: g.host.connectorSpkiSha256, clientConnectorSpkiSha256: g.remote?.connectorSpkiSha256 ?? null } };
+    return { keys: { hostConnectorSpkiSha256: g.hostKey, clientConnectorSpkiSha256: g.remote?.connectorSpkiSha256 ?? null } };
   });
   if ("status" in result) return json({ error: "refused" }, result.status);
   return json(result.keys);
