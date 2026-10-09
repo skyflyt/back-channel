@@ -41,6 +41,9 @@ import { hasFullScope } from "@/lib/agent-scope";
 import { isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
 import { remoteAccessSource } from "@/lib/remote-entitlement";
 import { listsInTx } from "@/lib/lists";
+import { AsyncLocalStorage } from "node:async_hooks";
+// Effects a Lists operation owes (doorbells, email) collected per transaction attempt and run only after it commits.
+const effects = new AsyncLocalStorage<Array<() => void>>();
 import { isOwnerAccount } from "@/lib/owner";
 import { SUPPORT_TOOL_NAMES } from "@/lib/mcp/remote-tools.mjs";
 import * as R from "@/lib/remote-app/rules.mjs";
@@ -199,7 +202,7 @@ async function audit(tx: Tx, accountId: string, eventType: string, detail: Recor
 async function mirror(tx: Tx, inv: Pick<Invite, "accountId" | "agentTokenId" | "listTaskId">, by: "person" | "starter", text: string, now: Date): Promise<boolean> {
   if (!inv.listTaskId) return false;
   const as = { accountId: inv.accountId, agentId: by === "person" ? null : inv.agentTokenId };
-  const r = await listsInTx(tx, as, "addEntry", { task_id: inv.listTaskId, kind: "progress", text: cut(text) }, now);
+  const r = await listsInTx(tx, as, "addEntry", { task_id: inv.listTaskId, kind: "progress", text: cut(text) }, now, effects.getStore());
   return r.ok;
 }
 
@@ -289,7 +292,7 @@ async function opRequest({ tx, caller, input, now, origin }: Ctx): Promise<Outco
   const p = S.parseInvite(input);
   await issuerReady(tx, me.accountId, now);
   if (p.taskId) {
-    const r = await listsInTx(tx, { accountId: me.accountId, agentId: me.id }, "getTask", { task_id: p.taskId }, now);
+    const r = await listsInTx(tx, { accountId: me.accountId, agentId: me.id }, "getTask", { task_id: p.taskId }, now, effects.getStore());
     if (!r.ok) return fail(r.code === "not_available" ? 404 : 409, r.code, r.message);
     const t = r.result.task as { claim?: { by?: { is_this_agent?: boolean } } | null };
     if (!t.claim?.by?.is_this_agent) fail(409, "claim_first", "Claim the task first with bc_task_claim, then ask with its task_id, so the task shows who is on it.");
@@ -338,7 +341,7 @@ async function opEnd({ tx, caller, input, now, id }: Ctx): Promise<Outcome> {
     const t = await transcriptFor(tx, ended, "issuer", now);
     if (patch.endReason === "done") {
       // The Lists done path, as the agent that holds the claim, with the transcript as the summary.
-      const r = await listsInTx(tx, { accountId: inv.accountId, agentId: inv.agentTokenId }, "done", { task_id: inv.listTaskId, summary: cut(t.text) }, now);
+      const r = await listsInTx(tx, { accountId: inv.accountId, agentId: inv.agentTokenId }, "done", { task_id: inv.listTaskId, summary: cut(t.text) }, now, effects.getStore());
       task = r.ok ? { done: true, status: (r.result.task as { status?: string }).status ?? null } : { done: false, why: r.message };
     } else {
       task = { done: false, updated: await mirror(tx, inv, "starter", t.text, now) };
@@ -673,17 +676,20 @@ async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input
     }
     const body = typeof input === "function" ? await input() : input;
     const origin = (process.env.PUBLIC_APP_URL ?? new URL(req.url).origin).replace(/\/$/, "");
+    let after: Array<() => void> = [];
     const result = await withSerializableRetry(
-      () => prisma.$transaction(async (tx: Tx): Promise<Outcome | { refusal: InstanceType<typeof R.RemoteRuleError> }> => {
+      () => effects.run((after = []), () => prisma.$transaction(async (tx: Tx): Promise<Outcome | { refusal: InstanceType<typeof R.RemoteRuleError> }> => {
         try {
           return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin });
         } catch (e) {
           if (e instanceof R.RemoteRuleError && !(e instanceof RollBack)) return { refusal: e };
           throw e;
         }
-      }, { isolationLevel: "Serializable" }),
+      }, { isolationLevel: "Serializable" })),
       { retryable: conflict },
     );
+    // The transaction committed (a refusal commits too): now ring the doorbells and send the email it owes.
+    for (const fn of after) fn();
     if ("refusal" in result) throw result.refusal;
     if (op === "request" && caller.kind === "agent") limits.rateLimit("support:request", caller.agentId, REQUESTS_PER_HOUR, 60 * 60_000);
     return respond(result.body, result.status ?? 200);
