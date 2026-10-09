@@ -392,7 +392,9 @@ async function opSearch({ tx, caller, input, now }: Ctx) {
   const listFilter = input.list_id !== undefined ? String(input.list_id) : undefined;
   const status = input.status !== undefined ? String(input.status) : undefined;
   if (status && !R.STATUSES.includes(status)) fail(400, "invalid_status", `status must be one of: ${R.STATUSES.join(", ")}`);
-  let ids = await visibleListIds(tx, caller);
+  // One list asked for by id reads even when archived (as getList and getTask do); only a search
+  // across lists leaves archived ones out.
+  let ids = await visibleListIds(tx, caller, { includeArchived: listFilter !== undefined });
   if (listFilter) ids = ids.filter((id) => id === listFilter);
   if (!ids.length) return listFilter ? NOT_AVAILABLE() : { tasks: [] };
   const where: Row = { listId: { in: ids } };
