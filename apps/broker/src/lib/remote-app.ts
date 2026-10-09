@@ -62,7 +62,8 @@ type Patch = Prisma.RemoteAppSessionUpdateManyMutationInput;
 /** agentId null: the person, signed in to the dashboard. */
 type Caller = { accountId: string; agentId: string | null };
 type Op = "machines" | "start" | "list" | "get" | "approve" | "deny" | "resume" | "stop" | "stopAll" | "report" | "end" | "surface" | "rotate";
-type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string };
+// viaTool: the request came through an MCP tool (a chat), never the executor's own worker.
+type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string; viaTool?: boolean };
 type Outcome = { status?: number; body: Record<string, unknown> };
 
 const PEOPLE_ONLY = new Set<Op>(["approve", "deny", "resume", "stopAll"]);
@@ -380,11 +381,12 @@ async function opList({ tx, caller, now }: Ctx): Promise<Outcome> {
   return { body: { pending, live, recent } };
 }
 
-async function opGet({ tx, caller, now, id }: Ctx): Promise<Outcome> {
+async function opGet({ tx, caller, now, id, viaTool }: Ctx): Promise<Outcome> {
   const s = await loadSession(tx, caller, id, now);
   // v1.1: the executor secret, handed out once, to the executor only (never the agent that asked when another drives,
-  // never the person), on its first read while the session runs. A v1 session (no hash) never gets one.
-  const executorSecret = caller.agentId && caller.agentId === R.executorOf(s) && R.executorSecretDue(s, now) ? await handOutExecutorSecret(tx, s, now) : undefined;
+  // never the person), on its first read while the session runs. A v1 session (no hash) never gets one. Never through
+  // bc_remote_session_status either: a tool reply lands in a chat transcript, so only the worker's own REST read gets it.
+  const executorSecret = !viaTool && caller.agentId && caller.agentId === R.executorOf(s) && R.executorSecretDue(s, now) ? await handOutExecutorSecret(tx, s, now) : undefined;
   const n = await names(tx, [s]);
   const v = { ...(await view(tx, s, n, now)), ...(executorSecret ? { executorSecret } : {}) };
   return { body: { session: v, actions: await actions(tx, s, 50), ...(caller.agentId ? { next: R.nextStep(v, roleOf(caller, s)) } : {}) } };
@@ -562,7 +564,7 @@ const OPS: Record<Op, (ctx: Ctx) => Promise<Outcome>> = {
 };
 
 /** Run one operation for whoever is calling. Shared by the REST route and the MCP tools. */
-async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input>), id?: string): Promise<NextResponse> {
+async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input>), id?: string, viaTool = false): Promise<NextResponse> {
   try {
     const caller = await resolveCaller(req, op);
     const key = caller.agentId ?? caller.accountId;
@@ -585,7 +587,7 @@ async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input
     const result = await withSerializableRetry(
       () => effects.run((after = []), () => prisma.$transaction(async (tx: Tx): Promise<Outcome | { refusal: InstanceType<typeof R.RemoteRuleError> }> => {
         try {
-          return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin });
+          return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin, viaTool });
         } catch (e) {
           if (e instanceof R.RemoteRuleError && !(e instanceof RollBack)) return { refusal: e };
           throw e;
@@ -678,7 +680,7 @@ export async function remoteTool(req: NextRequest, name: string, args: Input): P
       res = await run(req, "start", { host: args.host, apps: args.apps, minutes: args.minutes, goal: args.goal, taskId: args.task_id, executor: args.executor });
       break;
     case "bc_remote_session_status":
-      res = await run(req, "get", {}, id);
+      res = await run(req, "get", {}, id, true);
       break;
     case "bc_remote_session_end":
       res = await run(req, "end", { summary: args.summary, evidenceRef: args.evidence, finished: args.finished }, id);

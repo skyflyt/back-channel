@@ -750,6 +750,10 @@ test("v1.1 executor secret: born as a hash, handed out once to the executor whil
 
 test("v1.1: an agent driving its own session is its executor; a v1 session (no hash) never gets a secret, and its PC asks for none", async () => {
   const own = await startApproved({ taskId: undefined });
+  // Its chat side (the MCP tool) never gets the secret and never spends it: only its worker's own read does.
+  const chat = await tool(KEY.starter, "bc_remote_session_status", { remote_session_id: own });
+  assert.equal(chat.isError, false); assert.ok(!chat.text.includes("abx_"));
+  assert.equal(sessionRow(own).executorSecretIssuedAt ?? null, null);
   const read = await api("GET", `sessions/${own}`, { as: KEY.starter });
   assert.match(read.body.session.executorSecret, SECRET);
   assert.equal(sessionRow(own).executorSecretHash, sha(read.body.session.executorSecret));
