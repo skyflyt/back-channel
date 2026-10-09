@@ -107,6 +107,20 @@ try{
  assert.equal((await prisma.taskItem.findUniqueOrThrow({where:{id:note.id}})).version,2);
  console.log('PASS: concurrent edits against one version: one lands, one gets edit_conflict');
 
+ // The always-on worker (packages/worker, lists mode) never retries a task until its updated_at moves.
+ // Edits, reassignments and status changes go through updateMany without setting updatedAt themselves,
+ // so prove Prisma's @updatedAt really bumps it there, against PostgreSQL.
+ const stamp=async()=>(await prisma.taskItem.findUniqueOrThrow({where:{id:note.id}})).updatedAt.getTime();
+ let seen=await stamp();
+ for(const [what,body] of [['an edit',{title:'Call the plumber (kitchen)',version:2}],['a reassignment',{assignee:'my_agents'}],['a status change',{status:'blocked',reason:'waiting on the landlord'}]] as const){
+  await new Promise(r=>setTimeout(r,15));
+  ok(await call('PATCH',`/tasks/${note.id}`,'person',body),what);
+  const now=await stamp();
+  assert.ok(now>seen,`${what} moves updated_at`);
+  seen=now;
+ }
+ console.log('PASS: edits, reassignments and status changes move updated_at (the worker relies on it)');
+
  // Progress renews the holder's claim; a lapsed claim is released with an activity line on the next read.
  const agentOf=(id:string|null)=>id===a1.id?a1:a2;
  const before=row.claimExpiresAt!.getTime();
