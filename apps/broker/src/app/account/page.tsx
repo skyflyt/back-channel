@@ -403,7 +403,7 @@ export default function AccountPage() {
 
   // MCP connector: mint a per-agent key straight from the dashboard.
   const MCP_CLIENT_RUNTIME: Record<string, string> = { claude_desktop: "cowork", claude_code: "claude_code", codex: "codex", other: "other" };
-  const MCP_CLIENT_LABEL: Record<string, string> = { claude_desktop: "Claude Desktop", claude_code: "Claude Code", codex: "Codex CLI", other: "Other MCP client" };
+  const MCP_CLIENT_LABEL: Record<string, string> = { claude_desktop: "Claude Desktop", claude_code: "Claude Code", codex: "Codex app / CLI", other: "Other MCP client" };
   const mintMcpToken = async () => {
     setBusy("mcp-mint"); setMcpErr("");
     try {
@@ -419,16 +419,21 @@ export default function AccountPage() {
     setBusy("");
   };
 
-  const connectNewAgent = async () => {
+  const connectNewAgent = async (plugin = false) => {
     setBusy("exchange"); setExErr("");
+    if (plugin) setLegacyOpen(true);
     try {
       const r = await fetch("/api/auth/exchange-code", {
         method: "POST", credentials: "include",
         headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
-        body: JSON.stringify({ agent_name: agentName.trim() || "New agent", runtime_type: agentRuntime === "claude_web" ? "other" : agentRuntime }),
+        body: JSON.stringify({ agent_name: agentName.trim() || (plugin ? "Codex" : "New agent"), runtime_type: plugin ? "codex" : agentRuntime === "claude_web" ? "other" : agentRuntime }),
       });
       const j = await r.json().catch(() => ({}));
-      if (r.ok && j.code) { setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setLegacyFormOpen(false); }
+      if (r.ok && j.code) {
+        setExCode(j.code); setExPrompt(plugin ? `Connect Back Channel with code ${j.code} using the installed Back Channel plugin.` : j.paste_prompt);
+        setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setLegacyFormOpen(false);
+        if (plugin) { setConnectTrack("quick"); setLegacyOpen(true); setAgentFormOpen(false); }
+      }
       else setExErr(exchangeErrorMessage(r.status, j));
     } catch { setExErr("Couldn't reach Back Channel. Check your connection and try again."); }
     setBusy("");
@@ -455,7 +460,8 @@ export default function AccountPage() {
       // Reconnect rides the legacy exchange-code panel — make sure it's visible.
       setLegacyOpen(true);
       if (r.ok && j.code) {
-        setExCode(j.code); setExPrompt(j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setLegacyFormOpen(false);
+        setExCode(j.code); setExPrompt(a.runtime_type === "codex" ? `Connect Back Channel with code ${j.code} using the installed Back Channel plugin.` : j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setLegacyFormOpen(false);
+        if (a.runtime_type === "codex") setConnectTrack("quick");
       } else {
         setExErr(exchangeErrorMessage(r.status, j));
       }
@@ -1351,7 +1357,7 @@ export default function AccountPage() {
           own settings; the agent is never asked to run anything to establish trust. */}
       <div className="ds-card" id="connect-agent">
         <h2 className="ds-cardh">Connect a new agent</h2>
-        <p className="ds-cardsub">Back Channel is an <strong>MCP connector</strong>: generate a token, add it in your AI client&apos;s settings, done. Nothing gets pasted into a chat, and your agent never has to run install commands.</p>
+        <p className="ds-cardsub">Choose your AI client below. The Codex plugin connects with a one-time code; other MCP clients can use a token in their settings. Signing in to this website does not connect your assistant.</p>
         {mcpErr && <p className="ds-call danger" style={{ marginBottom: 12 }}>⚠ {mcpErr}</p>}
         {mcpToken ? (() => {
           const mcpUrl = `${typeof window !== "undefined" ? window.location.origin : "https://back-channel.app"}/api/mcp`;
@@ -1416,10 +1422,21 @@ export default function AccountPage() {
                 <button key={c} className={mcpClient === c ? "ds-btn" : "ds-btn ghost"} style={{ fontSize: 12.5 }} onClick={() => setMcpClient(c)}>{MCP_CLIENT_LABEL[c]}</button>
               ))}
             </div>
+            {mcpClient === "codex" && (
+              <div className="ds-call acc" style={{ marginTop: 12 }}>
+                <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Connect the Codex app or CLI with the Back Channel plugin</p>
+                <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13.5, lineHeight: 1.7 }}>
+                  <li>Install the Back Channel plugin from <code>skyflyt/back-channel</code>. If you installed it while Codex was open, restart Codex to load its tools.</li>
+                  <li>Generate a one-time code below, then paste the connect prompt into your Codex chat. The plugin saves the key securely on your computer.</li>
+                  <li>Ask &ldquo;Check my Back Channel inbox&rdquo; to verify the connection. Ask it to send a message when you want to reply.</li>
+                </ol>
+                <p className="ds-fine" style={{ marginBottom: 0 }}>Only paste the BCX connect code into chat. Keep raw agent keys out of chat.</p>
+              </div>
+            )}
             <label className="ds-label">Name it (so you can tell your agents apart later)</label>
             <input className="ds-input" value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder={`e.g. ${MCP_CLIENT_LABEL[mcpClient]} on my laptop`} />
             <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-              <button className="ds-btn" disabled={busy === "mcp-mint" || demoMode} onClick={mintMcpToken}>{busy === "mcp-mint" ? "…" : "Generate token →"}</button>
+              <button className="ds-btn" disabled={busy === "mcp-mint" || busy === "exchange" || demoMode} onClick={() => mcpClient === "codex" ? connectNewAgent(true) : mintMcpToken()}>{busy === "mcp-mint" || busy === "exchange" ? "…" : mcpClient === "codex" ? "Get connect code →" : "Generate token →"}</button>
               <button className="ds-btn ghost" onClick={() => setAgentFormOpen(false)}>Cancel</button>
             </div>
           </div>
@@ -1430,9 +1447,9 @@ export default function AccountPage() {
         {/* LEGACY — exchange-code / paste-in flow, for runtimes without MCP. */}
         <div style={{ marginTop: 16, borderTop: "1px dashed var(--ds-line)", paddingTop: 12 }}>
           {!legacyOpen ? (
-            <button className="ds-link" onClick={() => setLegacyOpen(true)}>Legacy &amp; advanced: connect with a paste-in code (agents without MCP) or the raw key</button>
+            <button className="ds-link" onClick={() => setLegacyOpen(true)}>Connect with a code or use advanced setup</button>
           ) : (<>
-            <p className="ds-cardsub"><strong>Legacy connect</strong> — paste a one-time code into any AI assistant and it connects itself. Use this only for runtimes that can&apos;t add an MCP server. <button className="ds-link" onClick={() => setLegacyOpen(false)}>Hide</button></p>
+            <p className="ds-cardsub"><strong>One-time connect code</strong> — paste the connect prompt into your assistant. Installed plugins redeem the code and keep the key on your computer. <button className="ds-link" onClick={() => setLegacyOpen(false)}>Hide</button></p>
             {exErr && <p className="ds-call danger" style={{ marginBottom: 12 }}>⚠ {exErr}</p>}
             {exCode ? (
               connectTrack === "guided" ? (() => {
@@ -1484,7 +1501,7 @@ export default function AccountPage() {
                 </div>
                 <p className="ds-fine" style={{ marginTop: 6 }}>{connectTrack === "guided" ? "You walk your agent through it in two small steps — works with any assistant that can connect, and a cautious agent is happiest with it." : "Your agent does the whole setup from one paste. Best on local runtimes (Cowork, Codex, Claude Code)."}</p>
                 <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-                  <button className="ds-btn" disabled={busy === "exchange" || demoMode} onClick={connectNewAgent}>{busy === "exchange" ? "…" : "Get connect code →"}</button>
+                  <button className="ds-btn" disabled={busy === "exchange" || demoMode} onClick={() => connectNewAgent()}>{busy === "exchange" ? "…" : "Get connect code →"}</button>
                   <button className="ds-btn ghost" onClick={() => setLegacyFormOpen(false)}>Cancel</button>
                 </div>
               </div>
