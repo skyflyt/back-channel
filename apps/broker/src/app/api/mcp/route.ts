@@ -317,6 +317,12 @@ export async function POST(req: NextRequest) {
   const v = validateMessage(body);
   if (!v.ok) return json(v.response);
   const msg = v.msg;
+  // Lists attribute every action to a specific agent, so a key with no agent
+  // identity isn't offered the bc_task* tools (and /api/lists refuses it).
+  if (msg.method === "tools/list" && !ctx.agentTokenId) {
+    const tools = (hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link")).filter((t) => !isListTool(t.name));
+    return json(rpcResult(msg.id, { tools }));
+  }
 
   // Notifications (no id) get 202 + empty body — including notifications/initialized.
   if (isNotification(msg)) return new NextResponse(null, { status: 202 });

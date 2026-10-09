@@ -60,7 +60,11 @@ async function resolveCaller(req: NextRequest): Promise<Caller> {
   if (authorization) {
     const ctx = await auth.getAuthContext(authorization);
     if (!ctx) return fail(401, "unauthorized", "Unauthorized");
-    return { accountId: ctx.account.id, agentId: ctx.agentTokenId ?? null, viaCookie: false };
+    // Fail closed: a bearer key must be a specific agent. Treating one with no
+    // agent identity as the person would hand it people-only powers (review,
+    // deciding which agents work a list).
+    if (!ctx.agentTokenId) return fail(401, "agent_key_required", "Lists need a per-agent key. Connect this agent from the Back Channel dashboard.");
+    return { accountId: ctx.account.id, agentId: ctx.agentTokenId, viaCookie: false };
   }
   const account = await auth.getAccountFromCookie(req.cookies.get(auth.SESSION_COOKIE_NAME)?.value);
   if (!account) return fail(401, "unauthorized", "Unauthorized");
