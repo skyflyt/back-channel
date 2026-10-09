@@ -42,11 +42,11 @@ The same `server/` runs under three hosts. Only the manifest that starts it
 differs, and all of them live in `apps/broker/connector/` so there is no copy
 to drift:
 
-| Host | Manifest | How the token arrives |
-|---|---|---|
-| Claude Desktop extension (`.mcpb`) | `manifest.json` | `user_config.token` in the extension settings (required) |
-| Claude Code plugin | `.claude-plugin/plugin.json` | `userConfig.token`, prompted at enable time (optional, stored in the OS credential store) |
-| Codex plugin | `.codex-plugin/plugin.json` + `.codex-mcp.json` | none at install — Codex has no secret prompt |
+| Host | Manifest | How the token arrives | Host id (keystore) |
+|---|---|---|---|
+| Claude Desktop extension (`.mcpb`) | `manifest.json` | `user_config.token` in the extension settings (required) | `BC_HOST=claude-desktop` |
+| Claude Code plugin | `.claude-plugin/plugin.json` | `userConfig.token`, prompted at enable time (optional, stored in the OS credential store) | `BC_HOST=claude-code` |
+| Codex plugin | `.codex-plugin/plugin.json` + `.codex-mcp.json` | none at install — Codex has no secret prompt | `--host=codex` (arg) |
 
 The repo root is the marketplace for both plugin hosts:
 `.claude-plugin/marketplace.json` (Claude Code) and
@@ -69,6 +69,43 @@ Two details that are easy to undo by accident:
   `plugin.json` files, and the skill). `server/packaging.test.mjs` fails the
   build if they disagree or if a manifest points at a file that isn't there.
 
+### One keystore per host
+
+The keystore holds each thread's session keys and the `bc_…` key that
+`bc_connect` or a redeemed code minted, and the bridge adopts whatever key it
+finds there at startup. Up to 1.6.0 every host shared one file,
+`~/.bc/mcpb-session-keys.json`, so the second app on a machine quietly became
+the first app's agent: pair Codex, install the Claude Code plugin, and Claude
+Code ran as the Codex agent, with mail landing on whichever app polled first.
+
+From 1.6.1 each manifest names its host (the last column above) and the bridge
+keeps `~/.bc/<host>-session-keys.json`. Resolution, in order:
+
+1. `BC_KEYSTORE_PATH`, if set — unchanged, always wins.
+2. No host id (an older manifest, a hand-written MCP config) — the shared
+   file, exactly as before.
+3. A host id — that host's file. If it doesn't exist yet and the shared file
+   does, the host takes the shared file over with one atomic rename.
+
+The rename is the migration. The first upgraded host to start keeps the
+pairing it had; any other host finds the shared file gone and comes up
+offering `bc_connect`, needing one fresh code. With a single host, nothing
+visible changes. If the rename fails for any reason other than another host
+winning it, the bridge uses the shared file in place for that run and tries
+again next start, so an upgrade can never lose a pairing.
+
+Codex takes its id as an argument because its plugin MCP config only passes
+environment variables through from the parent (`env_vars`). The session-start
+hook, which Claude Code and Codex share through `hooks/hooks.json`, cannot be
+told its host, so it works it out: `BC_HOST` if set, else Claude Code when
+`CLAUDECODE=1`, else Codex. It only reads — a guess never moves another app's
+pairing. `packaging.test.mjs` checks that every manifest names a distinct
+host and that the hook's guess matches what each plugin declares.
+
+Still shared, deliberately: the `~/.bc/token` that `npx backchannel-cli --pair`
+writes (source 3 below) is an explicit "pair this machine" step, and any host
+with no key of its own will use it.
+
 ### Connecting without a settings field: `bc_connect`
 
 A token is resolved in this order:
@@ -76,7 +113,7 @@ A token is resolved in this order:
 1. The configured value (`BC_TOKEN`) — a `bc_…` key or a `BCX-…` code. A host
    that never filled the option in may pass its own placeholder
    (`${user_config.token}`); that counts as empty.
-2. A key stored by an earlier `bc_connect` (in the keystore file).
+2. A key stored by an earlier `bc_connect` (in this host's keystore file).
 3. The key `npx backchannel-cli --pair` stored at `~/.bc/token`
    (`BC_TOKEN_FILE` overrides the path).
 
@@ -257,7 +294,8 @@ the "Back Channel agent token or connect code" field:
    `/api/auth/exchange-code`). Paste the *code*, not a token. On the bridge's
    first tool call it detects the `BCX-` shape, redeems it against
    `POST /api/auth/exchange`, and persists the minted `bc_…` key to the same
-   local keystore used for session crypto (`~/.bc/mcpb-session-keys.json`,
+   local keystore used for session crypto (`~/.bc/claude-desktop-session-keys.json`
+   — one per host, see [One keystore per host](#one-keystore-per-host) —
    overridable via `BC_KEYSTORE_PATH`). Every call after that — including
    after a Desktop restart — reuses the persisted key; the one-time code is
    never needed again (and can't be, since exchange codes are single-use).
@@ -542,6 +580,8 @@ Each AgentToken can enroll an immutable X25519/Ed25519 public identity. The
 local bridge keeps its private identity in a separate owner-only mailbox file
 beside the session keystore, so concurrent agents cannot overwrite each other's
 keys. The broker stores signed encrypted envelopes and routing metadata only.
+Mailbox filenames use the agent id independently of the host's session filename,
+so adoption of a host-specific login store preserves that agent's mailbox keys.
 It checks live same-account ownership and revocation in serializable transactions.
 OAuth connector keys can exchange ordinary mail but still cannot dispatch work.
 
@@ -569,8 +609,8 @@ UI test at http://127.0.0.1:8189. It does not connect to a real account.
   the broker generally) is content-blind by construction — see
   [Encryption in the bridge](#encryption-in-the-bridge).
 - **The bridge is a short-lived process**, re-spawned per Desktop session. Its
-  ephemeral per-session P-256 identity is persisted to
-  `~/.bc/mcpb-session-keys.json` so a restart doesn't force a re-handshake,
+  ephemeral per-session P-256 identity is persisted to that host's keystore
+  (`~/.bc/<host>-session-keys.json`) so a restart doesn't force a re-handshake,
   but that file is local-machine state — moving to a new machine (without
   copying it) means a fresh handshake for any in-flight session, which is
   survivable per protocol (the peer's most recent `handshake.pubkey` always

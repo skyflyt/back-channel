@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createKeyStore } from "./keystore.js";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createKeyStore, resolveKeystorePath, hostKeystorePath, normalizeHostId } from "./keystore.js";
 
 function fakeFs(initialFiles = {}) {
   const files = new Map(Object.entries(initialFiles));
@@ -26,12 +29,12 @@ test("mailbox keys stay in separate immutable owner-only files across session sa
   store.save({ session: { updatedAt: Date.now() } });
   assert.deepEqual(store.mailboxIdentity(ids[0], generate), one); assert.deepEqual(store.mailboxIdentity(ids[1], generate), two);
   assert.equal(generated, 2);
-  assert.equal(fs.modes.get("/test/sessions.json.mailbox-" + ids[0] + ".json"), 0o600);
+  assert.equal(fs.modes.get(join("/test", "mailbox-" + ids[0] + ".json")), 0o600);
   assert.throws(() => store.mailboxIdentity("../elsewhere", generate), /Invalid/);
 });
 
 test("concurrent mailbox creation keeps the winner's key; corrupt files cannot leak their contents", () => {
-  const fs = fakeFs(), id = "11111111-1111-4111-8111-111111111111", target = "/test/sessions.json.mailbox-" + id + ".json";
+  const fs = fakeFs(), id = "11111111-1111-4111-8111-111111111111", target = join("/test", "mailbox-" + id + ".json");
   fs.writeFileSync = (path, _data, options) => {
     assert.equal(options.flag, "wx");
     fs.files.set(path, JSON.stringify({ encryptionPrivateKey: "winner", signingPrivateKey: "winner-signing" }));
@@ -41,6 +44,21 @@ test("concurrent mailbox creation keeps the winner's key; corrupt files cannot l
   assert.equal(store.mailboxIdentity(id, () => ({ encryptionPrivateKey: "loser" })).encryptionPrivateKey, "winner");
   fs.files.set(target, "private-secret-but-invalid-json");
   assert.throws(() => store.mailboxIdentity(id, () => ({})), e => /could not be read/.test(e.message) && !e.message.includes("private-secret"));
+});
+
+test("host-specific session adoption preserves the same agent's mailbox identity", () => {
+  const sharedPath = join("/test", "mcpb-session-keys.json");
+  const fs = fakeFs({ [sharedPath]: "{}" });
+  const id = "11111111-1111-4111-8111-111111111111";
+  let generated = 0;
+  const generate = () => ({ encryptionPrivateKey: "key-" + ++generated, signingPrivateKey: "signing" });
+  const original = createKeyStore({ path: sharedPath, fs, isWindows: false }).mailboxIdentity(id, generate);
+  const adopted = resolveKeystorePath({ host: "codex", sharedPath, fs });
+  assert.deepEqual(createKeyStore({ path: adopted, fs, isWindows: false }).mailboxIdentity(id, generate), original);
+  assert.equal(generated, 1);
+  const other = createKeyStore({ path: hostKeystorePath("claude", sharedPath), fs, isWindows: false });
+  other.mailboxIdentity("22222222-2222-4222-8222-222222222222", generate);
+  assert.equal(generated, 2);
 });
 
 test("load(): missing file returns empty state, no throw", () => {
@@ -180,4 +198,97 @@ test("save(): directory creation uses a restrictive mode (0700) intent, not worl
   assert.equal(seenMkdirOpts.length, 1);
   assert.equal(seenMkdirOpts[0].mode, 0o700);
   assert.equal(seenMkdirOpts[0].recursive, true);
+});
+
+// ── one keystore per host (1.6.1): a second app on the machine must not become the first app's agent ──
+
+const SHARED = join("/h", ".bc", "mcpb-session-keys.json");
+const own = (host) => join("/h", ".bc", `${host}-session-keys.json`);
+const PAIRED = JSON.stringify({ __resolved_bc_token__: { bcToken: "bc_first_app" } });
+
+test("normalizeHostId: plain ids pass; placeholders, paths and junk are not ids", () => {
+  for (const [v, want] of [["codex", "codex"], [" Claude-Code ", "claude-code"], ["claude-desktop", "claude-desktop"]]) assert.equal(normalizeHostId(v), want, v);
+  for (const v of ["", undefined, null, "${user_config.host}", "../evil", "a/b", "a\\b", "-x", "x".repeat(33), "has space"]) assert.equal(normalizeHostId(v), "", String(v));
+});
+
+test("hostKeystorePath: sits next to the shared file, named for the host", () => {
+  assert.equal(hostKeystorePath("codex", SHARED), own("codex"));
+});
+
+test("resolveKeystorePath: BC_KEYSTORE_PATH wins outright, even with a host named, and nothing is moved", () => {
+  const fs = fakeFs({ [SHARED]: PAIRED });
+  assert.equal(resolveKeystorePath({ explicitPath: "/custom/keys.json", host: "codex", sharedPath: SHARED, fs }), "/custom/keys.json");
+  assert.equal(fs.files.get(SHARED), PAIRED);
+});
+
+test("resolveKeystorePath: no host named -> the shared file, exactly as before 1.6.1", () => {
+  const fs = fakeFs({ [SHARED]: PAIRED });
+  assert.equal(resolveKeystorePath({ sharedPath: SHARED, fs }), SHARED);
+  assert.equal(fs.files.get(SHARED), PAIRED);
+});
+
+test("resolveKeystorePath: an unusable host id is logged and treated as no host", () => {
+  const logs = [];
+  const fs = fakeFs({ [SHARED]: PAIRED });
+  assert.equal(resolveKeystorePath({ host: "${user_config.host}", sharedPath: SHARED, fs, log: (m) => logs.push(m) }), SHARED);
+  assert.ok(logs.some((l) => l.includes("unusable host id")));
+  assert.equal(fs.files.get(SHARED), PAIRED);
+});
+
+test("resolveKeystorePath: the first host to start takes the shared file over; it keeps its pairing", () => {
+  const logs = [];
+  const fs = fakeFs({ [SHARED]: PAIRED });
+  assert.equal(resolveKeystorePath({ host: "codex", sharedPath: SHARED, fs, log: (m) => logs.push(m) }), own("codex"));
+  assert.equal(fs.files.get(own("codex")), PAIRED);
+  assert.equal(fs.files.has(SHARED), false, "the shared file is moved, not copied: a copy would leave the key for the next app to adopt");
+  assert.ok(logs.some((l) => l.includes("took over the shared keystore")));
+});
+
+test("resolveKeystorePath: a second host finds the shared file gone and starts on its own, empty file", () => {
+  const fs = fakeFs({ [SHARED]: PAIRED });
+  resolveKeystorePath({ host: "codex", sharedPath: SHARED, fs });
+  assert.equal(resolveKeystorePath({ host: "claude-code", sharedPath: SHARED, fs }), own("claude-code"));
+  assert.equal(fs.files.has(own("claude-code")), false, "unpaired: it will offer bc_connect");
+  assert.equal(fs.files.get(own("codex")), PAIRED, "and the first host's pairing is untouched");
+});
+
+test("resolveKeystorePath: a host that already has its own file never touches the shared one", () => {
+  const mine = JSON.stringify({ __resolved_bc_token__: { bcToken: "bc_mine" } });
+  const fs = fakeFs({ [SHARED]: PAIRED, [own("claude-code")]: mine });
+  assert.equal(resolveKeystorePath({ host: "claude-code", sharedPath: SHARED, fs }), own("claude-code"));
+  assert.equal(fs.files.get(own("claude-code")), mine);
+  assert.equal(fs.files.get(SHARED), PAIRED);
+});
+
+test("resolveKeystorePath: losing the rename race (ENOENT) means another host has it — start unpaired, quietly", () => {
+  const logs = [];
+  const fs = { existsSync: (p) => p === SHARED, renameSync: () => { throw Object.assign(new Error("ENOENT: gone"), { code: "ENOENT" }); } };
+  assert.equal(resolveKeystorePath({ host: "codex", sharedPath: SHARED, fs, log: (m) => logs.push(m) }), own("codex"));
+  assert.deepEqual(logs, []);
+});
+
+test("resolveKeystorePath: any other rename failure stays on the shared file for this run, loudly", () => {
+  const logs = [];
+  const fs = { existsSync: (p) => p === SHARED, renameSync: () => { throw Object.assign(new Error("EPERM: in use"), { code: "EPERM" }); } };
+  assert.equal(resolveKeystorePath({ host: "codex", sharedPath: SHARED, fs, log: (m) => logs.push(m) }), SHARED, "fail toward the old behaviour, never toward losing a pairing");
+  assert.ok(logs.some((l) => l.includes("EPERM")));
+});
+
+test("resolveKeystorePath: adoptShared:false (the hook) resolves the host's path and never moves anything", () => {
+  const fs = fakeFs({ [SHARED]: PAIRED });
+  assert.equal(resolveKeystorePath({ host: "claude-code", adoptShared: false, sharedPath: SHARED, fs }), own("claude-code"));
+  assert.equal(fs.files.get(SHARED), PAIRED);
+  assert.equal(fs.files.has(own("claude-code")), false);
+});
+
+test("resolveKeystorePath on a real filesystem: Codex paired first, Claude Code installed second -> two agents, not one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "bc-keystore-"));
+  const shared = join(dir, "mcpb-session-keys.json");
+  writeFileSync(shared, PAIRED);
+  const codex = createKeyStore({ path: resolveKeystorePath({ host: "codex", sharedPath: shared }) });
+  const claudeCode = createKeyStore({ path: resolveKeystorePath({ host: "claude-code", sharedPath: shared }) });
+  assert.equal(codex.load().__resolved_bc_token__?.bcToken, "bc_first_app");
+  assert.equal(claudeCode.load().__resolved_bc_token__, undefined, "Claude Code must not inherit the Codex key");
+  assert.equal(existsSync(shared), false);
+  assert.equal(JSON.parse(readFileSync(join(dir, "codex-session-keys.json"), "utf8")).__resolved_bc_token__.bcToken, "bc_first_app");
 });

@@ -9,7 +9,7 @@
 // All logic lives in lib.js so tests import that, never this.
 import { readFileSync } from "node:fs";
 import { createBridge, DEFAULT_TOKEN_FILE, optionEnabled } from "./lib.js";
-import { createKeyStore } from "./keystore.js";
+import { createKeyStore, resolveKeystorePath } from "./keystore.js";
 
 const log = (...a) => console.error("[back-channel]", ...a);
 
@@ -26,11 +26,19 @@ const log = (...a) => console.error("[back-channel]", ...a);
 const token = (process.env.BC_TOKEN || "").trim();
 delete process.env.BC_TOKEN;
 
-// BC_KEYSTORE_PATH: override where per-session E2E identities are persisted.
-// Useful for running more than one bridge identity on the same machine (e.g.
-// testing both sides of a conversation locally) — normally left unset, which
-// defaults to ~/.bc/mcpb-session-keys.json.
-const keystore = process.env.BC_KEYSTORE_PATH ? createKeyStore({ path: process.env.BC_KEYSTORE_PATH, log }) : createKeyStore({ log });
+// Where this bridge keeps its key and per-session E2E identities: one file per
+// host app, ~/.bc/<host>-session-keys.json, so two apps on one machine never
+// share an agent. The host id comes from the manifest that started us —
+// `--host=<id>` in the args (Codex, whose plugin MCP config passes env through
+// from the parent only) or BC_HOST in the env (Claude Code, Claude Desktop).
+// BC_KEYSTORE_PATH still overrides it outright (e.g. testing both sides of a
+// conversation locally). No host id at all keeps the old shared
+// ~/.bc/mcpb-session-keys.json. Reasoning and migration: resolveKeystorePath.
+const hostArg = process.argv.find((a) => a.startsWith("--host="))?.slice("--host=".length);
+const keystore = createKeyStore({
+  path: resolveKeystorePath({ explicitPath: process.env.BC_KEYSTORE_PATH, host: hostArg ?? process.env.BC_HOST, log }),
+  log,
+});
 
 // With no token configured, fall back to the key `npx backchannel-cli --pair`
 // stored (~/.bc/token; BC_TOKEN_FILE overrides). Absent/unreadable = unpaired,
