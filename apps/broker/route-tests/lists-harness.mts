@@ -1,5 +1,6 @@
 /**
- * Shared harness for the Lists route tests (lists.routetest.mts, lists-mcp.routetest.mts).
+ * Shared harness for the Lists route tests (lists.routetest.mts, lists-mcp.routetest.mts,
+ * lists-sharing.routetest.mts, lists-phase3.routetest.mts).
  * Not a test file itself (the route-test glob is *.routetest.mts).
  *
  * An in-memory Prisma that supports exactly what src/lib/lists.ts uses, and is
@@ -33,7 +34,8 @@ import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 export type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 export type Table =
   | "taskList" | "taskListMember" | "taskListAgentGrant" | "taskItem" | "taskEntry" | "account" | "agentToken"
-  | "taskAgentOk" | "taskMention" | "taskReaction" | "taskListEvent" | "trustedPeer" | "accountAudit" | "viewToken";
+  | "taskAgentOk" | "taskMention" | "taskReaction" | "taskListEvent" | "trustedPeer" | "accountAudit" | "viewToken"
+  | "taskListTemplate" | "listsPreference";
 type Store = Record<Table, Row[]>;
 type Kind = "string" | "int" | "float" | "bool" | "date" | "json";
 type Field = { kind: Kind; optional?: boolean; def?: () => unknown; updatedAt?: boolean };
@@ -166,6 +168,32 @@ const MODELS: Record<Table, Model> = {
     relations: { list: ["taskList", "listId", "id"] },
     checks: { TaskListEvent_eventType_check: oneOf("eventType", ["member_added", "member_left", "member_removed"]) },
   },
+  // Lists Phase 3 (migration 20261009230000_task_lists_phase3). Both reference Account in SQL only.
+  taskListTemplate: {
+    pk: ["id"],
+    fields: {
+      id: F("string", { def: randomUUID }), ownerAccountId: F("string"), name: F("string"), emoji: opt("string"), items: F("json"),
+      createdAt: F("date", { def: tick }),
+    },
+    checks: {
+      TaskListTemplate_name_size: (r) => [...r.name].length >= 1 && [...r.name].length <= 80,
+      TaskListTemplate_emoji_size: (r) => r.emoji === null || ([...r.emoji].length >= 1 && [...r.emoji].length <= 16),
+      TaskListTemplate_items_shape: (r) => Array.isArray(r.items) && r.items.length >= 1 && r.items.length <= 200,
+      TaskListTemplate_items_size: (r) => Buffer.byteLength(JSON.stringify(r.items), "utf8") <= 1_000_000,
+    },
+  },
+  listsPreference: {
+    pk: ["accountId"],
+    fields: {
+      accountId: F("string"), digest: F("string", { def: () => "off" }), digestHour: F("int", { def: () => 8 }), timezone: opt("string"),
+      lastDigestAt: opt("date"),
+    },
+    checks: {
+      ListsPreference_digest_check: oneOf("digest", ["off", "daily"]),
+      ListsPreference_digestHour_check: (r) => r.digestHour >= 0 && r.digestHour <= 23,
+      ListsPreference_timezone_size: (r) => r.timezone === null || (r.timezone.length >= 1 && r.timezone.length <= 64),
+    },
+  },
   // Outside Lists: friendship (src/app/api/trust/*), the audit log, and one-time sign-in links.
   trustedPeer: {
     pk: ["id"],
@@ -205,6 +233,9 @@ export const state = {
   fired: [] as Array<{ accountId: string; kind: string; committedTasks: number }>,
   /** sendListNudgeEmail calls, as the email module received them. */
   emails: [] as Row[],
+  /** sendListDigestEmail calls (Phase 3), and what the sender answers (false: log-only or refused). */
+  digests: [] as Row[],
+  digestSendOk: true,
   rateLimited: false,
 };
 
@@ -577,6 +608,8 @@ export function resetStore() {
   state.barrier = null;
   state.fired = [];
   state.emails = [];
+  state.digests = [];
+  state.digestSendOk = true;
   state.rateLimited = false;
   const t = tick();
   for (const p of [A, B, C]) {
@@ -627,7 +660,10 @@ export function installMocks({ mcp = false } = {}) {
     },
   });
   mock.module("@/lib/email", {
-    namedExports: { sendListNudgeEmail: async (args: Row) => { state.emails.push(structuredClone(args)); return true; } },
+    namedExports: {
+      sendListNudgeEmail: async (args: Row) => { state.emails.push(structuredClone(args)); return true; },
+      sendListDigestEmail: async (args: Row) => { state.digests.push(structuredClone(args)); return state.digestSendOk; },
+    },
   });
   mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: !state.rateLimited, retryAfterSec: 42 }) } });
   class TooManyWaitersError extends Error {}
@@ -692,6 +728,82 @@ export async function rest(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", 
   const res = await route[method](req, { params: Promise.resolve({ path: segments.length ? segments : undefined }) });
   const text = await res.text();
   return { status: res.status, body: text ? JSON.parse(text) : null, headers: res.headers };
+}
+
+/**
+ * GET /api/lists/stream through the real route (Phase 3). `extra` adds or overrides request headers.
+ * Returns the response, a reader over its events, and abort (the client going away).
+ */
+export async function openStream(who: Who, extra: Record<string, string> = {}) {
+  const { GET } = await import("@/app/api/lists/stream/route");
+  const ac = new AbortController();
+  const headers = { ...headersFor(who), ...extra };
+  delete headers["content-type"];
+  const res = await GET(new NextRequest("https://back-channel.app/api/lists/stream", { headers, signal: ac.signal }));
+  const reader = res.body && res.status === 200 ? sseEvents(res.body) : null;
+  return { res, events: reader, abort: () => ac.abort() };
+}
+
+export type SseEvent = { event: string; id: string | null; data: any }; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+/** Read SSE events off a body: next() resolves with the next event, or null at the end or after `ms`. */
+export function sseEvents(body: ReadableStream<Uint8Array>) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let ended = false;
+  // One read in flight at a time, kept across calls: a read abandoned at a timeout would swallow the next chunk.
+  let inFlight: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+  const parse = (block: string): SseEvent => {
+    const field = (name: string) => block.split("\n").find((l) => l.startsWith(`${name}: `))?.slice(name.length + 2) ?? null;
+    const data = field("data");
+    return { event: field("event") ?? "message", id: field("id"), data: data === null ? null : JSON.parse(data) };
+  };
+  return {
+    async next(ms = 1_000): Promise<SseEvent | null> {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        const cut = buffer.indexOf("\n\n");
+        if (cut >= 0) {
+          const block = buffer.slice(0, cut);
+          buffer = buffer.slice(cut + 2);
+          if (block.startsWith(":")) continue;
+          return parse(block);
+        }
+        if (ended) return null;
+        const left = deadline - Date.now();
+        if (left <= 0) return null;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        inFlight ??= reader.read();
+        const chunk = await Promise.race([
+          inFlight,
+          new Promise<"timeout">((r) => { timer = setTimeout(() => r("timeout"), left); }),
+        ]);
+        clearTimeout(timer);
+        if (chunk === "timeout") return null;
+        inFlight = null;
+        if (chunk.done) ended = true;
+        else buffer += decoder.decode(chunk.value, { stream: true });
+      }
+    },
+    /** Every event that arrives within `ms`. */
+    async drain(ms = 100): Promise<SseEvent[]> {
+      const out: SseEvent[] = [];
+      for (;;) {
+        const e = await this.next(ms);
+        if (!e) return out;
+        out.push(e);
+      }
+    },
+    cancel: () => reader.cancel().catch(() => {}),
+  };
+}
+
+/** POST /api/lists/digest/run through the real route, with the secret header when given. */
+export async function runDigestRoute(secret?: string) {
+  const { POST } = await import("@/app/api/lists/digest/run/route");
+  const res = await POST(new NextRequest("https://back-channel.app/api/lists/digest/run", { method: "POST", headers: secret === undefined ? {} : { "x-lists-digest-secret": secret } }));
+  return { status: res.status, body: await res.json() };
 }
 
 /** POST /api/mcp tools/call (or any method) with a bearer, through the real MCP route. */
