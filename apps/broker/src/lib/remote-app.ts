@@ -473,7 +473,9 @@ async function opEnd({ tx, caller, input, now, id }: Ctx): Promise<Outcome> {
       const r = await listsInTx(tx, as, "done", { task_id: s.listTaskId, summary, ...(evidenceRef ? { evidence: `kept on ${pc}: ${evidenceRef}` } : {}) }, now);
       task = r.ok ? { done: true, status: (r.result.task as { status?: string }).status ?? null } : { done: false, why: r.message };
     } else {
-      const ok = await mirror(tx, next, "starter", `Ended the remote session on ${pc} without finishing: ${summary}`, now);
+      const text = s.status === "awaiting_consent" ? `Withdrew the request to use ${appList(s.appAllowList)} on ${pc}: ${summary}`
+        : `Ended the remote session on ${pc} without finishing: ${summary}`;
+      const ok = await mirror(tx, next, "starter", text, now);
       task = { done: false, updated: ok };
     }
   }

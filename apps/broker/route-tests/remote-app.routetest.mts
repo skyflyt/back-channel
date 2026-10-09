@@ -528,7 +528,7 @@ test("MCP: machines, start, status and end through the tools", async () => {
   assert.equal(withdrawn.isError, false);
   assert.deepEqual([withdrawn.json.session.status, withdrawn.json.session.endReason], ["ended", "agent_stop"]);
   assert.deepEqual(withdrawn.json.task, { done: false, updated: true });
-  assert.equal(entries().at(-1)!.body, "Ended the remote session on Shop-PC without finishing: Not needed after all.");
+  assert.equal(entries().at(-1)!.body, "Withdrew the request to use QuickBooks on Shop-PC: Not needed after all.");
   assert.equal(tables.taskItem[0].status, "in_progress", "not finished, so the task stays open");
 });
 
@@ -610,6 +610,28 @@ test("the whole Phase A loop with a fake executor: start, approve, Dispatch hand
   assert.equal((await api("POST", `sessions/${id}/end`, { as: KEY.exec, body: { summary: "again" } })).body.error, "session_over");
   assert.deepEqual((await agentLease(id)).body, { error: "session_inactive" });
   assert.deepEqual(tables.accountAudit.map(a => a.eventType), ["remote_app.requested", "remote_app.approved", "remote_app.paused", "remote_app.resumed", "remote_app.ended"]);
+});
+
+test("ending without finishing: agent_stop while running, fail_closed after it stopped to ask; a Lists refusal never undoes the end", async () => {
+  const first = await startApproved();
+  assert.equal((await api("POST", `sessions/${first}/end`, { cookie: "cs_a", body: { summary: "x" } })).body.error, "agent_key_required", "the person stops, the agent ends");
+  assert.equal((await api("POST", `sessions/${first}/end`, { as: KEY.starter, body: {} })).body.error, "invalid_summary");
+  assert.equal((await api("POST", `sessions/${first}/end`, { as: KEY.starter, body: { summary: "x", finished: "no" } })).body.error, "invalid_finished");
+  const early = await api("POST", `sessions/${first}/end`, { as: KEY.starter, body: { summary: "The vendor portal was down, so I stopped.", finished: false } });
+  assert.deepEqual([early.body.session.status, early.body.session.endReason, early.body.task], ["ended", "agent_stop", { done: false, updated: true }]);
+  assert.equal(entries().at(-1)!.body, "Ended the remote session on Shop-PC without finishing: The vendor portal was down, so I stopped.");
+  assert.equal(tables.taskItem[0].status, "in_progress", "the task stays with the agent, open");
+  const second = await startApproved();
+  assert.equal((await step(second, { action: "blocked", outcome: "fail_closed" }, KEY.starter)).body.session.status, "blocked");
+  const gaveUp = await api("POST", `sessions/${second}/end`, { as: KEY.starter, body: { summary: "An update dialog I didn't expect; stopping.", finished: false } });
+  assert.equal(gaveUp.body.session.endReason, "fail_closed");
+  // Finished, but the task's claim moved to someone else meanwhile: the session still ends; the task says why it wasn't marked done.
+  const third = await startApproved();
+  Object.assign(tables.taskItem[0], { claimAgentId: A.plain });
+  const done = await api("POST", `sessions/${third}/end`, { as: KEY.starter, body: { summary: "Entered the invoices." } });
+  assert.equal(done.status, 200); assert.equal(done.body.session.endReason, "done");
+  assert.equal(done.body.task.done, false); assert.match(done.body.task.why, /already on this/);
+  assert.equal(tables.taskItem[0].status, "in_progress");
 });
 
 test("the dashboard card lists waiting, running and recent sessions; Stop all ends every one", async () => {
