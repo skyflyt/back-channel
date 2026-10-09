@@ -498,7 +498,10 @@ Postgres `LISTEN/NOTIFY`).
   for 75 seconds, and retries the stream after 15 seconds, doubling up to 5
   minutes. A tab told `replaced` polls and takes a stream back only when it's
   looked at again, so three tabs don't evict each other in a loop. A change
-  that arrives while the page is hidden is checked when it's visible.
+  that arrives while the page is hidden is checked when it's visible. A busy
+  list doesn't reload the page on every event: the first change reloads at
+  once and the rest within 3 seconds become one more reload, which keeps a
+  dashboard well inside its 240 reads a minute.
 
 ## Templates and Duplicate list (Phase 3)
 

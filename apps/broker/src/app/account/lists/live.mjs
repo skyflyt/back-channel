@@ -22,11 +22,18 @@
  *   isVisible: () => boolean,
  *   watchVisibility?: (fn: () => void) => () => void,
  *   timers?: { setTimeout: typeof setTimeout, clearTimeout: typeof clearTimeout, setInterval: typeof setInterval, clearInterval: typeof clearInterval },
- *   pollMs?: number, retryMs?: number, maxRetryMs?: number, staleMs?: number,
+ *   pollMs?: number, retryMs?: number, maxRetryMs?: number, staleMs?: number, reloadGapMs?: number,
  * }} FeedDeps
  */
 
 export const POLL_MS = 10_000;
+/**
+ * A busy list (an agent posting progress every few seconds) shouldn't reload
+ * the page on every event: the first change reloads at once, and changes in
+ * the next RELOAD_GAP_MS become one more reload when it ends. That keeps a
+ * dashboard well inside the 240 reads a minute an account gets.
+ */
+export const RELOAD_GAP_MS = 3_000;
 /** First retry of a failed stream; doubles each time up to MAX_RETRY_MS. */
 export const RETRY_MS = 15_000;
 export const MAX_RETRY_MS = 5 * 60_000;
@@ -47,6 +54,7 @@ export function createListsFeed(deps) {
   const firstRetry = deps.retryMs ?? RETRY_MS;
   const maxRetry = deps.maxRetryMs ?? MAX_RETRY_MS;
   const staleMs = deps.staleMs ?? STALE_MS;
+  const reloadGap = deps.reloadGapMs ?? RELOAD_GAP_MS;
 
   /** The server time up to which this page has loaded everything. */
   let since = /** @type {string | null} */ (null);
@@ -64,8 +72,27 @@ export function createListsFeed(deps) {
   /** Something may have changed while the page was hidden: check when it's visible. */
   let pending = false;
   let unwatch = /** @type {(() => void) | null} */ (null);
+  /** While set, stream changes wait; `queued` says one came in meanwhile. */
+  let gapTimer = /** @type {any} */ (null);
+  let queued = false;
 
   const stopped = () => mode === "stopped";
+
+  /** Reload for a stream change: now, or once at the end of the current gap. */
+  function reloadSoon() {
+    if (gapTimer) {
+      queued = true;
+      return;
+    }
+    deps.onChange();
+    gapTimer = t.setTimeout(function endGap() {
+      gapTimer = null;
+      if (!queued || stopped()) return;
+      queued = false;
+      deps.onChange();
+      gapTimer = t.setTimeout(endGap, reloadGap);
+    }, reloadGap);
+  }
 
   /** Ask the server whether anything changed since the last load; reload if so. `first` always reloads. */
   async function check(first = false) {
@@ -173,7 +200,7 @@ export function createListsFeed(deps) {
         pending = true;
         return;
       }
-      deps.onChange();
+      reloadSoon();
       const at = readAt(e);
       if (at) since = at;
     });
@@ -213,6 +240,8 @@ export function createListsFeed(deps) {
       closeStream();
       if (retryTimer) t.clearTimeout(retryTimer);
       retryTimer = null;
+      if (gapTimer) t.clearTimeout(gapTimer);
+      gapTimer = null;
       unwatch?.();
       unwatch = null;
     },

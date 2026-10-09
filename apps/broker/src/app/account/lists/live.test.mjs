@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createListsFeed, createSharedFeed, POLL_MS, RETRY_MS, STALE_MS } from "./live.mjs";
+import { createListsFeed, createSharedFeed, POLL_MS, RETRY_MS, STALE_MS, RELOAD_GAP_MS } from "./live.mjs";
 
 /** Fake timers driven by advance(). */
 function clock() {
@@ -127,6 +127,24 @@ test("stream: polls until ready, then stops polling, catches up once, and reload
   assert.equal(feed.state(), "streaming", "heartbeats and changes keep it alive");
   feed.stop();
   assert.equal(s.last.closed, true);
+});
+
+test("a burst of `changed` reloads once at once and once more after the gap, not once per event", async () => {
+  const { c, s, page, feed } = setup();
+  feed.start();
+  await flush();
+  s.last.emit("ready", {});
+  await flush();
+  const before = page.loads;
+  for (let i = 0; i < 6; i++) s.last.emit("changed", { at: `2026-10-09T12:00:0${i}.000Z` });
+  assert.equal(page.loads, before + 1, "the first one reloads straight away");
+  await c.advance(RELOAD_GAP_MS);
+  assert.equal(page.loads, before + 2, "the rest become one reload when the gap ends");
+  await c.advance(RELOAD_GAP_MS * 3);
+  assert.equal(page.loads, before + 2, "and nothing more without new changes");
+  s.last.emit("changed", { at: "2026-10-09T12:01:00.000Z" });
+  assert.equal(page.loads, before + 3, "a change after a quiet gap reloads at once again");
+  feed.stop();
 });
 
 test("after a `changed`, a fallback poll asks only for what came after it", async () => {
