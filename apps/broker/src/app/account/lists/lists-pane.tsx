@@ -1,25 +1,39 @@
 "use client";
 /**
  * The Lists tab (/account?tab=lists): your lists on the left, the open list
- * on the right in bands (Doing, Up next, Ready for you, Done, and dropped
- * behind a toggle), quick add on top, and the task drawer for one task.
+ * on the right in bands (Waiting on you, Ready for you, Doing, Up next, Done,
+ * and dropped behind a toggle), quick add on top, and the task drawer for one
+ * task.
  *
- * Phase 1 is personal lists worked by you and the agents you pick. The URL
- * carries the open list and task (&list=…&task=…) so My plate on Overview,
- * and any bookmark, can open a task directly. Freshness is a 10-second poll
- * of /api/lists/changes while the page is visible.
+ * Phase 1 is personal lists worked by you and the agents you pick. Phase 2
+ * shares a list with friends: members in its settings, a "Shared" badge, the
+ * OK rule ("OK for my agents" on a friend's task your agents could take),
+ * people and their agents as assignees, @mentions, reactions, and agent work
+ * shown as "Alex · via Codex". The URL carries the open list and task
+ * (&list=…&task=…) so My plate on Overview, and any bookmark, can open a task
+ * directly.
+ *
+ * Phase 3: the page stays fresh through the live stream (useListChanges falls
+ * back to the 10-second poll when the stream isn't there), a list can start
+ * from a template or be duplicated, "Email me a daily summary" sits under the
+ * lists, and finishing a list's last task says "All done" in its header for a
+ * moment.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chip, EmptyState, SkeletonRows } from "@/components/ui/primitives";
 import {
-  listsApi, errorText, useListChanges, whoName, ago, elapsed, lapsesIn, assigneeLabel,
-  LISTS_OPEN_EVENT, type ListsTarget, type ListDetail, type ListSummary, type Plate, type TaskView, type EntryView,
+  listsApi, errorText, useListChanges, whoName, ago, elapsed, lapsesIn, assigneeLabel, needsMyOk, memberRef, memberLabel, reviewerLabel,
+  LISTS_OPEN_EVENT, type ListsTarget, type ListDetail, type ListSummary, type MentionView, type Plate, type ReactionEmoji, type TaskView, type EntryView,
 } from "./api";
-import { WhoAvatar, DueChip, PlainText } from "./bits";
+import { WhoAvatar, DueChip, PlainText, MentionText, Reactions, Byline } from "./bits";
 import { NewListForm, ListSettings, QuickAdd } from "./list-forms";
+import { DailySummary } from "./daily-summary";
 import { TaskDrawer } from "./task-drawer";
+import { mentionDirectory } from "./mentions.mjs";
+import { celebration, joinNames, tally, unfinishedCount, CELEBRATE_MS } from "./celebrate.mjs";
 
 const PRIVACY_NOTE = "Back Channel stores your lists so every app you use can open them. Keep passwords out of tasks.";
+const SHARED_PRIVACY_NOTE = "Everyone on this list, and the agents they allow, can see it. Keep passwords out of tasks.";
 const WEEK = 7 * 24 * 60 * 60_000;
 const ACTIVE = new Set(["open", "in_progress", "blocked", "needs_review"]);
 
@@ -28,6 +42,10 @@ type Line = { updated_at: string | null; progress: { text: string; by: EntryView
 
 const isDoing = (t: TaskView) => (!!t.claim && ACTIVE.has(t.status)) || t.status === "blocked" || t.status === "in_progress";
 const dueSort = (a: TaskView, b: TaskView) => (a.due ? Date.parse(a.due) : Infinity) - (b.due ? Date.parse(b.due) : Infinity);
+/** Finished in the last week, newest first: the Done band, and who the "All done" line credits. */
+const doneThisWeek = (tasks: TaskView[], now = Date.now()) => tasks
+  .filter((t) => t.status === "done" && now - Date.parse(t.completed_at ?? t.updated_at ?? "") < WEEK)
+  .sort((a, b) => Date.parse(b.completed_at ?? "") - Date.parse(a.completed_at ?? ""));
 
 function readUrl(): { list: string | null; task: string | null } {
   if (typeof window === "undefined") return { list: null, task: null };
@@ -63,15 +81,21 @@ function LiveLists() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [lines, setLines] = useState<Record<string, Line>>({});
   const [showSettings, setShowSettings] = useState(false);
+  const [focusMembers, setFocusMembers] = useState(false);
+  const [offerShare, setOfferShare] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
   const [showDone, setShowDone] = useState(false);
   const [showDropped, setShowDropped] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [rowBusy, setRowBusy] = useState("");
   const [rowErr, setRowErr] = useState<{ id: string; msg: string } | null>(null);
   const [sendBack, setSendBack] = useState<{ id: string; text: string } | null>(null);
+  const [cheer, setCheer] = useState<{ listId: string; text: string } | null>(null);
 
   const selRef = useRef(selId);
   useEffect(() => { selRef.current = selId; }, [selId]);
+  const plateRef = useRef(plate);
+  useEffect(() => { plateRef.current = plate; }, [plate]);
   const linesRef = useRef<Record<string, Line>>({});
 
   /* ------------------------------- loading ------------------------------- */
@@ -123,15 +147,34 @@ function LiveLists() {
     polled.current = true;
   }, [refresh]));
 
-  // A different list: clear the old one away and load the new one.
+  // "All done": the open list just went from something left to do to nothing, with work finished
+  // this week. Shown in the header for a few seconds, from the list already on the page.
+  const lastSeen = useRef<{ listId: string; unfinished: number } | null>(null);
   useEffect(() => {
-    setDetail(null); setDetailErr(""); setShowSettings(false); setShowDone(false); setShowDropped(false); setSendBack(null); setRowErr(null);
+    if (!detail) return;
+    const next = { listId: detail.list.id, unfinished: unfinishedCount(detail.tasks), done: doneThisWeek(detail.tasks) };
+    const line = celebration(lastSeen.current, next);
+    lastSeen.current = { listId: next.listId, unfinished: next.unfinished };
+    if (line) setCheer({ listId: next.listId, text: line });
+  }, [detail]);
+  useEffect(() => {
+    if (!cheer) return;
+    const timer = window.setTimeout(() => setCheer(null), CELEBRATE_MS);
+    return () => window.clearTimeout(timer);
+  }, [cheer]);
+
+  // A different list: clear the old one away and load the new one. The one-time
+  // "Share with a friend" offer belongs to the list just created, and goes with it.
+  useEffect(() => {
+    setDetail(null); setDetailErr(""); setShowSettings(false); setFocusMembers(false); setShowDone(false); setShowDropped(false); setSendBack(null); setRowErr(null);
+    setOfferShare((o) => (o === selId ? o : null));
     if (selId) void loadDetail(selId);
   }, [selId, loadDetail]);
 
   // Pick a list when none is chosen, or when the chosen one couldn't be opened
-  // (a stale link). A list that's just been created may not be in `lists` yet;
-  // it loads on its own. With no lists at all, open the new-list form.
+  // (a stale link, or a list you were taken off). A list that's just been
+  // created may not be in `lists` yet; it loads on its own. With no lists at
+  // all, open the new-list form.
   useEffect(() => {
     if (!lists) return;
     if (selId && (lists.some((l) => l.id === selId) || !detailErr)) return;
@@ -176,6 +219,7 @@ function LiveLists() {
     setSelId(id);
     setCreating(false);
     setTaskId(null);
+    setNotice("");
   };
 
   const rowAction = async (t: TaskView, label: string, fn: () => Promise<unknown>) => {
@@ -191,23 +235,58 @@ function LiveLists() {
     }
   };
 
+  // A reaction shows at once from the answer, then everything refreshes as usual.
+  const react = (t: TaskView, emoji: ReactionEmoji) => void rowAction(t, `react:${emoji}`, async () => {
+    const r = await listsApi.react(t.id, emoji);
+    setDetail((d) => (d && d.list.id === t.list.id ? { ...d, tasks: d.tasks.map((x) => (x.id === t.id ? { ...x, reactions: r.task.reactions } : x)) } : d));
+  });
+  const okTask = (t: TaskView) => void rowAction(t, "ok", () => listsApi.okTask(t.id));
+
+  const openPeople = () => { setShowSettings(true); setFocusMembers(true); setOfferShare(null); };
+
+  // A copy was made from the open list's settings: open the copy.
+  const onDuplicated = (id: string) => {
+    setNotice("Here's your copy. It's yours alone until you share it.");
+    setOfferShare(null);
+    setTaskId(null);
+    setCreating(false);
+    setSelId(id);
+    void loadLists();
+  };
+
+  // You left a list: it's gone for you, so drop it here at once and open another.
+  const onLeft = (name: string, id: string) => {
+    setLists((ls) => ls?.filter((x) => x.id !== id) ?? ls);
+    setNotice(`You left “${name}”. Its owner can add you back.`);
+    setTaskId(null);
+    setSelId(null);
+    void loadLists();
+  };
+
   const closeDrawer = useCallback(() => setTaskId(null), []);
   // A task opened by link from another list: show the list it's on behind it.
+  // Opening a task reads the mentions of you on it, so the plate refreshes then.
   const followTask = useCallback((t: TaskView) => {
     if (selRef.current !== t.list.id) { setSelId(t.list.id); setCreating(false); }
-  }, []);
+    if (plateRef.current?.mentions.some((m) => m.task.id === t.id)) void loadLists();
+  }, [loadLists]);
 
   /* --------------------------------- views --------------------------------- */
 
-  // What needs you, per list: tasks for you and finished work waiting for your look.
+  // What needs you, per list: tasks for you, finished work waiting for your look,
+  // friends' tasks waiting for your OK, and mentions of you.
   const needsYou = useMemo(() => {
     const m = new Map<string, Set<string>>();
-    for (const t of [...(plate?.up_next ?? []), ...(plate?.waiting_on_you ?? [])]) {
-      if (!m.has(t.list.id)) m.set(t.list.id, new Set());
-      m.get(t.list.id)!.add(t.id);
-    }
+    const add = (listId: string, id: string) => {
+      if (!m.has(listId)) m.set(listId, new Set());
+      m.get(listId)!.add(id);
+    };
+    for (const t of [...(plate?.up_next ?? []), ...(plate?.waiting_on_you ?? []), ...(plate?.ok_requests ?? [])]) add(t.list.id, t.id);
+    for (const x of plate?.mentions ?? []) add(x.task.list.id, x.task.id);
     return m;
   }, [plate]);
+
+  const dir = useMemo(() => mentionDirectory(detail?.members ?? []), [detail?.members]);
 
   const live = (lists ?? []).filter((l) => !l.archived);
   const archived = (lists ?? []).filter((l) => l.archived);
@@ -218,11 +297,12 @@ function LiveLists() {
   const listItem = (l: ListSummary) => {
     const need = needsYou.get(l.id)?.size ?? 0;
     const open = l.counts.open + l.counts.in_progress + l.counts.blocked + l.counts.needs_review;
-    const title = [need ? `${need} need${need === 1 ? "s" : ""} you` : "", `${open} not done yet`].filter(Boolean).join(" · ");
+    const title = [l.shared ? "Shared with friends" : "", need ? `${need} need${need === 1 ? "s" : ""} you` : "", `${open} not done yet`].filter(Boolean).join(" · ");
     return (
       <button key={l.id} className={`ds-lists-item${l.id === selId && !creating ? " on" : ""}${l.archived ? " archived" : ""}`} onClick={() => selectList(l.id)} title={title} aria-current={l.id === selId ? "true" : undefined}>
         <span className="ds-lists-emoji" aria-hidden>{l.emoji || "☑"}</span>
         <span className="ds-lists-name">{l.name}</span>
+        {l.shared && <span className="ds-lists-shared">Shared</span>}
         {need > 0 && <span className="ds-lists-need" aria-label={`${need} need you`}>{need}</span>}
         {open > 0 && <span className="ds-lists-open" aria-label={`${open} not done`}>{open}</span>}
       </button>
@@ -234,7 +314,7 @@ function LiveLists() {
       {!creating && <button className="ds-btn" style={{ width: "100%" }} onClick={() => setCreating(true)}>＋ New list</button>}
       {creating && (
         <NewListForm
-          onCreated={(id) => { setCreating(false); setDetailErr(""); setSelId(id); setTaskId(null); void loadLists(); }}
+          onCreated={(id) => { setCreating(false); setDetailErr(""); setNotice(""); setOfferShare(id); setSelId(id); setTaskId(null); void loadLists(); }}
           onCancel={live.length || archived.length ? () => setCreating(false) : undefined}
         />
       )}
@@ -247,6 +327,7 @@ function LiveLists() {
         </button>
       )}
       {showArchivedNow && archived.map(listItem)}
+      {lists !== null && <DailySummary />}
     </aside>
   );
 
@@ -254,7 +335,14 @@ function LiveLists() {
 
   const errFor = (t: TaskView) => rowErr?.id === t.id ? <p className="ds-err" role="alert" style={{ margin: "6px 0 0" }}>{rowErr.msg}</p> : null;
   const busyFor = (t: TaskView, label: string) => rowBusy === `${t.id}:${label}`;
+  const reactBusy = (t: TaskView): ReactionEmoji | null => (rowBusy.startsWith(`${t.id}:react:`) ? (rowBusy.slice(t.id.length + 7) as ReactionEmoji) : null);
   const locked = !!detail?.list.archived;
+  const isOwner = detail?.list.your_role === "owner";
+  const agentsCanWork = (detail?.your_agents ?? []).some((a) => a.access === "work");
+
+  const reactions = (t: TaskView, all = false) => (
+    <Reactions reactions={t.reactions} all={all && !locked} disabled={locked} busy={reactBusy(t)} onToggle={(emoji) => react(t, emoji)} />
+  );
 
   const sendBackForm = (t: TaskView) => sendBack?.id === t.id && (
     <div className="ds-inline-form">
@@ -274,6 +362,50 @@ function LiveLists() {
 
   const openTask = (t: TaskView) => setTaskId(t.id);
 
+  const okButton = (t: TaskView, primary = true) => (
+    <button className={`ds-btn ds-sm${primary ? "" : " ghost"}`} disabled={busyFor(t, "ok")} title={t.agent_may_act.why} onClick={() => okTask(t)}>
+      {busyFor(t, "ok") ? "…" : "OK for my agents"}
+    </button>
+  );
+
+  /** "Alex added this for your agents. They need your OK to take it." */
+  const okAsk = (t: TaskView) => {
+    const who = whoName(t.created_by);
+    if (t.assignee?.kind === "their_agents") return `${who} added this for your agents. They need your OK to take it.`;
+    if (t.assignee) return `${who} added this for you. Your agents need your OK to help with it.`;
+    return `${who} added this. Your agents need your OK to take it.`;
+  };
+
+  const okRow = (t: TaskView) => (
+    <div key={`ok-${t.id}`} className={`ds-task${t.id === taskId ? " on" : ""}`}>
+      <WhoAvatar who={t.created_by} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <button className="ds-task-main" style={{ width: "100%" }} onClick={() => openTask(t)}>
+          <div className="ds-task-title">{t.title}</div>
+          <div className="ds-task-line">{okAsk(t)}</div>
+          {t.due && <div className="ds-task-meta"><DueChip due={t.due} /></div>}
+        </button>
+        {errFor(t)}
+      </div>
+      {!locked && <div className="ds-task-actions">{okButton(t)}</div>}
+    </div>
+  );
+
+  const mentionRow = (m: MentionView) => {
+    const text = m.entry.text.replace(/\s+/g, " ");
+    const snippet = text.length > 180 ? `${text.slice(0, 179)}…` : text;
+    return (
+      <div key={`m-${m.id}`} className={`ds-task${m.task.id === taskId ? " on" : ""}`}>
+        <WhoAvatar who={m.entry.by} />
+        <button className="ds-task-main" onClick={() => openTask(m.task)}>
+          <div className="ds-task-title"><Byline who={m.entry.by} /> mentioned you</div>
+          <div className="ds-task-line"><MentionText inline text={snippet} dir={dir} author={m.entry.by} /></div>
+          <div className="ds-task-meta"><span>On &ldquo;{m.task.title}&rdquo; · {ago(m.entry.at)}</span></div>
+        </button>
+      </div>
+    );
+  };
+
   const doingRow = (t: TaskView) => {
     const by = t.claim?.by ?? null;
     const line = lines[t.id];
@@ -281,73 +413,91 @@ function LiveLists() {
     return (
       <div key={t.id} className={`ds-task${t.id === taskId ? " on" : ""}`}>
         {by ? <WhoAvatar who={by} pulse={agent && t.status === "in_progress"} /> : <span className="ds-task-check" aria-hidden />}
-        <button className="ds-task-main" onClick={() => openTask(t)}>
-          <div className="ds-task-title">{t.title}</div>
-          {t.status === "blocked" && line?.blocked && <div className="ds-task-line">Blocked on: {line.blocked}</div>}
-          {line?.progress && <div className="ds-task-line progress">&ldquo;{line.progress.text.split("\n")[0]}&rdquo;</div>}
-          <div className="ds-task-meta">
-            {by && <span>{whoName(by)}{t.claim?.since ? ` · ${elapsed(t.claim.since)}` : ""}</span>}
-            {!by && <span>Nobody is on it</span>}
-            {agent && t.claim?.lapses_at && <span>· {lapsesIn(t.claim.lapses_at)}</span>}
-            {t.claim?.stale && <span className="ds-nudge">{by?.is_you && !agent ? "Still on it?" : "No word for 3 days"}</span>}
-            {t.status === "blocked" && <Chip tone="warn">Blocked</Chip>}
-            <DueChip due={t.due} />
-          </div>
-        </button>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <button className="ds-task-main" style={{ width: "100%" }} onClick={() => openTask(t)}>
+            <div className="ds-task-title">{t.title}</div>
+            {t.status === "blocked" && line?.blocked && <div className="ds-task-line">Blocked on: {line.blocked}</div>}
+            {line?.progress && <div className="ds-task-line progress">&ldquo;{line.progress.text.split("\n")[0]}&rdquo;</div>}
+            <div className="ds-task-meta">
+              {by && <span><Byline who={by} />{t.claim?.since ? ` · ${elapsed(t.claim.since)}` : ""}</span>}
+              {!by && <span>Nobody is on it</span>}
+              {agent && t.claim?.lapses_at && <span>· {lapsesIn(t.claim.lapses_at)}</span>}
+              {t.claim?.stale && <span className="ds-nudge">{by?.is_you && !agent ? "Still on it?" : "No word for 3 days"}</span>}
+              {t.status === "blocked" && <Chip tone="warn">Blocked</Chip>}
+              <DueChip due={t.due} />
+            </div>
+          </button>
+          {reactions(t)}
+          {errFor(t)}
+        </div>
       </div>
     );
   };
 
   const upNextRow = (t: TaskView) => {
     const who = assigneeLabel(t);
+    const elsewhere = !!t.assignee && !t.assignee.is_you;
+    const ask = !locked && needsMyOk(t, agentsCanWork);
+    const fromFriend = !!detail?.list.shared && !!t.created_by && !t.created_by.is_you;
     return (
       <div key={t.id} className={`ds-task${t.id === taskId ? " on" : ""}`}>
         <span className="ds-task-check" aria-hidden />
         <div style={{ flex: 1, minWidth: 0 }}>
           <button className="ds-task-main" style={{ width: "100%" }} onClick={() => openTask(t)}>
             <div className="ds-task-title">{t.title}</div>
-            {(who || t.due || t.notes) && (
+            {(who || t.due || t.notes || fromFriend) && (
               <div className="ds-task-meta">
                 {who && <Chip tone={t.assignee?.is_you && t.assignee.kind === "person" ? "acc" : undefined}>{who}</Chip>}
                 <DueChip due={t.due} />
+                {fromFriend && <span>Added by <Byline who={t.created_by} /></span>}
                 {t.notes && <span title="Has notes">≡ notes</span>}
               </div>
             )}
           </button>
+          {reactions(t)}
           {errFor(t)}
         </div>
-        {!locked && (
+        {!locked && (ask || !elsewhere) && (
           <div className="ds-task-actions">
-            <button className="ds-btn ghost ds-sm" disabled={busyFor(t, "claim")} title="Say you're on it" onClick={() => void rowAction(t, "claim", () => listsApi.claim(t.id))}>
-              {busyFor(t, "claim") ? "…" : "Claim"}
-            </button>
+            {ask && okButton(t)}
+            {!elsewhere && (
+              <button className="ds-btn ghost ds-sm" disabled={busyFor(t, "claim")} title="Say you're on it" onClick={() => void rowAction(t, "claim", () => listsApi.claim(t.id))}>
+                {busyFor(t, "claim") ? "…" : "Claim"}
+              </button>
+            )}
           </div>
         )}
       </div>
     );
   };
 
-  const readyRow = (t: TaskView) => (
-    <div key={t.id} className={`ds-task${t.id === taskId ? " on" : ""}`}>
-      <WhoAvatar who={t.completed_by} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <button className="ds-task-main" style={{ width: "100%" }} onClick={() => openTask(t)}>
-          <div className="ds-task-title">{t.title}</div>
-          <div className="ds-summary ready">
-            <strong>{whoName(t.completed_by)}</strong> {t.summary ? <PlainText text={t.summary} /> : "finished this."}
-          </div>
-        </button>
-        {sendBackForm(t)}
-        {errFor(t)}
-      </div>
-      {!locked && sendBack?.id !== t.id && (
-        <div className="ds-task-actions">
-          <button className="ds-btn ds-sm" disabled={busyFor(t, "accept")} onClick={() => void rowAction(t, "accept", () => listsApi.review(t.id, "accept"))}>{busyFor(t, "accept") ? "…" : "Looks good"}</button>
-          <button className="ds-btn ghost ds-sm" onClick={() => setSendBack({ id: t.id, text: "" })}>Send back</button>
+  const readyRow = (t: TaskView) => {
+    // The person who asked checks it. (The list's owner can still step in from the drawer.)
+    const mineToCheck = !!t.needs_review_by?.is_you;
+    return (
+      <div key={t.id} className={`ds-task${t.id === taskId ? " on" : ""}`}>
+        <WhoAvatar who={t.completed_by} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <button className="ds-task-main" style={{ width: "100%" }} onClick={() => openTask(t)}>
+            <div className="ds-task-title">{t.title}</div>
+            <div className="ds-summary ready">
+              <strong><Byline who={t.completed_by} /></strong> {t.summary ? <PlainText text={t.summary} /> : "finished this."}
+            </div>
+            {!t.needs_review_by?.is_you && <div className="ds-task-meta"><span>Waiting for {reviewerLabel(t)} to check it</span></div>}
+          </button>
+          {reactions(t)}
+          {sendBackForm(t)}
+          {errFor(t)}
         </div>
-      )}
-    </div>
-  );
+        {!locked && mineToCheck && sendBack?.id !== t.id && (
+          <div className="ds-task-actions">
+            <button className="ds-btn ds-sm" disabled={busyFor(t, "accept")} onClick={() => void rowAction(t, "accept", () => listsApi.review(t.id, "accept"))}>{busyFor(t, "accept") ? "…" : "Looks good"}</button>
+            <button className="ds-btn ghost ds-sm" onClick={() => setSendBack({ id: t.id, text: "" })}>Send back</button>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const doneRow = (t: TaskView) => (
     <div key={t.id} className={`ds-task done${t.id === taskId ? " on" : ""}`}>
@@ -356,12 +506,13 @@ function LiveLists() {
         <button className="ds-task-main" style={{ width: "100%" }} onClick={() => openTask(t)}>
           <div className="ds-task-title">{t.title}</div>
           {t.summary && <div className="ds-summary"><PlainText text={t.summary} /></div>}
-          <div className="ds-task-meta"><span>{whoName(t.completed_by)} finished this {ago(t.completed_at)}</span></div>
+          <div className="ds-task-meta"><span>Finished by <Byline who={t.completed_by} /> {ago(t.completed_at)}</span></div>
         </button>
+        {reactions(t, true)}
         {sendBackForm(t)}
         {errFor(t)}
       </div>
-      {!locked && t.send_back_until && sendBack?.id !== t.id && (
+      {!locked && t.send_back_until && (!!t.created_by?.is_you || isOwner) && sendBack?.id !== t.id && (
         <div className="ds-task-actions">
           <button className="ds-btn ghost ds-sm" title="Hand it back to whoever did it, with a note" onClick={() => setSendBack({ id: t.id, text: "" })}>Send back</button>
         </div>
@@ -396,6 +547,7 @@ function LiveLists() {
     if (lists !== null && lists.length === 0) {
       return (
         <div className="ds-card">
+          {notice && <p className="ds-call ok" role="status" style={{ margin: "0 0 14px" }}>{notice}</p>}
           <EmptyState icon="☑">
             <strong style={{ color: "var(--ds-ink)" }}>Start your first list.</strong><br />
             Name it, pick which of your agents can work it, then add tasks. Your agents can pick tasks up, post progress as they go, and say what they did when they finish.
@@ -414,36 +566,58 @@ function LiveLists() {
     const l = detail.list;
     const now = Date.now();
     const tasks = detail.tasks;
+    const members = detail.members;
+    const shared = l.shared || members.length > 1;
     const doing = tasks.filter(isDoing);
     const upNext = tasks.filter((t) => t.status === "open" && !t.claim).sort(dueSort);
     const ready = tasks.filter((t) => t.status === "needs_review");
-    const done = tasks
-      .filter((t) => t.status === "done" && now - Date.parse(t.completed_at ?? t.updated_at ?? "") < WEEK)
-      .sort((a, b) => Date.parse(b.completed_at ?? "") - Date.parse(a.completed_at ?? ""));
+    const readyForMe = ready.every((t) => t.needs_review_by?.is_you);
+    const done = doneThisWeek(tasks, now);
     const dropped = tasks.filter((t) => t.status === "dropped");
     const workers = (detail.your_agents ?? []).filter((a) => a.access === "work");
     const viewers = (detail.your_agents ?? []).filter((a) => a.access === "view");
     const allDone = !doing.length && !upNext.length && !ready.length;
-    const byYou = done.filter((t) => !t.completed_by?.agent).length;
-    const byAgents = done.length - byYou;
-    const tally = [byYou ? `You finished ${byYou}` : "", byAgents ? `${byYou ? "your" : "Your"} agents finished ${byAgents}` : ""].filter(Boolean).join(" and ");
+    const okHere = l.archived ? [] : (plate?.ok_requests ?? []).filter((t) => t.list.id === l.id);
+    const mentionsHere = (plate?.mentions ?? []).filter((m) => m.task.list.id === l.id);
+    const others = members.filter((m) => !m.is_you);
 
     return (
       <>
+        {notice && <p className="ds-call ok" role="status" style={{ margin: "0 0 14px" }}>{notice}</p>}
         <div className="ds-lists-head">
           <h2 className="ds-lists-title"><span aria-hidden>{l.emoji || "☑"}</span>{l.name}</h2>
+          {shared && <Chip tone="acc" title="Shared with friends">Shared</Chip>}
           {l.archived && <Chip>Archived</Chip>}
-          <div style={{ marginLeft: "auto" }}>
-            <button className="ds-btn ghost ds-sm" aria-expanded={showSettings} onClick={() => setShowSettings((v) => !v)}>{showSettings ? "Close settings" : "Settings"}</button>
+          <div className="ds-lists-headr">
+            {shared && (
+              <button className="ds-faces" onClick={openPeople} title={`On this list: ${members.map(memberLabel).join(", ")}`} aria-label={`${members.length} people on this list. Show who`}>
+                {members.slice(0, 4).map((m) => <WhoAvatar key={m.handle ?? memberLabel(m)} who={memberRef(m)} size={24} />)}
+                {members.length > 4 && <span className="ds-faces-more">+{members.length - 4}</span>}
+              </button>
+            )}
+            <button className="ds-btn ghost ds-sm" aria-expanded={showSettings} onClick={() => { setShowSettings((v) => !v); setFocusMembers(false); }}>{showSettings ? "Close settings" : "Settings"}</button>
           </div>
         </div>
-        <p className="ds-lists-privacy">{PRIVACY_NOTE}</p>
+        {cheer?.listId === l.id && <p className="ds-lists-cheer" role="status">{cheer.text}</p>}
+        <p className="ds-lists-privacy">{shared ? SHARED_PRIVACY_NOTE : PRIVACY_NOTE}</p>
 
-        {showSettings && <ListSettings key={`settings-${l.id}`} detail={detail} onChanged={refresh} />}
+        {offerShare === l.id && l.your_role === "owner" && !shared && !l.archived && !showSettings && (
+          <div className="ds-call acc" style={{ margin: "0 0 18px" }}>
+            <strong>Share with a friend?</strong> Friends you add can see this list, add tasks and pick them up, with the agents they choose.
+            <div className="ds-actions" style={{ marginTop: 10 }}>
+              <button className="ds-btn ds-sm" onClick={openPeople}>Share with a friend</button>
+              <button className="ds-btn ghost ds-sm" onClick={() => setOfferShare(null)}>Not now</button>
+            </div>
+          </div>
+        )}
+
+        {showSettings && (
+          <ListSettings key={`settings-${l.id}`} detail={detail} focusMembers={focusMembers} onChanged={refresh} onLeft={() => onLeft(l.name, l.id)} onDuplicated={onDuplicated} />
+        )}
 
         {l.archived && !showSettings && (
           <p className="ds-call warn" style={{ margin: "0 0 18px" }}>
-            This list is archived, so it&apos;s read-only and off your agents&apos; plates. <button className="ds-link" onClick={() => setShowSettings(true)}>Unarchive it in settings</button>
+            This list is archived, so it&apos;s read-only and off your agents&apos; plates. {l.your_role === "owner" && <button className="ds-link" onClick={() => setShowSettings(true)}>Unarchive it in settings</button>}
           </p>
         )}
 
@@ -452,15 +626,26 @@ function LiveLists() {
             {workers.length
               ? <>{joinNames(workers.map((a) => a.name))} can work this list{viewers.length ? `, and ${joinNames(viewers.map((a) => a.name))} can read it` : ""}. </>
               : <>None of your agents can work this list yet. </>}
+            {shared && others.length > 0 && <>Shared with {joinNames(others.map(memberLabel))}. </>}
             <button className="ds-link" style={{ fontSize: 12 }} onClick={() => setShowSettings(true)}>Change</button>
           </p>
         )}
 
-        {!l.archived && <QuickAdd key={`quickadd-${l.id}`} listId={l.id} agents={detail.your_agents} disabled={l.archived} onAdded={refresh} />}
+        {!l.archived && <QuickAdd key={`quickadd-${l.id}`} listId={l.id} agents={detail.your_agents} members={members} disabled={l.archived} onAdded={refresh} />}
+
+        {(okHere.length > 0 || mentionsHere.length > 0) && (
+          <section className="ds-band" aria-label="Waiting on you">
+            <h3 className="ds-band-h">Waiting on you <span className="ds-band-n">{okHere.length + mentionsHere.length}</span></h3>
+            <div className="ds-band-box ready">
+              {okHere.map(okRow)}
+              {mentionsHere.map(mentionRow)}
+            </div>
+          </section>
+        )}
 
         {ready.length > 0 && (
-          <section className="ds-band" aria-label="Ready for you">
-            <h3 className="ds-band-h">Ready for you <span className="ds-band-n">{ready.length}</span></h3>
+          <section className="ds-band" aria-label={readyForMe ? "Ready for you" : "Ready for a look"}>
+            <h3 className="ds-band-h">{readyForMe ? "Ready for you" : "Ready for a look"} <span className="ds-band-n">{ready.length}</span></h3>
             <div className="ds-band-box ready">{ready.map(readyRow)}</div>
           </section>
         )}
@@ -478,7 +663,7 @@ function LiveLists() {
             {upNext.length
               ? upNext.map(upNextRow)
               : allDone && done.length
-                ? <div className="ds-band-empty">All done. {tally} this week.</div>
+                ? <div className="ds-band-empty">All done. {tally(done)} this week.</div>
                 : <div className="ds-band-empty">Nothing waiting. Add a task above.</div>}
           </div>
         </section>
@@ -513,7 +698,7 @@ function LiveLists() {
   return (
     <>
       <h1 className="ds-h1">Lists</h1>
-      <p className="ds-sub">Tasks for you and your agents. Agents pick them up, post progress as they work, and say what they did.</p>
+      <p className="ds-sub">Tasks for you, your agents and the friends you share a list with. Agents pick them up, post progress as they work, and say what they did.</p>
       <div className="ds-lists">
         {side}
         <div className="ds-lists-main">{main()}</div>
@@ -522,6 +707,7 @@ function LiveLists() {
         <TaskDrawer
           taskId={taskId}
           agents={drawerList?.your_agents}
+          members={drawerList?.members}
           isOwner={(drawerList?.list.your_role ?? summary?.your_role) === "owner"}
           archived={!!(drawerList?.list.archived ?? summary?.archived)}
           refreshKey={refreshKey}
@@ -534,8 +720,3 @@ function LiveLists() {
   );
 }
 
-/** "Claude Code", "Claude Code and Codex", "A, B and C". */
-function joinNames(names: string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-}
