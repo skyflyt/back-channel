@@ -298,6 +298,11 @@ function assertBoundedReads(label: string) {
     if (q.name === "trustedPeer") assert.equal(q.op, "count", `${where}: trust rows are only counted`);
     if (q.name === "session") assert.ok(q.op === "count" || (q.op === "findMany" && q.args.take <= 20), `${where}: sessions only counted or the latest 20`);
     if (q.op === "sql") assert.ok(!/"body"/i.test(q.args.sql), `${where}: SQL never references Frame.body`);
+    // List content is on the NEVER-track list (docs/admin-analytics-epic.md §2): lists and tasks may be counted, never read.
+    if (["taskList", "taskItem", "taskEntry"].includes(q.name)) {
+      assert.ok(q.op === "count" || (q.op === "groupBy" && !q.args.by.some((k: string) => ["name", "title", "notes", "summary", "body"].includes(k))), `${where}: list content is only counted`);
+    }
+    if (q.op === "sql") assert.ok(!/"(title|notes|summary)"/i.test(q.args.sql), `${where}: SQL never references list or task text`);
   }
 }
 
