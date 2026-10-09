@@ -19,6 +19,7 @@ import * as R from '../../../apps/broker/src/lib/remote-app/rules.mjs';
 const TOKEN = 'fixture-agent-key';
 const MARKERS = ['VALUE-MARKER-41', 'SCREEN-VALUE-MARKER', 'SCREEN-TITLE-MARKER', 'NOTE-MARKER-77'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const sha = value => createHash('sha256').update(value).digest('hex');
 
 function socketPath(t, label) {
     if (process.platform === 'win32') return `\\\\.\\pipe\\bc-test-${label}-${randomUUID()}`;
@@ -29,9 +30,12 @@ function socketPath(t, label) {
 
 /**
  * A fake AppBridge host on the agent-control pipe (a named pipe on Windows, a Unix socket elsewhere). With
- * secretHash it is a v1.1 host that knows the session's executor secret hash, and checks it in hello.
+ * secretHash (a value, or a function: the hash Back Channel lists for the session right now) it is a v1.1 host, as
+ * AppBridge's: a hello's secret must match, and a connection that presented none neither lists nor reaches the session.
  */
 async function fakeHost(t, sessionId, { act, hello, secretHash } = {}) {
+    const known = () => (typeof secretHash === 'function' ? secretHash() : secretHash) ?? null;
+    const NEEDS = { ok: false, outcome: 'fail_closed', reason: "this pipe needs the session's executor secret" };
     const where = socketPath(t, 'agent-control');
     const log = [];
     const surface = () => ({
@@ -46,13 +50,16 @@ async function fakeHost(t, sessionId, { act, hello, secretHash } = {}) {
     });
     const state = { sessions: [{ sessionId, goal: 'Save the memo', status: 'active', expiresAt: new Date(Date.now() + 600000).toISOString(),
         apps: [{ appId: 'app-notepad', name: 'Notepad' }, { appId: 'app-regedit', name: 'Registry Editor' }] }] };
-    const handle = m => {
+    const handle = (m, conn) => {
+        if (m.op !== 'hello' && m.op !== 'sessions' && known() && !conn.authorized) return NEEDS;
         switch (m.op) {
             case 'hello':
-                if (secretHash && (typeof m.executorSecret !== 'string' || createHash('sha256').update(m.executorSecret).digest('hex') !== secretHash))
-                    return { ok: false, outcome: 'fail_closed', reason: "this pipe needs the session's executor secret" };
+                if (m.executorSecret !== undefined) {
+                    if (typeof m.executorSecret !== 'string' || createHash('sha256').update(m.executorSecret).digest('hex') !== known()) return NEEDS;
+                    conn.authorized = true;
+                }
                 return hello ?? { ok: true, version: 1, host: { name: 'Test-PC' }, agentControl: true };
-            case 'sessions': return { ok: true, sessions: state.sessions };
+            case 'sessions': return { ok: true, sessions: known() && !conn.authorized ? [] : state.sessions };
             case 'open': return m.appId === 'app-notepad' ? { ok: true, windowId: 'w1', surface: surface() } : { ok: false, outcome: 'not_in_scope', reason: 'Not this session.' };
             case 'observe': return { ok: true, surface: surface() };
             case 'act': { const custom = act?.(m); return custom === undefined ? { ok: true, outcome: 'ok', surface: surface() } : custom; }
@@ -64,6 +71,7 @@ async function fakeHost(t, sessionId, { act, hello, secretHash } = {}) {
     const server = net.createServer(socket => {
         sockets.add(socket);
         socket.on('error', () => {});
+        const conn = { authorized: false };
         let buffer = '';
         socket.setEncoding('utf8');
         socket.on('data', chunk => {
@@ -73,7 +81,7 @@ async function fakeHost(t, sessionId, { act, hello, secretHash } = {}) {
                 const m = JSON.parse(buffer.slice(0, index));
                 buffer = buffer.slice(index + 1);
                 log.push(m);
-                const answer = handle(m);
+                const answer = handle(m, conn);
                 if (answer !== null) socket.write(JSON.stringify({ id: m.id, ...answer }) + '\n');
             }
         });
@@ -83,13 +91,26 @@ async function fakeHost(t, sessionId, { act, hello, secretHash } = {}) {
     return { path: where, log, state, ops: () => log.map(m => m.op) };
 }
 
-/** A fake Back Channel on loopback: /api/remote-app/sessions/{id}[/actions|/end|/stop], using the broker's real rules. */
-async function fakeBroker(t, sessionId, { executor = 'b', minutes = 10, onReport } = {}) {
+/**
+ * A fake Back Channel on loopback: /api/remote-app/sessions/{id}[/actions|/end|/stop|/executor-secret], using the
+ * broker's real rules. secret: true is a v1.1 session: born with a hash nothing matches, its secret handed out once on
+ * the executor's first read while it runs, and rotated on request; without it, a v1 session (no hash).
+ */
+async function fakeBroker(t, sessionId, { executor = 'b', minutes = 10, onReport, secret = false } = {}) {
     const now = new Date();
     const row = {
         id: sessionId, accountId: 'account', kind: 'agent', hostDeviceId: 'host-1', agentTokenId: 'a', executorAgentId: executor,
         listTaskId: null, goal: 'Save the memo in Notepad', appAllowList: ['Notepad'], minutes, status: 'active',
         createdAt: new Date(now.getTime() - 60000), startedAt: now, expiresAt: new Date(now.getTime() + minutes * 60000), endedAt: null, endReason: null,
+        executorSecretHash: secret ? sha(randomBytes(32).toString('hex')) : null, executorSecretIssuedAt: null,
+    };
+    const handedOut = [];
+    const running = () => row.status === 'active' || row.status === 'blocked';
+    const handOut = () => {
+        const value = ['abx', randomBytes(32).toString('base64url')].join('_');
+        Object.assign(row, { executorSecretHash: sha(value), executorSecretIssuedAt: new Date() });
+        handedOut.push(value);
+        return value;
     };
     const actions = [], requests = [];
     const view = at => {
@@ -103,12 +124,15 @@ async function fakeBroker(t, sessionId, { executor = 'b', minutes = 10, onReport
         requests.push({ method: req.method, url: req.url, body: raw });
         const reply = (status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
         if (req.headers.authorization !== `Bearer ${TOKEN}`) return reply(401, { error: 'unauthorized' });
-        const m = /^\/api\/remote-app\/sessions\/([^/]+)(?:\/(actions|end|stop))?$/.exec(req.url);
+        const m = /^\/api\/remote-app\/sessions\/([^/]+)(?:\/(actions|end|stop|executor-secret))?$/.exec(req.url);
         if (!m || m[1] !== row.id) return reply(404, { error: 'not_found' });
         const at = new Date();
         Object.assign(row, R.settle(row, at) ?? {});
         try {
-            if (req.method === 'GET' && !m[2]) return reply(200, { session: view(at), actions: actions.map(a => R.actionView(a, { pc: 'Test-PC' })), next: '' });
+            if (req.method === 'GET' && !m[2]) {
+                const due = row.executorSecretHash && !row.executorSecretIssuedAt && running();
+                return reply(200, { session: { ...view(at), ...(due ? { executorSecret: handOut() } : {}) }, actions: actions.map(a => R.actionView(a, { pc: 'Test-PC' })), next: '' });
+            }
             const body = raw ? JSON.parse(raw) : {};
             if (m[2] === 'actions') {
                 const d = R.reportDecision(row, R.parseReport(body), at, actions.length);
@@ -124,6 +148,11 @@ async function fakeBroker(t, sessionId, { executor = 'b', minutes = 10, onReport
                 return reply(200, { session: view(at) });
             }
             if (m[2] === 'stop') { Object.assign(row, R.stopPatch(row, 'agent', at) ?? {}); return reply(200, { session: view(at) }); }
+            if (m[2] === 'executor-secret') {
+                if (!row.executorSecretHash) return reply(409, { error: 'no_executor_secret', message: 'This session started before executor secrets existed.' });
+                if (!running()) return reply(409, { error: 'session_over', message: 'This session is over.' });
+                return reply(200, { session: { ...view(at), executorSecret: handOut() } });
+            }
             return reply(404, { error: 'not_found' });
         } catch (e) {
             if (e instanceof R.RemoteRuleError) return reply(e.status, { error: e.code, message: e.message });
@@ -133,7 +162,7 @@ async function fakeBroker(t, sessionId, { executor = 'b', minutes = 10, onReport
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(() => { server.closeAllConnections(); server.close(); });
     return {
-        url: `http://127.0.0.1:${server.address().port}`, row, actions, requests,
+        url: `http://127.0.0.1:${server.address().port}`, row, actions, requests, handedOut,
         stopByPerson: () => Object.assign(row, R.stopPatch(row, 'person', new Date(), 'account') ?? {}),
         posts: route => requests.filter(r => r.method === 'POST' && r.url.endsWith(route)).map(r => JSON.parse(r.body)),
     };
@@ -169,7 +198,7 @@ async function setup(t, { broker: brokerOptions, host: hostOptions, noHost = fal
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const sessionId = randomUUID();
     const broker = await fakeBroker(t, sessionId, brokerOptions);
-    const host = noHost ? { path: socketPath(t, 'absent'), log: [], ops: () => [] } : await fakeHost(t, sessionId, hostOptions);
+    const host = noHost ? { path: socketPath(t, 'absent'), log: [], ops: () => [] } : await fakeHost(t, sessionId, typeof hostOptions === 'function' ? hostOptions(broker) : hostOptions);
     const run = path.join(dir, 'run');
     fs.mkdirSync(run);
     const profile = { adapter: 'fixture', testOnly: true, executable: process.execPath, cwd: run, fixtureScript: path.join(import.meta.dirname, 'fixtures/remote-agent.mjs'), allowedSenders: ['a'], maxRuntimeMs: 30000 };
@@ -350,7 +379,7 @@ test('a missing agent-control pipe is "Allow agent control is off on this PC", a
     assert.equal(status, 'waiting_user');
     assert.match(result.text, /^Allow agent control is off on this PC\./);
     assert.equal(s.calls.length, 0);
-    assert.equal(s.broker.requests.filter(r => r.method === 'POST').length, 0);
+    assert.deepEqual(s.broker.requests.filter(r => r.method === 'POST').map(r => r.url.split('/').pop()), ['executor-secret'], 'nothing recorded: only the v1 session\'s "no secret" answer');
     const direct = await new AgentControlClient({ path: s.host.path }).sessions();
     assert.deepEqual(direct, { ok: false, outcome: 'needs_user', reason: AGENT_CONTROL_OFF });
 });
@@ -418,30 +447,82 @@ test('v1.1: a payload with the executor secret greets the host with it, and only
     assert.ok(!JSON.stringify([...s.relay.tasks.values()]).includes(secret), 'only sealed');
 });
 
-test('v1.1 back-compat: without a secret hello is v1 exactly; a host that knows the hash refuses none or a wrong one', async t => {
-    const plain = await setup(t);
-    assert.equal((await plain.go('SCENARIO:happy')).status, 'completed');
-    assert.deepEqual(plain.host.log[0], { id: '1', op: 'hello', version: 1 });
-    const secret = ['abx', randomBytes(32).toString('base64url')].join('_');
-    const s = await setup(t, { host: { secretHash: createHash('sha256').update(secret).digest('hex') } });
-    for (const executorSecret of [undefined, ['abx', randomBytes(32).toString('base64url')].join('_')]) {
-        const id = await s.a.send({ targetAgentId: 'b', profile: 'remote-app', objective: 'SCENARIO:happy', remoteAppSessionId: s.sessionId, executorSecret });
-        await s.b.cycle();
-        await s.a.cycle();
-        assert.equal(s.relay.tasks.get(id).status, 'failed');
-        assert.match(s.a.journal.continuations[id].result.text, /^This PC's agent control refused: this pipe needs the session's executor secret Nothing was done on this PC\.$/);
-    }
-    assert.deepEqual(s.host.ops(), ['hello', 'hello'], 'nothing past hello');
-    assert.equal(s.calls.length, 0);
-    assert.equal(s.broker.requests.filter(r => r.method === 'POST').length, 0);
+test('v1.1 back-compat: a v1 session (no hash) asks once, hears "no secret", and greets the PC v1 exactly', async t => {
+    const s = await setup(t);
+    assert.equal((await s.go('SCENARIO:happy')).status, 'completed');
+    assert.deepEqual(s.host.log[0], { id: '1', op: 'hello', version: 1 });
+    assert.ok(s.host.log.every(m => !('executorSecret' in m)));
+    assert.deepEqual(s.broker.posts('/executor-secret'), [{}]);
+    assert.equal(s.broker.row.executorSecretHash, null, 'asking never upgrades a v1 session');
     // A malformed secret never leaves the sender, and a sealed one is rejected unread.
     await assert.rejects(s.a.send({ targetAgentId: 'b', profile: 'remote-app', objective: 'x', remoteAppSessionId: s.sessionId, executorSecret: 'abx_short' }), /Invalid executor secret/);
     const task = { id: randomUUID(), senderAgentId: 'a', targetAgentId: 'b', expiresAt: new Date(Date.now() + 600000).toISOString() };
-    const payload = { ...binding(task, 'task'), profile: 'remote-app', objective: 'SCENARIO:happy', remoteAppSessionId: s.sessionId, executorSecret: secret + '=' };
+    const payload = { ...binding(task, 'task'), profile: 'remote-app', objective: 'SCENARIO:happy', remoteAppSessionId: s.sessionId, executorSecret: ['abx', randomBytes(32).toString('base64url')].join('_') + '=' };
     s.relay.tasks.set(task.id, { ...task, status: 'queued', sealed: seal(payload, binding(task, 'task'), s.keys.a, s.keys.b) });
     await s.b.cycle();
     assert.equal(s.relay.tasks.get(task.id).status, 'rejected');
     assert.equal(s.b.journal.tasks[task.id].reason, 'Invalid executor secret');
+});
+
+/** A v1.1 session and a v1.1 PC that checks hellos against the hash Back Channel lists right now. */
+const V11 = { broker: { secret: true }, host: broker => ({ secretHash: () => broker.row.executorSecretHash }) };
+
+test('v1.1 Phase A: the first read hands the worker the secret; it greets the PC with it, and nothing else ever sees it', async t => {
+    const s = await setup(t, V11);
+    const r = await s.go('SCENARIO:happy');
+    assert.equal(r.status, 'completed', r.result?.text);
+    assert.equal(s.broker.handedOut.length, 1);
+    const [secret] = s.broker.handedOut;
+    assert.deepEqual(s.host.log[0], { id: '1', op: 'hello', version: 1, executorSecret: secret });
+    assert.ok(s.host.log.slice(1).every(m => !('executorSecret' in m)), 'the secret is in hello only');
+    assert.deepEqual(s.broker.posts('/executor-secret'), [], 'the first read was enough');
+    assert.equal(s.broker.posts('/actions').length, 5);
+    assert.equal(s.broker.posts('/end').length, 1);
+    assert.ok(!s.broker.requests.some(q => q.body.includes(secret) || q.url.includes(secret)), 'never sent back');
+    assert.ok(!s.calls[0].prompt.includes(secret), 'never in the prompt');
+    assert.ok(!JSON.stringify(runtimeArgs(s.calls[0].p, { mcp: s.calls[0].options.mcp })).includes(secret));
+    assert.ok(!r.result.text.includes(secret), 'never in the result');
+    assert.ok(!JSON.stringify([...s.relay.tasks.values()]).includes(secret));
+    assert.ok(!JSON.stringify(s.b.journal).includes(secret), 'never journalled');
+});
+
+test('v1.1: a run that missed the first read (the session was paused then) asks for a fresh secret, once, and the PC takes it', async t => {
+    const s = await setup(t, V11);
+    s.broker.row.status = 'blocked';
+    const paused = await s.go('SCENARIO:happy');
+    assert.equal(paused.status, 'waiting_user');
+    assert.equal(s.broker.handedOut.length, 1, 'that read spent the first secret');
+    assert.deepEqual(s.host.ops(), [], 'and the PC was never asked');
+    s.broker.row.status = 'active';
+    const again = await s.go('SCENARIO:happy');
+    assert.equal(again.status, 'completed', again.result?.text);
+    assert.deepEqual(s.broker.posts('/executor-secret'), [{}]);
+    assert.equal(s.broker.handedOut.length, 2);
+    assert.deepEqual(s.host.log[0], { id: '1', op: 'hello', version: 1, executorSecret: s.broker.handedOut[1] });
+});
+
+test('v1.1: a sealed-in secret the PC no longer knows is replaced once; a PC that never takes the secret fails closed', async t => {
+    const s = await setup(t, V11);
+    s.broker.row.executorSecretIssuedAt = new Date(); // handed out earlier, to a reply that was lost
+    const stale = ['abx', randomBytes(32).toString('base64url')].join('_');
+    const id = await s.a.send({ targetAgentId: 'b', profile: 'remote-app', objective: 'SCENARIO:happy', remoteAppSessionId: s.sessionId, executorSecret: stale });
+    await s.b.cycle();
+    await s.a.cycle();
+    assert.equal(s.relay.tasks.get(id).status, 'completed', s.a.journal.continuations[id]?.result?.text);
+    assert.deepEqual(s.broker.posts('/executor-secret'), [{}]);
+    const hellos = s.host.log.filter(m => m.op === 'hello');
+    assert.equal(hellos[0].executorSecret, stale);
+    assert.equal(hellos.at(-1).executorSecret, s.broker.handedOut[0]);
+    // A PC whose list never matches (an old build, a broken one): the worker asks nothing more and uses nothing.
+    const stuck = await setup(t, { broker: { secret: true }, host: { secretHash: sha('another session') } });
+    const r = await stuck.go('SCENARIO:happy');
+    assert.equal(r.status, 'failed');
+    assert.match(r.result.text, /^This PC's agent control didn't take remote app session \S+ executor secret, so the PC wasn't used\./);
+    assert.ok(!r.result.text.includes(stuck.broker.handedOut[0]));
+    assert.deepEqual(stuck.broker.posts('/executor-secret'), [], 'its secret came fresh from the read: nothing to replace');
+    assert.ok(stuck.host.ops().every(op => op === 'hello' || op === 'sessions'), 'nothing past hello');
+    assert.equal(stuck.calls.length, 0);
+    assert.equal(stuck.broker.posts('/actions').length + stuck.broker.posts('/end').length, 0);
 });
 
 test('remote-app runtime arguments are fixed: only the worker MCP server, no shell, writes or web', () => {

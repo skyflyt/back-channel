@@ -31,6 +31,8 @@ export const SUPPORT_TIMEOUT_MS = 90000;
 // What a v1 AppBridge host answers to a hello it doesn't understand (AgentControlContract.Malformed). A v1 host
 // checks no secret at all, so on exactly this answer the agent-control client may greet once more without one.
 export const V1_MALFORMED = "That request isn't valid for agent control v1.";
+/** v1.1: a host refuses a hello whose secret matches no session it knows (it re-reads Back Channel first), and any op on a session bound to a secret this connection did not present. */
+export const NEEDS_EXECUTOR_SECRET = "this pipe needs the session's executor secret";
 const MAX_MESSAGE = 1024 * 1024;
 // v1.1 (contract §5): `abx_` and 43 base64url characters, issued by Back Channel once per session.
 const EXECUTOR_SECRET = /^abx_[A-Za-z0-9_-]{43}$/;

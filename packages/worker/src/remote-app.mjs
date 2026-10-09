@@ -13,7 +13,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { AgentControlClient, ACT_ACTIONS, KEY_NAMES, AGENT_CONTROL_OFF, refusal, isExecutorSecret } from './agent-control.mjs';
+import { AgentControlClient, ACT_ACTIONS, KEY_NAMES, AGENT_CONTROL_OFF, NEEDS_EXECUTOR_SECRET, refusal, isExecutorSecret } from './agent-control.mjs';
 import { validateProfile } from './runtime.mjs';
 import { RULES, SERVER_NAME, TOOL_NAMES } from './remote-app-mcp.mjs';
 
@@ -75,6 +75,7 @@ class Broker {
     report(step) { return this.client.remoteApp(this.path + '/actions', step); }
     end(body) { return this.client.remoteApp(this.path + '/end', body); }
     stop() { return this.client.remoteApp(this.path + '/stop', {}); }
+    rotate() { return this.client.remoteApp(this.path + '/executor-secret', {}); }
 }
 
 /** A write with a short retry for network errors, 5xx and rate limits. Never throws: status 0 is "unreachable". */
@@ -101,8 +102,10 @@ export async function verifySession(broker, id, agentId, task, now = Date.now())
     catch { return result('failed', `Couldn't reach Back Channel to check remote app session ${id}. ${NOTHING}`); }
     if (r.status === 404) return result('failed', `Remote app session ${id} isn't available to this agent: it doesn't exist, or other agents drive it. ${NOTHING}`);
     if (r.status === 401 || r.status === 403) return result('failed', `Back Channel refused this agent's key for remote app sessions (they need a full agent key). ${NOTHING}`);
-    const s = r.status === 200 ? r.body?.session : null;
-    if (!s || s.id !== id) return result('failed', `Back Channel didn't return remote app session ${id}. ${NOTHING}`);
+    // v1.1: the first read while the session runs carries its executor secret, once. It goes to the pipe's hello and
+    // nowhere else, so it leaves the view here (whatever the read says next).
+    const { executorSecret, ...s } = r.status === 200 && r.body?.session ? r.body.session : {};
+    if (!s.id || s.id !== id) return result('failed', `Back Channel didn't return remote app session ${id}. ${NOTHING}`);
     if (s.drivenBy?.agentId !== agentId)
         return result('failed', `Remote app session ${id} is driven by ${bounded(s.drivenBy?.name ?? 'another agent', 60)}, not by this agent. ${NOTHING}`);
     if (s.kind !== undefined && s.kind !== 'agent') return result('failed', `Remote app session ${id} isn't an agent session. ${NOTHING}`);
@@ -119,7 +122,20 @@ export async function verifySession(broker, id, agentId, task, now = Date.now())
     const deadline = Math.min(Date.parse(s.expiresAt), Date.parse(s.startedAt) + s.minutes * 60000, Date.parse(task.expiresAt));
     if (!Number.isFinite(deadline)) return result('failed', `Remote app session ${id} doesn't carry a valid time limit. ${NOTHING}`);
     if (deadline <= now + 1000) return result('failed', `Remote app session ${id} has run out of time. ${NOTHING}`);
-    return { session: s, deadline };
+    return { session: s, deadline, ...(isExecutorSecret(executorSecret) ? { executorSecret } : {}) };
+}
+
+/**
+ * v1.1: a fresh executor secret for a session whose first read this run didn't see (a task sent again, a lost reply)
+ * or whose sealed-in one the PC no longer knows. Back Channel hands out a new one and the old one stops working.
+ * { secret } (undefined for a v1 session, which needs none), or the result to return.
+ */
+export async function freshExecutorSecret(broker, id) {
+    const r = await write(() => broker.rotate());
+    if (r.status === 200 && isExecutorSecret(r.body?.session?.executorSecret)) return { secret: r.body.session.executorSecret };
+    if (r.status === 409 && r.body?.error === 'no_executor_secret') return { secret: undefined };
+    if (r.status === 409 && r.body?.error === 'session_over') return result('failed', `Remote app session ${id} is over. Going again needs a new session and a new approval. ${NOTHING}`);
+    return result('failed', `Couldn't get remote app session ${id}'s executor secret from Back Channel, so the PC can't be reached for it. Send the task again in a minute. ${NOTHING}`);
 }
 
 function evidenceOf(surface) {
@@ -559,6 +575,12 @@ export class RemoteApp {
         const until = Date.now() + this.hostWaitMs;
         for (;;) {
             const r = await pipe.sessions();
+            if (!r.ok && r.outcome === 'fail_closed' && r.reason === NEEDS_EXECUTOR_SECRET) {
+                // v1.1: the PC learns a new secret's hash from Back Channel on its next read; give it a moment.
+                if (Date.now() >= until) return { needsSecret: true };
+                await sleep(Math.min(1000, Math.max(50, this.hostWaitMs / 5)));
+                continue;
+            }
             if (!r.ok) {
                 if (r.outcome === 'needs_user' && r.reason === AGENT_CONTROL_OFF)
                     return { status: 'waiting_user', text: `${AGENT_CONTROL_OFF}. Your person can turn it on in Back Channel Remote's owner console on this PC, then send the task again. ${NOTHING}` };
@@ -577,11 +599,31 @@ export class RemoteApp {
         const broker = new Broker(this.client, id);
         const verified = await verifySession(broker, id, this.config.agentId, task);
         if (verified.result) return verified.result;
-        // v1.1: the session's executor secret, when the asking agent sealed one in, rides in hello (only there).
-        const pipe = new AgentControlClient({ path: this.pipePath, timeoutMs: this.pipeTimeoutMs, executorSecret: payload.executorSecret });
+        // v1.1: the session's executor secret rides in hello, only there. Back Channel hands it to this worker on its
+        // first read; a run that missed that read (a task sent again, a lost reply) asks for a fresh one, as does a run
+        // whose sealed-in secret the PC no longer knows. A v1 session has none, and hello is v1 exactly.
+        let secret = verified.executorSecret ?? payload.executorSecret;
+        let fresh = !!verified.executorSecret;
+        if (!secret) {
+            const got = await freshExecutorSecret(broker, id);
+            if (got.result) return got.result;
+            ({ secret } = got);
+            fresh = true;
+        }
+        const connect = executorSecret => new AgentControlClient({ path: this.pipePath, timeoutMs: this.pipeTimeoutMs, executorSecret });
+        let pipe = connect(secret);
         let bridge, controller;
         try {
-            const host = await this.hostReady(pipe, id);
+            let host = await this.hostReady(pipe, id);
+            if (host.needsSecret && !fresh) {
+                pipe.close();
+                const got = await freshExecutorSecret(broker, id);
+                if (got.result) return got.result;
+                pipe = connect(got.secret);
+                host = await this.hostReady(pipe, id);
+            }
+            if (host.needsSecret)
+                return { status: 'failed', text: `This PC's agent control didn't take remote app session ${id}'s executor secret, so the PC wasn't used. Send the task again in a minute; if it keeps happening, the PC's Back Channel Remote may need an update. ${NOTHING}` };
             if (!host.ready) return host;
             if (signal?.aborted) return { status: 'interrupted', text: 'Cancelled before launch' };
             controller = new SessionController({ session: verified.session, deadline: verified.deadline, broker, pipe, agentId: this.config.agentId, checkMs: this.checkMs });
