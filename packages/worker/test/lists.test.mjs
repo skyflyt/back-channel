@@ -444,13 +444,15 @@ test('the task text can never pick an executable, arguments, tools or permission
     // Claude: only the worker's server pre-approved; shell, file writes and the web refused unless the owner's profile allows workspace-write.
     const mcp = { name: SERVER_NAME, command: process.execPath, args: [LISTS_MCP_SCRIPT, '--bridge', 'pipe', '--nonce', 'ab'] };
     const claude = runtimeArgs({ adapter: 'claude' }, { mcp: { ...mcp, ...toolPolicy({ adapter: 'claude' }) } });
-    assert.deepEqual(claude.slice(0, 5), ['--print', '--output-format', 'json', '--permission-mode', 'plan']);
+    // The worker's own MCP server means dontAsk: plan mode refuses even the worker's tools.
+    assert.deepEqual(claude.slice(0, 5), ['--print', '--output-format', 'json', '--permission-mode', 'dontAsk']);
     assert.ok(claude.includes('--strict-mcp-config'));
     assert.equal(claude[claude.indexOf('--allowedTools') + 1], 'mcp__bc_lists');
     assert.equal(claude[claude.indexOf('--disallowedTools') + 1], 'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch');
     const writer = { adapter: 'claude', sandbox: 'workspace-write', permissionMode: 'manual' };
     const written = runtimeArgs(writer, { mcp: { ...mcp, ...toolPolicy(writer) } });
-    assert.equal(written[written.indexOf('--permission-mode') + 1], 'manual');
+    // The worker's MCP server means dontAsk; the write tools still run because they are pre-approved in --allowedTools.
+    assert.equal(written[written.indexOf('--permission-mode') + 1], 'dontAsk');
     assert.equal(written[written.indexOf('--allowedTools') + 1], 'mcp__bc_lists,Bash,Edit,Write,NotebookEdit');
     assert.equal(written[written.indexOf('--disallowedTools') + 1], 'WebFetch,WebSearch', 'the web stays refused');
     const codex = runtimeArgs({ adapter: 'codex', sandbox: 'read-only' }, { mcp: { ...mcp, ...toolPolicy({ adapter: 'codex' }) } });

@@ -68,6 +68,26 @@ async function jsonCommand(command, v) {
         unlock();
     }
 }
+/**
+ * A lock written before this computer last started can't belong to a running worker: nothing survives a restart, and
+ * its PID may since belong to an unrelated process, so the lock's age decides, never the PID. Recover it exactly as
+ * recover --confirm-stopped does (interrupted jobs don't replay), so a PC that restarted mid-run comes back at its next
+ * logon instead of refusing every start until someone runs recover by hand (seen 2026-09-15 and 2026-10-10). A lock from
+ * this boot, or within a minute of it, still needs a person.
+ */
+async function recoverAfterRestart(store) {
+    const f = path.join(store.directory, 'worker.lock');
+    let written;
+    try { written = fs.statSync(f).mtimeMs; } catch { return; }
+    const bootedAt = Date.now() - os.uptime() * 1000;
+    if (!(written < bootedAt - 60_000)) return;
+    fs.unlinkSync(f);
+    if (!store.read('config', null)) return;
+    const release = store.lock();
+    try { await new Worker(store).recover({ confirmStopped: true }); }
+    finally { release(); }
+    console.error('Recovered a lock left from before this computer last started: interrupted jobs will not replay.');
+}
 async function main() {
     if (Number(process.versions.node.split('.')[0]) < 22)
         throw Error('Node 22 or newer required');
@@ -101,6 +121,7 @@ async function main() {
         console.log('Confirmed recovery recorded. Interrupted jobs will not replay; submit a new task after reviewing side effects.');
         return;
     }
+    if (!['send', 'status', 'cancel', 'agents'].includes(command)) await recoverAfterRestart(store);
     const unlock = ['send', 'status', 'cancel', 'agents'].includes(command) ? () => { } : store.lock();
     try {
         if (command === 'init') {
