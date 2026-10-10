@@ -708,7 +708,9 @@ caps lengths below the broker's: a progress line is 500 characters, a comment
 - **Claude** runs with `--strict-mcp-config` and only `mcp__bc_lists`
   pre-approved. Shell, file writes and the web are refused. If the owner sets
   `sandbox: "workspace-write"` (with `permissionMode: "manual"`), shell and file
-  writes in the working folder are allowed; the web stays refused.
+  writes in the working folder are allowed; the web stays refused. It also gets
+  `--setting-sources project`: only the working folder's own settings load,
+  never the user's, so nothing the run could reach widens the next run.
 - **Codex** is allowed only read-only, and only when the profile says `sandbox:
   "read-only"` itself. Its sandbox can still run read-only shell commands on the
   machine. The `task_*` tools are the only way Back Channel hears about the work.

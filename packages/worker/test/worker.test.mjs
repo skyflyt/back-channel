@@ -9,6 +9,9 @@ import { Store } from '../src/store.mjs';
 import { identity, seal, open, binding } from '../src/crypto.mjs';
 import { Worker } from '../src/worker.mjs';
 import { runRuntime, runtimeArgs } from '../src/runtime.mjs';
+import { SERVER_NAME as REMOTE_APP_SERVER, SUPPORT_SERVER_NAME } from '../src/remote-app-mcp.mjs';
+import { SERVER_NAME as LISTS_SERVER } from '../src/lists-mcp.mjs';
+import { toolPolicy } from '../src/lists.mjs';
 class MemoryRelay {
     tasks = new Map();
     client(agent) {
@@ -137,7 +140,29 @@ test('durable result outbox retries without running again', async (t) => {
     assert.equal(s.relay.tasks.get(id).status, 'completed');
 });
 test('state lock prevents concurrent executors', t => { const s = setup(t); const release = s.a.store.lock(); assert.throws(() => s.a.store.lock(), /locked/); release(); });
-test('CLI adapters use fixed permission preserving arguments', () => { assert.deepEqual(runtimeArgs({ adapter: 'codex' }).slice(0, 4), ['exec', '--sandbox', 'read-only', '--json']); assert.deepEqual(runtimeArgs({ adapter: 'claude' }).slice(0, 6), ['--print', '--output-format', 'json', '--permission-mode', 'plan', '--json-schema']); });
+test('CLI adapters use fixed permission preserving arguments', () => { assert.deepEqual(runtimeArgs({ adapter: 'codex' }).slice(0, 4), ['exec', '--sandbox', 'read-only', '--json']); assert.deepEqual(runtimeArgs({ adapter: 'claude' }).slice(0, 6), ['--print', '--output-format', 'json', '--permission-mode', 'plan', '--json-schema']); assert.equal(runtimeArgs({ adapter: 'claude' }).length, 7, 'a plain claude run has exactly these arguments'); });
+test('Claude runs with the worker MCP server (remote-app, remote-support, lists) load project settings only; plain profiles are unchanged', () => {
+    // The worker's MCP server, as each profile builds it (remote-app.mjs, remote-support.mjs, lists.mjs).
+    const bridge = ['--bridge', '\\\\.\\pipe\\bc-x', '--nonce', 'ab'];
+    const runs = {
+        'remote-app': { name: REMOTE_APP_SERVER, command: process.execPath, args: ['remote-app-mcp.mjs', ...bridge] },
+        'remote-support': { name: SUPPORT_SERVER_NAME, command: process.execPath, args: ['remote-app-mcp.mjs', ...bridge, '--mode', 'support'] },
+        lists: { name: LISTS_SERVER, command: process.execPath, args: ['lists-mcp.mjs', ...bridge], ...toolPolicy({ adapter: 'claude' }) },
+        'lists (workspace-write)': { name: LISTS_SERVER, command: process.execPath, args: ['lists-mcp.mjs', ...bridge], ...toolPolicy({ adapter: 'claude', sandbox: 'workspace-write', permissionMode: 'manual' }) },
+    };
+    for (const [run, mcp] of Object.entries(runs)) {
+        const args = runtimeArgs({ adapter: 'claude' }, { mcp });
+        const at = args.indexOf('--setting-sources');
+        assert.ok(at > 0, `${run}: --setting-sources`);
+        assert.equal(args[at + 1], 'project', `${run}: project settings only, never user or local`);
+        assert.equal(args.filter(a => a === '--setting-sources').length, 1, run);
+        assert.ok(at < args.indexOf('--mcp-config'), `${run}: a flag of its own, before the MCP config`);
+    }
+    // Plain profiles (no worker MCP server) keep their arguments exactly, and codex never gets the flag.
+    for (const p of [{ adapter: 'claude' }, { adapter: 'claude', permissionMode: 'manual' }]) assert.ok(!runtimeArgs(p).includes('--setting-sources'), JSON.stringify(p));
+    assert.ok(!runtimeArgs({ adapter: 'codex' }).includes('--setting-sources'));
+    assert.ok(!runtimeArgs({ adapter: 'codex' }, { mcp: runs['remote-app'] }).includes('--setting-sources'), 'codex has no such flag');
+});
 test('stop is sticky and never launches the next queued task', async (t) => {
     const s = setup(t);
     await s.a.send({ targetAgentId: 'b', profile: 'approved', objective: 'first' });

@@ -441,11 +441,16 @@ test('the task text can never pick an executable, arguments, tools or permission
     assert.equal(options.mcp.command, process.execPath);
     for (const word of ['dangerously', 'calc', 'cmd.exe', 'workspace-write']) assert.ok(!JSON.stringify(args).includes(word), word);
     assert.ok(prompt.includes(JSON.stringify(hostile)), 'the words are data in the prompt');
+    // This run on Claude loads project settings only (its own working folder), never the user's.
+    const asClaude = runtimeArgs({ adapter: 'claude' }, { mcp: options.mcp });
+    assert.equal(asClaude[asClaude.indexOf('--setting-sources') + 1], 'project');
+    assert.equal(asClaude.filter(a => a === '--setting-sources').length, 1);
     // Claude: only the worker's server pre-approved; shell, file writes and the web refused unless the owner's profile allows workspace-write.
     const mcp = { name: SERVER_NAME, command: process.execPath, args: [LISTS_MCP_SCRIPT, '--bridge', 'pipe', '--nonce', 'ab'] };
     const claude = runtimeArgs({ adapter: 'claude' }, { mcp: { ...mcp, ...toolPolicy({ adapter: 'claude' }) } });
     // The worker's own MCP server means dontAsk: plan mode refuses even the worker's tools.
     assert.deepEqual(claude.slice(0, 5), ['--print', '--output-format', 'json', '--permission-mode', 'dontAsk']);
+    assert.deepEqual(claude.slice(7, 9), ['--setting-sources', 'project'], 'project settings only');
     assert.ok(claude.includes('--strict-mcp-config'));
     assert.equal(claude[claude.indexOf('--allowedTools') + 1], 'mcp__bc_lists');
     assert.equal(claude[claude.indexOf('--disallowedTools') + 1], 'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch');
@@ -453,6 +458,7 @@ test('the task text can never pick an executable, arguments, tools or permission
     const written = runtimeArgs(writer, { mcp: { ...mcp, ...toolPolicy(writer) } });
     // The worker's MCP server means dontAsk; the write tools still run because they are pre-approved in --allowedTools.
     assert.equal(written[written.indexOf('--permission-mode') + 1], 'dontAsk');
+    assert.equal(written[written.indexOf('--setting-sources') + 1], 'project', 'a writer still loads no user settings');
     assert.equal(written[written.indexOf('--allowedTools') + 1], 'mcp__bc_lists,Bash,Edit,Write,NotebookEdit');
     assert.equal(written[written.indexOf('--disallowedTools') + 1], 'WebFetch,WebSearch', 'the web stays refused');
     const codex = runtimeArgs({ adapter: 'codex', sandbox: 'read-only' }, { mcp: { ...mcp, ...toolPolicy({ adapter: 'codex' }) } });

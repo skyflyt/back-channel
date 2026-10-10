@@ -448,6 +448,10 @@ test('the payload can never pick an executable, arguments or anything else', asy
     assert.deepEqual(options.mcp.args.slice(0, 2), [MCP_SCRIPT, '--bridge']);
     assert.ok(!JSON.stringify(args).includes('dangerously'));
     assert.ok(prompt.includes(JSON.stringify(hostile)), 'the words are data in the prompt');
+    // This run on Claude loads project settings only (the profile's empty working folder), never the user's.
+    const asClaude = runtimeArgs({ adapter: 'claude' }, { mcp: options.mcp });
+    assert.equal(asClaude[asClaude.indexOf('--setting-sources') + 1], 'project');
+    assert.equal(asClaude.filter(a => a === '--setting-sources').length, 1);
     // The local profile must be read-only.
     assert.throws(() => validateRemoteAppProfile({ ...s.profile, adapter: 'codex', sandbox: 'workspace-write' }), /needs the claude adapter/);
   // v1: codex is refused even read-only, because its shell could open the PC's pipe without a report.
@@ -561,6 +565,8 @@ test('remote-app runtime arguments are fixed: only the worker MCP server, no she
     const claude = runtimeArgs({ adapter: 'claude' }, { mcp });
     // The worker's own MCP server means dontAsk: plan mode refuses even the worker's tools.
     assert.deepEqual(claude.slice(0, 5), ['--print', '--output-format', 'json', '--permission-mode', 'dontAsk']);
+    // Project settings only: no user settings can widen the run (design agent-desktop-scope.md, decision 3).
+    assert.deepEqual(claude.slice(7, 11), ['--setting-sources', 'project', '--mcp-config', claude[10]]);
     assert.deepEqual(JSON.parse(claude[claude.indexOf('--mcp-config') + 1]), { mcpServers: { bc_remote_app: { type: 'stdio', command: mcp.command, args: mcp.args } } });
     assert.ok(claude.includes('--strict-mcp-config'));
     assert.equal(claude[claude.indexOf('--allowedTools') + 1], 'mcp__bc_remote_app');
