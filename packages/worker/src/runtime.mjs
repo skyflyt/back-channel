@@ -31,12 +31,17 @@ const tomlString = value => {
     return JSON.stringify(value); // a JSON string without control characters is a TOML basic string
 };
 const mcpServers = mcp => ({ [mcp.name]: { type: 'stdio', command: mcp.command, args: mcp.args } });
+const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 /**
- * Fixed adapter arguments. `mcp` is set only by the worker's remote-app profile: the worker's own
- * stdio MCP server ({ name, command, args }, all chosen by the worker, never by a task).
+ * Fixed adapter arguments. `mcp` is set only by the worker's remote-app and lists profiles: the worker's own
+ * stdio MCP server ({ name, command, args }, all chosen by the worker, never by a task). On Claude, `allowTools`
+ * and `denyTools` (fixed lists chosen by the worker from the local profile) replace the remote-app defaults:
+ * only the worker's server pre-approved, and shell, file writes and the web refused.
  */
 export function runtimeArgs(p, { mcp } = {}) {
     if (mcp && !/^[a-z][a-z0-9_]{0,31}$/.test(mcp.name)) throw Error('Invalid MCP server name');
+    const allow = [`mcp__${mcp?.name}`, ...(mcp?.allowTools ?? [])], deny = mcp?.denyTools ?? REMOTE_APP_DISALLOWED_TOOLS;
+    if (mcp && ![...allow.slice(1), ...deny].every(name => TOOL_NAME.test(name))) throw Error('Invalid tool name');
     if (p.adapter === 'codex') {
         const args = ['exec', '--sandbox', p.sandbox ?? 'read-only', '--json', '--output-schema', path.join(import.meta.dirname, 'runtime-result.schema.json')];
         // Replaces the whole mcp_servers table: the run sees only the worker's server.
@@ -46,7 +51,7 @@ export function runtimeArgs(p, { mcp } = {}) {
     if (p.adapter === 'claude') {
         const args = ['--print', '--output-format', 'json', '--permission-mode', p.permissionMode ?? 'plan', '--json-schema', JSON.stringify(resultSchema)];
         if (mcp) args.push('--mcp-config', JSON.stringify({ mcpServers: mcpServers(mcp) }), '--strict-mcp-config',
-            '--allowedTools', `mcp__${mcp.name}`, '--disallowedTools', REMOTE_APP_DISALLOWED_TOOLS.join(','));
+            '--allowedTools', allow.join(','), ...(deny.length ? ['--disallowedTools', deny.join(',')] : []));
         return args;
     }
     return mcp ? [p.fixtureScript, '--mcp-config', JSON.stringify({ mcpServers: mcpServers(mcp) })] : [p.fixtureScript];

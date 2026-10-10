@@ -8,11 +8,12 @@ import { Store } from '../src/store.mjs';
 import { Client, Worker } from '../src/worker.mjs';
 import { validateProfile } from '../src/runtime.mjs';
 import { REMOTE_APP_PROFILE, validateRemoteAppProfile } from '../src/remote-app.mjs';
-const help = `bc-worker (Node 22+)\ninit --broker URL --name NAME     Token from BC_AGENT_TOKEN\nenroll                           Register public keys; prints peer trust JSON\nagents                           List enrolled peers (does not trust them)\ntrust --file peer.json            Pin {id,encryptionKey,signingKey} from owner-verified source\nprofile --name NAME --file FILE   Install local approved runtime profile ("remote-app" must be read-only)\nsend --target ID --profile NAME --objective-file FILE [--continue-profile NAME] [--remote-session ID]\n                                 --remote-session hands an approved remote app session to --profile remote-app\nrun [--once]                     Poll and execute approved work/continuations\nstatus                           Print durable local journal\ncancel --id UUID                 Cancel your outbound task\nrecover --confirm-stopped        Remove stale lock after owner stops previous worker/tree\nAll commands accept --state DIRECTORY (outside any repository/vault).\nExit 0 success; 1 failure. Enrollment and trust are separate.\n`;
+import { LISTS_PROFILE, ListsAgent, validateListsProfile } from '../src/lists.mjs';
+const help = `bc-worker (Node 22+)\ninit --broker URL --name NAME     Token from BC_AGENT_TOKEN\nenroll                           Register public keys; prints peer trust JSON\nagents                           List enrolled peers (does not trust them)\ntrust --file peer.json            Pin {id,encryptionKey,signingKey} from owner-verified source\nprofile --name NAME --file FILE   Install local approved runtime profile ("remote-app" must be read-only;\n                                 "lists" takes no allowedSenders and is read-only unless it says otherwise)\nsend --target ID --profile NAME --objective-file FILE [--continue-profile NAME] [--remote-session ID]\n                                 --remote-session hands an approved remote app session to --profile remote-app\nrun [--once] [--lists]           Poll and execute approved work/continuations; --lists also works the Lists\n                                 tasks assigned to this agent, one at a time, with the local "lists" profile\n                                 (without Dispatch enrollment, --lists works Lists only)\nstatus                           Print durable local journal\ncancel --id UUID                 Cancel your outbound task\nrecover --confirm-stopped        Remove stale lock after owner stops previous worker/tree\nAll commands accept --state DIRECTORY (outside any repository/vault).\nExit 0 success; 1 failure. Enrollment and trust are separate.\n`;
 async function main() {
     if (Number(process.versions.node.split('.')[0]) < 22)
         throw Error('Node 22 or newer required');
-    const { values: v, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries(['state', 'broker', 'name', 'file', 'target', 'profile', 'objective-file', 'continue-profile', 'id', 'remote-session'].map(k => [k, { type: 'string' }]).concat(['once', 'help', 'confirm-stopped'].map(k => [k, { type: 'boolean' }]))) });
+    const { values: v, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries(['state', 'broker', 'name', 'file', 'target', 'profile', 'objective-file', 'continue-profile', 'id', 'remote-session'].map(k => [k, { type: 'string' }]).concat(['once', 'help', 'confirm-stopped', 'lists'].map(k => [k, { type: 'boolean' }]))) });
     const command = positionals[0];
     if (v.help || !command) {
         console.log(help);
@@ -79,7 +80,7 @@ async function main() {
             if (!v.name)
                 throw Error('--name required');
             const parsed = JSON.parse(fs.readFileSync(v.file, 'utf8'));
-            const profile = v.name === REMOTE_APP_PROFILE ? validateRemoteAppProfile(parsed) : validateProfile(parsed);
+            const profile = v.name === REMOTE_APP_PROFILE ? validateRemoteAppProfile(parsed) : v.name === LISTS_PROFILE ? validateListsProfile(parsed) : validateProfile(parsed);
             if (profile.adapter === 'fixture')
                 throw Error('Fixture adapter is test-only and cannot be installed by CLI');
             config.profiles[v.name] = profile;
@@ -105,11 +106,17 @@ async function main() {
         }
         else if (command === 'run') {
             await worker.recover();
+            // --lists: the always-on agent loop (src/lists.mjs) beside Dispatch, sharing this state, lock and journal.
+            // It needs no Dispatch enrollment; without one, only Lists runs.
+            const lists = v.lists ? new ListsAgent(worker) : null;
+            lists?.recover();
+            const dispatch = !lists || Boolean(config.agentId);
+            if (!dispatch) console.error('Not enrolled for Dispatch: working Lists tasks only.');
             let stopped = false, failures = 0;
-            const stop = () => { stopped = true; worker.stop(); };
+            const stop = () => { stopped = true; worker.stop(); lists?.stop(); };
             process.on('SIGINT', stop);
             process.on('SIGTERM', stop);
-            try {
+            const dispatchLoop = async () => {
                 do {
                     try {
                         await worker.cycle();
@@ -126,6 +133,14 @@ async function main() {
                     if (!v.once && !stopped && !worker.stopped)
                         await new Promise(r => setTimeout(r, Math.min(60000, 5000 * 2 ** Math.min(failures, 4))));
                 } while (!v.once && !stopped && !worker.stopped);
+            };
+            // Either loop failing stops the other; the lock is released only once both have wound down.
+            const loop = promise => promise.catch(e => { stop(); throw e; });
+            try {
+                const outcomes = await Promise.allSettled([dispatch ? loop(dispatchLoop()) : null, lists ? loop(lists.run({ once: v.once })) : null]);
+                const failed = outcomes.find(o => o.status === 'rejected');
+                if (failed) throw failed.reason;
+                worker.assertReady();
             }
             finally {
                 process.off('SIGINT', stop);
