@@ -1005,7 +1005,7 @@ test("step-up: a grant for another session, another action or another account, a
   assert.equal(sessionRow(next).status, "awaiting_consent");
 });
 
-test("step-up: deny, Stop and 'go on' stay one click, an agent still can't approve even with a grant, and APPROVAL_STEP_UP=off skips the check", async () => {
+test("step-up: deny, Stop and Stop all stay one click, an agent still can't approve even with a grant, and APPROVAL_STEP_UP=off skips the check", async () => {
   process.env.APPROVAL_STEP_UP = "on";
   passkeyOn();
   const first = (await start()).body.session.id;
@@ -1019,8 +1019,6 @@ test("step-up: deny, Stop and 'go on' stay one click, an agent still can't appro
   }
   assert.equal(grantRow(g).usedAt, null, "an agent's request never touches the grant");
   assert.equal((await person(`sessions/${second}/approve`, { stepUp: g })).status, 200);
-  sessionRow(second).status = "blocked";
-  assert.equal((await person(`sessions/${second}/resume`)).status, 200, "let it go on: ungated");
   assert.equal((await person("stop-all")).body.stopped, 1, "Stop all: ungated");
   // The emergency switch: no passkey, no grant, approved.
   process.env.APPROVAL_STEP_UP = "off";
@@ -1033,6 +1031,46 @@ test("step-up: deny, Stop and 'go on' stay one click, an agent still can't appro
   await person(`sessions/${third}/stop`);
   const fourth = (await start()).body.session.id;
   assert.equal((await person(`sessions/${fourth}/approve`)).body.error, "passkey_required");
+});
+
+test("step-up: letting a paused session go on needs the person's passkey for that session and that action; a refusal leaves it paused; Stop stays one click", async () => {
+  process.env.APPROVAL_STEP_UP = "on";
+  passkeyOn();
+  const id = (await start()).body.session.id;
+  assert.equal((await person(`sessions/${id}/approve`, { stepUp: grantFor("approve_session", id) })).status, 200);
+  sessionRow(id).status = "blocked"; // it stopped to ask
+  const bare = await person(`sessions/${id}/resume`);
+  assert.equal(bare.status, 403); assert.equal(bare.body.error, "step_up_required");
+  const now = Date.now();
+  for (const [why, g] of [
+    ["the approval's grant for this session", grantFor("approve_session", id)],
+    ["another session's", grantFor("resume_session", crypto.randomUUID())],
+    ["expired", grantFor("resume_session", id, { expiresAt: new Date(now - 1) })],
+    ["another account's", grantFor("resume_session", id, {}, "acct-b")],
+  ] as Array<[string, string]>) {
+    const r = await person(`sessions/${id}/resume`, { stepUp: g });
+    assert.equal(r.status, 403, why); assert.equal(r.body.error, "step_up_required", why);
+  }
+  // An agent, the one that asked or the one driving, can't let it go on, grant or not.
+  for (const as of [KEY.starter, KEY.exec]) {
+    const no = await api("POST", `sessions/${id}/resume`, { as, cookie: "cs_a", stepUp: grantFor("resume_session", id) });
+    assert.equal(no.status, 403); assert.equal(no.body.error, "people_only");
+  }
+  assert.equal(sessionRow(id).status, "blocked", "still paused");
+  assert.equal(tables.accountAudit.filter(a => a.eventType === "remote_app.resumed").length, 0);
+  // With no passkey on the account it's passkey_required, and the card offers to add one.
+  const saved = [...tables.accountPasskey]; tables.accountPasskey.length = 0;
+  assert.equal((await person(`sessions/${id}/resume`)).body.error, "passkey_required");
+  tables.accountPasskey.push(...saved);
+  const g = grantFor("resume_session", id);
+  const ok = await person(`sessions/${id}/resume`, { stepUp: g });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.session.status, "active");
+  assert.ok(grantRow(g).usedAt instanceof Date, "spent by the resume");
+  // Paused again: the same grant is spent, so it takes a new one.
+  sessionRow(id).status = "blocked";
+  assert.equal((await person(`sessions/${id}/resume`, { stepUp: g })).body.error, "step_up_required");
+  const stopped = await person(`sessions/${id}/stop`);
+  assert.equal(stopped.status, 200, "Stop: ungated"); assert.notEqual(stopped.body.session.status, "blocked");
 });
 
 test("step-up: a conflict re-runs the approval whole; the grant is spent once, by the attempt that committed", async () => {

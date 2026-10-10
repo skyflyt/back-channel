@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, upsertOriginalAgentToken } from "@/lib/auth";
 import { bootstrapPrompt } from "@/lib/notify.mjs";
-import { requireStepUp, STEP_UP_HEADER } from "@/lib/step-up";
+import { requireConnectStepUp, STEP_UP_HEADER } from "@/lib/step-up";
 
 export const runtime = "nodejs";
 
@@ -23,14 +23,15 @@ export const runtime = "nodejs";
  * change for a "reveal my bootstrap prompt" action and keeps this endpoint
  * from being the one place that still needs a plaintext column to read.
  *
- * Needs the person's passkey step-up (connect_agent, src/lib/step-up.ts), like every
- * dashboard route that mints an agent key: the prompt carries a full key, on screen.
+ * On an account with a PC in Back Channel Remote, needs the person's passkey step-up
+ * (connect_agent, src/lib/step-up.ts), like every dashboard route that mints an agent
+ * key: the prompt carries a full key, on screen. Other accounts: as before.
  */
 export async function GET(req: NextRequest) {
   const account = await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value);
   if (!account) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   if (!account.emailVerifiedAt) return NextResponse.json({ error: "no_api_key", message: "Your account doesn't have an API key yet — verify your email first." }, { status: 409 });
-  const refusal = await requireStepUp(prisma, { accountId: account.id, action: "connect_agent", grant: req.headers.get(STEP_UP_HEADER), now: new Date() });
+  const refusal = await requireConnectStepUp(prisma, { accountId: account.id, grant: req.headers.get(STEP_UP_HEADER), now: new Date() });
   if (refusal) return NextResponse.json({ error: refusal.error, message: refusal.message }, { status: refusal.status });
 
   const apiKey = await upsertOriginalAgentToken(account.id);

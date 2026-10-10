@@ -8,13 +8,14 @@
  */
 import { browserSupportsWebAuthn, startAuthentication, startRegistration } from "@simplewebauthn/browser";
 
-export type StepUpAction = "approve_session" | "approve_support" | "connect_agent" | "manage_passkeys";
+export type StepUpAction = "approve_session" | "resume_session" | "approve_support" | "connect_agent" | "manage_passkeys";
 /** "needed": the page knows the account has a passkey and the step-up is on, so the prompt comes first. */
 export type StepUpHint = "needed" | undefined;
 export const STEP_UP_HEADER = "x-bc-step-up";
 
 export interface PasskeyView { id: string; label: string; transports: string[]; createdAt: string; lastUsedAt: string | null }
-export interface PasskeyState { stepUp: "on" | "off"; passkeys: PasskeyView[] }
+/** connectStepUp: whether connecting an agent asks for the passkey on this account (only an account with a PC). */
+export interface PasskeyState { stepUp: "on" | "off"; connectStepUp: "on" | "off"; passkeys: PasskeyView[] }
 
 /** A passkey problem, in words for the person. code: passkey_required, cancelled, unsupported, failed, or the server's. */
 export class PasskeyError extends Error {
@@ -51,11 +52,13 @@ export async function loadPasskeys(): Promise<PasskeyState | null> {
     const res = await fetch("/api/account/passkeys", { credentials: "include" });
     if (!res.ok) return null;
     const j = (await res.json()) as Partial<PasskeyState>;
-    return { stepUp: j.stepUp === "off" ? "off" : "on", passkeys: Array.isArray(j.passkeys) ? j.passkeys : [] };
+    return { stepUp: j.stepUp === "off" ? "off" : "on", connectStepUp: j.connectStepUp === "on" ? "on" : "off", passkeys: Array.isArray(j.passkeys) ? j.passkeys : [] };
   } catch { return null; }
 }
 
-export const hintFor = (s: PasskeyState | null): StepUpHint => (s && s.stepUp === "on" && s.passkeys.length > 0 ? "needed" : undefined);
+/** "needed" when the prompt should come first: the step-up is on and the account has a passkey (for connecting an agent, also a PC). */
+export const hintFor = (s: PasskeyState | null, connect = false): StepUpHint =>
+  (s && s.stepUp === "on" && s.passkeys.length > 0 && (!connect || s.connectStepUp === "on") ? "needed" : undefined);
 
 /** One step-up: the passkey prompt for exactly this action (and target), answered with a single-use grant. */
 export async function stepUp(action: StepUpAction, targetId?: string | null): Promise<string> {

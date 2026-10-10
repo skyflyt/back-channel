@@ -371,7 +371,7 @@ export default function AccountPage() {
   const rotateKey = async (confirmed = false) => {
     if (!confirmed && !confirm("Rotate your API key? Any agent still using the old key will stop working until you give it the new one.")) return;
     setBusy("key"); setKeyErr(""); setPasskeyFor(null);
-    const r = await sendWithStepUp("connect_agent", null, (h) => fetch("/api/account/key/rotate", { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf(), ...h } }), passkeys.hint);
+    const r = await sendWithStepUp("connect_agent", null, (h) => fetch("/api/account/key/rotate", { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf(), ...h } }), passkeys.connectHint);
     if (r.ok && typeof r.body.api_key === "string") setNewKey(r.body.api_key);
     else if (r.needsPasskey) setPasskeyFor({ where: "key", retry: () => { void passkeys.reload(); void rotateKey(true); } });
     else setKeyErr(mintError(r));
@@ -380,7 +380,7 @@ export default function AccountPage() {
 
   const revealBootstrap = async () => {
     setBusy("bootstrap"); setExErr(""); setPasskeyFor(null);
-    const r = await sendWithStepUp("connect_agent", null, (h) => fetch("/api/account/bootstrap-prompt", { credentials: "include", headers: h }), passkeys.hint);
+    const r = await sendWithStepUp("connect_agent", null, (h) => fetch("/api/account/bootstrap-prompt", { credentials: "include", headers: h }), passkeys.connectHint);
     if (r.ok && typeof r.body.prompt === "string") setBootstrap(r.body.prompt);
     else if (r.needsPasskey) setPasskeyFor({ where: "connect", retry: () => { void passkeys.reload(); void revealBootstrap(); } });
     else setExErr(mintError(r));
@@ -423,7 +423,7 @@ export default function AccountPage() {
       method: "POST", credentials: "include",
       headers: { "content-type": "application/json", "x-bc-csrf": csrf(), ...h },
       body: JSON.stringify({ agent_name: agentName.trim() || MCP_CLIENT_LABEL[mcpClient], runtime_type: MCP_CLIENT_RUNTIME[mcpClient] }),
-    }), passkeys.hint);
+    }), passkeys.connectHint);
     if (r.ok && typeof r.body.api_key === "string") { setMcpToken(r.body.api_key); setAgentFormOpen(false); setMcpCopied(""); loadAgents(); }
     else if (r.needsPasskey) setPasskeyFor({ where: "connect", retry: () => { void passkeys.reload(); void mintMcpToken(); } });
     else setMcpErr(mintError(r));
@@ -437,7 +437,7 @@ export default function AccountPage() {
       method: "POST", credentials: "include",
       headers: { "content-type": "application/json", "x-bc-csrf": csrf(), ...h },
       body: JSON.stringify({ agent_name: agentName.trim() || (plugin ? "Codex" : "New agent"), runtime_type: plugin ? "codex" : agentRuntime === "claude_web" ? "other" : agentRuntime }),
-    }), passkeys.hint);
+    }), passkeys.connectHint);
     const j = r.body as { code?: string; paste_prompt?: string; expires_at?: string };
     if (r.ok && j.code) {
       setExCode(j.code); setExPrompt(plugin ? `Connect Back Channel with code ${j.code} using the installed Back Channel plugin.` : j.paste_prompt ?? "");
@@ -464,7 +464,7 @@ export default function AccountPage() {
       method: "POST", credentials: "include",
       headers: { "content-type": "application/json", "x-bc-csrf": csrf(), ...h },
       body: JSON.stringify({ agent_name: a.name, runtime_type: a.runtime_type }),
-    }), passkeys.hint);
+    }), passkeys.connectHint);
     const j = r.body as { code?: string; paste_prompt?: string; expires_at?: string };
     // Reconnect rides the legacy exchange-code panel — make sure it's visible.
     setLegacyOpen(true);
@@ -1369,7 +1369,7 @@ export default function AccountPage() {
           own settings; the agent is never asked to run anything to establish trust. */}
       <div className="ds-card" id="connect-agent">
         <h2 className="ds-cardh">Connect a new agent</h2>
-        <p className="ds-cardsub">Choose your AI client below. The Codex plugin connects with a one-time code; other MCP clients can use a token in their settings. Signing in to this website does not connect your assistant. Getting a token or a code asks for your passkey (Windows Hello or your phone), so an agent can&apos;t connect itself.</p>
+        <p className="ds-cardsub">Choose your AI client below. The Codex plugin connects with a one-time code; other MCP clients can use a token in their settings. Signing in to this website does not connect your assistant.{passkeys.state?.connectStepUp === "on" ? " Because you use Back Channel Remote, getting a token or a code asks for your passkey (Windows Hello or your phone), so an agent working on one of your PCs can't connect itself." : ""}</p>
         {mcpErr && <p className="ds-call danger" style={{ marginBottom: 12 }}>⚠ {mcpErr}</p>}
         {passkeyFor?.where === "connect" && (
           <div style={{ marginBottom: 12 }}>
@@ -1632,7 +1632,7 @@ export default function AccountPage() {
               <code className="ds-mono" style={{ background: "#f8fafc", border: "1px solid var(--ds-line)", borderRadius: 8, padding: "6px 10px", fontSize: 13 }}>{m.api_key_masked ?? "—"}</code>
               <button className="ds-btn ghost" onClick={() => rotateKey()} disabled={busy === "key" || demoMode}>{busy === "key" ? "Rotating…" : "Rotate key"}</button>
             </div>
-            <p className="ds-fine" style={{ marginTop: 8 }}>Last used {lastUsed}. We never show the full key here — only the last 4 characters. Rotating asks for your passkey. <button className="ds-link" onClick={() => setShowDevKey(false)}>Hide</button></p>
+            <p className="ds-fine" style={{ marginTop: 8 }}>Last used {lastUsed}. We never show the full key here — only the last 4 characters.{passkeys.state?.connectStepUp === "on" ? " Rotating asks for your passkey." : ""} <button className="ds-link" onClick={() => setShowDevKey(false)}>Hide</button></p>
             {keyErr && <p className="ds-call danger" style={{ marginTop: 8 }}>⚠ {keyErr}</p>}
             {passkeyFor?.where === "key" && (
               <AddPasskeyInline action="Rotating your key" onCancel={() => setPasskeyFor(null)} onAdded={() => { const retry = passkeyFor.retry; setPasskeyFor(null); retry(); }} />

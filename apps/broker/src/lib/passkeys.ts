@@ -4,7 +4,7 @@
  * People only: the dashboard's cookie, and CSRF on every change. A request carrying any bearer key is refused first,
  * so no agent adds, removes or answers a passkey. Every route answers Cache-Control: no-store.
  *
- *   GET    /api/account/passkeys                    { stepUp: "on"|"off", passkeys: [{ id, label, createdAt, lastUsedAt, transports }] }
+ *   GET    /api/account/passkeys                    { stepUp: "on"|"off", connectStepUp: "on"|"off", passkeys: [{ id, label, createdAt, lastUsedAt, transports }] }
  *   POST   /api/account/passkeys/register/options   {}: { ceremonyId, options } (an account that already has a passkey
  *                                                   sends a manage_passkeys grant in x-bc-step-up)
  *   POST   /api/account/passkeys/register/verify    { ceremonyId, response, label? }: { passkey }
@@ -128,7 +128,9 @@ async function spendCeremony(accountId: string, id: string, kind: "register" | "
 
 async function opList(account: Account) {
   const rows = await prisma.accountPasskey.findMany({ where: { accountId: account.id }, orderBy: { createdAt: "asc" }, take: MAX_PASSKEYS * 2 });
-  return { stepUp: SU.stepUpEnforced() ? "on" : "off", passkeys: rows.map(view) };
+  const on = SU.stepUpEnforced();
+  // connectStepUp: whether connecting an agent asks for the passkey on this account (only with a PC: step-up.ts).
+  return { stepUp: on ? "on" : "off", connectStepUp: on && (await SU.accountHasPc(prisma, account.id)) ? "on" : "off", passkeys: rows.map(view) };
 }
 
 async function opRegisterOptions(account: Account, req: NextRequest, now: Date) {

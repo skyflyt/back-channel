@@ -161,19 +161,25 @@ agents from approving, but not an agent clicking the page itself.
     another reason never spends it, and a conflict retry spends it once.
 - Without a valid grant, approve is `403 step_up_required`. With no passkey on the account at all, it's
   `403 passkey_required`, and the card offers **Add a passkey** in place.
-- **Deny, "let it go on" and Stop are not gated.** Saying no stays one click.
-- The same step-up guards approving a support code ([remote support](remote-support.md)) and every dashboard route
-  that mints an agent credential:
+- **"Let it go on"** (resuming a paused session) needs the same step-up, with its own grant (`resume_session`, that
+  session's id). A pause is exactly when you should look, and an agent driving the PC mustn't un-pause itself. A
+  refused "go on" leaves the session paused.
+- **Deny, Stop and Stop all are not gated.** Saying no stays one click.
+- The same step-up guards approving a support code ([remote support](remote-support.md)).
+- **If you use Back Channel Remote**, it also guards every dashboard route that mints an agent credential:
   - `POST /api/auth/exchange-code` (connect codes);
   - `POST /api/account/agents` (agent tokens);
   - `POST /api/account/key/rotate`;
   - `GET /api/account/bootstrap-prompt` (the setup prompt with a key).
 
-  So the connect code shown after verifying a new account (`/verify`) or recovering a key (`/recover`) comes after
-  the passkey too: a new account adds one there first ("Add a passkey, then get my code"), then confirms with it.
+  "Uses Back Channel Remote" means the account has at least one registered PC that isn't revoked (an
+  `AppBridgeDevice` with role `host`; `accountHasPc` in `src/lib/step-up.ts`). That is the only setting where an
+  agent can drive a desktop and reach the dashboard. Every other account's routes behave exactly as before, so
+  sign-up is unchanged for them: `/verify` and `/recover` show the connect code straight away. On an account with a
+  PC, `/recover` asks for the passkey first (or to add one: "Add a passkey, then get my code").
 - Agent (bearer) APIs are unchanged, and an agent can't approve anyway (`403 people_only` comes first).
 
-**The dashboard.** Approve runs the prompt inline: one press, the Windows Hello or phone prompt, done. Settings →
+**The dashboard.** Approve and "Let it go on" run the prompt inline: one press, the Windows Hello or phone prompt, done. Settings →
 **Passkeys** lists your passkeys (by the name you gave them), adds one ("Add a passkey") and removes one. Adding a
 second passkey, or removing one, needs a step-up with a passkey you already have, so nothing driving the browser can
 slip its own in. The first one needs none: there's nothing to confirm with yet. So **add yours right away**.
@@ -182,11 +188,11 @@ slip its own in. The first one needs none: there's nothing to confirm with yet. 
 
 | Method and path | Body | Result |
 |---|---|---|
-| `GET /api/account/passkeys` | | `{ stepUp: "on"\|"off", passkeys: [{ id, label, transports, createdAt, lastUsedAt }] }`; never key material |
+| `GET /api/account/passkeys` | | `{ stepUp: "on"\|"off", connectStepUp: "on"\|"off", passkeys: [{ id, label, transports, createdAt, lastUsedAt }] }`; `connectStepUp` says whether connecting an agent asks for the passkey on this account (only with a PC); never key material |
 | `POST …/register/options` | `{}`; the `x-bc-step-up` header (`manage_passkeys`) when the account has a passkey | `{ ceremonyId, options }` |
 | `POST …/register/verify` | `{ ceremonyId, response, label? }` | `{ passkey }`; `label` is plain text, at most 60 characters |
 | `DELETE …/{id}` | the `x-bc-step-up` header (`manage_passkeys`) | `{ removed: true, remaining }` |
-| `POST …/step-up/options` | `{ action, targetId? }`: `approve_session` and `approve_support` name their target, `connect_agent` and `manage_passkeys` none | `{ ceremonyId, options }`; `403 passkey_required` with none |
+| `POST …/step-up/options` | `{ action, targetId? }`: `approve_session`, `resume_session` and `approve_support` name their target, `connect_agent` and `manage_passkeys` none | `{ ceremonyId, options }`; `403 passkey_required` with none |
 | `POST …/step-up/verify` | `{ ceremonyId, response }` | `{ grant, action, targetId, expiresAt }` |
 
 Each options call stores its challenge for 5 minutes (`PasskeyChallenge`), and the first verify attempt spends it,
@@ -196,7 +202,7 @@ so a password manager's silent passkey is refused. The relying party is `back-ch
 
 **The switch.** `APPROVAL_STEP_UP` (default `on`). `off` skips the check everywhere. It is an **emergency switch
 only**, for when WebAuthn breaks for everyone. Passkeys can still be added and removed while it's off. With it off,
-an agent driving a signed-in PC can approve its own sessions again, so turn it back on as soon as you can. It isn't in
+an agent driving a signed-in PC can approve or un-pause its own sessions again, so turn it back on as soon as you can. It isn't in
 `cloudbuild.yaml`: set it on the running service (`gcloud run services update backchannel-broker --region us-west1
 --update-env-vars APPROVAL_STEP_UP=off`), and the next deploy, whose `--set-env-vars` replaces the whole environment,
 turns it back on.
@@ -259,7 +265,7 @@ Serializable conflicts that outlast the retry budget are `503 { error: "busy", r
 | `GET /sessions/{id}` | the agent that asked, the executor, or the person | | `{ session, actions, next? }` (`next` for agents); the executor's first read while the session runs also carries `session.executorSecret`, once (v1.1, see [The executor secret](#the-executor-secret-v11)) |
 | `POST /sessions/{id}/approve` | person (cookie + CSRF), with a passkey step-up for this session in `x-bc-step-up` | | `{ session }`; `403 step_up_required` or `passkey_required` without one ([Approvals need a passkey](#approvals-need-a-passkey)) |
 | `POST /sessions/{id}/deny` | person | | `{ session }` |
-| `POST /sessions/{id}/resume` | person | | `{ session }`, a paused session goes on |
+| `POST /sessions/{id}/resume` | person, with a passkey step-up for this session (`resume_session`) in `x-bc-step-up` | | `{ session }`, a paused session goes on; `403 step_up_required` or `passkey_required` without one |
 | `POST /sessions/{id}/stop` | person, the agent that asked, or the executor | | `{ session }`; idempotent |
 | `POST /stop-all` | person | | `{ stopped }` |
 | `POST /sessions/{id}/actions` | the executor | `{ action, target?, outcome, evidenceRef? }` | `{ recorded, step, session, task, next? }`; in apps scope, `409 not_in_scope` (recorded, paused) for an app off the list |
@@ -497,7 +503,7 @@ executor secret only the worker holds (contract v1.1).
 |---|---|
 | Prompt injection from the screen | The broker never sees the screen. Tool descriptions say the app's content is data, not instructions; steps carry no content; every non-`ok` outcome pauses and asks. |
 | An agent starts or widens its own session | Approval is cookie + CSRF only, any bearer key refused first; one PC, at most 60 minutes, never extended; full-scope agents only; "started by", "driven by" and "the whole PC" shown on the card. |
-| An agent approves itself in the PC's signed-in browser, or mints itself a connect code | Approving, and every dashboard route that mints an agent credential, needs a passkey step-up just before it: a credential prompt the agent can't complete. The grant is for one action and one target, single-use, at most 2 minutes. Adding or removing a passkey needs one too, once the account has one. `APPROVAL_STEP_UP=off` (emergency only) removes this. |
+| An agent approves or un-pauses itself in the PC's signed-in browser, or mints itself a connect code | Approving, letting a paused session go on, and (on an account with a PC) every dashboard route that mints an agent credential, need a passkey step-up just before it: a credential prompt the agent can't complete. The grant is for one action and one target, single-use, at most 2 minutes. Adding or removing a passkey needs one too, once the account has one. `APPROVAL_STEP_UP=off` (emergency only) removes this. |
 | The agent widens its own CLI through a file dialog | Remote, support and lists runs pass `--setting-sources project` from an empty working folder, so Claude Code's user settings never load. |
 | The whole PC is in reach | Only toward the approved goal, per session, under the PC's rails: no passwords, UAC, sign-in and the lock screen stay the person's, administrator windows and the denylist refused, every step recorded, a banner on every monitor, Stop final. The CLI itself has no shell, files or web. |
 | Session hijack | "agent" leases re-gated on every renewal, bound to the PC's pinned key at redemption; stop deletes them in the same transaction. |
@@ -613,7 +619,7 @@ none, as before). Additive. Apply it before deploying the code: Prisma reads eve
 signature counter, transports, label and dates) and `PasskeyChallenge` (the challenge store, and each verified
 step-up's grant as a hash), both with a cascading foreign key to `Account` and checks on their own rows
 ([Approvals need a passkey](#approvals-need-a-passkey)). Purely additive. Apply it before deploying the code: every
-approval and agent connect reads `AccountPasskey`.
+approval and "go on", and every agent connect on an account with a PC, reads `AccountPasskey`.
 
 `prisma/migrations/20261012090000_agent_readiness` adds the nullable `readiness` (JSONB) and `readinessAt` to
 `AgentToken` ([Setting up a PC](#setting-up-a-pc)), with checks that both are set together and the report is a small

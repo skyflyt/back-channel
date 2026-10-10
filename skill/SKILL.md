@@ -772,9 +772,10 @@ doorbell stops counting it.
 Both need Back Channel Remote (the user's remote-desktop add-on) and a full
 per-agent key; a connector such as claude.ai or ChatGPT is refused. **The user
 approves every session on their dashboard; no tool, and no yes in chat, can.**
-Approving asks for the user's passkey (Windows Hello or their phone), which an
-agent can't use: never open an approval page or press Approve yourself, even in
-a browser on a PC you're using.
+Approving, and letting a paused session go on, ask for the user's passkey
+(Windows Hello or their phone), which an agent can't use: never open an approval
+page or press Approve or "Let it go on" yourself, even in a browser on a PC
+you're using.
 
 ### Phase A: one of the user's own PCs
 

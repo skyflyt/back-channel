@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid, generateApiKey, hashToken } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { seedWelcomeIfFirstConnect } from "@/lib/onboarding";
-import { requireStepUp, STEP_UP_HEADER } from "@/lib/step-up";
+import { requireConnectStepUp, STEP_UP_HEADER } from "@/lib/step-up";
 
 export const runtime = "nodejs";
 
@@ -42,8 +42,9 @@ export async function GET(req: NextRequest) {
  * those only protected a key in transit through an untrusted agent chat.
  * The raw key is returned ONCE; only its hash is stored.
  *
- * Needs the person's passkey step-up (connect_agent, src/lib/step-up.ts): an agent
- * driving a PC whose browser is signed in can't mint itself a new agent key.
+ * On an account with a PC in Back Channel Remote, needs the person's passkey step-up
+ * (connect_agent, src/lib/step-up.ts): an agent driving that PC, whose browser is
+ * signed in, can't mint itself a new agent key. Other accounts: as before.
  */
 export async function POST(req: NextRequest) {
   const account = await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value);
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest) {
   if (!account.emailVerifiedAt) {
     return NextResponse.json({ error: "email_unverified", message: "Verify your email first." }, { status: 409 });
   }
-  const refusal = await requireStepUp(prisma, { accountId: account.id, action: "connect_agent", grant: req.headers.get(STEP_UP_HEADER), now: new Date() });
+  const refusal = await requireConnectStepUp(prisma, { accountId: account.id, grant: req.headers.get(STEP_UP_HEADER), now: new Date() });
   if (refusal) return NextResponse.json({ error: refusal.error, message: refusal.message }, { status: refusal.status });
 
   // Same ceiling as exchange-code minting: 15/hour covers wiring several

@@ -1,8 +1,9 @@
 -- Passkey step-up for approvals (vault design/agent-desktop-scope.md, "Security decisions after the build", decided by
 -- Skylar 2026-10-10; src/lib/step-up.ts; docs/remote-app-sessions.md, "Approvals need a passkey"). Agents may now drive
 -- the whole PC, and that PC's signed-in browser can reach back-channel.app, so approving an agent session or a support
--- request, and connecting an agent, now need a WebAuthn step-up (Windows Hello, a phone or a security key) just before
--- the action. An agent can't complete one: it's a credential prompt, and a phone passkey needs the phone.
+-- request, letting a paused session go on, and (on an account with a PC in Back Channel Remote) connecting an agent,
+-- now need a WebAuthn step-up (Windows Hello, a phone or a security key) just before the action. An agent can't
+-- complete one: it's a credential prompt, and a phone passkey needs the phone.
 --
 -- PURELY ADDITIVE: two new tables, each with a foreign key to "Account" (ON DELETE CASCADE, like every other
 -- account-owned table) and CHECKs that only constrain their own rows. No existing table, column, index or row is
@@ -17,8 +18,8 @@
 --                       spendable once across every Cloud Run instance, and no new signing secret is needed.
 --
 -- Order: apply this migration BEFORE deploying the app change that uses it. The new code reads "AccountPasskey" on
--- every approval and every agent connect (unless APPROVAL_STEP_UP=off), so it fails against a database without these
--- tables. The old code never reads them, so applying first is safe.
+-- every approval and "go on", and on every agent connect of an account with a PC (unless APPROVAL_STEP_UP=off), so it
+-- fails against a database without these tables. The old code never reads them, so applying first is safe.
 --
 -- Rollback: roll the app back first, then (only if wanted; it deletes every registered passkey, which people would have
 -- to add again):
@@ -96,12 +97,12 @@ ALTER TABLE "AccountPasskey"
 
 ALTER TABLE "PasskeyChallenge"
   -- A registration carries no target or grant, and an action only to say a manage_passkeys step-up authorized it
-  -- (an account that already has a passkey); a step-up names one of the four actions, and only the two approvals (and
-  -- always they) name their target.
+  -- (an account that already has a passkey); a step-up names one of the five actions, and only the two approvals and
+  -- "go on" (and always they) name their target.
   ADD CONSTRAINT "PasskeyChallenge_kind_check" CHECK (
     ("kind" = 'register' AND ("action" IS NULL OR "action" = 'manage_passkeys') AND "targetId" IS NULL AND "grantHash" IS NULL AND "usedAt" IS NULL) OR
-    ("kind" = 'step_up' AND "action" IN ('approve_session','approve_support','connect_agent','manage_passkeys')
-      AND ("action" IN ('approve_session','approve_support')) = ("targetId" IS NOT NULL))),
+    ("kind" = 'step_up' AND "action" IN ('approve_session','resume_session','approve_support','connect_agent','manage_passkeys')
+      AND ("action" IN ('approve_session','resume_session','approve_support')) = ("targetId" IS NOT NULL))),
   ADD CONSTRAINT "PasskeyChallenge_target_size" CHECK ("targetId" IS NULL OR char_length("targetId") <= 64),
   -- A grant exists only once its challenge was answered, and is spent only if it exists.
   ADD CONSTRAINT "PasskeyChallenge_grant_order" CHECK (("grantHash" IS NULL OR "answeredAt" IS NOT NULL) AND ("usedAt" IS NULL OR "grantHash" IS NOT NULL));

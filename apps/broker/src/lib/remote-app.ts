@@ -16,8 +16,8 @@
  *    exactly like Dispatch: it lives on a hosted app's servers and has no business driving a PC.
  *  - Approve, deny, "go on" and Stop all: the person, in the dashboard (cookie + CSRF). A request that
  *    carries any bearer key is refused before anything else, so no agent can approve its own session.
- *    Approve also needs the person's passkey step-up for that session (src/lib/step-up.ts): an agent driving
- *    the PC, whose browser is signed in, can't complete a passkey prompt. Deny is never gated.
+ *    Approve and "go on" also need the person's passkey step-up for that session (src/lib/step-up.ts): an agent
+ *    driving the PC, whose browser is signed in, can't complete a passkey prompt. Deny and Stop are never gated.
  *  - Stop: the person, the agent that asked, the agent driving, or the PC itself (remote-app-host.ts).
  *  - Steps (action reports): the agent driving the session only, with its own full-scope key.
  *
@@ -73,7 +73,7 @@ type Patch = Prisma.RemoteAppSessionUpdateManyMutationInput;
 type Caller = { accountId: string; agentId: string | null };
 type Op = "machines" | "readiness" | "start" | "list" | "get" | "approve" | "deny" | "resume" | "stop" | "stopAll" | "report" | "end" | "surface" | "rotate";
 // viaTool: the request came through an MCP tool (a chat), never the executor's own worker.
-// stepUp: the person's passkey step-up grant (the x-bc-step-up header), for approve only.
+// stepUp: the person's passkey step-up grant (the x-bc-step-up header), for approve and resume.
 type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string; viaTool?: boolean; stepUp?: string | null };
 type Outcome = { status?: number; body: Record<string, unknown> };
 
@@ -507,9 +507,13 @@ async function opDeny({ tx, caller, now, id }: Ctx): Promise<Outcome> {
   return { body: { session: await view(tx, next, n, now) } };
 }
 
-async function opResume({ tx, caller, now, id }: Ctx): Promise<Outcome> {
+async function opResume({ tx, caller, now, id, stepUp }: Ctx): Promise<Outcome> {
   const s = await loadSession(tx, caller, id, now);
   R.resumeCheck(s, now);
+  // A pause is exactly when the person should look: letting it go on needs their passkey, for this session only, so an
+  // agent driving the PC can't un-pause itself. Spent in this transaction, after the session's own checks.
+  const refusal = await SU.requireStepUp(tx, { accountId: caller.accountId, action: "resume_session", targetId: s.id, grant: stepUp, now });
+  if (refusal) fail(refusal.status, refusal.error, refusal.message);
   const next = await apply(tx, s, { status: "active" });
   await audit(tx, caller.accountId, "remote_app.resumed", { sessionId: s.id });
   await mirror(tx, next, "person", "Said the remote session can go on.", now);

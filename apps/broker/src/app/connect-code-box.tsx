@@ -3,10 +3,11 @@
 /**
  * The one-time connect code shown after verifying an account (/verify) or recovering a key (/recover).
  *
- * Minting a code needs the person's passkey step-up (src/lib/step-up.ts), so an agent driving a PC whose browser is
- * signed in can't connect itself. An account with no passkey adds one here first (Windows Hello or a phone), then
- * confirms with it. Every passkey prompt runs on a click, never on page load. With the step-up switched off
- * (APPROVAL_STEP_UP=off), the code is made straight away, as before.
+ * On an account with a PC in Back Channel Remote, minting a code needs the person's passkey step-up
+ * (src/lib/step-up.ts), so an agent driving that PC, whose browser is signed in, can't connect itself: an account with
+ * no passkey adds one here first (Windows Hello or a phone), then confirms with it. Every passkey prompt runs on a
+ * click, never on page load. Every other account (and every account while APPROVAL_STEP_UP=off) gets its code straight
+ * away, as before.
  *
  * Plain text only: the site's Trusted Types CSP blanks the page on raw HTML. Inline styles, like the pages it sits in.
  */
@@ -38,16 +39,31 @@ export function ConnectCodeBox() {
     setBusy(false);
   }, []);
 
+  /** A first try with no passkey (no prompt on page load): what Back Channel answers says what minting needs. */
+  const tryPlain = useCallback(async () => {
+    setBusy(true); setError("");
+    try {
+      const res = await fetch("/api/auth/exchange-code", { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } });
+      const j = (await res.json().catch(() => ({}))) as { code?: string; paste_prompt?: string; expires_at?: string; error?: string; message?: string };
+      if (res.ok && j.code) { setGate("none"); setCode({ prompt: j.paste_prompt ?? j.code, expiry: new Date(j.expires_at ?? 0).getTime() }); }
+      else if (j.error === "passkey_required") setGate("add");
+      else if (j.error === "step_up_required") setGate("confirm");
+      else { setGate("none"); setError(j.message ?? "Couldn't make a connect code. Try again."); }
+    } catch { setGate("none"); setError("Couldn't reach Back Channel. Check your connection and try again."); }
+    setBusy(false);
+  }, []);
+
+  // Only an account with a PC in Back Channel Remote needs the passkey to connect an agent (src/lib/step-up.ts); every
+  // other account gets its code straight away, as before.
   useEffect(() => {
     let stop = false;
     void loadPasskeys().then((p) => {
       if (stop) return;
-      const g: Gate = !p ? "confirm" : p.stepUp === "off" ? "none" : p.passkeys.length ? "confirm" : "add";
-      setGate(g);
-      if (g === "none") void mint();
+      if (p && p.stepUp === "on" && p.connectStepUp === "on") setGate(p.passkeys.length ? "confirm" : "add");
+      else void tryPlain();
     });
     return () => { stop = true; };
-  }, [mint]);
+  }, [tryPlain]);
 
   useEffect(() => {
     if (!code) return;
@@ -81,21 +97,22 @@ export function ConnectCodeBox() {
       ) : gate === "add" ? (
         <div style={st.passkeyBox}>
           <p style={{ margin: "0 0 10px" }}>
-            <strong>One more step: add a passkey.</strong> Connecting an agent asks for your passkey (Windows Hello on this PC, or your phone), and so
-            does approving anything an agent asks to do on your PCs. Agents can&apos;t use a passkey, so they can never do those things by themselves.
+            <strong>One more step: add a passkey.</strong> Because you use Back Channel Remote, connecting an agent asks for your passkey (Windows Hello
+            on this PC, or your phone), and so does approving anything an agent asks to do on your PCs. Agents can&apos;t use a passkey, so they can never do
+            those things by themselves.
             You&apos;ll be asked twice: once to add it, once to confirm.
           </p>
           <button onClick={addThenMint} disabled={busy} style={st.passkeyBtn}>{busy ? "Waiting for your passkey…" : "Add a passkey, then get my code"}</button>
         </div>
-      ) : gate === "none" ? (
+      ) : gate === "none" || gate === "checking" ? (
         <div style={st.promptBox}>
-          <p style={st.promptText}>{busy ? "Making your connect code…" : "Your connect code expired."}</p>
-          {!busy && <button onClick={() => mint()} style={st.copyBtnWide}>Generate a new code</button>}
+          <p style={st.promptText}>{busy || gate === "checking" ? "Making your connect code…" : "Your connect code expired."}</p>
+          {!busy && gate === "none" && <button onClick={() => mint()} style={st.copyBtnWide}>Generate a new code</button>}
         </div>
       ) : (
         <div style={st.promptBox}>
-          <p style={st.promptText}>Confirm it&apos;s you with your passkey (Windows Hello or your phone) to get a one-time connect code.</p>
-          <button onClick={() => mint("needed")} disabled={busy || gate === "checking"} style={st.copyBtnWide}>{busy ? "Waiting for your passkey…" : "Get my connect code"}</button>
+          <p style={st.promptText}>Because you use Back Channel Remote, confirm it&apos;s you with your passkey (Windows Hello or your phone) to get a one-time connect code.</p>
+          <button onClick={() => mint("needed")} disabled={busy} style={st.copyBtnWide}>{busy ? "Waiting for your passkey…" : "Get my connect code"}</button>
         </div>
       )}
       {error && <p style={st.error} aria-live="polite">{error}</p>}

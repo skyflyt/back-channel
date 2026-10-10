@@ -1026,8 +1026,8 @@ model ListsPreference {
 
 // A passkey (WebAuthn: Windows Hello, a phone, a security key) on the account, used only for the approval
 // step-up (src/lib/step-up.ts, docs/remote-app-sessions.md "Approvals need a passkey"): approving an agent
-// session or a support request, and connecting an agent, need one just before the action. Public material only:
-// the private key never leaves the authenticator.
+// session or a support request, letting a paused session go on, and (on an account with a PC) connecting an agent,
+// need one just before the action. Public material only: the private key never leaves the authenticator.
 model AccountPasskey {
   id           String    @id @default(uuid())
   accountId    String
@@ -1052,9 +1052,9 @@ model PasskeyChallenge {
   id         String    @id @default(uuid())
   accountId  String
   kind       String    // "register" | "step_up"
-  action     String?   // step_up: "approve_session" | "approve_support" | "connect_agent" | "manage_passkeys";
+  action     String?   // step_up: "approve_session" | "resume_session" | "approve_support" | "connect_agent" | "manage_passkeys";
                        // register: "manage_passkeys" when a step-up authorized it (the account had a passkey), else null
-  targetId   String?   // approve_session: the RemoteAppSession id; approve_support: the SupportInvite id; else null
+  targetId   String?   // approve_session, resume_session: the RemoteAppSession id; approve_support: the SupportInvite id; else null
   challenge  String    @unique // base64url, as sent to the browser
   expiresAt  DateTime  // the ceremony's deadline (5 minutes); once a step-up verifies, the grant's (2 minutes)
   answeredAt DateTime? // the first verify attempt spent the challenge

@@ -9,10 +9,13 @@
  *
  * Gated actions (each grant is for exactly one of them, and one target):
  *   approve_session   approving an agent remote-app session (src/lib/remote-app.ts opApprove); target: the session id
+ *   resume_session    letting a paused agent session go on (opResume): a pause is when the person should look, and an
+ *                     agent driving the PC mustn't un-pause itself; target: the session id
  *   approve_support   approving a support request, which mints and shows the BCS code (src/lib/remote-support.ts)
  *   connect_agent     minting a new agent credential from the dashboard: a connect code (/api/auth/exchange-code), an
  *                     agent token (POST /api/account/agents), a rotated key (/api/account/key/rotate) or the setup
- *                     prompt with a key (/api/account/bootstrap-prompt); no target
+ *                     prompt with a key (/api/account/bootstrap-prompt); no target. ONLY on an account that can be
+ *                     driven: one with a live AppBridge PC (accountHasPc). Elsewhere those routes are as they were.
  *   manage_passkeys   adding a passkey when the account already has one, or removing one; no target
  * Denying, stopping and cancelling are never gated: refusing stays one click. Agent (bearer) routes are unchanged.
  *
@@ -32,7 +35,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 
 export const STEP_UP_HEADER = "x-bc-step-up";
-export const STEP_UP_ACTIONS = ["approve_session", "approve_support", "connect_agent", "manage_passkeys"] as const;
+export const STEP_UP_ACTIONS = ["approve_session", "resume_session", "approve_support", "connect_agent", "manage_passkeys"] as const;
 export type StepUpAction = (typeof STEP_UP_ACTIONS)[number];
 /** A ceremony (the WebAuthn prompt) may take this long; the browser's own timeout is 60 seconds. */
 export const CEREMONY_TTL_MS = 5 * 60_000;
@@ -52,9 +55,9 @@ export function isStepUpAction(v: unknown): v is StepUpAction {
   return typeof v === "string" && (STEP_UP_ACTIONS as readonly string[]).includes(v);
 }
 
-/** The two approvals name the session or support request they are for; the other actions name nothing. */
+/** The approvals and "go on" name the session or support request they are for; the other actions name nothing. */
 export function actionTakesTarget(action: StepUpAction): boolean {
-  return action === "approve_session" || action === "approve_support";
+  return action === "approve_session" || action === "resume_session" || action === "approve_support";
 }
 
 /** A target id as the approvals use them (a UUID), or null. */
@@ -114,4 +117,27 @@ export async function requireStepUp(
     data: { usedAt: q.now },
   });
   return spent.count === 1 ? null : STALE;
+}
+
+type PcDb = { appBridgeDevice: Prisma.TransactionClient["appBridgeDevice"] };
+
+/**
+ * Can an agent drive one of this account's desktops? True when it has at least one registered, non-revoked AppBridge
+ * PC (an AppBridgeDevice with role "host"). That is the only setting where an agent can use a PC and reach the
+ * signed-in dashboard, so it's what decides whether minting an agent credential needs the step-up.
+ */
+export async function accountHasPc(db: PcDb, accountId: string): Promise<boolean> {
+  return (await db.appBridgeDevice.count({ where: { accountId, role: "host", revokedAt: null } })) > 0;
+}
+
+/**
+ * The connect_agent gate, for every dashboard route that mints an agent credential: the step-up only on an account
+ * with a PC (accountHasPc); every other account's routes behave exactly as before, and any grant sent is left unspent.
+ */
+export async function requireConnectStepUp(
+  db: Db & PcDb,
+  q: { accountId: string; grant: string | null | undefined; now: Date },
+): Promise<StepUpRefusal | null> {
+  if (!stepUpEnforced() || !(await accountHasPc(db, q.accountId))) return null;
+  return requireStepUp(db, { accountId: q.accountId, action: "connect_agent", grant: q.grant, now: q.now });
 }

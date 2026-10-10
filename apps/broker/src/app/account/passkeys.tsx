@@ -21,12 +21,16 @@ function when(iso: string | null): string {
   return new Date(iso).toLocaleDateString();
 }
 
-/** The account's passkeys (undefined while loading, null when they couldn't be read) and the step-up hint for the buttons that need one. */
-export function usePasskeys(enabled = true): { state: PasskeyState | null | undefined; hint: StepUpHint; reload: () => Promise<void> } {
+/**
+ * The account's passkeys (undefined while loading, null when they couldn't be read) and the step-up hints for the
+ * buttons that need one: `hint` for approvals and "go on", `connectHint` for connecting an agent (only gated on an
+ * account with a PC).
+ */
+export function usePasskeys(enabled = true): { state: PasskeyState | null | undefined; hint: StepUpHint; connectHint: StepUpHint; reload: () => Promise<void> } {
   const [state, setState] = useState<PasskeyState | null | undefined>(undefined);
   const reload = useCallback(async () => { setState(await loadPasskeys()); }, []);
   useEffect(() => { if (enabled) void reload(); }, [enabled, reload]);
-  return { state, hint: hintFor(state ?? null), reload };
+  return { state, hint: hintFor(state ?? null), connectHint: hintFor(state ?? null, true), reload };
 }
 
 /**
@@ -68,7 +72,7 @@ export function PasskeysCard({ demoMode }: { demoMode: boolean }) {
     setBusy("add"); setMessage("");
     try {
       const p = await addPasskey(label, hint);
-      setLabel(""); setMessage(`Added "${p.label}". Approvals and new agent connections will ask for it.`);
+      setLabel(""); setMessage(`Added "${p.label}". Approvals will ask for it${state?.connectStepUp === "on" ? ", and so will connecting a new agent" : ""}.`);
     } catch (e) { setMessage(e instanceof Error ? e.message : "The passkey couldn't be added. Try again."); }
     setBusy(""); await reload();
   }
@@ -86,9 +90,9 @@ export function PasskeysCard({ demoMode }: { demoMode: boolean }) {
     <div className="ds-card" style={{ marginBottom: 14 }} id="passkeys">
       <h2 className="ds-cardh">Passkeys</h2>
       <p className="ds-cardsub">
-        Approving an agent&apos;s request to use one of your PCs, approving a support code, and connecting a new agent each ask for a passkey: Windows Hello on this PC,
-        or your phone. Agents can&apos;t use a passkey, so an agent working on one of your PCs can&apos;t approve itself, even in a browser that&apos;s signed in here.
-        Denying and stopping never need one.
+        If you use Back Channel Remote, approving an agent&apos;s request to use one of your PCs, letting a paused one go on, approving a support code, and connecting
+        a new agent each ask for a passkey: Windows Hello on this PC, or your phone. Agents can&apos;t use a passkey, so an agent working on one of your PCs can&apos;t
+        approve itself, even in a browser that&apos;s signed in here. Denying and stopping never need one.
       </p>
       {demoMode ? <p className="ds-fine">Sign in to manage passkeys.</p>
         : state === undefined ? <p className="ds-fine">Loading your passkeys…</p>
@@ -98,7 +102,10 @@ export function PasskeysCard({ demoMode }: { demoMode: boolean }) {
             <p className="ds-call warn" style={{ marginBottom: 12 }}>Passkey confirmation is switched off on Back Channel for now (an emergency setting), so approvals don&apos;t ask for one. Your passkeys are kept.</p>
           )}
           {list.length === 0 && (
-            <p className="ds-call warn" style={{ marginBottom: 12 }}>You have no passkey yet, so approvals and new agent connections are refused until you add one.</p>
+            <p className="ds-call warn" style={{ marginBottom: 12 }}>
+              {state.connectStepUp === "on" ? "You have no passkey yet, so approvals and new agent connections are refused until you add one."
+                : "You have no passkey yet. You'll need one before you approve an agent's use of a PC or a support code."}
+            </p>
           )}
           {list.map((p) => (
             <div className="ds-item" key={p.id}>

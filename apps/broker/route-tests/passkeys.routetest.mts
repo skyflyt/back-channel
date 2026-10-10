@@ -66,6 +66,8 @@ const db: any = {
   exchangeCode: table("exchangeCode", () => ({ createdAt: new Date(), usedAt: null }), ["codeHash"]),
   accountPasskey: table("accountPasskey", () => ({ id: crypto.randomUUID(), createdAt: new Date(), lastUsedAt: null, counter: 0n, transports: [] }), ["credentialId"]),
   passkeyChallenge: table("passkeyChallenge", () => ({ id: crypto.randomUUID(), createdAt: new Date(), action: null, targetId: null, answeredAt: null, grantHash: null, passkeyId: null, usedAt: null }), ["challenge", "grantHash"]),
+  // An account's AppBridge devices: a live PC ("host") is what makes connecting an agent need the step-up.
+  appBridgeDevice: table("appBridgeDevice"),
 };
 // The real getAccountFromCookie reads the cookie's row with its account.
 const cookieFind = db.sessionCookie.findUnique;
@@ -148,6 +150,12 @@ async function stepUp(action: string, targetId: string | null, credentialId: str
 function passkeyOn(accountId = "acct-a", credentialId = `cred-${accountId}`) {
   const row = { id: crypto.randomUUID(), accountId, credentialId, publicKey: Buffer.from([165, 1, 2, 3, 38]), counter: 0n, transports: ["internal"], label: "Office PC", createdAt: new Date(), lastUsedAt: null };
   tables.accountPasskey.push(row);
+  return row;
+}
+/** A device registered in Back Channel Remote: a PC ("host") by default. */
+function deviceOn(accountId = "acct-a", over: Row = {}) {
+  const row = { id: `dev${randomBytes(8).toString("hex")}`, accountId, role: "host", label: "Office PC", enabled: true, relayEnabled: true, createdAt: new Date(), revokedAt: null, ...over };
+  tables.appBridgeDevice.push(row);
   return row;
 }
 function grantFor(action: string, targetId: string | null, over: Row = {}, accountId = "acct-a"): string {
@@ -268,6 +276,9 @@ test("list and remove: labels and dates, never key material; removing needs a st
   const list = await pk("GET", "");
   assert.equal(list.status, 200);
   assert.equal(list.body.stepUp, "on");
+  assert.equal(list.body.connectStepUp, "off", "no PC in Back Channel Remote: connecting an agent needs no passkey");
+  deviceOn();
+  assert.equal((await pk("GET", "")).body.connectStepUp, "on");
   assert.deepEqual(list.body.passkeys.map((p: Row) => [p.id, p.label]), [[mine.id, "Office PC"]]);
   assert.ok(!JSON.stringify(list.body).includes(mine.credentialId) && !JSON.stringify(list.body).includes("publicKey"));
   const bare = await pk("DELETE", mine.id);
@@ -279,7 +290,7 @@ test("list and remove: labels and dates, never key material; removing needs a st
   assert.deepEqual(tables.accountPasskey.map(p => p.id), [theirs.id]);
   assert.ok(tables.accountAudit.some(a => a.eventType === "passkey.removed"));
   process.env.APPROVAL_STEP_UP = "off";
-  assert.equal((await pk("GET", "")).body.stepUp, "off");
+  assert.deepEqual([(await pk("GET", "")).body.stepUp, (await pk("GET", "")).body.connectStepUp], ["off", "off"]);
 });
 
 test("step-up options: the action and its target are checked, and an account with no passkey is passkey_required", async () => {
@@ -289,6 +300,7 @@ test("step-up options: the action and its target are checked, and an account wit
   for (const [body, error] of [
     [{ action: "approve_everything" }, "invalid_action"],
     [{ action: "approve_session" }, "invalid_target"],
+    [{ action: "resume_session" }, "invalid_target"],
     [{ action: "approve_support", targetId: "not-a-uuid" }, "invalid_target"],
     [{ action: "connect_agent", targetId: id }, "invalid_target"],
   ] as Array<[Row, string]>) {
@@ -339,7 +351,36 @@ test("step-up verify: a good answer gets a single-use grant for that action only
   assert.deepEqual(tables.accountAudit.filter(a => a.eventType === "step_up.confirmed").map(a => a.detail.action), ["approve_support"]);
 });
 
-test("connect codes: /api/auth/exchange-code needs a connect_agent grant; none, the wrong action, a reused or an expired grant is refused and mints nothing", async () => {
+test("no PC in Back Channel Remote: connecting an agent is exactly as before, with no passkey and no grant; a PC makes it need the step-up", async () => {
+  const routes: Array<[string, (o?: Opts) => Promise<Res>, string]> = [["connect code", mintCode, "code"], ["agent token", mintToken, "api_key"], ["rotated key", rotate, "api_key"], ["setup prompt", bootstrap, "prompt"]];
+  // No passkey, no grant: every route mints, as it always did.
+  for (const [what, call, field] of routes) {
+    const r = await call();
+    assert.equal(r.status, 200, `${what}: ${JSON.stringify(r.body)}`); assert.ok(r.body[field], what);
+  }
+  // A passkey on the account changes nothing, and a grant sent along is left unspent.
+  passkeyOn();
+  const g = grantFor("connect_agent", null);
+  for (const [what, call] of routes) assert.equal((await call({ stepUp: g })).status, 200, what);
+  assert.equal(tables.passkeyChallenge.find(c => c.grantHash === sha(g))!.usedAt, null);
+  // A revoked PC, a phone or laptop (role "remote"), or another account's PC doesn't make this account drivable.
+  deviceOn("acct-a", { revokedAt: new Date() }); deviceOn("acct-a", { role: "remote" }); deviceOn("acct-b");
+  for (const [what, call] of routes) assert.equal((await call()).status, 200, `${what}: still ungated`);
+  // A live PC does: from now on each route needs the step-up.
+  tables.accountPasskey.length = 0;
+  deviceOn();
+  for (const [what, call] of routes) {
+    const r = await call();
+    assert.equal(r.status, 403, what); assert.equal(r.body.error, "passkey_required", what);
+  }
+  passkeyOn();
+  for (const [what, call] of routes) assert.equal((await call()).body.error, "step_up_required", what);
+  // The other account has a live PC of its own, so it was gated all along, and by that PC alone.
+  assert.equal((await mintCode({ cookie: COOKIE.b })).body.error, "passkey_required");
+});
+
+test("connect codes: on an account with a PC, /api/auth/exchange-code needs a connect_agent grant; none, the wrong action, a reused or an expired grant is refused and mints nothing", async () => {
+  deviceOn();
   const none = await mintCode();
   assert.equal(none.status, 403); assert.equal(none.body.error, "passkey_required");
   const key = passkeyOn();
@@ -371,7 +412,8 @@ test("connect codes: /api/auth/exchange-code needs a connect_agent grant; none, 
   assert.equal((await mintCode()).status, 200);
 });
 
-test("every other dashboard route that mints an agent key needs the step-up too: a token, a rotated key, the setup prompt with a key", async () => {
+test("on an account with a PC, every other dashboard route that mints an agent key needs the step-up too: a token, a rotated key, the setup prompt with a key", async () => {
+  deviceOn();
   passkeyOn();
   const routes: Array<[string, (o?: Opts) => Promise<Res>, string]> = [["agent token", mintToken, "api_key"], ["rotated key", rotate, "api_key"], ["setup prompt", bootstrap, "prompt"]];
   for (const [what, call, field] of routes) {

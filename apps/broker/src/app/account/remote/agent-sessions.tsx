@@ -13,9 +13,9 @@
  * cookie. An agent's one-tap approval link (?vt=...&approve=<id>) signs the person in through
  * consumeApprovalLink() and scrolls to that request's card.
  *
- * Approve asks for the person's passkey (Windows Hello or their phone) for that one session, so an agent driving a
- * PC whose browser is signed in can't approve itself (src/lib/step-up.ts). An account with no passkey gets "Add a
- * passkey" right there. Deny, "let it go on" and Stop stay one click.
+ * Approve and "Let it go on" ask for the person's passkey (Windows Hello or their phone) for that one session, so an
+ * agent driving a PC whose browser is signed in can't approve or un-pause itself (src/lib/step-up.ts). An account with
+ * no passkey gets "Add a passkey" right there. Deny, Stop and Stop all stay one click.
  *
  * Plain text only: the page's Trusted Types CSP blanks it on any raw HTML, so every string here is a React text node.
  */
@@ -160,18 +160,23 @@ export default function AgentSessions() {
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   };
 
-  /** Approve: the person's passkey for this session (asked first when the account has one), then the approval. */
-  async function approve(s: AgentSession) {
-    setBusy(`approve:${s.id}`); setMessage(""); setNeedsPasskey(null);
-    const r = await sendWithStepUp("approve_session", s.id, (h) => post(`/api/remote-app/sessions/${encodeURIComponent(s.id)}/approve`, h), passkeys.hint);
-    if (r.ok) { setMessage(DONE.approve); clearFocus(s); }
+  /**
+   * Approve, or let a paused session go on: the person's passkey for this session and this action (asked first when
+   * the account has one), then the request.
+   */
+  async function stepped(s: AgentSession, what: "approve" | "resume") {
+    setBusy(`${what}:${s.id}`); setMessage(""); setNeedsPasskey(null);
+    const action = what === "approve" ? "approve_session" : "resume_session";
+    const r = await sendWithStepUp(action, s.id, (h) => post(`/api/remote-app/sessions/${encodeURIComponent(s.id)}/${what}`, h), passkeys.hint);
+    if (r.ok) { setMessage(DONE[what]); clearFocus(s); }
     else if (r.needsPasskey) setNeedsPasskey(s.id);
     else setMessage(r.message ?? "That didn't work. Try again.");
     setBusy("");
     load();
   }
+  const approve = (s: AgentSession) => stepped(s, "approve");
 
-  async function act(s: AgentSession, what: "deny" | "resume" | "stop") {
+  async function act(s: AgentSession, what: "deny" | "stop") {
     setBusy(`${what}:${s.id}`); setMessage(""); setNeedsPasskey(null);
     try {
       const r = await post(`/api/remote-app/sessions/${encodeURIComponent(s.id)}/${what}`);
@@ -268,13 +273,16 @@ export default function AgentSessions() {
                 <div className="ds-iname">{paused ? <Chip tone="warn">Paused</Chip> : <Chip tone="ok">Running</Chip>} {s.startedBy.name} is using {desktop(s) ? `the whole PC (${s.pc.label})` : `${appList(s.apps)} on ${s.pc.label}`}</div>
                 <div className="ds-imeta">{clock(left)} left of {s.minutes} minutes{drivenBy(s)}</div>
                 {goalAndTask(s)}
-                {paused && <p className="ds-fine" style={{ margin: "8px 0 0" }}>It stopped to ask: {s.pausedBecause ?? "something unexpected came up"}. Sort it out at the PC, then let it go on, or stop it.</p>}
+                {paused && <p className="ds-fine" style={{ margin: "8px 0 0" }}>It stopped to ask: {s.pausedBecause ?? "something unexpected came up"}. Sort it out at the PC, then let it go on (that asks for your passkey), or stop it.</p>}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                {paused && <button className="ds-btn ghost" disabled={!!busy} onClick={() => act(s, "resume")}>Let it go on</button>}
+                {paused && <button className="ds-btn ghost" disabled={!!busy} onClick={() => stepped(s, "resume")}>{busy !== `resume:${s.id}` ? "Let it go on" : passkeys.hint ? "Waiting for your passkey…" : "…"}</button>}
                 <button className="ds-btn danger" disabled={busy === `stop:${s.id}`} onClick={() => act(s, "stop")}>Stop</button>
               </div>
             </div>
+            {paused && needsPasskey === s.id && (
+              <AddPasskeyInline action="Letting it go on" onCancel={() => setNeedsPasskey(null)} onAdded={() => { void passkeys.reload(); void stepped(s, "resume"); }} />
+            )}
             <Steps steps={s.actions ?? []} />
           </div>
         );
