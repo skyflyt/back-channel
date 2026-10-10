@@ -1,0 +1,84 @@
+name: appbridge contention soak (temporary)
+
+# Temporary evidence for the relay-gate contention fix: runs scripts/appbridge-integration.mts many times
+# against a fresh database, with and without every core pinned by a CPU burner (a slow runner), for the
+# pre-fix broker code ("baseline", the files as of BASELINE_SHA) and this branch ("branch").
+# Removed before the PR is marked ready.
+on:
+  push:
+    branches: [loby/relay-gate-contention]
+    paths: [".github/workflows/appbridge-contention-soak.yml", "apps/broker/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASELINE_SHA: 69b799ac587f20a13998f0cb59e1c4ad2fd06c3a
+  ITERATIONS: 40
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        code: [baseline]
+        load: [none, cpu]
+        shard: [1, 2, 3, 4]
+    defaults:
+      run:
+        working-directory: apps/broker
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: dispatch_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d dispatch_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres@127.0.0.1:5432/dispatch_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/broker/package-lock.json
+      - run: npm ci
+      - name: Use the pre-fix broker code
+        if: matrix.code == 'baseline'
+        run: git checkout "$BASELINE_SHA" -- src scripts prisma && git -C ../.. status --short
+      - name: Soak
+        run: |
+          echo "nproc=$(nproc)"
+          if [ "${{ matrix.load }}" = cpu ]; then
+            for i in $(seq "$(nproc)"); do (yes > /dev/null &); done
+          fi
+          pass=0; fail=0
+          for i in $(seq "$ITERATIONS"); do
+            npx prisma db push --force-reset --skip-generate > /dev/null 2>&1 || { echo "db push failed"; exit 1; }
+            start=$(date +%s%N)
+            if node --experimental-strip-types --import ./route-tests/register-hooks.mjs scripts/appbridge-integration.mts > out.txt 2>&1; then
+              pass=$((pass+1)); r=PASS
+            else
+              fail=$((fail+1)); r=FAIL
+            fi
+            ms=$(( ($(date +%s%N) - start) / 1000000 ))
+            where=$(grep -o 'appbridge-integration.mts:[0-9]*' out.txt | head -1)
+            actual=$(grep -o 'actual: \[[^]]*\]' out.txt | head -1)
+            echo "SOAK ${{ matrix.code }} ${{ matrix.load }} shard=${{ matrix.shard }} iter=$i $r ${ms}ms $where $actual"
+            [ "$r" = FAIL ] && grep -v '^PASS' out.txt | head -20
+          done
+          pkill yes || true
+          echo "SOAK-SUMMARY code=${{ matrix.code }} load=${{ matrix.load }} shard=${{ matrix.shard }} pass=$pass fail=$fail"
+          echo "code=${{ matrix.code }} load=${{ matrix.load }} shard=${{ matrix.shard }}: pass=$pass fail=$fail" >> "$GITHUB_STEP_SUMMARY"
