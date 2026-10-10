@@ -21,12 +21,12 @@ function when(iso: string | null): string {
   return new Date(iso).toLocaleDateString();
 }
 
-/** The account's passkeys and the step-up hint for the buttons that need one. */
-export function usePasskeys(enabled = true): { state: PasskeyState | null; hint: StepUpHint; reload: () => Promise<void> } {
-  const [state, setState] = useState<PasskeyState | null>(null);
+/** The account's passkeys (undefined while loading, null when they couldn't be read) and the step-up hint for the buttons that need one. */
+export function usePasskeys(enabled = true): { state: PasskeyState | null | undefined; hint: StepUpHint; reload: () => Promise<void> } {
+  const [state, setState] = useState<PasskeyState | null | undefined>(undefined);
   const reload = useCallback(async () => { setState(await loadPasskeys()); }, []);
   useEffect(() => { if (enabled) void reload(); }, [enabled, reload]);
-  return { state, hint: hintFor(state), reload };
+  return { state, hint: hintFor(state ?? null), reload };
 }
 
 /**
@@ -90,7 +90,9 @@ export function PasskeysCard({ demoMode }: { demoMode: boolean }) {
         or your phone. Agents can&apos;t use a passkey, so an agent working on one of your PCs can&apos;t approve itself, even in a browser that&apos;s signed in here.
         Denying and stopping never need one.
       </p>
-      {demoMode ? <p className="ds-fine">Sign in to manage passkeys.</p> : !state ? <p className="ds-fine">Couldn&apos;t load your passkeys. Refresh to try again.</p> : (
+      {demoMode ? <p className="ds-fine">Sign in to manage passkeys.</p>
+        : state === undefined ? <p className="ds-fine">Loading your passkeys…</p>
+        : !state ? <p className="ds-fine">Couldn&apos;t load your passkeys. Refresh to try again.</p> : (
         <>
           {state.stepUp === "off" && (
             <p className="ds-call warn" style={{ marginBottom: 12 }}>Passkey confirmation is switched off on Back Channel for now (an emergency setting), so approvals don&apos;t ask for one. Your passkeys are kept.</p>
