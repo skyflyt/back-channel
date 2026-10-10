@@ -23,9 +23,11 @@ export function validateProfile(p) {
     }
     return p;
 }
-// Tools a remote-app run refuses outright on Claude (shell, file writes, the web): its only extra
-// capability is the worker's own MCP server.
-export const REMOTE_APP_DISALLOWED_TOOLS = Object.freeze(['Bash', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch']);
+// Tools a remote-app (or remote-support) run refuses outright on Claude: shell, file writes, the web, and also
+// file reads and subagents. Read, Grep, Glob and Agent need no approval in any permission mode, so without these a
+// run steered by something on screen could read the PC's files into its summary. Its only capability is the worker's
+// own MCP server. (No MultiEdit: current Claude Code has no such tool, and a deny rule naming none warns.)
+export const REMOTE_APP_DISALLOWED_TOOLS = Object.freeze(['Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Read', 'Grep', 'Glob', 'Agent']);
 const tomlString = value => {
     if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value)) throw Error('Invalid MCP server setting');
     return JSON.stringify(value); // a JSON string without control characters is a TOML basic string

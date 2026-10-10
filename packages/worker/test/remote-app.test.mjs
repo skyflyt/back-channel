@@ -538,6 +538,9 @@ test('remote-app runtime arguments are fixed: only the worker MCP server, no she
     assert.equal(claude[claude.indexOf('--allowedTools') + 1], 'mcp__bc_remote_app');
     assert.equal(claude[claude.indexOf('--disallowedTools') + 1], REMOTE_APP_DISALLOWED_TOOLS.join(','));
     assert.ok(['Bash', 'Write', 'Edit', 'WebFetch'].every(tool => REMOTE_APP_DISALLOWED_TOOLS.includes(tool)));
+    // Reads and subagents need no approval in any mode: denied, so the run can't read the PC's files.
+    assert.ok(['Read', 'Grep', 'Glob', 'Agent'].every(tool => REMOTE_APP_DISALLOWED_TOOLS.includes(tool)));
+    assert.ok(!REMOTE_APP_DISALLOWED_TOOLS.includes('MultiEdit'), 'no deny rule for a tool Claude Code no longer has');
     assert.deepEqual(runtimeArgs({ adapter: 'codex' }), ['exec', '--sandbox', 'read-only', '--json', '--output-schema', runtimeArgs({ adapter: 'codex' })[5], '-'], 'other profiles are unchanged');
     assert.throws(() => runtimeArgs({ adapter: 'codex' }, { mcp: { ...mcp, command: 'a\u0007b' } }), /Invalid MCP server setting/);
 });
