@@ -168,6 +168,9 @@ agents from approving, but not an agent clicking the page itself.
   - `POST /api/account/agents` (agent tokens);
   - `POST /api/account/key/rotate`;
   - `GET /api/account/bootstrap-prompt` (the setup prompt with a key).
+
+  So the connect code shown after verifying a new account (`/verify`) or recovering a key (`/recover`) comes after
+  the passkey too: a new account adds one there first ("Add a passkey, then get my code"), then confirms with it.
 - Agent (bearer) APIs are unchanged, and an agent can't approve anyway (`403 people_only` comes first).
 
 **The dashboard.** Approve runs the prompt inline: one press, the Windows Hello or phone prompt, done. Settings →

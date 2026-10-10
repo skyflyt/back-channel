@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+// The connect code, behind the person's passkey (src/lib/step-up.ts).
+import { ConnectCodeBox } from "../connect-code-box";
 
 interface RecoverResult {
   status: string;
@@ -25,23 +27,8 @@ export default function RecoverPage() {
   const [handle, setHandle] = useState("");
   const [data, setData] = useState<RecoverResult | null>(null);
   const [errMsg, setErrMsg] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [exCode, setExCode] = useState<{ prompt: string; expiry: number } | null>(null);
-  const [exLeft, setExLeft] = useState(0);
+  // Once the key is rotated the bc_session cookie is set, and ConnectCodeBox mints a connect code (after the person's passkey).
   const [showRaw, setShowRaw] = useState(false);
-
-  const mintExchange = () => {
-    fetch("/api/auth/exchange-code", { method: "POST", credentials: "include", headers: { "x-bc-csrf": (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") } })
-      .then((r) => r.json())
-      .then((j) => { if (j.code) setExCode({ prompt: j.paste_prompt, expiry: new Date(j.expires_at).getTime() }); })
-      .catch(() => {});
-  };
-  useEffect(() => { if (state === "ok") mintExchange(); }, [state]);
-  useEffect(() => {
-    if (!exCode) return;
-    const tick = () => { const left = Math.max(0, Math.round((exCode.expiry - Date.now()) / 1000)); setExLeft(left); if (left <= 0) setExCode(null); };
-    tick(); const iv = setInterval(tick, 1000); return () => clearInterval(iv);
-  }, [exCode]);
 
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get("token");
@@ -117,14 +104,6 @@ export default function RecoverPage() {
         setErrMsg(e instanceof Error ? e.message : String(e));
         setState("error");
       });
-  };
-
-  const copy = () => {
-    const text = exCode?.prompt ?? data?.bootstrap_prompt ?? data?.api_key;
-    if (!text) return;
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
   };
 
   return (
@@ -203,18 +182,7 @@ export default function RecoverPage() {
               key is now <strong>invalid</strong>. Paste this one-time code into your assistant to
               reconnect it — your new key never goes into the chat.
             </p>
-            {exCode ? (
-              <div style={styles.promptBox}>
-                <p style={styles.codeNote}>Expires in :{String(exLeft).padStart(2, "0")}</p>
-                <pre style={styles.promptText}>{exCode.prompt}</pre>
-                <button onClick={copy} style={styles.copyBtnWide}>{copied ? "✓ Copied" : "Copy connect code"}</button>
-              </div>
-            ) : (
-              <div style={styles.promptBox}>
-                <p style={styles.promptText}>Your connect code expired.</p>
-                <button onClick={() => { setShowRaw(false); mintExchange(); }} style={styles.copyBtnWide}>Generate a new code</button>
-              </div>
-            )}
+            <ConnectCodeBox />
             <p style={styles.smallLead}>
               Or, to script your key manually,{" "}
               <button onClick={() => setShowRaw((v) => !v)} style={styles.linkBtn}>{showRaw ? "hide it" : "reveal your raw key"}</button>.
