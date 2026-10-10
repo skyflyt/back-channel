@@ -605,12 +605,12 @@ model AppBridgeEntitlement {
 // A one-use relay pass (about 60 s). Only its hash is stored; swept minutes after expiry.
 model AppBridgePass {
   passHash       String    @id
-  purpose        String // "session" | "presence" | "agent"
+  purpose        String // "session" | "presence" | "agent" | "support"
   accountId      String
-  hostDeviceId   String
+  hostDeviceId   String // "support": the helper's ephemeral relay identity, not a device
   remoteDeviceId String?
   enrollmentId   String?
-  // "agent" passes only: the RemoteAppSession the PC holds it for (no FK, see RemoteAppSession).
+  // "agent" and "support" passes only: the RemoteAppSession it is for (no FK, see RemoteAppSession).
   remoteAppSessionId String?
   createdAt      DateTime  @default(now())
   expiresAt      DateTime
@@ -627,7 +627,7 @@ model AppBridgeLease {
   hostDeviceId   String
   remoteDeviceId String?
   enrollmentId   String?
-  // "agent" leases only: the RemoteAppSession it belongs to. Stopping the session deletes these.
+  // "agent" and "support" leases only: the RemoteAppSession it belongs to. Ending the session deletes these.
   remoteAppSessionId String?
   createdAt      DateTime @default(now())
   expiresAt      DateTime
@@ -663,28 +663,39 @@ model AppBridgeConnectionEvent {
 model RemoteAppSession {
   id              String    @id @default(uuid())
   accountId       String
-  kind            String    @default("agent") // "agent" (Phase A); "support" is reserved for Phase B
-  hostDeviceId    String // the PC: an AppBridgeDevice with role "host"
-  agentTokenId    String // the agent that asked for the session
+  kind            String    @default("agent") // "agent" (Phase A) | "support" (Phase B, docs/remote-support.md)
+  // "agent": the PC, an AppBridgeDevice with role "host". "support": NOT a device. The helper's ephemeral
+  // relay identity ("support_" + 22 characters), minted at redemption; no AppBridgeDevice ever has it.
+  hostDeviceId    String
+  agentTokenId    String // the agent that asked for the session (for "support": the one that asked for the code)
   executorAgentId String? // the agent on the PC that drives the app; null = the agent that asked
   listTaskId      String? // the Lists task this session works on
-  goal            String
-  appAllowList    String[] // app names as the person approved them; the PC enforces the list
+  goal            String // "support": the exact task text the helped person was shown
+  appAllowList    String[] // app names as the person approved them; the PC enforces the list ("support": empty)
   status          String    @default("awaiting_consent") // awaiting_consent | active | blocked | ended | denied | lapsed
-  consentBy       String? // the account that approved or denied it
-  consentVia      String? // "web": the dashboard (the only way in v1)
-  minutes         Int // 1..60
+  consentBy       String? // the account that approved or denied it ("support": null; the helped person has no account)
+  consentVia      String? // "web": the dashboard (Phase A); "helper": Allow on the helped person's own screen (support)
+  minutes         Int // 1..60 ("support": 1..45)
   startedAt       DateTime?
   expiresAt       DateTime? // startedAt + minutes; never extended
   endedAt         DateTime?
-  endReason       String? // done | user_stop | host_stop | agent_stop | lapsed | fail_closed | revoked
+  endReason       String? // done | user_stop | host_stop | agent_stop | lapsed | fail_closed | revoked | reported
   summary         String? // the agent's own words when it ended the session
   evidenceRef     String? // a pointer into the PC's own evidence store, never the evidence
   createdAt       DateTime  @default(now())
+  // ── "support" sessions only (docs/remote-support.md); null for "agent" ──
+  helperLabel                String? // who it's for, in the issuer's agent's words; shown to the issuer only
+  supportKeySha256           String? // the temporary client's P-256 key, pinned at redemption (uppercase hex SHA-256 of its DER)
+  supportKeySpki             String? // that key (base64 DER SubjectPublicKeyInfo), to check its signed Allow and removal receipt
+  supportCredentialHash      String?   @unique // sha256 of the client's abs_ credential; the raw value is never stored
+  supportCredentialExpiresAt DateTime? // fixed at redemption, never renewed
+  removal                    String? // removed | in_memory | unconfirmed: the client's signed removal receipt
+  removalAt                  DateTime?
 
   @@index([accountId, status])
   @@index([agentTokenId])
   @@index([hostDeviceId, status])
+  @@index([supportKeySha256])
 }
 
 // One step of a remote app session, as fixed metadata: a kind of action, a
@@ -695,10 +706,55 @@ model RemoteAppActionLog {
   at          DateTime @default(now())
   action      String // open | observe | invoke | set_value | toggle | select | scroll | key | screenshot | blocked
   target      String? // a control or app name, at most 120 characters
-  outcome     String // ok | credential_field | not_in_scope | needs_user | fail_closed
+  outcome     String // ok | credential_field | not_in_scope | needs_user | fail_closed | declined ("support": the helped person said no on their screen)
   evidenceRef String? // a pointer into the PC's own evidence store
 
   @@index([sessionId, at])
+}
+
+// ── Remote support: one-time help for someone else (docs/remote-support.md) ──
+// Phase B. An agent asks for a support code; its person (owner-only in v1)
+// approves it in the dashboard, which mints a single-use code BCS-XXXX-XXXX
+// (only its hash is stored) shown to the person alone. They send it themselves.
+// The helped person's temporary client redeems it with a fresh key, which
+// creates a RemoteAppSession with kind "support" pinned to that key; nothing
+// can act until they press Allow on their own screen. No foreign keys, like
+// RemoteAppSession: ending or deleting things must never erase what happened.
+model SupportInvite {
+  id            String    @id @default(uuid())
+  accountId     String // the issuer: the person whose account mints the code
+  agentTokenId  String // the agent that asked for it
+  forName       String // who it's for, in the agent's words ("Mom"); shown to the issuer only
+  task          String // the exact task text the helped person sees
+  minutes       Int // 1..45: the session's cap once they allow it
+  listTaskId    String? // the Lists task it's bound to (claimed by the agent that asked)
+  status        String    @default("requested") // requested | denied | lapsed | withdrawn | minted | voided | expired | reported | redeemed
+  codeHash      String?   @unique // sha256 of the code; set when minted. The code itself is never stored
+  mintedAt      DateTime?
+  codeExpiresAt DateTime? // mintedAt + 15 minutes: the redeem window
+  redeemedAt    DateTime?
+  sessionId     String?   @unique // the RemoteAppSession the redemption created
+  closedAt      DateTime? // when it stopped being usable without being redeemed
+  createdAt     DateTime  @default(now())
+
+  @@index([accountId, status])
+  @@index([accountId, mintedAt])
+  @@index([agentTokenId])
+}
+
+// "I didn't ask for this": filed from the landing page (via "page", which also
+// cancels the code) or from the temporary client (via "helper", which also ends
+// the session). The issuer sees these on the Remote page.
+model SupportReport {
+  id        String   @id @default(uuid())
+  accountId String // the issuer the report is about
+  inviteId  String
+  sessionId String?
+  via       String // page | helper
+  createdAt DateTime @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([inviteId])
 }
 
 // ── Back Channel Remote paid tier (Stripe) ──────────────────────────────────

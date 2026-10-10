@@ -31,24 +31,10 @@
 import type { Account } from "@prisma/client";
 import { NextResponse, type NextRequest } from "next/server";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
-
-const EMAIL = /^[^@\s]+@[^@\s]+$/;
-
-/** The owner allowlist from ADMIN_EMAILS. Empty (admin closed) when unset. */
-export function ownerEmails(): Set<string> {
-  const raw = process.env.ADMIN_EMAILS ?? "";
-  // Commas are the documented separator; semicolons and whitespace are also
-  // accepted because gcloud --set-env-vars reserves the comma.
-  return new Set(raw.split(/[,;\s]+/).map(s => s.trim().toLowerCase()).filter(s => EMAIL.test(s)));
-}
-
-/** True only for a verified, non-reserved account whose email is allowlisted. */
-export function isOwnerAccount(account: Pick<Account, "email" | "emailVerifiedAt"> & { reserved?: boolean | null }): boolean {
-  const allow = ownerEmails();
-  if (allow.size === 0) return false;
-  if (!account.emailVerifiedAt || account.reserved) return false;
-  return typeof account.email === "string" && allow.has(account.email.trim().toLowerCase());
-}
+// The allowlist itself (rules 3 and 4 below) lives in owner.ts, which imports nothing at runtime, so
+// modules the MCP route loads can ask it too (remote support is owner-only in v1). Unchanged; re-exported.
+import { isOwnerAccount } from "@/lib/owner";
+export { ownerEmails, isOwnerAccount } from "@/lib/owner";
 
 export type OwnerGateInput = {
   authorization?: string | null;

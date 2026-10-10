@@ -339,7 +339,9 @@ retention rule yet); a deleted account's rows must be removed by `accountId` by 
 - **The relay** accepting `purpose: "agent"` (backchannel-relay, a Cloudflare Worker).
 - The skill and privacy-page copy for remote sessions (design chunk A7).
 - A retention rule for ended sessions and their steps.
-- Phase B (one-time remote support): `kind: "support"` is reserved and refused by the agent lease.
+- Phase B (one-time remote support for someone else) is a separate document: [docs/remote-support.md](remote-support.md).
+  Its sessions are `RemoteAppSession` rows with `kind: "support"`; every endpoint here, the PC's routes and the "agent"
+  lease ignore or refuse them, and they have their own "support" lease.
 
 ## Data
 
