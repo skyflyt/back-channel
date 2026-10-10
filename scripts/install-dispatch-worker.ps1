@@ -117,10 +117,16 @@ exit `$worker.ExitCode
 # worker (--parent-pid), so stopping the task (which ends the launcher) really stops the worker.
 $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $taskLauncher + '"')
 $taskUpdated = $false
+$taskUpdateRefused = $false
 if ($taskTask) {
-    # An existing install picks up the new action; its trigger, settings and enabled state are kept.
-    Set-ScheduledTask -TaskName 'BackChannel-Worker' -Action $taskAction | Out-Null
-    $taskUpdated = $true
+    # An existing install picks up the new action; its trigger, settings and enabled state are kept. A task registered
+    # from an elevated PowerShell can't be changed from a normal one: Windows refuses, and the old action keeps working.
+    try {
+        Set-ScheduledTask -TaskName 'BackChannel-Worker' -Action $taskAction -ErrorAction Stop | Out-Null
+        $taskUpdated = $true
+    } catch {
+        $taskUpdateRefused = $true
+    }
 } elseif ($StartAtLogon) {
     $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $taskSid.Value
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId $taskSid.Value -LogonType Interactive -RunLevel Limited
@@ -139,6 +145,14 @@ if ($taskUpdated) {
         Write-Host 'Started the worker again.'
     } elseif ($taskWasRunning) {
         Write-Host "The worker was running and is stopped now. Start it again with: Start-ScheduledTask -TaskName 'BackChannel-Worker'"
+    }
+} elseif ($taskUpdateRefused) {
+    # The task still runs the same launcher file, which now starts the new worker, so only the new command line is missing.
+    Write-Host 'Kept the BackChannel-Worker task''s existing command: Windows refused to change it (it was probably created from an elevated PowerShell).'
+    Write-Host 'It runs the updated worker all the same. If PowerShell scripts are blocked on this PC, run this installer once from an elevated PowerShell.'
+    if ($taskWasRunning -and (Get-ScheduledTask -TaskName 'BackChannel-Worker').State -ne 'Disabled') {
+        Start-ScheduledTask -TaskName 'BackChannel-Worker'
+        Write-Host 'Started the worker again.'
     }
 } elseif ($StartAtLogon) {
     Write-Host 'Registered BackChannel-Worker disabled; it has not started and will not start at logon yet.'
