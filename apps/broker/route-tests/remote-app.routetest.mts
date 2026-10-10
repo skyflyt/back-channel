@@ -522,9 +522,12 @@ test("MCP: machines, start, status and end through the tools", async () => {
   assert.equal(machines.isError, false);
   assert.equal(machines.json.remoteAccess, "available");
   assert.deepEqual(machines.json.machines, [
-    { hostDeviceId: PC1, name: "Shop-PC", online: true, internetAccess: true, appsAvailable: null },
-    { hostDeviceId: PC2, name: "Office PC", online: false, internetAccess: true, appsAvailable: null },
+    { hostDeviceId: PC1, name: "Shop-PC", online: true, internetAccess: true, appsAvailable: null, agents: [] },
+    { hostDeviceId: PC2, name: "Office PC", online: false, internetAccess: true, appsAvailable: null, agents: [] },
   ]);
+  // Readiness (route-tests/agent-readiness.routetest.mts): the Dispatch agent hasn't reported, so it isn't ready yet.
+  assert.deepEqual(machines.json.executors.map((e: Row) => [e.agentId, e.ready, e.reporting]), [[A.exec, false, false]]);
+  assert.ok(machines.json.howToFix.claude);
   const started = await tool(KEY.starter, "bc_remote_session_start", { host: "shop-pc", apps: ["QuickBooks"], minutes: 20, goal: "Enter invoices", task_id: TASK });
   assert.equal(started.isError, false); assert.equal(started.json.session.status, "awaiting_consent"); assert.match(started.json.approvalUrl, /\/account\/remote\?vt=/);
   const id = started.json.session.id;

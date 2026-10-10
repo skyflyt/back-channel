@@ -54,6 +54,8 @@ import { REMOTE_TOOL_NAMES } from "@/lib/mcp/remote-tools.mjs";
 // Remote support (bc_support_*, docs/remote-support.md) shares the bc_remote_* gating and is dispatched from remoteTool().
 import { isSupportTool, supportTool } from "@/lib/remote-support";
 import * as R from "@/lib/remote-app/rules.mjs";
+// PC readiness for agents (the worker's reports, the six-step checklist): docs/remote-app-sessions.md, "Setting up a PC".
+import * as RD from "@/lib/remote-app/readiness.mjs";
 
 type Tx = Prisma.TransactionClient;
 type Input = Record<string, unknown>;
@@ -61,12 +63,12 @@ type Session = RemoteAppSession;
 type Patch = Prisma.RemoteAppSessionUpdateManyMutationInput;
 /** agentId null: the person, signed in to the dashboard. */
 type Caller = { accountId: string; agentId: string | null };
-type Op = "machines" | "start" | "list" | "get" | "approve" | "deny" | "resume" | "stop" | "stopAll" | "report" | "end" | "surface" | "rotate";
+type Op = "machines" | "readiness" | "start" | "list" | "get" | "approve" | "deny" | "resume" | "stop" | "stopAll" | "report" | "end" | "surface" | "rotate";
 // viaTool: the request came through an MCP tool (a chat), never the executor's own worker.
 type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string; viaTool?: boolean };
 type Outcome = { status?: number; body: Record<string, unknown> };
 
-const PEOPLE_ONLY = new Set<Op>(["approve", "deny", "resume", "stopAll"]);
+const PEOPLE_ONLY = new Set<Op>(["approve", "deny", "resume", "stopAll", "readiness"]);
 const AGENTS_ONLY = new Set<Op>(["start", "report", "end", "surface", "rotate"]);
 const WRITES = new Set<Op>(["start", "approve", "deny", "resume", "stop", "stopAll", "report", "end", "rotate"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -96,7 +98,11 @@ async function resolveCaller(req: NextRequest, op: Op): Promise<Caller> {
   const authorization = req.headers.get("authorization");
   if (authorization) {
     // A bearer key is an agent, whatever cookie rides along: approving is a person's act, in the browser.
-    if (PEOPLE_ONLY.has(op)) fail(403, "people_only", "Only your person can do this, signed in to the Back Channel dashboard. An agent never approves its own session.");
+    if (PEOPLE_ONLY.has(op)) {
+      fail(403, "people_only", op === "readiness"
+        ? "This is the dashboard's view of your person's PCs. Agents get each PC's readiness from bc_remote_machines."
+        : "Only your person can do this, signed in to the Back Channel dashboard. An agent never approves its own session.");
+    }
     const ctx = await auth.getAuthContext(authorization);
     if (!ctx) return fail(401, "unauthorized", "Unauthorized");
     if (!ctx.agentTokenId) fail(401, "agent_key_required", "Remote app sessions need a per-agent key. Connect this agent from the Back Channel dashboard.");
@@ -304,18 +310,66 @@ async function accessState(tx: Tx, accountId: string, now: Date) {
   return (await remoteAccessSource(tx, accountId, now)) ? "available" : "not_entitled";
 }
 
+/**
+ * PC readiness for agents: each of the account's live full-scope agents that is enrolled for Dispatch or has reported
+ * readiness, with its key fingerprint (computed here from its Dispatch keys), its last report, the PC it reports from
+ * (a best-effort name match, never a hard link) and the six-step checklist; and each registered PC no worker reports
+ * from. The owner's "Agents on your PCs" card shows all of it; bc_remote_machines gives agents ready/missing.
+ */
+async function readinessOf(tx: Tx, accountId: string, now: Date) {
+  const [agents, hosts] = await Promise.all([
+    tx.agentToken.findMany({
+      where: { accountId, revokedAt: null, scope: "full", OR: [{ dispatchEncryptionKey: { not: null }, dispatchSigningKey: { not: null } }, { readinessAt: { not: null } }] },
+      orderBy: { createdAt: "asc" }, take: 100,
+    }),
+    tx.appBridgeDevice.findMany({ where: { accountId, role: "host", revokedAt: null }, orderBy: { createdAt: "asc" }, take: 50 }),
+  ]);
+  const pcs = hosts.map((h) => ({ hostDeviceId: h.id, name: pcName(h) }));
+  const nameOf = new Map(agents.map((a) => [a.id, a.name || a.dispatchName || "agent"]));
+  const matched = new Set<string>();
+  const rows = agents.map((a) => {
+    const report = RD.storedReadiness(a.readiness, a.id);
+    const pc = report ? RD.matchPc(report.appbridge.hostName, pcs) : null;
+    if (pc) matched.add(pc.hostDeviceId);
+    const c = RD.checklist({ report, readinessAt: report ? a.readinessAt : null, now, pc });
+    // The senders by the names the person gave those agents here (the PC never sends names).
+    const readiness = report && { ...report, profiles: { remoteApp: { ...report.profiles.remoteApp,
+      senders: report.profiles.remoteApp.senders.map((x) => ({ ...x, name: nameOf.get(x.agentId) ?? null })) } } };
+    return {
+      agentId: a.id, name: nameOf.get(a.id) as string, fingerprint: RD.fingerprint(a.dispatchSigningKey, a.dispatchEncryptionKey),
+      readiness, readinessAt: report && a.readinessAt ? a.readinessAt.toISOString() : null, reporting: c.reporting,
+      pc, reportsFrom: report?.appbridge.hostName ?? null, steps: c.steps, ready: c.ready, missing: c.missing,
+    };
+  });
+  return { agents: rows, pcs: pcs.filter((p) => !matched.has(p.hostDeviceId)).map((p) => ({ ...p, ...RD.pcWithoutAgent() })) };
+}
+
+/** GET /api/remote-app/readiness: the dashboard's "Agents on your PCs" card (the person only). */
+async function opReadiness({ tx, caller, now }: Ctx): Promise<Outcome> {
+  const r = await readinessOf(tx, caller.accountId, now);
+  return { body: { staleAfterMinutes: RD.STALE_MS / 60_000, agents: r.agents, pcs: r.pcs } };
+}
+
 async function opMachines({ tx, caller, now }: Ctx): Promise<Outcome> {
   const hosts = await tx.appBridgeDevice.findMany({ where: { accountId: caller.accountId, role: "host", revokedAt: null, enabled: true }, orderBy: { createdAt: "asc" }, take: 50 });
   const presence = hosts.length
     ? await tx.appBridgeLease.findMany({ where: { accountId: caller.accountId, purpose: "presence", expiresAt: { gt: now } }, select: { hostDeviceId: true } })
     : [];
   const online = new Set(presence.map((p) => p.hostDeviceId));
+  const ready = await readinessOf(tx, caller.accountId, now);
+  const brief = (a: (typeof ready.agents)[number]) => ({ agentId: a.agentId, name: a.name, ready: a.ready, missing: a.missing });
   return {
     body: {
       remoteAccess: await accessState(tx, caller.accountId, now),
-      machines: hosts.map((h) => ({ hostDeviceId: h.id, name: pcName(h), online: online.has(h.id), internetAccess: h.relayEnabled, appsAvailable: null })),
+      machines: hosts.map((h) => ({ hostDeviceId: h.id, name: pcName(h), online: online.has(h.id), internetAccess: h.relayEnabled, appsAvailable: null,
+        agents: ready.agents.filter((a) => a.pc?.hostDeviceId === h.id).map(brief) })),
+      // Every agent that could drive an app on a PC (enrolled for Dispatch), where it reports from, and what's missing.
+      executors: ready.agents.filter((a) => a.fingerprint).map((a) => ({ ...brief(a), hostDeviceId: a.pc?.hostDeviceId ?? null, pc: a.pc?.name ?? null, reporting: a.reporting })),
+      howToFix: RD.HOW_TO,
       note: "Back Channel never sees a PC's apps, so it can't list them (appsAvailable is null). Name the apps your person mentioned; the PC enforces the list. " +
-        "A PC needs internet access on to take an agent session.",
+        "A PC needs internet access on to take an agent session. Each machine's agents are the Back Channel workers that report from it (matched by the PC's name). " +
+        "To have an agent on the PC drive the app, name a ready one as executor in bc_remote_session_start. If none is ready, don't start a session: " +
+        "tell your person what's missing, using howToFix for each missing step. They fix it on that PC in AppBridge → Agents, and the Remote page of the dashboard shows the same checklist.",
     },
   };
 }
@@ -559,7 +613,7 @@ async function opSurface({ tx, caller, now, id }: Ctx): Promise<Outcome> {
 }
 
 const OPS: Record<Op, (ctx: Ctx) => Promise<Outcome>> = {
-  machines: opMachines, start: opStart, list: opList, get: opGet, approve: opApprove, deny: opDeny, resume: opResume,
+  machines: opMachines, readiness: opReadiness, start: opStart, list: opList, get: opGet, approve: opApprove, deny: opDeny, resume: opResume,
   stop: opStop, stopAll: opStopAll, report: opReport, end: opEnd, surface: opSurface, rotate: opRotate,
 };
 
@@ -628,7 +682,8 @@ async function readJson(req: NextRequest): Promise<Input> {
 
 /**
  * Map a REST request onto an operation.
- *   GET  /api/remote-app/machines                  machines   agent or person
+ *   GET  /api/remote-app/machines                  machines   agent or person (with each PC's agents' readiness)
+ *   GET  /api/remote-app/readiness                 readiness  person: the "Agents on your PCs" card
  *   GET  /api/remote-app/sessions                  list       agent (its own) or person (the dashboard card)
  *   POST /api/remote-app/sessions                  start      agent
  *   POST /api/remote-app/stop-all                  stopAll    person
@@ -648,6 +703,7 @@ export async function remoteAppRoute(req: NextRequest, path: string[]): Promise<
   let route: [Op, Input | (() => Promise<Input>), string?] | null = null;
   if (extra === undefined) {
     if (a === "machines" && !b && m === "GET") route = ["machines", {}];
+    else if (a === "readiness" && !b && m === "GET") route = ["readiness", {}];
     else if (a === "stop-all" && !b && m === "POST") route = ["stopAll", {}];
     else if (a === "sessions" && !b) route = m === "GET" ? ["list", {}] : m === "POST" ? ["start", body] : null;
     else if (a === "sessions" && b && !c && m === "GET") route = ["get", {}, b];

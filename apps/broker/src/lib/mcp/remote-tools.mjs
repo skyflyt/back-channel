@@ -30,7 +30,11 @@ const SESSION_TOOLS = [
   {
     name: "bc_remote_machines",
     description:
-      "Your person's PCs enrolled in Back Channel Remote that an agent could use an app on: each with its id, name, whether it is online, and whether internet access is on. " +
+      "Your person's PCs enrolled in Back Channel Remote that an agent could use an app on: each with its id, name, whether it is online, whether internet access is on, " +
+      "and the agents on it (agents: the Back Channel workers that report from that PC, each ready or with the setup steps it is missing). executors lists every agent of your person's " +
+      "that could drive an app on a PC, with where it reports from, ready and missing; howToFix says how your person fixes each missing step. " +
+      "To have an agent on the PC drive the app, name a ready executor as executor in bc_remote_session_start. If none is ready, don't start a session that can't run: " +
+      "tell your person exactly what's missing, using howToFix (each step is done on that PC, in AppBridge → Agents). " +
       "Back Channel doesn't know which apps a PC has; name the apps your person mentioned. Call this before bc_remote_session_start.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
@@ -50,7 +54,7 @@ const SESSION_TOOLS = [
         minutes: { type: "integer", minimum: 1, maximum: 60, description: "How long it may run once approved: 1 to 60 minutes. Never extended." },
         goal: { type: "string", description: "One plain sentence your person will read before approving, e.g. \"Enter this week's three supplier invoices in QuickBooks.\"" },
         task_id: { type: "string", description: "The Lists task this is for (claim it first with bc_task_claim)." },
-        executor: { type: "string", description: "Optional: the id or name of your person's agent that runs on that PC and will drive the app. Default: you." },
+        executor: { type: "string", description: "Optional: the id or name of your person's agent that runs on that PC and will drive the app: a ready one from bc_remote_machines (executors). Default: you." },
       },
       required: ["host", "apps", "minutes", "goal"],
       additionalProperties: false,
