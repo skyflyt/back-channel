@@ -15,7 +15,8 @@
       "args": ["${__dirname}/server/index.js"],
       "env": {
         "BC_TOKEN": "${user_config.token}",
-        "BC_MCP_URL": "${user_config.mcp_url}"
+        "BC_MCP_URL": "${user_config.mcp_url}",
+        "BC_HOST": "claude-desktop"
       }
     }
   },

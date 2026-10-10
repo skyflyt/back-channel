@@ -2,11 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sessionStartNote } from "./session-start.js";
+import { sessionStartNote, hookHost } from "./session-start.js";
 import { fetchPending, describePending } from "./inbox.js";
 import { storedToken, optionEnabled } from "./lib.js";
 
@@ -133,6 +133,52 @@ test("the real hook entry point, as a host runs it: prints one JSON line when ma
 
     const dead = await run({ BC_INBOX_ON_START: "1", BC_MCP_URL: "http://127.0.0.1:9/api/mcp" });
     assert.deepEqual([dead.code, dead.out, dead.err], [0, "", ""], "an unreachable server is silent, not an error");
+  } finally {
+    server.close();
+  }
+});
+
+test("hookHost: BC_HOST if set, else Claude Code when CLAUDECODE=1, else Codex", () => {
+  assert.equal(hookHost({ CLAUDECODE: "1" }), "claude-code");
+  assert.equal(hookHost({}), "codex");
+  assert.equal(hookHost({ CLAUDECODE: "0" }), "codex");
+  assert.equal(hookHost({ BC_HOST: "codex", CLAUDECODE: "1" }), "codex", "an explicit BC_HOST wins over detection");
+  assert.equal(hookHost({ BC_HOST: "../nope", CLAUDECODE: "1" }), "claude-code", "an unusable BC_HOST is ignored");
+});
+
+test("the real hook reads its own host's keystore, not the shared one, and never moves the shared file", async () => {
+  const hook = resolve(dirname(fileURLToPath(import.meta.url)), "..", "hooks", "session-start.mjs");
+  const home = mkdtempSync(join(tmpdir(), "bc-hook-home-"));
+  mkdirSync(join(home, ".bc"));
+  const shared = join(home, ".bc", "mcpb-session-keys.json");
+  writeFileSync(shared, JSON.stringify({ __resolved_bc_token__: { bcToken: "bc_shared_other_app" } }));
+  writeFileSync(join(home, ".bc", "claude-code-session-keys.json"), JSON.stringify({ __resolved_bc_token__: { bcToken: "bc_claude_code" } }));
+  const seen = [];
+  const server = createServer((req, res) => {
+    seen.push(req.headers.authorization);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ pending_count: 1, kinds: ["frame"] }));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const run = (extraEnv) => new Promise((done) => {
+    const env = { ...process.env, HOME: home, USERPROFILE: home, BC_TOKEN_FILE: join(home, "no-token-file"), BC_INBOX_ON_START: "1", BC_MCP_URL: `http://127.0.0.1:${server.address().port}/api/mcp`, ...extraEnv };
+    for (const k of ["BC_TOKEN", "BC_KEYSTORE_PATH", "BC_HOST", "CLAUDECODE", "CLAUDE_PLUGIN_OPTION_TOKEN"]) if (!(k in extraEnv)) delete env[k];
+    const child = spawn(process.execPath, [hook], { env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (c) => (out += c));
+    child.on("close", (code) => done({ code, out }));
+  });
+  try {
+    const claude = await run({ CLAUDECODE: "1" });
+    assert.equal(claude.code, 0);
+    assert.match(claude.out, /1 unread item/);
+    assert.deepEqual(seen, ["Bearer bc_claude_code"], "Claude Code's own key, never the shared file's");
+
+    seen.length = 0;
+    const codex = await run({});
+    assert.deepEqual([codex.code, codex.out], [0, ""], "Codex has no keystore of its own yet: silent, not someone else's inbox");
+    assert.deepEqual(seen, []);
+    assert.ok(existsSync(shared), "only the bridge takes the shared file over, never the hook");
   } finally {
     server.close();
   }

@@ -25,7 +25,8 @@
       ],
       "env": {
         "BC_TOKEN": "${user_config.token}",
-        "BC_CHANNEL": "${user_config.push_messages}"
+        "BC_CHANNEL": "${user_config.push_messages}",
+        "BC_HOST": "claude-code"
       }
     }
   },

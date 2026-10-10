@@ -8,9 +8,10 @@
  * restart would force a re-handshake (survivable per protocol's "always use
  * the latest handshake.pubkey" rule, but disruptive and easy to avoid).
  *
- * Stored at ~/.bc/mcpb-session-keys.json, alongside the skill's own ~/.bc/
- * keep-warm state (same convention, different file). Filesystem is injectable
- * for tests — default is real node:fs.
+ * Stored at ~/.bc/<host>-session-keys.json — one file per host app, see
+ * resolveKeystorePath below — alongside the skill's own ~/.bc/ keep-warm state
+ * (same convention, different file). Filesystem is injectable for tests —
+ * default is real node:fs.
  *
  * SECURITY (2026-07-03 hardening — H2/M1/M2 from the security pass):
  *   This file holds live bc_ bearer material (session ECDH private keys, and
@@ -60,10 +61,86 @@
 
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, chmodSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir, userInfo } from "node:os";
 
+// The keystore every host shared before 1.6.1. Still the path for a bridge
+// started without a host id (an older manifest, a hand-written MCP config).
 export const DEFAULT_KEYSTORE_PATH = join(homedir(), ".bc", "mcpb-session-keys.json");
+
+/**
+ * One keystore per host (1.6.1). Besides session keys, the keystore holds the
+ * bc_ key that bc_connect or a redeemed connect code minted, and the bridge
+ * adopts whatever key it finds there at startup without asking anyone. While
+ * every host shared DEFAULT_KEYSTORE_PATH, the second app to run on a machine
+ * quietly became the first app's agent: pair Codex, then install the Claude
+ * Code plugin, and Claude Code ran as the Codex agent — wrong name, wrong
+ * runtime, mail landing on whichever app polled first, and two processes
+ * read-modify-writing one file of session keys.
+ *
+ * So each host's manifest now names the host (BC_HOST in its env, or
+ * --host=<id> in its args) and the bridge keeps ~/.bc/<id>-session-keys.json.
+ * In order:
+ *   1. BC_KEYSTORE_PATH, if set, wins — unchanged.
+ *   2. No host id: the shared DEFAULT_KEYSTORE_PATH, exactly as before.
+ *   3. A host id: that host's own file. If it doesn't exist yet and the shared
+ *      file does, the host takes the shared file over with a single rename.
+ *
+ * The rename is the whole migration, and it is atomic: the first upgraded
+ * host to start keeps the pairing it had, and every other host on the machine
+ * finds the shared file gone and comes up unpaired, offering bc_connect. That
+ * is the fix rather than a side effect — those hosts were running as another
+ * app's agent. Someone with one host, the common case, sees no change.
+ *
+ * `adoptShared: false` resolves the same path without ever renaming, for code
+ * that only reads (the session-start hook guesses its host from the
+ * environment, and a guess must not be allowed to move another app's pairing).
+ */
+const HOST_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/** A host id as a manifest passes it, or "" — an unsubstituted `${…}` placeholder or anything path-like is not one. */
+export function normalizeHostId(value) {
+  const v = String(value ?? "").trim().toLowerCase();
+  return HOST_ID_RE.test(v) ? v : "";
+}
+
+/** Where a host's own keystore lives: next to the shared one, named for the host. */
+export function hostKeystorePath(host, sharedPath = DEFAULT_KEYSTORE_PATH) {
+  return join(dirname(sharedPath), `${host}-session-keys.json`);
+}
+
+export function resolveKeystorePath({
+  explicitPath = "",
+  host = "",
+  adoptShared = true,
+  sharedPath = DEFAULT_KEYSTORE_PATH,
+  fs = { existsSync, renameSync },
+  log = () => {},
+} = {}) {
+  const explicit = String(explicitPath ?? "").trim();
+  if (explicit) return explicit;
+
+  const id = normalizeHostId(host);
+  if (!id) {
+    if (String(host ?? "").trim()) log(`keystore: ignoring unusable host id ${JSON.stringify(String(host))}; using the shared keystore`);
+    return sharedPath;
+  }
+
+  const own = hostKeystorePath(id, sharedPath);
+  if (!adoptShared || fs.existsSync(own) || !fs.existsSync(sharedPath)) return own;
+  try {
+    fs.renameSync(sharedPath, own);
+    log(`keystore: ${id} took over the shared keystore (${sharedPath} -> ${own}); other apps on this machine now connect separately`);
+    return own;
+  } catch (e) {
+    // ENOENT: another host renamed it between our check and our rename. It's theirs; start unpaired.
+    if (e?.code === "ENOENT") return own;
+    // Anything else (a file held open on Windows, a permissions problem): stay
+    // on the shared file for this run, as before 1.6.1, and try again next start.
+    log(`keystore: could not take over the shared keystore for ${id}, using it in place this run: ${e?.message ?? e}`);
+    return sharedPath;
+  }
+}
 const PRUNE_AFTER_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — sessions this stale are long over
 const IS_WINDOWS = process.platform === "win32";
 
