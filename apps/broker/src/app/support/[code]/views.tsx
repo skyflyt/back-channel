@@ -59,15 +59,17 @@ export function Valid({ info, download }: { info: SupportCodePage; download: str
         <div className="ds-cardh">How it works</div>
         <ol style={{ margin: "8px 0 0", paddingLeft: 20, lineHeight: 1.7, fontSize: 14 }}>
           <li>Download the helper and open it.</li>
-          <li>Enter this code: <span className="ds-mono" style={{ fontWeight: 600, userSelect: "all" }}>{code}</span></li>
+          <li>If it asks for a code, enter: <span className="ds-mono" style={{ fontWeight: 600, userSelect: "all" }}>{code}</span></li>
           <li>Check that it shows {name} and the same task, then press <b>Allow</b>.</li>
           <li>{name}&apos;s AI assistant asks you before every change. You can say no to any of them, and press <b>Stop</b> at any time.</li>
-          <li>When it&apos;s done, it disconnects and removes itself, and shows you a short summary of what was done.</li>
+          <li>When it&apos;s done, it disconnects and shows you a short summary of what was done. It never installed anything; you can then delete the file you downloaded.</li>
         </ol>
         <div style={{ marginTop: 16 }}>
           {download ? (
             <>
-              <a className="ds-btn" style={{ textDecoration: "none", display: "inline-block" }} href={download} rel="noopener noreferrer">Download the helper</a>
+              {/* The helper reads its code from this file name, so the person needn't type it. Browsers honour the name only
+                  for a same-origin download; otherwise the helper asks for the code (step 2). */}
+              <a className="ds-btn" style={{ textDecoration: "none", display: "inline-block" }} href={download} download={`BackChannelHelp-${code}.exe`} rel="noopener noreferrer">Download the helper</a>
               <p className="ds-fine" style={{ margin: "8px 0 0" }}>For Windows. It doesn&apos;t install anything and can&apos;t do anything until you press Allow.</p>
             </>
           ) : (
