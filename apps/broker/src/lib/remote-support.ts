@@ -11,7 +11,8 @@
  *  - REST: src/app/api/support/[[...path]]/route.ts -> supportRoute()
  *  - MCP:  src/lib/remote-app.ts remoteTool() -> supportTool() for bc_support_* (catalog: mcp/remote-tools.mjs)
  *  - The landing page: src/app/support/[code]/page.tsx -> supportCodeForPage()
- *  - The helper's relay pass: src/lib/appbridge.ts issueSupportPass (it reads the session itself)
+ *  - The helper's relay pass, and the issuer connector's: src/lib/appbridge.ts issueSupportPass and
+ *    issueSupportClientPass (they read the session themselves; the second pins the issuer's device on it)
  *
  * Who may do what:
  *  - Ask for a code, follow it, withdraw or end it: an agent, with a FULL-SCOPE key (a connector key is refused,
@@ -23,6 +24,10 @@
  *  - Allow, stop, report, record steps, send the removal receipt, read the session and transcript: the temporary
  *    client, with the abs_ credential its redemption returned (bound to the key that redeemed; Allow and the
  *    receipt are also signed with that key).
+ *  - The executor secret (the support relay path contract, §2.3): born with the session at redemption (hash only),
+ *    handed out ONCE to the agent that asked, in its first GET /invites/{id} once the helped person has allowed it,
+ *    and again only by its explicit rotation (POST /invites/{id}/executor-secret). Never to the helped person, the
+ *    person's dashboard or an audit row. The helper gets `peer` instead: the issuer connector's pinned key.
  *
  * Content-blind like remote app sessions: the broker stores fixed action kinds, a bounded control name and an
  * outcome. Never screen content, typed text or a screenshot, and never the code or the credential (hashes only).
@@ -62,16 +67,16 @@ type Caller =
   | { kind: "client"; accountId: string; sessionId: string }
   | { kind: "public" };
 type Op =
-  | "request" | "list" | "get" | "end" | "approve" | "deny" | "void" | "stop" | "redeem" | "report"
+  | "request" | "list" | "get" | "end" | "rotate" | "approve" | "deny" | "void" | "stop" | "redeem" | "report"
   | "clientGet" | "allow" | "clientReport" | "clientStop" | "step" | "receipt" | "transcript";
 type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string };
 type Outcome = { status?: number; body: Record<string, unknown> };
 
-const AGENTS_ONLY = new Set<Op>(["request", "end"]);
+const AGENTS_ONLY = new Set<Op>(["request", "end", "rotate"]);
 const PEOPLE_ONLY = new Set<Op>(["approve", "deny", "void", "stop"]);
 const CLIENT = new Set<Op>(["clientGet", "allow", "clientReport", "clientStop", "step", "receipt", "transcript"]);
 const PUBLIC = new Set<Op>(["redeem", "report"]);
-const WRITES = new Set<Op>(["request", "end", "approve", "deny", "void", "stop", "redeem", "report", "allow", "clientReport", "clientStop", "step", "receipt"]);
+const WRITES = new Set<Op>(["request", "end", "rotate", "approve", "deny", "void", "stop", "redeem", "report", "allow", "clientReport", "clientStop", "step", "receipt"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_BODY = 8 * 1024;
 const REQUESTS_PER_HOUR = 10;
@@ -272,14 +277,26 @@ async function inviteOfSession(tx: Tx, s: Session): Promise<Invite> {
   return (await tx.supportInvite.findFirst({ where: { sessionId: s.id } }))!;
 }
 
-async function view(tx: Tx, inv: Invite, now: Date, session?: Session | null) {
+/** executorSecret: the raw value, only from the one response that hands it out to the agent that asked. */
+async function view(tx: Tx, inv: Invite, now: Date, session?: Session | null, executorSecret?: string) {
   const s = session === undefined ? await sessionOf(tx, inv, now) : session;
   const [agent, task, report] = await Promise.all([
     tx.agentToken.findFirst({ where: { id: inv.agentTokenId }, select: { name: true } }),
     inv.listTaskId ? tx.taskItem.findFirst({ where: { id: inv.listTaskId }, select: { id: true, title: true } }) : null,
     tx.supportReport.findFirst({ where: { inviteId: inv.id }, select: { id: true } }),
   ]);
-  return S.inviteView(inv, { now, session: s, requestedBy: agent?.name || "a removed agent", task, reported: !!report });
+  return S.inviteView(inv, { now, session: s, requestedBy: agent?.name || "a removed agent", task, reported: !!report, executorSecret });
+}
+
+/**
+ * Hand out the session's executor secret: a fresh value whose hash replaces the stored one (the one the session was
+ * born with, or the last one handed out), returned to the caller and never kept. Guarded by the hash it was read with.
+ */
+async function handOutExecutorSecret(tx: Tx, s: Session, now: Date): Promise<string> {
+  const { secret, hash } = R.newExecutorSecret(randomBytes(32));
+  const won = await tx.remoteAppSession.updateMany({ where: { id: s.id, status: s.status, executorSecretHash: s.executorSecretHash }, data: R.executorSecretPatch(hash, now) });
+  if (won.count !== 1) throw new RollBack(409, "changed", "This session changed at the same moment. Read it again and retry.");
+  return secret;
 }
 
 const stepView = (row: Pick<RemoteAppActionLog, "at" | "action" | "target" | "outcome">, audience: "issuer" | "helped") =>
@@ -351,6 +368,23 @@ async function opEnd({ tx, caller, input, now, id }: Ctx): Promise<Outcome> {
   return { body: { support: v, transcript: await transcriptFor(tx, ended, "issuer", now), task, next: S.nextStep(v) } };
 }
 
+/**
+ * The agent that asked lost the reply that carried the executor secret (or its worker lost it): a fresh one, handed out
+ * in this response only, and the old one stops working (the issuer connector learns the new hash from its next pass).
+ * Only while the session runs. Audited, without the secret.
+ */
+async function opRotate({ tx, caller, now, id }: Ctx): Promise<Outcome> {
+  const inv = await loadInvite(tx, caller, id, now);
+  await liveAgent(tx, caller);
+  const s = await sessionOf(tx, inv, now);
+  if (!s) return fail(409, "not_running", `Nothing is running: this is ${S.inviteStatusLabel(inv.status)}.`);
+  R.executorSecretRotateCheck(s, now);
+  const executorSecret = await handOutExecutorSecret(tx, s, now);
+  await audit(tx, inv.accountId, "support.executor_secret_rotated", { inviteId: inv.id, sessionId: s.id });
+  const v = await view(tx, inv, now, s, executorSecret);
+  return { body: { support: v, next: S.nextStep(v) } };
+}
+
 // ── agents and the dashboard ────────────────────────────────────────────────
 
 async function opList({ tx, caller, now }: Ctx): Promise<Outcome> {
@@ -399,7 +433,10 @@ async function opList({ tx, caller, now }: Ctx): Promise<Outcome> {
 async function opGet({ tx, caller, now, id }: Ctx): Promise<Outcome> {
   const inv = await loadInvite(tx, caller, id, now);
   const s = await sessionOf(tx, inv, now);
-  const v = await view(tx, inv, now, s);
+  // The executor secret, handed out once: to the agent that asked (loadInvite admits no other agent), on its first read
+  // after the helped person allowed the session. The person's read never shows it and never spends it.
+  const executorSecret = caller.kind === "agent" && s && R.executorSecretDue(s, now) ? await handOutExecutorSecret(tx, s, now) : undefined;
+  const v = await view(tx, inv, now, s, executorSecret);
   return {
     body: {
       support: v,
@@ -502,7 +539,10 @@ async function opRedeem({ tx, input, now }: Ctx): Promise<Outcome> {
   if (await tx.remoteAppSession.findFirst({ where: { supportKeySha256: key.sha256 } })) fail(409, "key_in_use", "Use a fresh key for each code.");
   const relayHostId = S.RELAY_HOST_PREFIX + randomBytes(16).toString("base64url");
   const session = await tx.remoteAppSession.create({
-    data: S.newSupportSession({ invite: inv, relayHostId, keySha256: key.sha256, keySpki: key.spki, credentialHash: sha(credential), now }),
+    // Born with an executor secret's hash; nobody holds that value (it is discarded here), so the issuer connector's pipe
+    // admits nothing until the agent that asked is handed its own (opGet, once the helped person has allowed it).
+    data: S.newSupportSession({ invite: inv, relayHostId, keySha256: key.sha256, keySpki: key.spki, credentialHash: sha(credential),
+      executorSecretHash: R.newExecutorSecret(randomBytes(32)).hash, now }),
   });
   const claimed = await tx.supportInvite.updateMany({ where: { id: inv.id, status: "minted", codeExpiresAt: { gt: now } }, data: { status: "redeemed", redeemedAt: now, sessionId: session.id } });
   if (claimed.count !== 1) throw new RollBack(410, "code_invalid", S.UNIFORM_INVALID);
@@ -645,7 +685,7 @@ async function opTranscript({ tx, caller, now }: Ctx): Promise<Outcome> {
 }
 
 const OPS: Record<Op, (ctx: Ctx) => Promise<Outcome>> = {
-  request: opRequest, list: opList, get: opGet, end: opEnd, approve: opApprove, deny: opDeny, void: opVoid, stop: opStop,
+  request: opRequest, list: opList, get: opGet, end: opEnd, rotate: opRotate, approve: opApprove, deny: opDeny, void: opVoid, stop: opStop,
   redeem: opRedeem, report: opReport, clientGet: opClientGet, allow: opAllow, clientReport: opClientReport, clientStop: opClientStop,
   step: opStep, receipt: opReceipt, transcript: opTranscript,
 };
@@ -728,6 +768,7 @@ async function readJson(req: NextRequest): Promise<Input> {
  *   GET  /api/support/invites                  list          agent (its own) or person (the dashboard card)
  *   GET  /api/support/invites/:id              get           the agent that asked, or the person
  *   POST /api/support/invites/:id/end          end           the agent that asked { finished? }
+ *   POST /api/support/invites/:id/executor-secret  rotate    the agent that asked: a fresh executor secret, once
  *   POST /api/support/invites/:id/approve      approve       person (owner): mints the code, shown once
  *   POST /api/support/invites/:id/deny         deny          person
  *   POST /api/support/invites/:id/void         void          person: an unused code stops working
@@ -751,7 +792,7 @@ export async function supportRoute(req: NextRequest, path: string[]): Promise<Ne
     if (a === "invites" && !b) route = m === "GET" ? ["list", {}] : m === "POST" ? ["request", body] : null;
     else if (a === "invites" && b && !c && m === "GET") route = ["get", {}, b];
     else if (a === "invites" && b && c && m === "POST") {
-      const op = ({ end: "end", approve: "approve", deny: "deny", void: "void", stop: "stop" } as Record<string, Op>)[c];
+      const op = ({ end: "end", "executor-secret": "rotate", approve: "approve", deny: "deny", void: "void", stop: "stop" } as Record<string, Op>)[c];
       if (op) route = [op, op === "end" ? body : {}, b];
     } else if ((a === "redeem" || a === "report") && !b && m === "POST") route = [a, body];
     else if (a === "client" && b && !c) {

@@ -18,6 +18,7 @@
  * A stopped session never reopens: going again takes a new request and a new approval.
  */
 
+import { createHash } from "node:crypto";
 import { looksSecret } from "../lists/rules.mjs";
 
 export const LIMITS = Object.freeze({
@@ -213,8 +214,10 @@ export function startCheck(liveCount) {
 }
 
 /**
- * The row to create for a new request. Never active: only the person's approval starts it.
- * @param {{ accountId: string, hostDeviceId: string, agentId: string, executorAgentId: string | null, taskId?: string, goal: string, apps: string[], minutes: number }} p
+ * The row to create for a new request. Never active: only the person's approval starts it. It is born with an
+ * executor secret's hash (agent-control v1.1: newExecutorSecret below; the raw value is discarded), so the PC's
+ * agent-control pipe never admits a hello for it before its executor has been handed its own value.
+ * @param {{ accountId: string, hostDeviceId: string, agentId: string, executorAgentId: string | null, taskId?: string, goal: string, apps: string[], minutes: number, executorSecretHash: string }} p
  */
 export function newSession(p) {
   return {
@@ -228,6 +231,7 @@ export function newSession(p) {
     appAllowList: p.apps,
     minutes: p.minutes,
     status: "awaiting_consent",
+    executorSecretHash: p.executorSecretHash,
   };
 }
 
@@ -362,6 +366,65 @@ export function agentLeaseExpiry(session, now, ttlMs) {
   return new Date(Math.min(now.getTime() + ttlMs, ms(session.expiresAt)));
 }
 
+// ── The executor secret (agent-control v1.1; the support relay path contract, §2.3 and §5) ──
+//
+// Per session, both kinds. The local pipe that carries agent-control (the PC's AgentControl pipe in Phase A, the issuer
+// connector's SupportConnector pipe in Phase B) admits a hello only with this session's secret, so a rogue process of
+// the same user can't drive it. The broker stores only its sha256. A secret is generated when the session is created,
+// and its raw value is never kept, so nobody holds it until it is HANDED OUT: once, to its one reader (Phase A: the
+// executor; Phase B: the agent that asked, which seals it into the Dispatch hand-off), in a fresh value whose hash
+// replaces the first. After that no read shows it again; a lost reply is recovered by an explicit rotation, which
+// hands out a new value and stops the old one. A session with no hash is a v1 session (created before secrets
+// existed): it never gets one, and its PC asks for none.
+
+export const EXECUTOR_SECRET_PREFIX = "abx_";
+export const EXECUTOR_SECRET = /^abx_[A-Za-z0-9_-]{43}$/;
+
+/**
+ * A fresh executor secret and the hash to store. `bytes` is 32 random bytes: the caller passes node:crypto
+ * randomBytes(32) (like newCode's `pick`), so this stays pure.
+ * @param {Uint8Array} bytes
+ */
+export function newExecutorSecret(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length !== 32) throw new TypeError("an executor secret needs 32 random bytes");
+  const secret = EXECUTOR_SECRET_PREFIX + Buffer.from(bytes).toString("base64url");
+  return { secret, hash: createHash("sha256").update(secret, "utf8").digest("hex") };
+}
+
+/** Running, as far as the secret is concerned: an agent session approved and not over; a support session allowed and not over. */
+const secretRunning = (/** @type {any} */ s) => (s.kind === "support" ? s.status === "active" : RUNNING.includes(s.status));
+
+/**
+ * Is the session's secret due to its reader in this response? Exactly once: while the session runs, while it has not
+ * been handed out yet, and never for a v1 session (no hash).
+ * @param {any} session @param {Date} now
+ */
+export function executorSecretDue(session, now) {
+  const s = effective(session, now);
+  return !!s.executorSecretHash && !s.executorSecretIssuedAt && secretRunning(s);
+}
+
+/**
+ * May its reader rotate the secret (a lost reply)? Only while the session runs, and never for a v1 session.
+ * @param {any} session @param {Date} now
+ */
+export function executorSecretRotateCheck(session, now) {
+  const s = effective(session, now);
+  const support = s.kind === "support";
+  if (!s.executorSecretHash) {
+    fail(409, "no_executor_secret", "This session started before executor secrets existed, so nothing asks for one: connect as before.");
+  }
+  if (s.status === "awaiting_consent") {
+    fail(409, support ? "not_allowed_yet" : "not_approved", support
+      ? "Nothing is running yet. The executor secret is handed out once, on your first bc_support_status after they press Allow."
+      : "Your person hasn't approved this session yet. The executor secret is handed out once, with the session, after they do.");
+  }
+  if (!secretRunning(s)) fail(409, "session_over", "This session is over, so it has no use for an executor secret.");
+}
+
+/** What handing out a secret (the first time, or by rotation) writes: the new value's hash, and when. @param {string} hash @param {Date} now */
+export const executorSecretPatch = (hash, now) => ({ executorSecretHash: hash, executorSecretIssuedAt: now });
+
 // ── Words ───────────────────────────────────────────────────────────────────
 
 /** @param {string} status */
@@ -489,7 +552,11 @@ export function nextStep(view, { role, sameAgent }) {
       }
       return `Approved until ${view.expiresAt}. Work only in ${view.apps.join(", ")} on ${view.pc.label}, only toward the goal, and stop and ask if anything is unexpected. ` +
         "bc_remote_app_open, bc_remote_observe and bc_remote_act answer not_available_yet until the Back Channel Remote agent component is installed on that PC. " +
-        "Finish with bc_remote_session_end and a summary of what you did.";
+        "Finish with bc_remote_session_end and a summary of what you did." +
+        (view.executorSecret
+          ? " session.executorSecret is shown this once: send it in the hello on the PC's agent-control pipe (v1.1) and keep it nowhere else. " +
+            `If it gets lost, POST /api/remote-app/sessions/${view.id}/executor-secret for a new one; the old one stops working.`
+          : "");
     case "blocked":
       return `Paused: ${view.pausedBecause}. Your person decides on the Remote page whether it goes on. Don't work around it; wait, or end the session.`;
     default:

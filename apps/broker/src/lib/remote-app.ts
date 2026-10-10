@@ -26,7 +26,15 @@
  *
  * Content-blind by construction: the broker stores fixed action kinds, a bounded control or app name, an
  * outcome and a pointer into the PC's own evidence store. Never screen content, typed text or a screenshot.
+ *
+ * The executor secret (agent-control v1.1, the support relay path contract §5): every session is born with a
+ * secret's hash (the raw value is discarded). The executor (executorAgentId, or the agent that asked when it drives
+ * itself) is handed a fresh value ONCE, in its first GET /sessions/{id} while the session runs, and sends it in the
+ * hello on the PC's agent-control pipe; the PC reads the hash from GET /hosts/self/agent-sessions. A lost reply is
+ * recovered by POST /sessions/{id}/executor-secret (the executor only). A session with no hash predates v1.1: it never
+ * gets one, and its PC asks for none.
  */
+import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { AgentToken, AppBridgeDevice, Prisma, RemoteAppSession } from "@prisma/client";
 import { prisma } from "@/lib/db";
@@ -53,13 +61,14 @@ type Session = RemoteAppSession;
 type Patch = Prisma.RemoteAppSessionUpdateManyMutationInput;
 /** agentId null: the person, signed in to the dashboard. */
 type Caller = { accountId: string; agentId: string | null };
-type Op = "machines" | "start" | "list" | "get" | "approve" | "deny" | "resume" | "stop" | "stopAll" | "report" | "end" | "surface";
-type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string };
+type Op = "machines" | "start" | "list" | "get" | "approve" | "deny" | "resume" | "stop" | "stopAll" | "report" | "end" | "surface" | "rotate";
+// viaTool: the request came through an MCP tool (a chat), never the executor's own worker.
+type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string; viaTool?: boolean };
 type Outcome = { status?: number; body: Record<string, unknown> };
 
 const PEOPLE_ONLY = new Set<Op>(["approve", "deny", "resume", "stopAll"]);
-const AGENTS_ONLY = new Set<Op>(["start", "report", "end", "surface"]);
-const WRITES = new Set<Op>(["start", "approve", "deny", "resume", "stop", "stopAll", "report", "end"]);
+const AGENTS_ONLY = new Set<Op>(["start", "report", "end", "surface", "rotate"]);
+const WRITES = new Set<Op>(["start", "approve", "deny", "resume", "stop", "stopAll", "report", "end", "rotate"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DAY = 86_400_000;
 const MAX_BODY = 16 * 1024;
@@ -204,6 +213,17 @@ async function actions(tx: Tx, s: Session, take: number, pc?: string) {
   return rows.reverse().map((r) => R.actionView(r, { pc }));
 }
 
+/**
+ * Hand out the session's executor secret: a fresh value whose hash replaces the stored one (the one the session was
+ * born with, or the last one handed out), returned to the caller and never kept. Guarded by the hash it was read with.
+ */
+async function handOutExecutorSecret(tx: Tx, s: Session, now: Date): Promise<string> {
+  const { secret, hash } = R.newExecutorSecret(randomBytes(32));
+  const won = await tx.remoteAppSession.updateMany({ where: { id: s.id, status: s.status, executorSecretHash: s.executorSecretHash }, data: R.executorSecretPatch(hash, now) });
+  if (won.count !== 1) throw new RollBack(409, "changed", "This session changed at the same moment. Read it again and retry.");
+  return secret;
+}
+
 function roleOf(caller: Caller, s: Session) {
   const role: "starter" | "driver" = caller.agentId === s.agentTokenId ? "starter" : "driver";
   return { role, sameAgent: !s.executorAgentId || s.executorAgentId === s.agentTokenId };
@@ -309,7 +329,9 @@ async function opStart({ tx, caller, input, now, origin }: Ctx): Promise<Outcome
   const task = p.taskId ? await claimedTask(tx, caller, p.taskId, now) : null;
   R.startCheck((await liveOthers(tx, caller.accountId, now, R.LIVE)).length);
   const created = await tx.remoteAppSession.create({
-    data: R.newSession({ accountId: caller.accountId, hostDeviceId: host.id, agentId: me.id, executorAgentId: executor.id, taskId: p.taskId, goal: p.goal, apps: p.apps, minutes: p.minutes }),
+    data: R.newSession({ accountId: caller.accountId, hostDeviceId: host.id, agentId: me.id, executorAgentId: executor.id, taskId: p.taskId, goal: p.goal, apps: p.apps, minutes: p.minutes,
+      // v1.1: born with an executor secret's hash; nobody holds that value, so the PC admits no hello until the executor is handed its own.
+      executorSecretHash: R.newExecutorSecret(randomBytes(32)).hash }),
   });
   // The one-tap approval link, built like bc_dashboard_link: a single-use, 15-minute sign-in for the person,
   // deep-linking to this request's card on the Remote page. Only its hash is stored.
@@ -359,11 +381,31 @@ async function opList({ tx, caller, now }: Ctx): Promise<Outcome> {
   return { body: { pending, live, recent } };
 }
 
-async function opGet({ tx, caller, now, id }: Ctx): Promise<Outcome> {
+async function opGet({ tx, caller, now, id, viaTool }: Ctx): Promise<Outcome> {
   const s = await loadSession(tx, caller, id, now);
+  // v1.1: the executor secret, handed out once, to the executor only (never the agent that asked when another drives,
+  // never the person), on its first read while the session runs. A v1 session (no hash) never gets one. Never through
+  // bc_remote_session_status either: a tool reply lands in a chat transcript, so only the worker's own REST read gets it.
+  const executorSecret = !viaTool && caller.agentId && caller.agentId === R.executorOf(s) && R.executorSecretDue(s, now) ? await handOutExecutorSecret(tx, s, now) : undefined;
   const n = await names(tx, [s]);
-  const v = await view(tx, s, n, now);
+  const v = { ...(await view(tx, s, n, now)), ...(executorSecret ? { executorSecret } : {}) };
   return { body: { session: v, actions: await actions(tx, s, 50), ...(caller.agentId ? { next: R.nextStep(v, roleOf(caller, s)) } : {}) } };
+}
+
+/**
+ * The executor lost the reply that carried its executor secret: a fresh one, in this response only, and the old one
+ * stops working (the PC reads the new hash from GET /hosts/self/agent-sessions). The executor only, while the session
+ * runs, and never for a v1 session. Audited, without the secret.
+ */
+async function opRotate({ tx, caller, now, id }: Ctx): Promise<Outcome> {
+  const s = await loadSession(tx, caller, id, now);
+  if (caller.agentId !== R.executorOf(s)) fail(403, "not_driver", "Only the agent driving this session holds its executor secret.");
+  await liveAgent(tx, caller);
+  R.executorSecretRotateCheck(s, now);
+  const executorSecret = await handOutExecutorSecret(tx, s, now);
+  await audit(tx, s.accountId, "remote_app.executor_secret_rotated", { sessionId: s.id });
+  const v = { ...(await view(tx, s, await names(tx, [s]), now)), executorSecret };
+  return { body: { session: v, next: R.nextStep(v, roleOf(caller, s)) } };
 }
 
 async function opApprove({ tx, caller, now, id }: Ctx): Promise<Outcome> {
@@ -518,11 +560,11 @@ async function opSurface({ tx, caller, now, id }: Ctx): Promise<Outcome> {
 
 const OPS: Record<Op, (ctx: Ctx) => Promise<Outcome>> = {
   machines: opMachines, start: opStart, list: opList, get: opGet, approve: opApprove, deny: opDeny, resume: opResume,
-  stop: opStop, stopAll: opStopAll, report: opReport, end: opEnd, surface: opSurface,
+  stop: opStop, stopAll: opStopAll, report: opReport, end: opEnd, surface: opSurface, rotate: opRotate,
 };
 
 /** Run one operation for whoever is calling. Shared by the REST route and the MCP tools. */
-async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input>), id?: string): Promise<NextResponse> {
+async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input>), id?: string, viaTool = false): Promise<NextResponse> {
   try {
     const caller = await resolveCaller(req, op);
     const key = caller.agentId ?? caller.accountId;
@@ -545,7 +587,7 @@ async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input
     const result = await withSerializableRetry(
       () => effects.run((after = []), () => prisma.$transaction(async (tx: Tx): Promise<Outcome | { refusal: InstanceType<typeof R.RemoteRuleError> }> => {
         try {
-          return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin });
+          return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin, viaTool });
         } catch (e) {
           if (e instanceof R.RemoteRuleError && !(e instanceof RollBack)) return { refusal: e };
           throw e;
@@ -597,6 +639,7 @@ async function readJson(req: NextRequest): Promise<Input> {
  *   POST /api/remote-app/sessions/:id/stop         stop       person, the agent that asked, or the one driving
  *   POST /api/remote-app/sessions/:id/actions      report     the agent driving
  *   POST /api/remote-app/sessions/:id/end          end        the agent that asked, or the one driving
+ *   POST /api/remote-app/sessions/:id/executor-secret  rotate  the one driving: a fresh executor secret, once (v1.1)
  */
 export async function remoteAppRoute(req: NextRequest, path: string[]): Promise<NextResponse> {
   const m = req.method;
@@ -609,7 +652,7 @@ export async function remoteAppRoute(req: NextRequest, path: string[]): Promise<
     else if (a === "sessions" && !b) route = m === "GET" ? ["list", {}] : m === "POST" ? ["start", body] : null;
     else if (a === "sessions" && b && !c && m === "GET") route = ["get", {}, b];
     else if (a === "sessions" && b && c && m === "POST") {
-      const op = ({ approve: "approve", deny: "deny", resume: "resume", stop: "stop", actions: "report", end: "end" } as Record<string, Op>)[c];
+      const op = ({ approve: "approve", deny: "deny", resume: "resume", stop: "stop", actions: "report", end: "end", "executor-secret": "rotate" } as Record<string, Op>)[c];
       if (op) route = [op, op === "report" || op === "end" ? body : {}, b];
     }
   }
@@ -637,7 +680,7 @@ export async function remoteTool(req: NextRequest, name: string, args: Input): P
       res = await run(req, "start", { host: args.host, apps: args.apps, minutes: args.minutes, goal: args.goal, taskId: args.task_id, executor: args.executor });
       break;
     case "bc_remote_session_status":
-      res = await run(req, "get", {}, id);
+      res = await run(req, "get", {}, id, true);
       break;
     case "bc_remote_session_end":
       res = await run(req, "end", { summary: args.summary, evidenceRef: args.evidence, finished: args.finished }, id);
@@ -653,7 +696,9 @@ export async function remoteTool(req: NextRequest, name: string, args: Input): P
 /**
  * The running sessions bound to one PC, for its banner and its own scope enforcement: which apps, toward what
  * goal, until when, started by and driven by which agent, for which task. Waiting requests are not shown to
- * the PC: only the person's approval in the dashboard starts anything.
+ * the PC: only the person's approval in the dashboard starts anything. executorSecretSha256 (v1.1): the hash the
+ * PC's agent-control pipe checks the executor's hello against; null for a v1 session, whose hello needs no secret.
+ * It changes when the secret is handed out or rotated, so a pipe whose check fails re-reads this before it refuses.
  */
 export async function sessionsForHost(tx: Tx, host: AppBridgeDevice, now: Date) {
   const rows = await tx.remoteAppSession.findMany({ where: { accountId: host.accountId, hostDeviceId: host.id, kind: "agent", status: { in: [...R.RUNNING] } }, orderBy: { createdAt: "desc" }, take: 5 });
@@ -667,7 +712,8 @@ export async function sessionsForHost(tx: Tx, host: AppBridgeDevice, now: Date) 
   for (const s of settled) {
     const v = await view(tx, s, n, now);
     out.push({ id: v.id, status: v.status, apps: v.apps, goal: v.goal, startedAt: v.startedAt, expiresAt: v.expiresAt,
-      startedBy: v.startedBy.name, drivenBy: v.drivenBy.name, task: v.task?.title ?? null, ...(s.status === "blocked" ? { pausedBecause: (v as { pausedBecause?: string }).pausedBecause } : {}) });
+      startedBy: v.startedBy.name, drivenBy: v.drivenBy.name, task: v.task?.title ?? null, executorSecretSha256: s.executorSecretHash ?? null,
+      ...(s.status === "blocked" ? { pausedBecause: (v as { pausedBecause?: string }).pausedBecause } : {}) });
   }
   return out;
 }
