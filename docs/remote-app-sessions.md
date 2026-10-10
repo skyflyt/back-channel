@@ -273,7 +273,9 @@ recorded and nothing is ended.
 holds no key and no state. Each call goes over a private local bridge to the worker: a random named pipe (a Unix
 socket in a `0700` directory elsewhere), plus a 256-bit nonce.
 - Claude also gets `--strict-mcp-config`, `--allowedTools mcp__bc_remote_app` and
-  `--disallowedTools Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch`.
+  `--disallowedTools Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Read,Grep,Glob,Agent`. Reads and subagents are
+  denied too: they need no approval in any permission mode, so otherwise something on screen could steer the run into
+  reading the PC's files into its summary.
 - Codex gets `-c mcp_servers={bc_remote_app=...}`, which replaces any configured servers, under the read-only
   sandbox.
 

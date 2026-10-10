@@ -21,7 +21,7 @@ import { LIMITS, RULES, SERVER_NAME, TOOL_NAMES } from './lists-mcp.mjs';
 export const LISTS_PROFILE = 'lists';
 export const LISTS_MCP_SCRIPT = path.join(import.meta.dirname, 'lists-mcp.mjs');
 /** Claude tools a read-only run refuses; workspace-write allows the first five. The web is always refused. */
-export const WRITE_TOOLS = Object.freeze(['Bash', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+export const WRITE_TOOLS = Object.freeze(['Bash', 'Edit', 'Write', 'NotebookEdit']);
 export const WEB_TOOLS = Object.freeze(['WebFetch', 'WebSearch']);
 /** The only line the worker ever writes on a task in its own words, to keep a running CLI's claim alive. */
 export const AUTO_PROGRESS = 'Still on it: the always-on agent is still working on this.';
