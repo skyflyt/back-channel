@@ -28,24 +28,46 @@ export type RetryOptions = {
   attempts?: number; // total tries, including the first
   baseMs?: number; // first backoff ceiling; doubles per retry
   capMs?: number; // per-retry backoff ceiling
+  jitter?: "equal" | "full"; // equal: sleep in [ceiling/2, ceiling]; full: anywhere in [0, ceiling]
+  deadlineMs?: number; // give up rather than start a sleep that would end later than this after the first try
   retryable?: (e: unknown) => boolean;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  now?: () => number;
 };
 const pause = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 // Bounded: at most `attempts` tries and, with the defaults, at most 10+20+40+80 =
 // 150ms of sleep, so a caller behind an HTTP request never stalls on contention.
 // Equal jitter (half fixed, half random) de-synchronises colliding requests (the
-// losers of one conflict would otherwise collide again in lockstep) while
-// guaranteeing each retry actually waits for the winner to commit.
+// losers of one conflict would otherwise collide again in lockstep) while making
+// each retry wait at least half its ceiling. That suits a conflict over one row:
+// the loser waits on the winner's row lock and aborts the moment it commits.
+// A crowd racing on one predicate needs more room: CONTENTION_RETRY.
 export async function withSerializableRetry<T>(run: () => Promise<T>, opts: RetryOptions = {}): Promise<T> {
-  const { attempts = 5, baseMs = 10, capMs = 80, retryable = isSerializationFailure, sleep = pause, random = Math.random } = opts;
+  const { attempts = 5, baseMs = 10, capMs = 80, jitter = "equal", deadlineMs = Infinity, retryable = isSerializationFailure, sleep = pause, random = Math.random, now = Date.now } = opts;
+  const started = now();
   for (let attempt = 1; ; attempt++) {
     try { return await run(); } catch (e) {
       if (attempt >= attempts || !retryable(e)) throw e;
       const ceiling = Math.min(capMs, baseMs * 2 ** (attempt - 1));
-      await sleep(ceiling / 2 + random() * (ceiling / 2));
+      const ms = jitter === "full" ? random() * ceiling : ceiling / 2 + random() * (ceiling / 2);
+      if (now() - started + ms > deadlineMs) throw e;
+      await sleep(ms);
     }
   }
 }
+
+// For transactions that race as a crowd on one predicate, not on one row: every AppBridge redeem reads the
+// account's live leases for the caps and inserts one. Row locks cannot order a crowd like that; SSI cancels
+// all but one member per round ("Canceled on identification as a pivot"), sometimes that one as well, so N
+// concurrent requests need at least N rounds, each as long as the winner's transaction. The defaults above
+// fit 5 rounds into ~150ms: on a busy CI runner four redeems racing for one account (a phone's pooled
+// connections) intermittently ran out, and three of them got the 503 ([200,503,503,503], 2026-10-10), the
+// three losers retrying within 10ms of each other in every round. So, for that shape:
+//  - 10 attempts: room for a crowd of 8 (one remote's pairs across its PCs) plus cancelled rounds;
+//  - ceilings doubling from 10ms to 320ms: the window soon outgrows N transactions, so the crowd spreads
+//    out and commits one at a time instead of colliding again;
+//  - full jitter: a retry lands anywhere under its ceiling, not bunched in the top half with the others;
+//  - a 2s deadline: however slow the host, an HTTP caller gets the retryable 503 within about 2s.
+export const CONTENTION_RETRY = { attempts: 10, baseMs: 10, capMs: 320, jitter: "full", deadlineMs: 2000 } as const satisfies RetryOptions;

@@ -259,6 +259,26 @@ test("retry helper: bounded attempts, jittered exponential backoff, strict predi
   assert.equal(calls, 3); assert.equal(slept.length, 2);
   calls = 0; await assert.rejects(withSerializableRetry(async () => { calls++; throw new Error("boom"); }), /boom/); assert.equal(calls, 1);
 });
+test("retry helper: the contention budget spreads a crowd with full jitter and stops at its deadline", async () => {
+  const { CONTENTION_RETRY, withSerializableRetry } = await import("@/lib/serializable");
+  const abort = aborts[0][1]();
+  // Full jitter: anywhere from 0 to the ceiling, which doubles from 10ms to the 320ms cap.
+  for (const [random, expected] of [[() => 0, [0, 0, 0, 0, 0, 0, 0, 0, 0]], [() => 0.999999, [10, 20, 40, 80, 160, 320, 320, 320, 320]]] as const) {
+    const slept: number[] = []; let calls = 0;
+    await assert.rejects(withSerializableRetry(async () => { calls++; throw abort; }, { ...CONTENTION_RETRY, sleep: async ms => { slept.push(ms); }, random }), (e: unknown) => e === abort);
+    assert.equal(calls, 10); assert.deepEqual(slept.map(Math.round), expected);
+  }
+  // On a slow host the deadline ends it first: attempts of 300ms each, the clock driven by the fake run and sleep.
+  let clock = 0, calls = 0; const slept: number[] = [];
+  await assert.rejects(withSerializableRetry(async () => { calls++; clock += 300; throw abort; },
+    { ...CONTENTION_RETRY, now: () => clock, random: () => 0.999999, sleep: async ms => { slept.push(ms); clock += ms; } }), (e: unknown) => e === abort);
+  assert.ok(calls < 10, "the deadline, not the attempt count, ended it"); assert.ok(clock <= 300 + CONTENTION_RETRY.deadlineMs, `never sleeps past the deadline: ${clock}`);
+  assert.deepEqual(slept.map(Math.round), [10, 20, 40, 80, 160], "it gives up rather than start a sleep that would end past 2s");
+  // A success inside the budget returns as soon as it commits.
+  calls = 0;
+  assert.equal(await withSerializableRetry(async () => { if (++calls < 8) throw abort; return "ok"; }, { ...CONTENTION_RETRY, sleep: async () => {} }), "ok");
+  assert.equal(calls, 8);
+});
 test("GET paginates oldest-first and reconciles expiry without leaking private fields", async () => {
   await run("submit", input()); const first = tasks[0]; first.expiresAt = new Date(Date.now() - 1);
   for (let i = 1; i < 52; i++) tasks.push({ ...first, id: `bbbbbbbb-bbbb-4bbb-8bbb-${String(i).padStart(12, "0")}`, createdAt: new Date(first.createdAt.getTime() + i) });

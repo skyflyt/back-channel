@@ -48,7 +48,7 @@ import { rateLimit, rateLimitPeek } from "@/lib/rate-limit";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 import { checkOwnerAdmin, ownerGateInput } from "@/lib/admin";
 import { REMOTE_ACCESS_FEATURE, remoteAccessSource } from "@/lib/remote-entitlement";
-import { isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
+import { CONTENTION_RETRY, isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
 // Remote app sessions (docs/remote-app-sessions.md): the pure rules for the "agent" lease purpose.
 import * as RemoteApp from "@/lib/remote-app/rules.mjs";
 // Remote support (docs/remote-support.md): the pure rules for the "support" lease purpose.
@@ -397,7 +397,8 @@ const isConflict = (e: unknown): boolean =>
 
 /**
  * Every AppBridge (and billing) transaction runs through this: SERIALIZABLE, and on a conflict the WHOLE
- * transaction is re-run under serializable.ts's small bounded budget (5 attempts, <=150 ms of backoff).
+ * transaction is re-run under serializable.ts's CONTENTION_RETRY budget (up to 10 attempts, full-jitter
+ * backoff, never past 2 s): racing redeems conflict as a crowd on the account's leases, one commit per round.
  * An aborted attempt rolled back completely, so a re-run is exactly-once for everything the callback
  * writes (a pass or device code is consumed once, a lease or credential created once), and every gate,
  * cap and one-use check is read again, fresh, by the attempt that commits. Contention here is routine:
@@ -412,7 +413,7 @@ const isConflict = (e: unknown): boolean =>
  * time is read inside it, so each attempt checks expiry against its own clock.
  */
 export function serializableTx<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-  return withSerializableRetry(() => prisma.$transaction(fn, { isolationLevel: "Serializable" }), { retryable: isConflict });
+  return withSerializableRetry(() => prisma.$transaction(fn, { isolationLevel: "Serializable" }), { ...CONTENTION_RETRY, retryable: isConflict });
 }
 
 // ── Device-facing routes ────────────────────────────────────────────────────

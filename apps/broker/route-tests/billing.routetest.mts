@@ -93,7 +93,15 @@ const WHSEC = "whsec_" + "Tq3v".repeat(8);
 const SECRET_KEY = "sk_test_" + "K9x".repeat(10);
 let limited = false;
 let warnings: string[] = [];
-before(() => {
+// serializableTx's real retry budget, its backoff recorded rather than slept.
+let CONTENTION_RETRY: { attempts: number };
+const slept: number[] = [];
+before(async () => {
+  const serializable = await import("@/lib/serializable");
+  CONTENTION_RETRY = serializable.CONTENTION_RETRY;
+  mock.module("@/lib/serializable", { namedExports: { ...serializable,
+    withSerializableRetry: (run: () => Promise<unknown>, opts: object) => serializable.withSerializableRetry(run, { ...opts, sleep: async (ms: number) => { slept.push(ms); } }),
+  } });
   mock.module("@/lib/db", { namedExports: { prisma: db } });
   mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: !limited, retryAfterSec: 7 }), rateLimitPeek: () => ({ ok: !limited, retryAfterSec: 7 }) } });
   mock.module("@/lib/auth", { namedExports: {
@@ -603,9 +611,10 @@ test("webhook: retry budget exhausted is the fixed retryable 503 with nothing re
   for (const [name, abort] of aborts) {
     tables.stripeEvent = []; tables.remoteSubscription = []; tables.accountAudit = [];
     const event = stripeEvent("customer.subscription.created", subscription());
-    transactionFaults = Array.from({ length: 5 }, abort); transactionCalls = 0;
+    transactionFaults = Array.from({ length: CONTENTION_RETRY.attempts }, abort); transactionCalls = 0; slept.length = 0;
     const r = await deliver(event);
-    assert.equal(r.status, 503, name); assert.deepEqual(await r.json(), { error: "retry" }, name); assert.equal(transactionCalls, 5, name);
+    assert.equal(r.status, 503, name); assert.deepEqual(await r.json(), { error: "retry" }, name); assert.equal(transactionCalls, CONTENTION_RETRY.attempts, name);
+    assert.equal(slept.length, CONTENTION_RETRY.attempts - 1, `${name}: a backoff before every re-run`);
     assert.equal(r.headers.get("retry-after"), "1", name); assert.equal(r.headers.get("cache-control"), "no-store", name);
     assert.equal(tables.stripeEvent.length, 0, name); assert.equal(tables.remoteSubscription.length, 0, name); assert.equal(subscriptionAudits(), 0, name);
     assert.equal((await deliver(event)).status, 200, name);

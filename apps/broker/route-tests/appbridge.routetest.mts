@@ -79,7 +79,16 @@ db.$transaction = async (fn: any, options: any) => {
 // `limited` still forces every bucket shut.
 let limited = false;
 const hits = new Map<string, number>();
-before(() => {
+// serializableTx's real retry budget, its backoff recorded rather than slept: the exhaustion matrix
+// below would otherwise sleep about a second per case.
+let CONTENTION_RETRY: { attempts: number; baseMs: number; capMs: number; jitter: string; deadlineMs: number };
+const slept: number[] = [];
+before(async () => {
+  const serializable = await import("@/lib/serializable");
+  CONTENTION_RETRY = serializable.CONTENTION_RETRY;
+  mock.module("@/lib/serializable", { namedExports: { ...serializable,
+    withSerializableRetry: (run: () => Promise<unknown>, opts: object) => serializable.withSerializableRetry(run, { ...opts, sleep: async (ms: number) => { slept.push(ms); } }),
+  } });
   mock.module("@/lib/db", { namedExports: { prisma: db } });
   mock.module("@/lib/rate-limit", { namedExports: {
     rateLimit: (bucket: string, key: string, max: number) => { const k = `${bucket}:${key}`; const n = (hits.get(k) ?? 0) + 1; hits.set(k, n); return { ok: !limited && n <= max, retryAfterSec: 7 }; },
@@ -93,7 +102,7 @@ before(() => {
 });
 function reset() {
   for (const k of Object.keys(tables)) tables[k] = [];
-  limited = false; hits.clear(); transactionFaults = []; transactionCalls = 0;
+  limited = false; hits.clear(); transactionFaults = []; transactionCalls = 0; slept.length = 0;
   process.env.APPBRIDGE_REMOTE_ACCESS = "on";
   process.env.APPBRIDGE_RELAY_PUBLIC_KEY = RELAY_PUBLIC_KEY;
   delete process.env.APPBRIDGE_RELAY_URL;
@@ -835,18 +844,22 @@ test("every AppBridge transaction re-runs whole on a conflict, in every abort sh
   }
 });
 
-test("retry budget exhausted: the fixed retryable 503 after exactly five attempts, with nothing written", async () => {
+test("retry budget exhausted: the fixed retryable 503 after the contention budget's ten attempts, with nothing written", async () => {
+  assert.deepEqual(CONTENTION_RETRY, { attempts: 10, baseMs: 10, capMs: 320, jitter: "full", deadlineMs: 2000 });
   for (const c of cases) for (const [shape, abort] of aborts) {
     const name = `${c.name} / ${shape}`;
     reset(); const ctx = await c.arrange();
     const tablesBefore = structuredClone(tables); const before = new Map(hits);
-    transactionFaults = Array.from({ length: 5 }, abort); transactionCalls = 0;
+    transactionFaults = Array.from({ length: CONTENTION_RETRY.attempts }, abort); transactionCalls = 0;
     const started = Date.now();
     const r = await c.act(ctx);
-    assert.equal(r.status, 503, name); assert.equal(transactionCalls, 5, `${name}: bounded`);
+    assert.equal(r.status, 503, name); assert.equal(transactionCalls, CONTENTION_RETRY.attempts, `${name}: bounded`);
     assert.deepEqual(await r.json(), { error: "retry" }, name);
     assert.equal(r.headers.get("retry-after"), "1", name); assert.equal(r.headers.get("cache-control"), "no-store", name);
     assert.ok(Date.now() - started < 1000, `${name}: bounded latency`);
+    assert.equal(slept.length, CONTENTION_RETRY.attempts - 1, `${name}: a backoff before every re-run`);
+    assert.ok(slept.every((ms, i) => ms >= 0 && ms <= Math.min(CONTENTION_RETRY.capMs, CONTENTION_RETRY.baseMs * 2 ** i)), `${name}: each under its ceiling`);
+    assert.ok(slept.reduce((a, b) => a + b, 0) <= CONTENTION_RETRY.deadlineMs, `${name}: never past the deadline`);
     assert.deepEqual(tables, tablesBefore, `${name}: every attempt rolled back, no audit row, no consumed pass or code`);
     for (const [k, n] of hits) assert.ok(n - (before.get(k) ?? 0) <= 1, `${name}: ${k} counted once`);
     assert.deepEqual(failureBudgets(), [...before].filter(([k]) => k.includes("-failed:")), `${name}: an outage is not a refusal`);
@@ -879,7 +892,7 @@ test("one-use pass: consumed by exactly the attempt that commits, never twice, n
   assert.equal(hits.get(`appbridge:redeem:${remote.key.fp}`), 1);
   // Retries exhausted: nothing committed, so the pass is still unconsumed and the relay's retry redeems it once.
   const outage = await issue();
-  transactionFaults = Array.from({ length: 5 }, aborts[0][1]);
+  transactionFaults = Array.from({ length: CONTENTION_RETRY.attempts }, aborts[0][1]);
   assert.equal((await redeem(outage, "session", remote.key.fp)).status, 503);
   assert.equal(tables.pass.find(p => p.passHash === sha(outage))!.consumedAt, null);
   assert.equal((await redeem(outage, "session", remote.key.fp)).status, 200);
