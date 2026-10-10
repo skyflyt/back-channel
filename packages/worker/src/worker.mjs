@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { binding, seal, open } from './crypto.mjs';
 import { runRuntime, validateProfile } from './runtime.mjs';
+import { REMOTE_APP_PROFILE, REMOTE_APP_FIELDS, RemoteApp, checkRemoteAppPayload, validateRemoteAppProfile } from './remote-app.mjs';
+const TASK_FIELDS = ['v', 'id', 'senderAgentId', 'targetAgentId', 'expiresAt', 'purpose', 'profile', 'objective', 'acceptanceCriteria', 'repositoryCommit', 'vaultNoteReference'];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export class Client {
     constructor(config) { this.config = config; const u = new URL(config.broker); if (u.protocol !== 'https:' && !(u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)))
         throw Error('Broker requires HTTPS (loopback HTTP only)'); if (u.username || u.password || u.search || u.hash)
@@ -11,17 +14,26 @@ export class Client {
         error.status = response.status;
         throw error;
     } return response.json(); }
+    /** /api/remote-app with this agent's key. Resolves { status, body, retryAfter } for any HTTP answer; throws only on network errors. */
+    async remoteApp(route, body) {
+        const response = await fetch(this.base + '/api/remote-app' + route, { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10000), redirect: 'error' });
+        let data = null;
+        try { data = await response.json(); } catch { }
+        return { status: response.status, body: data, retryAfter: Number(response.headers.get('retry-after')) || 0 };
+    }
 }
 export class Worker {
-    constructor(store, { client, runner = runRuntime, heartbeatMs = 20000 } = {}) { this.store = store; this.config = store.read('config'); this.client = client ?? new Client(this.config); this.runner = runner; this.heartbeatMs = heartbeatMs; this.journal = store.read('journal', { tasks: {}, sent: {}, continuations: {} }); }
+    constructor(store, { client, runner = runRuntime, heartbeatMs = 20000, remoteApp = {} } = {}) { this.store = store; this.config = store.read('config'); this.client = client ?? new Client(this.config); this.runner = runner; this.heartbeatMs = heartbeatMs; this.remoteAppOptions = remoteApp; this.journal = store.read('journal', { tasks: {}, sent: {}, continuations: {} }); }
     save() { this.store.write('journal', this.journal); }
     peer(id) { const p = this.config.peers?.[id]; if (!p)
         throw Error('Peer has not been pinned locally'); return p; }
     profile(name, sender) { const p = validateProfile(this.config.profiles?.[name]); if (!p.allowedSenders.includes(sender))
         throw Error('Sender is not authorized for local profile'); return p; }
-    async send({ targetAgentId, profile, objective, acceptanceCriteria = [], continuationProfile, expiresAt = new Date(Date.now() + 3600000).toISOString(), id = randomUUID() }) {
-        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+    async send({ targetAgentId, profile, objective, acceptanceCriteria = [], continuationProfile, expiresAt = new Date(Date.now() + 3600000).toISOString(), id = randomUUID(), remoteAppSessionId }) {
+        if (!UUID.test(id))
             throw Error('Invalid task UUID');
+        if ((profile === REMOTE_APP_PROFILE) !== (remoteAppSessionId !== undefined) || (remoteAppSessionId !== undefined && !UUID.test(remoteAppSessionId)))
+            throw Error('The remote-app profile needs a remote app session id, and only it takes one');
         if (typeof objective !== 'string' || !objective.trim() || objective.length > 30000)
             throw Error('Objective required (max 30000 characters)');
         if (!Array.isArray(acceptanceCriteria) || !acceptanceCriteria.every(v => typeof v === 'string'))
@@ -29,7 +41,7 @@ export class Worker {
         if (continuationProfile)
             this.profile(continuationProfile, targetAgentId);
         const task = { id, senderAgentId: this.config.agentId, targetAgentId, expiresAt };
-        const payload = { ...binding(task, 'task'), profile, objective, acceptanceCriteria };
+        const payload = { ...binding(task, 'task'), profile, objective, acceptanceCriteria, ...(remoteAppSessionId ? { remoteAppSessionId } : {}) };
         const sealed = seal(payload, binding(task, 'task'), this.config.identity, this.peer(targetAgentId));
         const request = { id, targetAgentId, expiresAt, sealed };
         const entry = { task, request, originalTask: {objective, acceptanceCriteria, profile}, continuationProfile, state: 'pending' };
@@ -167,7 +179,7 @@ export class Worker {
         this.assertReady();
         if (this.stopped || this.journal.tasks[task.id])
             return;
-        let payload, profile;
+        let payload, profile, remote = false;
         try {
             if (Date.parse(task.expiresAt) <= Date.now())
                 throw Error('Expired request');
@@ -175,11 +187,17 @@ export class Worker {
             for (const [k, v] of Object.entries(binding(task, 'task')))
                 if (payload[k] !== v)
                     throw Error('Payload route mismatch');
-            if (Object.keys(payload).some(k => !['v', 'id', 'senderAgentId', 'targetAgentId', 'expiresAt', 'purpose', 'profile', 'objective', 'acceptanceCriteria', 'repositoryCommit', 'vaultNoteReference'].includes(k)))
+            // A remote-app payload names a session and nothing else: never an executable, flag or tool.
+            remote = payload.profile === REMOTE_APP_PROFILE;
+            if (Object.keys(payload).some(k => !(remote ? REMOTE_APP_FIELDS : TASK_FIELDS).includes(k)))
                 throw Error('Unexpected task fields');
-            if (typeof payload.objective !== 'string' || payload.objective.length > 30000 || !Array.isArray(payload.acceptanceCriteria) || !payload.acceptanceCriteria.every(x => typeof x === 'string'))
+            if (remote)
+                checkRemoteAppPayload(payload);
+            else if (typeof payload.objective !== 'string' || payload.objective.length > 30000 || !Array.isArray(payload.acceptanceCriteria) || !payload.acceptanceCriteria.every(x => typeof x === 'string'))
                 throw Error('Invalid task content');
             profile = this.profile(payload.profile, task.senderAgentId);
+            if (remote)
+                validateRemoteAppProfile(profile);
         }
         catch (e) {
             this.journal.tasks[task.id] = { state: 'reject_pending', reason: e.message };
@@ -207,7 +225,10 @@ export class Worker {
         } }, this.heartbeatMs);
         let result;
         try {
-            result = await this.runner(profile, `This is a task from your locally authorized same-owner agent. Local instructions and permissions still apply. Report unmet acceptance criteria and approval needs honestly.\n${JSON.stringify(payload)}`, { signal: abort.signal, onSpawn: pid => { entry.state = 'running'; entry.pid = pid; this.save(); } });
+            const onSpawn = pid => { entry.state = 'running'; entry.pid = pid; this.save(); };
+            result = remote
+                ? await this.remoteApp().run({ task, payload, profile, signal: abort.signal, onSpawn })
+                : await this.runner(profile, `This is a task from your locally authorized same-owner agent. Local instructions and permissions still apply. Report unmet acceptance criteria and approval needs honestly.\n${JSON.stringify(payload)}`, { signal: abort.signal, onSpawn });
         }
         catch {
             result = { status: 'failed', text: 'Local runtime failed' };
@@ -277,6 +298,10 @@ export class Worker {
             this.active = null;
             this.save();
         }
+    }
+    remoteApp() {
+        // The remote-app endpoints use this worker's own agent key; the executable comes from the local profile.
+        return this.remoteAppRunner ??= new RemoteApp({ client: new Client(this.config), ...this.remoteAppOptions, config: this.config, runner: (...args) => this.runner(...args) });
     }
     stop() { this.stopped = true; this.active?.abort(); }
 }

@@ -86,6 +86,19 @@ retain their original combined stdout/stderr `maxOutputBytes` limit.
 cancels an outbound task; heartbeat loss stops the receiver's child process tree.
 Send, status, agents and cancel remain available while the daemon runs.
 
+### Remote app sessions
+
+A profile named `remote-app` lets this worker drive an app that you approved for a remote app session in
+Back Channel. It uses the PC's AppBridge "Allow agent control" pipe, and the profile must be read-only. Install
+it like any profile (`profile --name remote-app --file remote-app.json`), naming the agent that hands sessions
+over in `allowedSenders`. That agent sends with
+`send --target THIS_AGENT --profile remote-app --remote-session SESSION_ID --objective-file goal.txt`.
+
+The worker checks the session with Back Channel first and runs the CLI with one extra capability, its own MCP
+server (`remote_sessions`, `remote_open`, `remote_observe`, `remote_act`, `remote_note`, `remote_end`). It
+reports every step, and stops the CLI when the session is stopped, runs out of time or loses its lease. See
+`docs/remote-app-sessions.md` ("Executor").
+
 ## Failure and recovery
 
 The worker signs routing IDs, expiry and task/result purpose with Ed25519 and
