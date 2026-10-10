@@ -172,6 +172,17 @@
 .ds-suggest-detail { color: var(--ds-mut); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .ds-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
+/* ---------- Phase 3 ---------- */
+/* "All done" in the list header: a plain line that eases in, and simply appears when motion is reduced. */
+.ds-lists-cheer { margin: 8px 0 0; font-size: 13.5px; font-weight: 600; color: var(--ds-ok); animation: ds-cheer-in 420ms ease-out both; }
+@keyframes ds-cheer-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .ds-lists-cheer { animation: none; } }
+/* "Email me a daily summary", under the lists */
+.ds-lists-digest { border-top: 1px solid var(--ds-line-soft); margin-top: 10px; padding: 0 4px 4px; }
+.ds-lists-digest .ds-lists-sec { padding-left: 4px; }
+.ds-lists-digest-hour { display: flex; align-items: center; gap: 6px; padding: 0 2px 6px 26px; flex-wrap: wrap; }
+.ds-lists-digest-hour .ds-select { font-size: 12.5px; padding: 3px 8px; }
+
 @media (max-width: 860px) {
   .ds-lists { grid-template-columns: 1fr; }
   .ds-lists-side { position: static; }

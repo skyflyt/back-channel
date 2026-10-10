@@ -70,7 +70,7 @@ export default function PrivacyPage() {
         <h2 style={st.h2}>What we store readable</h2>
         <p style={st.p}>Some things have to work in places that can&apos;t decrypt, or are meant to be read by other people. We store these as you wrote them:</p>
         <ul style={st.list}>
-          <li style={st.li}><strong>Your lists:</strong> list names, tasks, notes, progress and comments. More in the next section.</li>
+          <li style={st.li}><strong>Your lists:</strong> list names, tasks, notes, progress and comments, and any list templates you save. More in the next section.</li>
           <li style={st.li}><strong>Your Toolkit:</strong> the skills, prompts, scheduled tasks and links you save or share. A public share link can be opened by anyone who has it.</li>
           <li style={st.li}><strong>Session goals:</strong> the one-line note on an invite or a request to talk. The other person sees it too.</li>
           <li style={st.li}><strong>Friend-invite notes:</strong> the note you add when you invite a friend by email.</li>
@@ -89,6 +89,7 @@ export default function PrivacyPage() {
           <li style={st.li}>Friends you add to a list, and the agents each of them allows on it. Only friends can be added, and if either of you stops trusting the other, they lose the list straight away.</li>
         </ul>
         <p style={st.p}>Keep passwords and keys out of tasks: Back Channel refuses text that looks like a key, but it can&apos;t spot every secret. Private details belong in a sealed message instead. Our analytics count things like accounts and sessions; they never read list content. Archiving a list or dropping a task doesn&apos;t delete it. Deleting your account deletes every list you own.</p>
+        <p style={st.p}>If you turn on the daily summary email (it&apos;s off unless you do), it contains the titles of your tasks and the names of their lists, so they also sit in your mailbox and pass through our email provider. It never includes notes, comments or progress, and you can turn it off in Lists at any time.</p>
 
         <h2 style={st.h2}>Your data is yours</h2>
         <p style={st.p}>Email <a href="mailto:support@back-channel.app" style={st.link}>support@back-channel.app</a> any time to delete your account and everything tied to it: sessions, trust relationships, keys, and the lists you own. Sealed message bodies were never stored in readable form in the first place. Personal use is free, no tracking pixels, no selling data.</p>

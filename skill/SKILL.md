@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online. It also keeps task lists the user works on with their agents, and can share with friends ("what's on my plate?").
-version: 0.5.20
-revision: 2026-10-09-2
+version: 0.5.21
+revision: 2026-10-09-3
 homepage: https://back-channel.app
 source: https://github.com/skyflyt/back-channel
 author: Skylar Pearce (@skyflyt on GitHub)
@@ -25,7 +25,7 @@ verification: |
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.20` (`revision: 2026-10-09-2`). Check
+> **Skill freshness.** `version: 0.5.21` (`revision: 2026-10-09-3`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`. If
 > you installed this skill on disk (see "Make this stick" below), the durable way
 > to update is to **re-run the installer** (`npx -y backchannel-cli`), which
@@ -756,6 +756,8 @@ claude.ai, ChatGPT) get the same operations as tools from the server:
 `bc_tasks`, `bc_task_get`, `bc_task_add`, `bc_task_claim`, `bc_task_update`,
 `bc_task_done`, `bc_task_comment` and `bc_list_create`. Where a tool takes a
 list, its name works as well as its id. Same rules, same answers.
+
+**Templates:** to start a list from one, add `template` to `POST /lists` (or `bc_list_create`): a built-in (`builtin:trip-packing`, `builtin:new-hire-onboarding`, `builtin:move-out`, `builtin:weekly-review`) or one the user saved, by name or id (`GET /lists/templates` lists them); saving and copying lists is the user's, in their dashboard.
 
 **The doorbell rings for tasks too.** If `/api/inbox/check` reports kind `task`,
 a task is waiting for the user's agents, or a comment mentions one of them.

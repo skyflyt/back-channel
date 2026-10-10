@@ -11,19 +11,26 @@
  * people and their agents as assignees, @mentions, reactions, and agent work
  * shown as "Alex · via Codex". The URL carries the open list and task
  * (&list=…&task=…) so My plate on Overview, and any bookmark, can open a task
- * directly. Freshness is a 10-second poll of /api/lists/changes while the page
- * is visible.
+ * directly.
+ *
+ * Phase 3: the page stays fresh through the live stream (useListChanges falls
+ * back to the 10-second poll when the stream isn't there), a list can start
+ * from a template or be duplicated, "Email me a daily summary" sits under the
+ * lists, and finishing a list's last task says "All done" in its header for a
+ * moment.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chip, EmptyState, SkeletonRows } from "@/components/ui/primitives";
 import {
   listsApi, errorText, useListChanges, whoName, ago, elapsed, lapsesIn, assigneeLabel, needsMyOk, memberRef, memberLabel, reviewerLabel,
-  LISTS_OPEN_EVENT, type ListsTarget, type ListDetail, type ListSummary, type MentionView, type Plate, type ReactionEmoji, type TaskView, type EntryView, type PersonRef,
+  LISTS_OPEN_EVENT, type ListsTarget, type ListDetail, type ListSummary, type MentionView, type Plate, type ReactionEmoji, type TaskView, type EntryView,
 } from "./api";
 import { WhoAvatar, DueChip, PlainText, MentionText, Reactions, Byline } from "./bits";
 import { NewListForm, ListSettings, QuickAdd } from "./list-forms";
+import { DailySummary } from "./daily-summary";
 import { TaskDrawer } from "./task-drawer";
 import { mentionDirectory } from "./mentions.mjs";
+import { celebration, joinNames, tally, unfinishedCount, CELEBRATE_MS } from "./celebrate.mjs";
 
 const PRIVACY_NOTE = "Back Channel stores your lists so every app you use can open them. Keep passwords out of tasks.";
 const SHARED_PRIVACY_NOTE = "Everyone on this list, and the agents they allow, can see it. Keep passwords out of tasks.";
@@ -35,7 +42,10 @@ type Line = { updated_at: string | null; progress: { text: string; by: EntryView
 
 const isDoing = (t: TaskView) => (!!t.claim && ACTIVE.has(t.status)) || t.status === "blocked" || t.status === "in_progress";
 const dueSort = (a: TaskView, b: TaskView) => (a.due ? Date.parse(a.due) : Infinity) - (b.due ? Date.parse(b.due) : Infinity);
-const shortName = (ref: PersonRef | null | undefined) => (ref ? ref.person.replace(/@bc$/, "") : "someone");
+/** Finished in the last week, newest first: the Done band, and who the "All done" line credits. */
+const doneThisWeek = (tasks: TaskView[], now = Date.now()) => tasks
+  .filter((t) => t.status === "done" && now - Date.parse(t.completed_at ?? t.updated_at ?? "") < WEEK)
+  .sort((a, b) => Date.parse(b.completed_at ?? "") - Date.parse(a.completed_at ?? ""));
 
 function readUrl(): { list: string | null; task: string | null } {
   if (typeof window === "undefined") return { list: null, task: null };
@@ -80,6 +90,7 @@ function LiveLists() {
   const [rowBusy, setRowBusy] = useState("");
   const [rowErr, setRowErr] = useState<{ id: string; msg: string } | null>(null);
   const [sendBack, setSendBack] = useState<{ id: string; text: string } | null>(null);
+  const [cheer, setCheer] = useState<{ listId: string; text: string } | null>(null);
 
   const selRef = useRef(selId);
   useEffect(() => { selRef.current = selId; }, [selId]);
@@ -135,6 +146,22 @@ function LiveLists() {
     if (polled.current) setRefreshKey((k) => k + 1);
     polled.current = true;
   }, [refresh]));
+
+  // "All done": the open list just went from something left to do to nothing, with work finished
+  // this week. Shown in the header for a few seconds, from the list already on the page.
+  const lastSeen = useRef<{ listId: string; unfinished: number } | null>(null);
+  useEffect(() => {
+    if (!detail) return;
+    const next = { listId: detail.list.id, unfinished: unfinishedCount(detail.tasks), done: doneThisWeek(detail.tasks) };
+    const line = celebration(lastSeen.current, next);
+    lastSeen.current = { listId: next.listId, unfinished: next.unfinished };
+    if (line) setCheer({ listId: next.listId, text: line });
+  }, [detail]);
+  useEffect(() => {
+    if (!cheer) return;
+    const timer = window.setTimeout(() => setCheer(null), CELEBRATE_MS);
+    return () => window.clearTimeout(timer);
+  }, [cheer]);
 
   // A different list: clear the old one away and load the new one. The one-time
   // "Share with a friend" offer belongs to the list just created, and goes with it.
@@ -217,6 +244,16 @@ function LiveLists() {
 
   const openPeople = () => { setShowSettings(true); setFocusMembers(true); setOfferShare(null); };
 
+  // A copy was made from the open list's settings: open the copy.
+  const onDuplicated = (id: string) => {
+    setNotice("Here's your copy. It's yours alone until you share it.");
+    setOfferShare(null);
+    setTaskId(null);
+    setCreating(false);
+    setSelId(id);
+    void loadLists();
+  };
+
   // You left a list: it's gone for you, so drop it here at once and open another.
   const onLeft = (name: string, id: string) => {
     setLists((ls) => ls?.filter((x) => x.id !== id) ?? ls);
@@ -290,6 +327,7 @@ function LiveLists() {
         </button>
       )}
       {showArchivedNow && archived.map(listItem)}
+      {lists !== null && <DailySummary />}
     </aside>
   );
 
@@ -534,9 +572,7 @@ function LiveLists() {
     const upNext = tasks.filter((t) => t.status === "open" && !t.claim).sort(dueSort);
     const ready = tasks.filter((t) => t.status === "needs_review");
     const readyForMe = ready.every((t) => t.needs_review_by?.is_you);
-    const done = tasks
-      .filter((t) => t.status === "done" && now - Date.parse(t.completed_at ?? t.updated_at ?? "") < WEEK)
-      .sort((a, b) => Date.parse(b.completed_at ?? "") - Date.parse(a.completed_at ?? ""));
+    const done = doneThisWeek(tasks, now);
     const dropped = tasks.filter((t) => t.status === "dropped");
     const workers = (detail.your_agents ?? []).filter((a) => a.access === "work");
     const viewers = (detail.your_agents ?? []).filter((a) => a.access === "view");
@@ -562,6 +598,7 @@ function LiveLists() {
             <button className="ds-btn ghost ds-sm" aria-expanded={showSettings} onClick={() => { setShowSettings((v) => !v); setFocusMembers(false); }}>{showSettings ? "Close settings" : "Settings"}</button>
           </div>
         </div>
+        {cheer?.listId === l.id && <p className="ds-lists-cheer" role="status">{cheer.text}</p>}
         <p className="ds-lists-privacy">{shared ? SHARED_PRIVACY_NOTE : PRIVACY_NOTE}</p>
 
         {offerShare === l.id && l.your_role === "owner" && !shared && !l.archived && !showSettings && (
@@ -575,7 +612,7 @@ function LiveLists() {
         )}
 
         {showSettings && (
-          <ListSettings key={`settings-${l.id}`} detail={detail} focusMembers={focusMembers} onChanged={refresh} onLeft={() => onLeft(l.name, l.id)} />
+          <ListSettings key={`settings-${l.id}`} detail={detail} focusMembers={focusMembers} onChanged={refresh} onLeft={() => onLeft(l.name, l.id)} onDuplicated={onDuplicated} />
         )}
 
         {l.archived && !showSettings && (
@@ -683,31 +720,3 @@ function LiveLists() {
   );
 }
 
-/** "Claude Code", "Claude Code and Codex", "A, B and C". */
-function joinNames(names: string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-}
-
-/**
- * Who finished what this week, people before their agents: "You finished 2 and
- * your agents finished 3", "Alex finished 4, you finished 1 and Alex's agents
- * finished 6".
- */
-function tally(done: TaskView[]): string {
-  const groups = new Map<string, { label: string; n: number; you: boolean; agents: boolean }>();
-  for (const t of done) {
-    const by = t.completed_by;
-    const agents = !!by?.agent;
-    const key = `${by?.handle ?? by?.person ?? "?"}|${agents ? 1 : 0}`;
-    const label = by?.is_you ? (agents ? "your agents" : "you") : agents ? `${shortName(by)}'s agents` : shortName(by);
-    const g = groups.get(key) ?? { label, n: 0, you: !!by?.is_you, agents };
-    g.n += 1;
-    groups.set(key, g);
-  }
-  const parts = [...groups.values()]
-    .sort((a, b) => Number(a.agents) - Number(b.agents) || Number(b.you) - Number(a.you) || b.n - a.n)
-    .map((g) => `${g.label} finished ${g.n}`);
-  const text = joinNames(parts);
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}

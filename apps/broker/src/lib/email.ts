@@ -396,3 +396,32 @@ export async function sendListNudgeEmail(args: { to: string; handle: string; kin
     return true;
   } catch (e) { console.error("Resend send failed (lists-nudge):", e instanceof Error ? e.message : e); return false; }
 }
+
+/**
+ * Lists: the opt-in daily digest (src/lib/lists-digest.ts decides when, and
+ * src/lib/lists/digest.mjs what it says). Task titles, list names and counts,
+ * nothing else, and one link to the Lists tab with a one-time sign-in. The log
+ * line never carries list content or the link.
+ */
+export async function sendListDigestEmail(args: { to: string; handle: string; subject: string; sections: Array<{ heading: string; lines: string[] }>; url: string }): Promise<boolean> {
+  const resend = client();
+  if (!resend) { console.log(`[lists-digest] (log-only) to=${args.handle} sections=${args.sections.length}`); return false; }
+  const blocks = args.sections
+    .map((s) => `<p style="margin:20px 0 6px;font-weight:600">${escapeHtml(s.heading)}</p>\n  <ul style="margin:0;padding-left:20px;color:#334155">${s.lines.map((l) => `<li>${escapeHtml(l)}</li>`).join("")}</ul>`)
+    .join("\n  ");
+  const footer = "You turned on the daily summary in Lists, and can turn it off there. The sign-in link works once, for 15 minutes; after that, sign in as usual.";
+  const html = `
+<!doctype html>
+<html><body style="font-family:system-ui,-apple-system,sans-serif;color:#0f172a;max-width:560px;margin:40px auto;padding:0 24px;line-height:1.6">
+  <h2 style="font-size:20px;margin:0 0 8px">Your lists today</h2>
+  ${blocks}
+  <p style="margin:28px 0"><a href="${args.url}" style="display:inline-block;background:#0f172a;color:#fff;padding:10px 20px;border-radius:9px;text-decoration:none;font-weight:600">Open my lists</a></p>
+  <p style="font-size:13px;color:#94a3b8">${escapeHtml(footer)}</p>
+</body></html>`.trim();
+  const text = `Your lists today\n\n${args.sections.map((s) => `${s.heading}\n${s.lines.map((l) => `- ${l}`).join("\n")}`).join("\n\n")}\n\nOpen my lists: ${args.url}\n\n(${footer})`;
+  try {
+    const res = await resend.emails.send({ from: FROM, to: [args.to], subject: args.subject, html, text });
+    if (res.error) { console.error("Resend error (lists-digest):", res.error); return false; }
+    return true;
+  } catch (e) { console.error("Resend send failed (lists-digest):", e instanceof Error ? e.message : e); return false; }
+}
