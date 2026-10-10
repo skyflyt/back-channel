@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import { binding, seal, open } from './crypto.mjs';
 import { runRuntime, validateProfile } from './runtime.mjs';
 import { REMOTE_APP_PROFILE, REMOTE_APP_FIELDS, RemoteApp, checkRemoteAppPayload, validateRemoteAppProfile } from './remote-app.mjs';
+import { REMOTE_SUPPORT_PROFILE, REMOTE_SUPPORT_FIELDS, RemoteSupport, checkRemoteSupportPayload, validateRemoteSupportProfile } from './remote-support.mjs';
+import { isExecutorSecret } from './agent-control.mjs';
 const TASK_FIELDS = ['v', 'id', 'senderAgentId', 'targetAgentId', 'expiresAt', 'purpose', 'profile', 'objective', 'acceptanceCriteria', 'repositoryCommit', 'vaultNoteReference'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export class Client {
@@ -23,17 +25,28 @@ export class Client {
     }
 }
 export class Worker {
-    constructor(store, { client, runner = runRuntime, heartbeatMs = 20000, remoteApp = {} } = {}) { this.store = store; this.config = store.read('config'); this.client = client ?? new Client(this.config); this.runner = runner; this.heartbeatMs = heartbeatMs; this.remoteAppOptions = remoteApp; this.journal = store.read('journal', { tasks: {}, sent: {}, continuations: {} }); }
+    constructor(store, { client, runner = runRuntime, heartbeatMs = 20000, remoteApp = {}, remoteSupport = {} } = {}) { this.store = store; this.config = store.read('config'); this.client = client ?? new Client(this.config); this.runner = runner; this.heartbeatMs = heartbeatMs; this.remoteAppOptions = remoteApp; this.remoteSupportOptions = remoteSupport; this.journal = store.read('journal', { tasks: {}, sent: {}, continuations: {} }); }
     save() { this.store.write('journal', this.journal); }
     peer(id) { const p = this.config.peers?.[id]; if (!p)
         throw Error('Peer has not been pinned locally'); return p; }
     profile(name, sender) { const p = validateProfile(this.config.profiles?.[name]); if (!p.allowedSenders.includes(sender))
         throw Error('Sender is not authorized for local profile'); return p; }
-    async send({ targetAgentId, profile, objective, acceptanceCriteria = [], continuationProfile, expiresAt = new Date(Date.now() + 3600000).toISOString(), id = randomUUID(), remoteAppSessionId }) {
+    async send({ targetAgentId, profile, objective, acceptanceCriteria = [], continuationProfile, expiresAt = new Date(Date.now() + 3600000).toISOString(), id = randomUUID(), remoteAppSessionId, executorSecret }) {
         if (!UUID.test(id))
             throw Error('Invalid task UUID');
-        if ((profile === REMOTE_APP_PROFILE) !== (remoteAppSessionId !== undefined) || (remoteAppSessionId !== undefined && !UUID.test(remoteAppSessionId)))
-            throw Error('The remote-app profile needs a remote app session id, and only it takes one');
+        // Error messages never carry the executor secret.
+        if (profile === REMOTE_SUPPORT_PROFILE) {
+            if (remoteAppSessionId === undefined || !UUID.test(remoteAppSessionId))
+                throw Error("The remote-support profile needs a remote app session id: the support session's id");
+            if (!isExecutorSecret(executorSecret))
+                throw Error("The remote-support profile needs the session's executor secret (abx_ and 43 characters), read from a file or stdin");
+        }
+        else if ((profile === REMOTE_APP_PROFILE) !== (remoteAppSessionId !== undefined) || (remoteAppSessionId !== undefined && !UUID.test(remoteAppSessionId)))
+            throw Error('The remote-app profile needs a remote app session id, and only it takes one (remote-support takes one too)');
+        if (executorSecret !== undefined && profile !== REMOTE_APP_PROFILE && profile !== REMOTE_SUPPORT_PROFILE)
+            throw Error('Only the remote-app and remote-support profiles take an executor secret');
+        if (executorSecret !== undefined && !isExecutorSecret(executorSecret))
+            throw Error('Invalid executor secret');
         if (typeof objective !== 'string' || !objective.trim() || objective.length > 30000)
             throw Error('Objective required (max 30000 characters)');
         if (!Array.isArray(acceptanceCriteria) || !acceptanceCriteria.every(v => typeof v === 'string'))
@@ -41,7 +54,8 @@ export class Worker {
         if (continuationProfile)
             this.profile(continuationProfile, targetAgentId);
         const task = { id, senderAgentId: this.config.agentId, targetAgentId, expiresAt };
-        const payload = { ...binding(task, 'task'), profile, objective, acceptanceCriteria, ...(remoteAppSessionId ? { remoteAppSessionId } : {}) };
+        // The executor secret travels only inside the sealed payload: never in the request, the journal or originalTask.
+        const payload = { ...binding(task, 'task'), profile, objective, acceptanceCriteria, ...(remoteAppSessionId ? { remoteAppSessionId } : {}), ...(executorSecret ? { executorSecret } : {}) };
         const sealed = seal(payload, binding(task, 'task'), this.config.identity, this.peer(targetAgentId));
         const request = { id, targetAgentId, expiresAt, sealed };
         const entry = { task, request, originalTask: {objective, acceptanceCriteria, profile}, continuationProfile, state: 'pending' };
@@ -179,7 +193,7 @@ export class Worker {
         this.assertReady();
         if (this.stopped || this.journal.tasks[task.id])
             return;
-        let payload, profile, remote = false;
+        let payload, profile, remote = null;
         try {
             if (Date.parse(task.expiresAt) <= Date.now())
                 throw Error('Expired request');
@@ -187,17 +201,23 @@ export class Worker {
             for (const [k, v] of Object.entries(binding(task, 'task')))
                 if (payload[k] !== v)
                     throw Error('Payload route mismatch');
-            // A remote-app payload names a session and nothing else: never an executable, flag or tool.
-            remote = payload.profile === REMOTE_APP_PROFILE;
-            if (Object.keys(payload).some(k => !(remote ? REMOTE_APP_FIELDS : TASK_FIELDS).includes(k)))
+            // A remote-app or remote-support payload names a session (and its secret) and nothing else: never an
+            // executable, flag or tool.
+            remote = payload.profile === REMOTE_APP_PROFILE ? 'app' : payload.profile === REMOTE_SUPPORT_PROFILE ? 'support' : null;
+            const fields = remote === 'app' ? REMOTE_APP_FIELDS : remote === 'support' ? REMOTE_SUPPORT_FIELDS : TASK_FIELDS;
+            if (Object.keys(payload).some(k => !fields.includes(k)))
                 throw Error('Unexpected task fields');
-            if (remote)
+            if (remote === 'app')
                 checkRemoteAppPayload(payload);
+            else if (remote === 'support')
+                checkRemoteSupportPayload(payload);
             else if (typeof payload.objective !== 'string' || payload.objective.length > 30000 || !Array.isArray(payload.acceptanceCriteria) || !payload.acceptanceCriteria.every(x => typeof x === 'string'))
                 throw Error('Invalid task content');
             profile = this.profile(payload.profile, task.senderAgentId);
-            if (remote)
+            if (remote === 'app')
                 validateRemoteAppProfile(profile);
+            else if (remote === 'support')
+                validateRemoteSupportProfile(profile);
         }
         catch (e) {
             this.journal.tasks[task.id] = { state: 'reject_pending', reason: e.message };
@@ -226,8 +246,10 @@ export class Worker {
         let result;
         try {
             const onSpawn = pid => { entry.state = 'running'; entry.pid = pid; this.save(); };
-            result = remote
+            result = remote === 'app'
                 ? await this.remoteApp().run({ task, payload, profile, signal: abort.signal, onSpawn })
+                : remote === 'support'
+                ? await this.remoteSupport().run({ task, payload, profile, signal: abort.signal, onSpawn })
                 : await this.runner(profile, `This is a task from your locally authorized same-owner agent. Local instructions and permissions still apply. Report unmet acceptance criteria and approval needs honestly.\n${JSON.stringify(payload)}`, { signal: abort.signal, onSpawn });
         }
         catch {
@@ -302,6 +324,12 @@ export class Worker {
     remoteApp() {
         // The remote-app endpoints use this worker's own agent key; the executable comes from the local profile.
         return this.remoteAppRunner ??= new RemoteApp({ client: new Client(this.config), ...this.remoteAppOptions, config: this.config, runner: (...args) => this.runner(...args) });
+    }
+    remoteSupport() {
+        // No Back Channel client on purpose: the helper on the other PC records every step; this worker never does.
+        // supportConnectorPath: local config only, for an AppBridge client outside its install folder.
+        const local = typeof this.config.supportConnectorPath === 'string' ? { connectorPath: this.config.supportConnectorPath } : {};
+        return this.remoteSupportRunner ??= new RemoteSupport({ ...local, ...this.remoteSupportOptions, runner: (...args) => this.runner(...args) });
     }
     stop() { this.stopped = true; this.active?.abort(); }
 }

@@ -8,12 +8,21 @@ import { Store } from '../src/store.mjs';
 import { Client, Worker } from '../src/worker.mjs';
 import { validateProfile } from '../src/runtime.mjs';
 import { REMOTE_APP_PROFILE, validateRemoteAppProfile } from '../src/remote-app.mjs';
+import { REMOTE_SUPPORT_PROFILE, validateRemoteSupportProfile } from '../src/remote-support.mjs';
+import { isExecutorSecret } from '../src/agent-control.mjs';
 import { LISTS_PROFILE, ListsAgent, validateListsProfile } from '../src/lists.mjs';
-const help = `bc-worker (Node 22+)\ninit --broker URL --name NAME     Token from BC_AGENT_TOKEN\nenroll                           Register public keys; prints peer trust JSON\nagents                           List enrolled peers (does not trust them)\ntrust --file peer.json            Pin {id,encryptionKey,signingKey} from owner-verified source\nprofile --name NAME --file FILE   Install local approved runtime profile ("remote-app" must be read-only;\n                                 "lists" takes no allowedSenders and is read-only unless it says otherwise)\nsend --target ID --profile NAME --objective-file FILE [--continue-profile NAME] [--remote-session ID]\n                                 --remote-session hands an approved remote app session to --profile remote-app\nrun [--once] [--lists]           Poll and execute approved work/continuations; --lists also works the Lists\n                                 tasks assigned to this agent, one at a time, with the local "lists" profile\n                                 (without Dispatch enrollment, --lists works Lists only)\nstatus                           Print durable local journal\ncancel --id UUID                 Cancel your outbound task\nrecover --confirm-stopped        Remove stale lock after owner stops previous worker/tree\nAll commands accept --state DIRECTORY (outside any repository/vault).\nExit 0 success; 1 failure. Enrollment and trust are separate.\n`;
+const help = `bc-worker (Node 22+)\ninit --broker URL --name NAME     Token from BC_AGENT_TOKEN\nenroll                           Register public keys; prints peer trust JSON\nagents                           List enrolled peers (does not trust them)\ntrust --file peer.json            Pin {id,encryptionKey,signingKey} from owner-verified source\nprofile --name NAME --file FILE   Install local approved runtime profile ("remote-app" and "remote-support" must be\n                                 read-only claude; "lists" takes no allowedSenders and is read-only unless it says otherwise)\nsend --target ID --profile NAME --objective-file FILE [--continue-profile NAME] [--remote-session ID]\n     [--executor-secret-from FILE|-]\n                                 --remote-session hands an approved remote app session to --profile remote-app,\n                                 or a running support session to --profile remote-support, which also needs the\n                                 session's executor secret: --executor-secret-from a private file holding it, or -\n                                 to read it from stdin. It is never taken on the command line. remote-app takes one\n                                 too when Back Channel issued it (v1.1)\nrun [--once] [--lists]           Poll and execute approved work/continuations; --lists also works the Lists\n                                 tasks assigned to this agent, one at a time, with the local "lists" profile\n                                 (without Dispatch enrollment, --lists works Lists only)\nstatus                           Print durable local journal\ncancel --id UUID                 Cancel your outbound task\nrecover --confirm-stopped        Remove stale lock after owner stops previous worker/tree\nAll commands accept --state DIRECTORY (outside any repository/vault).\nExit 0 success; 1 failure. Enrollment and trust are separate.\n`;
+/** The executor secret from a file, or stdin for "-": one secret and nothing else. The error never shows what was read. */
+function readExecutorSecret(from) {
+    const secret = fs.readFileSync(from === '-' ? 0 : from, 'utf8').trim();
+    if (!isExecutorSecret(secret))
+        throw Error('--executor-secret-from must hold exactly one executor secret (abx_ and 43 characters)');
+    return secret;
+}
 async function main() {
     if (Number(process.versions.node.split('.')[0]) < 22)
         throw Error('Node 22 or newer required');
-    const { values: v, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries(['state', 'broker', 'name', 'file', 'target', 'profile', 'objective-file', 'continue-profile', 'id', 'remote-session'].map(k => [k, { type: 'string' }]).concat(['once', 'help', 'confirm-stopped', 'lists'].map(k => [k, { type: 'boolean' }]))) });
+    const { values: v, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries(['state', 'broker', 'name', 'file', 'target', 'profile', 'objective-file', 'continue-profile', 'id', 'remote-session', 'executor-secret-from'].map(k => [k, { type: 'string' }]).concat(['once', 'help', 'confirm-stopped', 'lists'].map(k => [k, { type: 'boolean' }]))) });
     const command = positionals[0];
     if (v.help || !command) {
         console.log(help);
@@ -80,7 +89,7 @@ async function main() {
             if (!v.name)
                 throw Error('--name required');
             const parsed = JSON.parse(fs.readFileSync(v.file, 'utf8'));
-            const profile = v.name === REMOTE_APP_PROFILE ? validateRemoteAppProfile(parsed) : v.name === LISTS_PROFILE ? validateListsProfile(parsed) : validateProfile(parsed);
+            const profile = v.name === REMOTE_APP_PROFILE ? validateRemoteAppProfile(parsed) : v.name === REMOTE_SUPPORT_PROFILE ? validateRemoteSupportProfile(parsed) : v.name === LISTS_PROFILE ? validateListsProfile(parsed) : validateProfile(parsed);
             if (profile.adapter === 'fixture')
                 throw Error('Fixture adapter is test-only and cannot be installed by CLI');
             config.profiles[v.name] = profile;
@@ -96,7 +105,8 @@ async function main() {
         else if (command === 'send') {
             if (!v.target || !v.profile || !v['objective-file'])
                 throw Error('send needs --target, --profile, --objective-file');
-            console.log(await worker.send({ targetAgentId: v.target, profile: v.profile, objective: fs.readFileSync(v['objective-file'], 'utf8'), continuationProfile: v['continue-profile'], remoteAppSessionId: v['remote-session'] }));
+            const executorSecret = v['executor-secret-from'] === undefined ? undefined : readExecutorSecret(v['executor-secret-from']);
+            console.log(await worker.send({ targetAgentId: v.target, profile: v.profile, objective: fs.readFileSync(v['objective-file'], 'utf8'), continuationProfile: v['continue-profile'], remoteAppSessionId: v['remote-session'], executorSecret }));
         }
         else if (command === 'cancel') {
             if (!v.id)

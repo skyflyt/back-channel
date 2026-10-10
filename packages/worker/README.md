@@ -99,6 +99,33 @@ server (`remote_sessions`, `remote_open`, `remote_observe`, `remote_act`, `remot
 reports every step, and stops the CLI when the session is stopped, runs out of time or loses its lease. See
 `docs/remote-app-sessions.md` ("Executor").
 
+When Back Channel issued the session an executor secret (v1.1), add `--executor-secret-from FILE` (or `-` to read
+it from stdin). The worker sends it in the PC's pipe greeting and nowhere else. Without one, nothing changes.
+
+### Support sessions
+
+A profile named `remote-support` lets this worker carry out a support session: someone you help ran Back Channel's
+temporary helper and pressed Allow, and AppBridge on this PC ("Allow this PC to reach helpers I approve") bridges
+its support connector pipe across the relay to that helper. Install the profile like `remote-app`
+(`profile --name remote-support --file remote-support.json`: read-only claude, naming the agent that hands sessions
+over in `allowedSenders`). That agent reads the session's executor secret once from `bc_support_status`, writes it
+to a private file (or pipes it in), and sends:
+
+```
+send --target THIS_AGENT --profile remote-support --remote-session SESSION_ID --objective-file task.txt
+     --executor-secret-from secret.txt
+```
+
+The secret is never taken on a command line, where other processes could read it. Delete the file afterwards.
+
+The CLI gets the same six `remote_*` tools as `remote-app`, worded for the person in control: they confirm each
+open and act on their own screen, and when they say no (`declined`), the agent is told not to work around it.
+Nothing pauses, and **this worker records nothing with Back Channel**: the helper on the other PC records every step.
+At the end the worker sends `end` over the pipe and returns the agent's summary in the sealed result. The asking agent
+then calls `bc_support_end` to close the request and get the transcript. If the support connector isn't running, the
+result is `waiting_user` with the switch to turn on. See `docs/agent-dispatch-contract.md` ("The remote-support
+profile").
+
 ### Lists: an always-on agent
 
 `run --lists` also makes this worker an always-on agent for Back Channel Lists. Assign a task to this agent (in
@@ -170,6 +197,8 @@ fixture and an in-memory relay, including the encrypted roundtrip and sender
 continuation, route/purpose replay, tampering, rejected profiles/peers, duplicate
 polling, restart, lease cancellation, outbox retry and local exclusivity.
 `test/lists.test.mjs` covers lists mode against a loopback broker that uses the broker's own Lists rules and a
-fixture agent CLI that speaks MCP.
+fixture agent CLI that speaks MCP. `test/remote-support.test.mjs` covers the remote-support profile against a
+fixture support connector pipe that checks the executor secret's hash, a loopback Back Channel that must receive
+nothing, and the same fixture agent CLI.
 Real broker integration and installed-CLI acceptance are separate integration
 checks; passing a fixture test does not claim a remote machine was enrolled.
