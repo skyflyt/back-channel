@@ -31,6 +31,8 @@ import { POST as viewTokenSelfPOST } from "@/app/api/account/view-token-self/rou
 import { GET as agentPayloadsGET } from "@/app/api/inbox/agent-payloads/route";
 // Lists (bc_task*, bc_list_create): called directly with the caller's own key, same rules as /api/lists.
 import { isListTool, listsTool, tasksWaitingForAgents } from "@/lib/lists";
+// Remote app sessions (bc_remote_*): full-scope keys only, same rules as /api/remote-app.
+import { isRemoteTool, remoteTool } from "@/lib/remote-app";
 import { waitForInbox, TooManyWaitersError } from "@/lib/inbox-bus";
 // Side effect: registers the shared pendingCounter with inbox-bus (same wiring
 // /api/inbox/check and /api/inbox/events rely on) so waitForInbox here counts
@@ -110,6 +112,7 @@ async function dispatchTool(
   auth: { accountId: string; handle: string; displayName: string | null; agentTokenId: string | null },
 ): Promise<ToolOutcome> {
   if (isListTool(name)) return listsTool(req, name, args);
+  if (isRemoteTool(name)) return remoteTool(req, name, args);
   switch (name) {
     case "bc_whoami": {
       const agent = auth.agentTokenId
@@ -320,7 +323,7 @@ export async function POST(req: NextRequest) {
   // Lists attribute every action to a specific agent, so a key with no agent
   // identity isn't offered the bc_task* tools (and /api/lists refuses it).
   if (msg.method === "tools/list" && !ctx.agentTokenId) {
-    const tools = (hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link")).filter((t) => !isListTool(t.name));
+    const tools = (hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link")).filter((t) => !isListTool(t.name) && !isRemoteTool(t.name));
     return json(rpcResult(msg.id, { tools }));
   }
 
@@ -337,7 +340,8 @@ export async function POST(req: NextRequest) {
       // A connector key is refused by the dashboard-link route itself
       // (view-token-self); leaving the tool out of its catalog just keeps the
       // model from offering something that will not work.
-      return json(rpcResult(msg.id, { tools: hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link") }));
+      // The bc_remote_* tools (a PC's apps) are left out for the same reason, and refused by remote-app.ts.
+      return json(rpcResult(msg.id, { tools: hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link" && !isRemoteTool(t.name)) }));
     case "tools/call": {
       const name = msg.params?.name;
       const tool = typeof name === "string" ? getTool(name) : null;

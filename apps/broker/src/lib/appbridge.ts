@@ -19,16 +19,23 @@
  *   device state and the host's enrollment attestation, all in one account.
  * - Privacy. No IP, user agent, query or body is stored or logged. The only
  *   history is the owner's 7-day connection log (device, PC, time).
+ * - The "agent" purpose (docs/remote-app-sessions.md): a PC's lease for one remote
+ *   app session its person approved. The gate also re-reads that session (approved,
+ *   running, unpaused, in time, this PC, live full-scope agents) every time, and
+ *   stopping the session deletes the lease in the stopping transaction. Agent
+ *   leases have their own budget, apart from the device caps and takeover.
  */
 import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, verify as verifySignature, type KeyObject } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import type { AppBridgeDevice, Prisma } from "@prisma/client";
+import type { AppBridgeDevice, Prisma, RemoteAppSession } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { rateLimit, rateLimitPeek } from "@/lib/rate-limit";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 import { checkOwnerAdmin, ownerGateInput } from "@/lib/admin";
 import { REMOTE_ACCESS_FEATURE, remoteAccessSource } from "@/lib/remote-entitlement";
 import { isSerializationFailure, withSerializableRetry } from "@/lib/serializable";
+// Remote app sessions (docs/remote-app-sessions.md): the pure rules for the "agent" lease purpose.
+import * as RemoteApp from "@/lib/remote-app/rules.mjs";
 
 export const FEATURE = REMOTE_ACCESS_FEATURE;
 const CREDENTIAL_PREFIX = "ab_";
@@ -42,6 +49,10 @@ const MAX_REMOTES_PER_ACCOUNT = 3;   // phones or laptops relayed at once, per a
 const MAX_PAIRS_PER_REMOTE_HOST = 4; // one remote's live pairs to one PC: its workspace socket plus pooled HTTPS connections
 const MAX_PAIRS_PER_REMOTE = 8;      // one remote's live pairs across all its PCs (a laptop on two PCs at once)
 const MAX_PRESENCE_PER_ACCOUNT = 4;
+// "agent" leases: a PC holding one for the account's one remote app session at a time (remote-app/rules.mjs),
+// plus a spare for a PC that reconnects before the relay has released its old lease. Its own budget: never
+// counted with, and never displacing or displaced by, the session (device) or presence caps.
+const MAX_AGENT_LEASES_PER_ACCOUNT = 2;
 // Device takeover at pass issue (Skylar, 2026-09-25): a remote refused as a fourth device may displace
 // one of the busy ones, at most this often per taking device, so two devices cannot ping-pong forever.
 const TAKEOVERS_PER_DEVICE = 6;
@@ -68,7 +79,8 @@ export const SCOPES = {
 type Role = keyof typeof SCOPES;
 type Scope = "appbridge.device" | "appbridge.host.relay" | "appbridge.relay.presence" | "appbridge.relay.pass";
 type Body = Record<string, unknown>;
-type Refusal = "rollout_off" | "not_entitled" | "relay_off" | "device_revoked" | "not_paired" | "not_found";
+type Refusal = "rollout_off" | "not_entitled" | "relay_off" | "device_revoked" | "not_paired" | "not_found" | "session_inactive";
+type Purpose = "session" | "presence" | "agent";
 
 export class AppBridgeError extends Error {
   status: number; retryAfter?: number;
@@ -285,8 +297,9 @@ export async function accountContext(req: NextRequest, mutate: boolean) {
 
 // ── The gate ────────────────────────────────────────────────────────────────
 
-type Binding = { accountId: string; hostDeviceId: string; remoteDeviceId: string | null; enrollmentId: string | null };
-type Admitted = { host: AppBridgeDevice; remote: AppBridgeDevice | null };
+// remoteAppSessionId is set for an "agent" pass or lease only: the remote app session the PC holds it for.
+type Binding = { accountId: string; hostDeviceId: string; remoteDeviceId: string | null; enrollmentId: string | null; remoteAppSessionId: string | null };
+type Admitted = { host: AppBridgeDevice; remote: AppBridgeDevice | null; session: RemoteAppSession | null };
 
 /** Every condition for relay access, read fresh in the caller's transaction. */
 async function gate(tx: Prisma.TransactionClient, b: Binding): Promise<Admitted | { refused: Refusal }> {
@@ -297,14 +310,28 @@ async function gate(tx: Prisma.TransactionClient, b: Binding): Promise<Admitted 
   if (!host || host.accountId !== b.accountId || host.role !== "host") return { refused: "not_found" };
   if (host.revokedAt || !host.enabled) return { refused: "device_revoked" };
   if (!host.relayEnabled) return { refused: "relay_off" };
-  if (b.remoteDeviceId === null) return { host, remote: null };
+  if (b.remoteAppSessionId !== null) {
+    // An "agent" lease (docs/remote-app-sessions.md): on top of everything above, a remote app session that
+    // the person approved in the dashboard, still running, not paused and not out of time, bound to THIS PC,
+    // whose agents (the one that asked and the one driving) are still live, full-scope agents of the account.
+    if (b.remoteDeviceId !== null) return { refused: "not_found" };
+    const session = await tx.remoteAppSession.findUnique({ where: { id: b.remoteAppSessionId } });
+    if (!session || session.accountId !== b.accountId || session.hostDeviceId !== host.id) return { refused: "not_found" };
+    const agentIds = [...new Set([session.agentTokenId, RemoteApp.executorOf(session)])];
+    const agents = await tx.agentToken.findMany({ where: { id: { in: agentIds } }, select: { id: true, accountId: true, revokedAt: true, scope: true } });
+    if (!RemoteApp.admitsAgentLease(session, { accountId: b.accountId, hostDeviceId: host.id }, new Date()) || !RemoteApp.agentsAdmit(session, agents)) {
+      return { refused: "session_inactive" };
+    }
+    return { host, remote: null, session };
+  }
+  if (b.remoteDeviceId === null) return { host, remote: null, session: null };
   const remote = await tx.appBridgeDevice.findUnique({ where: { id: b.remoteDeviceId } });
   if (!remote || remote.accountId !== b.accountId || remote.role !== "remote") return { refused: "not_found" };
   if (remote.revokedAt || !remote.enabled) return { refused: "device_revoked" };
   if (b.enrollmentId === null) return { refused: "not_paired" };
   const pairing = await tx.appBridgePairing.findUnique({ where: { hostDeviceId_enrollmentId: { hostDeviceId: host.id, enrollmentId: b.enrollmentId } } });
   if (!pairing || pairing.withdrawnAt || pairing.remoteDeviceId !== remote.id) return { refused: "not_paired" };
-  return { host, remote };
+  return { host, remote, session: null };
 }
 function refuse(r: Refusal): never { return r === "not_found" ? fail(404, "not_found") : fail(403, r); }
 
@@ -539,8 +566,9 @@ async function sessionCapacity(tx: Prisma.TransactionClient, accountId: string, 
   };
 }
 
-async function issuePass(req: NextRequest, purpose: "session" | "presence"): Promise<NextResponse> {
-  const { device } = await deviceContext(req, purpose === "presence" ? "appbridge.relay.presence" : "appbridge.relay.pass");
+async function issuePass(req: NextRequest, purpose: Purpose): Promise<NextResponse> {
+  // A PC asks for its presence and agent passes with the same host scope; a remote asks for session passes.
+  const { device } = await deviceContext(req, purpose === "session" ? "appbridge.relay.pass" : "appbridge.relay.presence");
   limit("appbridge:pass", device.id, 30, 60_000);
   const body = await readBody(req);
   let binding: Binding;
@@ -548,11 +576,16 @@ async function issuePass(req: NextRequest, purpose: "session" | "presence"): Pro
   if (purpose === "presence") {
     exact(body, []);
     if (device.role !== "host") fail(400, "invalid_request");
-    binding = { accountId: device.accountId, hostDeviceId: device.id, remoteDeviceId: null, enrollmentId: null };
+    binding = { accountId: device.accountId, hostDeviceId: device.id, remoteDeviceId: null, enrollmentId: null, remoteAppSessionId: null };
+  } else if (purpose === "agent") {
+    // The PC's own pass for one remote app session bound to it (docs/remote-app-sessions.md).
+    exact(body, ["sessionId"]);
+    if (device.role !== "host") fail(400, "invalid_request");
+    binding = { accountId: device.accountId, hostDeviceId: device.id, remoteDeviceId: null, enrollmentId: null, remoteAppSessionId: id(body.sessionId) };
   } else {
     exact(body, ["hostDeviceId", "enrollmentId"], ["takeover"]);
     if (device.role !== "remote") fail(400, "invalid_request");
-    binding = { accountId: device.accountId, hostDeviceId: id(body.hostDeviceId), remoteDeviceId: device.id, enrollmentId: id(body.enrollmentId) };
+    binding = { accountId: device.accountId, hostDeviceId: id(body.hostDeviceId), remoteDeviceId: device.id, enrollmentId: id(body.enrollmentId), remoteAppSessionId: null };
     if ("takeover" in body) {
       if (typeof body.takeover !== "string" || !DEVICE_ID.test(body.takeover)) fail(400, "invalid");
       takeover = body.takeover;
@@ -587,6 +620,20 @@ async function issuePass(req: NextRequest, purpose: "session" | "presence"): Pro
 export const issuePresencePass = (req: NextRequest) => handle(() => issuePass(req, "presence"));
 /** POST /relay/passes — a remote's pass to reach one PC, for one of that PC's attested enrollments. */
 export const issueSessionPass = (req: NextRequest) => handle(() => issuePass(req, "session"));
+/**
+ * POST /relay/agent-passes { sessionId } — a PC's pass for an "agent" lease: its standing to let an agent use
+ * an app on it, for one remote app session the person approved (docs/remote-app-sessions.md). Refused with
+ * 403 session_inactive unless that session is approved, running, unpaused and in time; 404 if it is not
+ * this PC's.
+ */
+export const issueAgentPass = (req: NextRequest) => handle(() => issuePass(req, "agent"));
+
+/** A PC's own `ab_` credential (the host relay scope it asks for passes with): for the agent-session routes in remote-app-host.ts. */
+export async function hostDevice(req: NextRequest): Promise<AppBridgeDevice> {
+  const { device } = await deviceContext(req, "appbridge.relay.presence");
+  if (device.role !== "host") fail(403, "scope");
+  return device;
+}
 
 // ── Relay-facing routes ─────────────────────────────────────────────────────
 
@@ -602,7 +649,7 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
   const body = await relayRequest(req);
   const flood = rateLimitPeek("appbridge:redeem-failed", "all", REDEEM_FAILURES);
   const names = Object.keys(body);
-  if (names.length !== 3 || typeof body.pass !== "string" || !HEX64.test(body.pass) || (body.purpose !== "session" && body.purpose !== "presence") ||
+  if (names.length !== 3 || typeof body.pass !== "string" || !HEX64.test(body.pass) || (body.purpose !== "session" && body.purpose !== "presence" && body.purpose !== "agent") ||
     typeof body.connectorSpkiSha256 !== "string" || !HEX64.test(body.connectorSpkiSha256)) {
     spend("appbridge:redeem-failed", "all", REDEEM_FAILURES);
     return fail(400, "invalid_request");
@@ -625,10 +672,13 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
     if (consumed.count !== 1) return null;
     const pass = await tx.appBridgePass.findUnique({ where: { passHash } });
     if (!pass || pass.purpose !== purpose) return null;
-    const binding: Binding = { accountId: pass.accountId, hostDeviceId: pass.hostDeviceId, remoteDeviceId: pass.remoteDeviceId, enrollmentId: pass.enrollmentId };
+    const binding: Binding = { accountId: pass.accountId, hostDeviceId: pass.hostDeviceId, remoteDeviceId: pass.remoteDeviceId, enrollmentId: pass.enrollmentId,
+      remoteAppSessionId: pass.remoteAppSessionId ?? null };
     if ((purpose === "session") !== (binding.remoteDeviceId !== null)) return null;
+    if ((purpose === "agent") !== (binding.remoteAppSessionId !== null)) return null;
     const g = await gate(tx, binding);
     if ("refused" in g) return null;
+    // A session pass is presented by the remote; a presence or agent pass by the PC itself.
     const presenter = purpose === "session" ? g.remote! : g.host;
     if (!sameFingerprint(presenter.connectorSpkiSha256, presented)) return null;
     if (purpose === "session") {
@@ -654,13 +704,20 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
         mine = mine.filter(l => !superseded.includes(l.id));
       }
       if (mine.length >= MAX_PAIRS_PER_REMOTE || (!remotes.has(binding.remoteDeviceId) && remotes.size >= MAX_REMOTES_PER_ACCOUNT)) return "capacity" as const;
+    } else if (purpose === "agent") {
+      // The agent budget: its own count, of "agent" leases only. Session (device) and presence leases are
+      // never read or touched here, so an agent session never displaces a phone and is never displaced.
+      const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "agent", expiresAt: { gt: now } }, select: { id: true } });
+      if (live.length >= MAX_AGENT_LEASES_PER_ACCOUNT) return "capacity" as const;
     } else {
       // Presence cap: each PC keeps one waiting connection; the spares cover a PC reconnecting before
       // the relay has released its old lease. Nothing else bounds presence leases per account.
       const live = await tx.appBridgeLease.findMany({ where: { accountId: binding.accountId, purpose: "presence", expiresAt: { gt: now } }, select: { id: true } });
       if (live.length >= MAX_PRESENCE_PER_ACCOUNT) return "capacity" as const;
     }
-    const lease = await tx.appBridgeLease.create({ data: { id: newId(), purpose, ...binding, expiresAt: new Date(now.getTime() + LEASE_TTL_MS) } });
+    // An agent lease never outlives its session.
+    const leaseExpiry = g.session ? RemoteApp.agentLeaseExpiry(g.session, now, LEASE_TTL_MS) : new Date(now.getTime() + LEASE_TTL_MS);
+    const lease = await tx.appBridgeLease.create({ data: { id: newId(), purpose, ...binding, expiresAt: leaseExpiry } });
     // The log records an admitted attempt: it is written here, so a pair the relay then fails to
     // join still appears (the page and docs call these "connection attempts").
     if (purpose === "session") await tx.appBridgeConnectionEvent.create({ data: { accountId: binding.accountId, hostDeviceId: binding.hostDeviceId, remoteDeviceId: binding.remoteDeviceId!, at: now } });
@@ -668,6 +725,7 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
       leaseId: lease.id, accountId: binding.accountId, hostDeviceId: binding.hostDeviceId,
       clientDeviceId: binding.remoteDeviceId, enrollmentId: binding.enrollmentId,
       hostConnectorSpkiSha256: g.host.connectorSpkiSha256, clientConnectorSpkiSha256: g.remote?.connectorSpkiSha256 ?? null,
+      ...(g.session ? { remoteAppSessionId: g.session.id } : {}),
     };
   });
   if (!grant) return refused();
@@ -699,9 +757,13 @@ export const renewLease = (req: NextRequest) => handle(async () => {
     const lease = await tx.appBridgeLease.findUnique({ where: { id: leaseId } });
     if (!lease) return { status: 404 } as const;
     if (lease.expiresAt <= now) { await tx.appBridgeLease.deleteMany({ where: { id: leaseId } }); return { status: 410 } as const; }
-    const g = await gate(tx, { accountId: lease.accountId, hostDeviceId: lease.hostDeviceId, remoteDeviceId: lease.remoteDeviceId, enrollmentId: lease.enrollmentId });
+    const g = await gate(tx, { accountId: lease.accountId, hostDeviceId: lease.hostDeviceId, remoteDeviceId: lease.remoteDeviceId, enrollmentId: lease.enrollmentId,
+      remoteAppSessionId: lease.remoteAppSessionId ?? null });
     if ("refused" in g) { await tx.appBridgeLease.deleteMany({ where: { id: leaseId } }); return { status: 403 } as const; }
-    const extended = await tx.appBridgeLease.updateMany({ where: { id: leaseId, expiresAt: { gt: now } }, data: { expiresAt: new Date(now.getTime() + LEASE_TTL_MS) } });
+    // An agent lease is renewed only up to its session's end (and its session is re-read above: stopped,
+    // paused or out of time is a refusal that deletes the lease).
+    const until = g.session ? RemoteApp.agentLeaseExpiry(g.session, now, LEASE_TTL_MS) : new Date(now.getTime() + LEASE_TTL_MS);
+    const extended = await tx.appBridgeLease.updateMany({ where: { id: leaseId, expiresAt: { gt: now } }, data: { expiresAt: until } });
     if (extended.count !== 1) return { status: 410 } as const;
     return { keys: { hostConnectorSpkiSha256: g.host.connectorSpkiSha256, clientConnectorSpkiSha256: g.remote?.connectorSpkiSha256 ?? null } };
   });
@@ -756,6 +818,8 @@ async function revokeInTx(tx: Prisma.TransactionClient, deviceId: string, now: D
   await tx.appBridgeCredential.updateMany({ where: { deviceId, revokedAt: null }, data: { revokedAt: now } });
   await tx.appBridgePairing.updateMany({ where: { OR: [{ hostDeviceId: deviceId }, { remoteDeviceId: deviceId }], withdrawnAt: null }, data: { withdrawnAt: now } });
   await tx.appBridgeLease.deleteMany({ where: { OR: [{ hostDeviceId: deviceId }, { remoteDeviceId: deviceId }] } });
+  // A PC that goes ends every remote app session bound to it (its agent leases went with the line above).
+  await tx.remoteAppSession.updateMany({ where: { hostDeviceId: deviceId, status: { in: [...RemoteApp.LIVE] } }, data: { status: "ended", endReason: "revoked", endedAt: now } });
 }
 
 /** DELETE /account/devices/{id} — revoke a device: its credentials stop, its pairings are withdrawn, its live leases are deleted. */

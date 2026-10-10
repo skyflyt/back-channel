@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AppShell, type ShellTab } from "@/components/ui/shell";
 import { useIsOwner } from "@/components/ui/use-is-owner";
+import AgentSessions, { consumeApprovalLink } from "./agent-sessions";
 
 // Where the apps are published (a public repository; the source repository is private). The page
 // links to it rather than fetching it: connect-src is 'self', and a download list that is always
@@ -125,6 +126,7 @@ export default function RemotePage() {
 
   const load = useCallback(async () => {
     try {
+      await consumeApprovalLink(); // an agent's one-tap approval link signs the person in first
       const r = await fetch("/api/appbridge/v1/account/devices", { credentials: "include" });
       if (r.status === 401) {
         if (process.env.NODE_ENV !== "production") { setData(DEMO.devices); setConnections(DEMO.connections); setBilling(DEMO_BILLING); setState("ready"); return; }
@@ -228,6 +230,8 @@ export default function RemotePage() {
                   : "Remote access is enabled for your account."}
               </p>
             </div>
+
+            <AgentSessions />
 
             {billing && <PlanCard billing={billing} busy={busy} message={billingMessage} onOpen={openStripe} />}
 

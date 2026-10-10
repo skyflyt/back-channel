@@ -165,6 +165,34 @@ try{
  assert.equal(await leases('presence'),4,'presence leases are never displaced');
  console.log('PASS: concurrent takeovers of one device take it over once, never 503, and never admit a fourth remote');
 
+ // Remote app sessions (docs/remote-app-sessions.md): the PC's "agent" lease under contention. With three
+ // phones relayed, four agent passes for one approved session redeemed at once admit exactly the agent
+ // budget (2) and never touch a phone's lease; then the person's Stop (the real route: session ended and its
+ // leases deleted in one serializable transaction) races four renewals. No 503, and no lease outlives it.
+ const agentToken=await prisma.agentToken.create({data:{accountId:account.id,keyHash:sha(randomUUID()),name:'Integration agent'}});
+ const remoteSession=await prisma.remoteAppSession.create({data:{accountId:account.id,hostDeviceId:host.deviceId,agentTokenId:agentToken.id,goal:'Integration check',
+  appAllowList:['QuickBooks'],minutes:30,status:'active',consentBy:account.id,consentVia:'web',startedAt:new Date(),expiresAt:new Date(Date.now()+30*60_000)}});
+ const agentPass=async()=>{const r=await ab.issueAgentPass(call('POST','/relay/agent-passes',host.credential,{sessionId:remoteSession.id}));assert.equal(r.status,200);return (await r.json()).pass as string;};
+ const phonesBefore=await leases('session');
+ const agentRedeemed=await Promise.all((await together(4,()=>agentPass())).map(p=>redeem(p,'agent',host.key.fp)));
+ assert.deepEqual(statuses(agentRedeemed),[200,200,409,409],'the agent budget holds under contention');
+ assert.equal(await leases('agent'),2);
+ assert.equal(await leases('session'),phonesBefore,'an agent lease never displaces a phone');
+ const agentLeaseIds=await Promise.all(agentRedeemed.filter(r=>r.status===200).map(async r=>(await r.json()).leaseId as string));
+ const rawCookie='cs_'+randomBytes(32).toString('base64url');
+ await prisma.sessionCookie.create({data:{token:sha(rawCookie),accountId:account.id,expiresAt:new Date(Date.now()+3_600_000)}});
+ const {remoteAppRoute}=await import('../src/lib/remote-app.ts');
+ const stopReq=new NextRequest(`https://back-channel.app/api/remote-app/sessions/${remoteSession.id}/stop`,{method:'POST',headers:{'content-type':'application/json',cookie:`bc_session=${rawCookie}; bc_csrf=tok`,'x-bc-csrf':'tok'}});
+ const [duringStop,stopped]=await Promise.all([together(4,i=>ab.renewLease(relayCall('renew',{leaseId:agentLeaseIds[i%2]}))),remoteAppRoute(stopReq,['sessions',remoteSession.id,'stop'])]);
+ assert.equal(stopped.status,200,'the stop commits');
+ assert.ok(duringStop.every(r=>[200,403,404].includes(r.status)),`renewals racing a stop never 503: ${statuses(duringStop)}`);
+ assert.equal(await leases('agent'),0,'no agent lease outlives the stop');
+ for(const leaseId of agentLeaseIds)assert.equal((await ab.renewLease(relayCall('renew',{leaseId}))).status,404);
+ assert.equal((await prisma.remoteAppSession.findUniqueOrThrow({where:{id:remoteSession.id}})).endReason,'user_stop');
+ assert.equal((await ab.issueAgentPass(call('POST','/relay/agent-passes',host.credential,{sessionId:remoteSession.id}))).status,403,'a stopped session never reopens');
+ assert.equal(await leases('session'),phonesBefore,'and the phones were never touched');
+ console.log('PASS: agent leases keep their own budget under contention, and a stop racing renewals leaves none alive');
+
  // A rotated credential's first requests arrive together: each ends the predecessor, once.
  const rotated=await ab.rotateCredential(call('POST','/devices/self/credential',host.credential));assert.equal(rotated.status,200);
  const next=(await rotated.json()).credential as string;

@@ -1547,6 +1547,37 @@ export async function listsTool(req: NextRequest, name: string, args: Input): Pr
 }
 
 /**
+ * For remote app sessions (src/lib/remote-app.ts): one Lists operation, run as
+ * the given person or agent, INSIDE the caller's transaction, with exactly the
+ * rules /api/lists applies. A Lists refusal comes back as a value, never
+ * thrown, so the session's own write still commits; anything else (a
+ * serialization abort) propagates and the caller's whole transaction re-runs.
+ */
+export async function listsInTx(
+  tx: Tx,
+  as: { accountId: string; agentId: string | null },
+  op: "getTask" | "addEntry" | "done",
+  input: Input,
+  now: Date,
+  // Doorbells, email and live-stream updates this operation owes, run by the caller once ITS transaction commits.
+  after: Array<() => void> = [],
+): Promise<{ ok: true; result: Row } | { ok: false; code: string; message: string }> {
+  const ctx: Ctx = {
+    tx, caller: { accountId: as.accountId, agentId: as.agentId, viaCookie: false }, input, now, after,
+    rung: new Set<string>(), nudged: new Set<string>(), touched: new Set<string>(), audience: new Set<string>(),
+  };
+  try {
+    const result = await OPS[op](ctx);
+    // The same fan-out transact() does: open pages hear that the task changed, after the caller commits.
+    await announce(ctx);
+    return { ok: true, result: result as Row };
+  } catch (e) {
+    if (e instanceof R.ListRuleError) return { ok: false, code: e.code, message: e.message };
+    throw e;
+  }
+}
+
+/**
  * Doorbell helper for bc_check_inbox and the inbox doorbell: what is waiting
  * for this account's agents that none of them has seen yet. Open tasks
  * assigned to its agents, plus comments and progress lines that mention one of
