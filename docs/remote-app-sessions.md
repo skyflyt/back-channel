@@ -430,7 +430,10 @@ uppercase SHA-256 of `signingKey + "\n" + encryptionKey`, the agent's public Dis
 PEM strings Back Channel stores), in groups of four (`AB12-CD34-EF56-7890`). You compare it with the fingerprint shown
 on that agent's own PC, or here on the dashboard. `bc-worker allow-sender` then fetches the agent's keys from Back
 Channel, fingerprints them itself and refuses unless they match what you confirmed. So even a compromised Back Channel
-can't slip a sender in: it would have to fool your own comparison.
+can't slip a sender in: it would have to fool your own comparison. Changing senders needs the worker stopped:
+the console runs `bc-worker stop` (it ends only this state's own worker; the scheduled task's launcher also passes
+`--parent-pid`, so stopping the task stops the worker), then `allow-sender` or `revoke-sender`, then starts the task
+again if it was running.
 
 **Still open.**
 - A retention rule for ended sessions and their steps.
