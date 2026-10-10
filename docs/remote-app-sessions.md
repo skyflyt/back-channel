@@ -187,11 +187,12 @@ process of the same Windows user can't drive the session's apps.
   (`executorSecretHash`) and throws that first value away: nobody holds it, so the pipe admits no `hello` for the
   session before its executor has its own.
 - **Handed out once, to the executor.** The executor is `executorAgentId`, or the agent that asked when it drives
-  itself (`drivenBy`). Its first `GET /api/remote-app/sessions/{id}` (or `bc_remote_session_status`) while the session
-  runs (approved, or paused) carries `session.executorSecret`: `abx_` + 43 base64url characters, a fresh value whose
-  hash replaces the stored one (`executorSecretIssuedAt` records when). No later read shows it again. The agent that
-  asked (when another agent drives), the person and the dashboard never see it, and their reads never spend it. Only
-  the hash is stored; no audit row or Lists entry carries it.
+  itself (`drivenBy`). Its first `GET /api/remote-app/sessions/{id}` while the session runs (approved, or paused)
+  carries `session.executorSecret`: `abx_` + 43 base64url characters, a fresh value whose hash replaces the stored one
+  (`executorSecretIssuedAt` records when). No later read shows it again. `bc_remote_session_status` never shows or
+  spends it, even for the executor: a tool reply lands in a chat transcript. The agent that asked (when another agent
+  drives), the person and the dashboard never see it, and their reads never spend it. Only the hash is stored; no
+  audit row or Lists entry carries it.
 - **The PC** reads the current hash per session from `GET /hosts/self/agent-sessions` (`executorSecretSha256`) and
   checks the hello in constant time against it:
   ```jsonc
@@ -374,7 +375,6 @@ retention rule yet); a deleted account's rows must be removed by `accountId` by 
 - **The v1.1 secret check on the PC** (AppBridge repo, contract PR-4): the agent-control pipe reading
   `executorSecretSha256` and refusing a v1.1 session's `hello` without the matching secret; the worker sending it
   (contract PR-5). The broker side is built here.
-- The skill and privacy-page copy for remote sessions (design chunk A7).
 - A retention rule for ended sessions and their steps.
 - Phase B (one-time remote support for someone else) is a separate document: [docs/remote-support.md](remote-support.md).
   Its sessions are `RemoteAppSession` rows with `kind: "support"`; every endpoint here, the PC's routes and the "agent"

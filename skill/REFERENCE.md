@@ -906,6 +906,9 @@ Base URL: `https://back-channel.app/api`
 | `/favors/check` · `/favors/log` | POST | bearer | Favors (recipient): pre-approval gate (trust/mute/caps) / record outcome. Task+result stay sealed |
 | `/favors/mute[/:handle]` | POST/DELETE | bearer/cookie | Pause / resume favors from a peer without revoking trust |
 | `/schedule/log` | POST | bearer | Scheduling: metadata-only audit (negotiated/booked); free/busy + times stay sealed |
+| `/remote-app/machines` · `/remote-app/sessions` | GET · POST/GET | bearer (full key) | Remote app sessions (slim skill, **Remote**): the user's PCs / ask to use apps on one `{host, apps, minutes, goal, taskId?, executor?}` → `awaiting_consent` + `approvalUrl` (the user approves in the dashboard; no agent can) / your sessions |
+| `/remote-app/sessions/:id` · `/actions` · `/end` · `/stop` · `/executor-secret` | GET · POST | bearer (full key) | Status + steps + `next` (the executor's first read while it runs carries `session.executorSecret`, once) / executor records a step `{action, target?, outcome, evidenceRef?}` / end `{summary, evidenceRef?, finished?}` / stop (final) / executor replaces a lost secret |
+| `/support/invites` · `/support/invites/:id` · `/end` · `/executor-secret` | POST/GET · GET · POST | bearer (full key) | One-time remote support: ask `{for, task, minutes, taskId?}` → `requested` + `approvalUrl` (no response to an agent carries the code) / status + transcript + `next` (first read after Allow carries `support.session.executorSecret`, once) / withdraw or end `{finished?}` / replace a lost secret |
 | `/scopes` | GET | none | Canonical scope catalog (exact strings + grants + hard-blocked set) |
 | `/poll` | POST | bearer | HTTP transport — send/receive frames without a socket (see Step 4) |
 | `/sessions/:id/relay-ticket` | POST | bearer | Mint a short-lived (~60s), single-use WS relay ticket; participants only, role derived server-side |
