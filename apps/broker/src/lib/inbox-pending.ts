@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { sessionUnread } from "@/lib/relay";
 import { setPendingCounter, type InboxKind } from "@/lib/inbox-bus";
+import { tasksWaitingForAgents } from "@/lib/lists";
 
 /**
  * Content-blind pending count for the inbox doorbell (design spec S4.3): sum
@@ -33,17 +34,22 @@ async function pendingCount(accountId: string): Promise<{ count: number; kinds: 
     frameCount += u.content_unread_count;
   }
 
-  const [payloadCount, inviteCount] = await Promise.all([
+  const [payloadCount, inviteCount, taskCount] = await Promise.all([
     prisma.agentPayload.count({ where: { accountId, deliveredAt: null } }),
     prisma.inboxRequest.count({ where: { recipientAccountId: accountId, status: "pending", expiresAt: { gt: new Date() } } }),
+    // Lists: open tasks assigned to this account's agents that none of them has
+    // seen on its plate yet (agentSeenAt). Rings once per assignment, like an
+    // undelivered payload, then stops. Best effort: lists never break the doorbell.
+    tasksWaitingForAgents(accountId),
   ]);
 
   const kinds: InboxKind[] = [];
   if (frameCount > 0) kinds.push("frame");
   if (payloadCount > 0) kinds.push("payload");
   if (inviteCount > 0) kinds.push("invite");
+  if (taskCount > 0) kinds.push("task");
 
-  return { count: frameCount + payloadCount + inviteCount, kinds };
+  return { count: frameCount + payloadCount + inviteCount + taskCount, kinds };
 }
 
 setPendingCounter(pendingCount);

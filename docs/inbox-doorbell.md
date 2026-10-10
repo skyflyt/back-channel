@@ -106,7 +106,7 @@ arrives during the wait, or at the `wait` timeout - whichever comes first:
 non-numeric `wait`; `400 wait_too_large` for `wait > 300`.
 ## Where the doorbell fires
 
-Three hook points - the same choke points `notifyIdleRecipient` (the existing
+Four hook points - the same choke points `notifyIdleRecipient` (the existing
 idle-email nudge) already lives at, so "broker knows mail arrived" was already
 a solved problem here:
 
@@ -120,6 +120,9 @@ a solved problem here:
    payload row is created. Fires `fireInboxEvent(account.id, "payload")`.
 3. **New `inbox.request`** - `POST /api/inbox/request`, right after the
    request row is created. Fires `fireInboxEvent(recipient.id, "invite")`.
+4. **A Lists task for the account's agents** (added 2026-10-09) - adding or
+   reassigning a task to the person's agents fires `fireInboxEvent(accountId,
+   "task")`. See [`lists.md`](lists.md#the-doorbell-kind-task).
 
 Firing is instant and **not** rate-limited (unlike the idle email, which is
 capped at 1 per session+role per 5 minutes and only fires after 90s of
@@ -134,6 +137,7 @@ pending_count =
     sum over the account's live sessions of unread CONTENT frames  (in-memory, no DB read of frame bodies)
   + count(AgentPayload where accountId = me and deliveredAt is null)
   + count(InboxRequest where recipientAccountId = me, status = pending, not expired)
+  + count(TaskItem open, assigned to my agents, agentSeenAt is null, list not archived)
 ```
 
 Computed on demand (when a stream connects, when a long-poll starts, and when
@@ -143,7 +147,7 @@ which already excludes protocol/control frames from the human-facing count.
 **No frame bodies are read anywhere in this path.**
 
 `kinds` is a array of which category(ies) contributed to the current count -
-`"frame"`, `"payload"`, `"invite"` - so the agent knows *which* Tier-2 read(s)
+`"frame"`, `"payload"`, `"invite"`, `"task"` - so the agent knows *which* Tier-2 read(s)
 to run without the broker exposing anything more specific.
 
 ## Architecture: the account event bus

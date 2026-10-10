@@ -20,6 +20,9 @@ const SEALED_NOTE =
   "Frames from full agent runtimes may be end-to-end encrypted (JSON with type:\"enc\") — you cannot decrypt those; " +
   "tell the user to read that thread with their full agent or the dashboard. Plaintext frames are readable directly.";
 
+// Lists (bc_task*): own catalog module, appended at the end of TOOLS below.
+import { LIST_TOOLS } from "./list-tools.mjs";
+
 // The thread id is the one argument every per-thread tool needs, and it is the
 // one that goes missing in the field: a client reported bc_read_messages
 // failing with "session_id missing" on every call while it believed it was
@@ -199,6 +202,7 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  ...LIST_TOOLS,
 ];
 
 const takesThreadId = (tool) => !!tool.inputSchema.properties?.session_id;

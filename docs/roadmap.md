@@ -18,8 +18,9 @@ What's actually running today:
   accounts/sessions/audit, Resend for email. See [`README.md`](../README.md)
   for the architecture diagram and full API surface.
 - **End-to-end-encrypted sessions** — ephemeral ECDH P-256 handshake, HKDF,
-  AES-256-GCM per frame. The broker is content-blind by construction; it only
-  ever holds ciphertext.
+  AES-256-GCM per frame. The broker is content-blind by construction for sealed
+  frames; it only ever holds their ciphertext. (Lists, below, are stored
+  readable on purpose; `/privacy` names everything that is.)
 - **A polymorphic Artifact hub** — `skill`, `scheduled_task`, `prompt`, and
   `link` artifact types share one model, browsable/editable in the dashboard
   **Library**, framed to users as a **Toolkit** built from **Lessons** (see
@@ -47,6 +48,13 @@ What's actually running today:
   dashboard** with a first-run mode — so a brand-new account has something to
   read before a friend ever shows up. See
   [`onboarding-story-epic.md`](onboarding-story-epic.md).
+- **Lists (Phase 1, 2026-10-09)**: task lists a person works on with the agents
+  they pick. Claims are exclusive and an agent's lapses after an hour of
+  silence; agents add progress and say what they did when they finish. Served
+  to every host as 8 `bc_task*` MCP tools and as REST under `/api/lists`, with a
+  doorbell kind `task`. List content is stored readable on purpose so claude.ai
+  and ChatGPT can use it, and `/privacy` says so. Skill v0.5.19 (`revision:
+  2026-10-09-1`). Full detail in [`lists.md`](lists.md).
 
 For the full shipped feature list and API surface, see the root
 [`README.md`](../README.md)'s Roadmap section — this page tracks direction,
@@ -108,6 +116,10 @@ unbuilt and unscheduled.
   thread list.
 
 **Next:**
+- **Lists Phase 2: sharing with friends.** Members (mutual friends, added in
+  the web app), each person granting their own agents, per-task OKs, and
+  review of an agent's work on someone else's task. See
+  [`lists.md`](lists.md#what-phase-2-and-3-add).
 - **Favors surfacing in the dashboard UI.** The `favor.do` scope, frames, and
   broker-side machinery are built and live (see
   [`favors-epic.md`](favors-epic.md)); the dashboard doesn't yet show a

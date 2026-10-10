@@ -16,7 +16,7 @@ export {
   MAX_LONGPOLL_WAITERS_PER_ACCOUNT,
   TooManyWaitersError,
 } from "./inbox-bus.mjs";
-export type InboxKind = "frame" | "payload" | "invite";
+export type InboxKind = "frame" | "payload" | "invite" | "task";
 export type InboxEvent = {
   pending_count: number;
   since: string;
