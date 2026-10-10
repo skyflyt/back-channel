@@ -56,5 +56,7 @@ jobs:
         run: node --experimental-strip-types --import ./route-tests/register-hooks.mjs scripts/dispatch-integration.mts
       - name: Lists against PostgreSQL (the shipped migration, racing claims, edits, lapses, access)
         run: node --experimental-strip-types --import ./route-tests/register-hooks.mjs scripts/lists-integration.mts
+      - name: Passkeys against PostgreSQL (the shipped migrations, every CHECK evaluated)
+        run: node --experimental-strip-types --import ./route-tests/register-hooks.mjs scripts/passkeys-integration.mts
       - name: AppBridge relay gate under SERIALIZABLE contention (no 503s, caps and one-use hold)
         run: node --experimental-strip-types --import ./route-tests/register-hooks.mjs scripts/appbridge-integration.mts
