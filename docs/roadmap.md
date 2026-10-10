@@ -55,6 +55,12 @@ What's actually running today:
   doorbell kind `task`. List content is stored readable on purpose so claude.ai
   and ChatGPT can use it, and `/privacy` says so. Skill v0.5.19 (`revision:
   2026-10-09-1`). Full detail in [`lists.md`](lists.md).
+- **Lists (Phase 2, 2026-10-09)**: sharing a list with friends. Only mutual
+  friends can be added, and only from the web app; membership follows friendship
+  on every request. A friend's task is a request: your agents act on it after
+  you OK it (in the web, or in chat with `ok_from`). People and their agents as
+  assignees, mentions, reactions, and opt-in email at most hourly. Skill v0.5.20
+  (`revision: 2026-10-09-2`).
 
 For the full shipped feature list and API surface, see the root
 [`README.md`](../README.md)'s Roadmap section — this page tracks direction,
@@ -116,10 +122,9 @@ unbuilt and unscheduled.
   thread list.
 
 **Next:**
-- **Lists Phase 2: sharing with friends.** Members (mutual friends, added in
-  the web app), each person granting their own agents, per-task OKs, and
-  review of an agent's work on someone else's task. See
-  [`lists.md`](lists.md#what-phase-2-and-3-add).
+- **Lists Phase 3.** Live updates in the web app, an always-on agent that picks
+  up tasks assigned to it, templates, an opt-in daily digest, and a Lists tab in
+  the in-chat panel. See [`lists.md`](lists.md#what-phase-2-and-3-add).
 - **Favors surfacing in the dashboard UI.** The `favor.do` scope, frames, and
   broker-side machinery are built and live (see
   [`favors-epic.md`](favors-epic.md)); the dashboard doesn't yet show a

@@ -9,15 +9,25 @@
  * only bumps the version, so that case saves on top without asking.
  *
  * Everything people and agents wrote is rendered as plain text with its line
- * breaks. No HTML, ever: production CSP enforces Trusted Types.
+ * breaks, with @mentions highlighted as text spans. No HTML, ever: production
+ * CSP enforces Trusted Types.
+ *
+ * On a shared list (Phase 2): a friend's task your agents could take shows
+ * "OK for my agents" (the OK rule: their task is a request, not an
+ * instruction); "For" offers the people on the list and their agents, but
+ * never someone else's specific agent, which only they pick; the comment box
+ * suggests @mentions; reactions toggle.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Chip } from "@/components/ui/primitives";
 import {
   listsApi, ListsError, errorText, whoName, ago, elapsed, lapsesIn, dueDay, dayName, assigneeValue, assigneeLabel, blockedReason, eventLine,
-  STATUS_LABEL, type TaskDetail, type TaskView, type YourAgent,
+  needsMyOk, reviewerLabel, memberLabel,
+  STATUS_LABEL, type MemberView, type ReactionEmoji, type TaskDetail, type TaskView, type YourAgent,
 } from "./api";
-import { WhoAvatar, PlainText } from "./bits";
+import { WhoAvatar, PlainText, MentionText, Reactions, Byline } from "./bits";
+import { mentionDirectory, mentionTargets, mentionQuery, suggestMentions, insertMention, type MentionTarget } from "./mentions.mjs";
+import { bareHandle } from "./quick-add.mjs";
 
 type Field = "title" | "notes";
 type Draft = { text: string; base: number; baseText: string };
@@ -29,6 +39,8 @@ interface Props {
   taskId: string;
   /** The person's agents and their access on this task's list (from the list view). */
   agents: YourAgent[] | undefined;
+  /** Everyone on this task's list (from the list view), for "For" and @mentions. */
+  members: MemberView[] | undefined;
   isOwner: boolean;
   archived: boolean;
   /** Bumped when the 10-second poll sees a change; the drawer reloads quietly. */
@@ -42,7 +54,9 @@ interface Props {
 
 const ACTIVE = ["open", "in_progress", "blocked", "needs_review"];
 
-export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onClose, onChanged, onLoaded }: Props) {
+export function TaskDrawer({ taskId, agents, members, isOwner, archived, refreshKey, onClose, onChanged, onLoaded }: Props) {
+  const dir = useMemo(() => mentionDirectory(members ?? []), [members]);
+  const targets = useMemo(() => mentionTargets(members ?? []), [members]);
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [loadErr, setLoadErr] = useState("");
   const [busy, setBusy] = useState("");
@@ -186,24 +200,52 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
     const holderOk = !held || mine || isOwner;
     const locked = archived;
     const workAgents = (agents ?? []).filter((a) => a.access === "work");
-    const assignee = assigneeValue(task);
-    const lostAgent = task.assignee?.kind === "agent" && !workAgents.some((a) => a.id === task.assignee?.agent_id);
+    const others = (members ?? []).filter((m) => !m.is_you && m.handle);
+    // Someone else's task, for someone else: it isn't yours to pick up.
+    const elsewhere = !!task.assignee && !task.assignee.is_you;
+    const canFinish = held ? mine || isOwner : !elsewhere;
+    const askOk = !locked && needsMyOk(task, workAgents.length > 0);
+    const reviewer = st === "needs_review" && (!!task.needs_review_by?.is_you || isOwner);
+    const askedByYou = !!task.created_by?.is_you || isOwner;
     const reason = st === "blocked" ? [...task.entries].reverse().map(blockedReason).find((r) => r !== null) ?? null : null;
     const anyBusy = !!busy;
 
+    // "For": you, your agents, each of your agents with work access, then each
+    // person on the list and their agents. Someone else's specific agent is
+    // shown when it's the current choice but can't be picked: only its person
+    // picks it, and the API refuses another person's agent id.
+    const assignee = task.assignee?.kind === "agent" && !task.assignee.is_you ? `other-agent:${task.assignee.agent_id ?? ""}` : assigneeValue(task);
+    const forOptions: { value: string; label: string; group?: string }[] = [
+      { value: "nobody", label: "Nobody yet" },
+      { value: "me", label: "Me" },
+      { value: "my_agents", label: "My agents" },
+      ...workAgents.map((a) => ({ value: a.id, label: a.name })),
+      ...others.flatMap((m) => [
+        { value: `@${bareHandle(m.handle)}`, label: memberLabel(m), group: "people" },
+        { value: `@${bareHandle(m.handle)}'s agents`, label: `${memberLabel(m)}'s agents`, group: "people" },
+      ]),
+    ];
+    const known = forOptions.some((o) => o.value === assignee);
+    const currentLabel = task.assignee
+      ? task.assignee.kind === "agent"
+        ? task.assignee.is_you ? `${task.assignee.agent} (no access)` : whoName(task.assignee)
+        : (assigneeLabel(task) ?? "").replace(/^For /, "")
+      : "Nobody yet";
+
     const actions: { key: string; label: string; title?: string; primary?: boolean; onClick: () => void }[] = [];
-    if (st === "open" || (st === "blocked" && !held)) actions.push({ key: "claim", label: "Claim", title: "Say you're on it", primary: st === "open", onClick: () => void run("claim", () => listsApi.claim(task.id)) });
+    if (askOk) actions.push({ key: "ok", label: "OK for my agents", title: "Let your agents take this task", primary: true, onClick: () => void run("ok", () => listsApi.okTask(task.id)) });
+    if ((st === "open" || (st === "blocked" && !held)) && !elsewhere) actions.push({ key: "claim", label: "Claim", title: "Say you're on it", primary: st === "open" && !askOk, onClick: () => void run("claim", () => listsApi.claim(task.id)) });
     if (held && mine) actions.push({ key: "release", label: "Let go", title: "Put it back for anyone to pick up", onClick: () => void run("release", () => listsApi.release(task.id)) });
     if (held && !mine && isOwner) actions.push({ key: "release", label: "Free it up", title: `Take it off ${whoName(claim?.by)} so anyone can pick it up`, onClick: () => void run("release", () => listsApi.release(task.id)) });
-    if ((st === "open" || st === "in_progress" || st === "blocked") && holderOk) actions.push({ key: "done", label: "Done", primary: mine || st === "in_progress", onClick: () => openForm("done") });
+    if ((st === "open" || st === "in_progress" || st === "blocked") && canFinish) actions.push({ key: "done", label: "Done", primary: mine || st === "in_progress", onClick: () => openForm("done") });
     if ((st === "open" || st === "in_progress") && holderOk) actions.push({ key: "block", label: "Block", title: "Mark it stuck, and say on what", onClick: () => openForm("block") });
     if (st === "blocked" && holderOk) actions.push({ key: "unblock", label: "Unblock", onClick: () => void run("unblock", () => listsApi.updateTask(task.id, { status: "unblocked" })) });
-    if (st === "needs_review") {
+    if (reviewer) {
       actions.push({ key: "accept", label: "Looks good", primary: true, onClick: () => void run("accept", () => listsApi.review(task.id, "accept")) });
       actions.push({ key: "send_back", label: "Send back", onClick: () => openForm("send_back") });
     }
     if (st === "done") {
-      if (task.send_back_until) actions.push({ key: "send_back", label: "Send back", title: "Hand it back to whoever did it, with a note", onClick: () => openForm("send_back") });
+      if (task.send_back_until && askedByYou) actions.push({ key: "send_back", label: "Send back", title: "Hand it back to whoever did it, with a note", onClick: () => openForm("send_back") });
       actions.push({ key: "reopen", label: "Reopen", onClick: () => void run("reopen", () => listsApi.updateTask(task.id, { status: "reopened" })) });
     }
     if (ACTIVE.includes(st)) actions.push({ key: "drop", label: "Drop", title: "Take it off the list. You can restore it later.", onClick: () => void run("drop", () => listsApi.updateTask(task.id, { status: "dropped" })) });
@@ -250,7 +292,7 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
           <div className="ds-drawer-claim">
             <WhoAvatar who={claim.by} size={26} pulse={!!claim.by?.agent && st === "in_progress"} />
             <span style={{ flex: "1 1 0", minWidth: 0 }}>
-              <strong style={{ color: "var(--ds-ink)" }}>{mine ? "You're on it" : `${whoName(claim.by)} is on it`}</strong>
+              <strong style={{ color: "var(--ds-ink)" }}>{mine ? "You're on it" : <>On it: <Byline who={claim.by} /></>}</strong>
               {claim.since && <> · {elapsed(claim.since)}</>}
               {claim.by?.agent && claim.lapses_at && <> · {lapsesIn(claim.lapses_at)}</>}
             </span>
@@ -270,17 +312,35 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
         {/* Finished work */}
         {st === "needs_review" && (
           <div className="ds-summary ready" style={{ marginTop: 14 }}>
-            <strong>Ready for you.</strong> {whoName(task.completed_by)} finished this{task.summary ? ":" : "."}
+            <strong>{task.needs_review_by?.is_you ? "Ready for you." : `Waiting for ${reviewerLabel(task)} to check it.`}</strong> Finished by <Byline who={task.completed_by} />{task.summary ? ":" : "."}
             {task.summary && <PlainText text={task.summary} />}
           </div>
         )}
         {st === "done" && (
           <div className="ds-summary" style={{ marginTop: 14 }}>
-            <strong>{whoName(task.completed_by)} finished this</strong> {ago(task.completed_at)}{task.summary ? ":" : "."}
+            <strong>Finished by <Byline who={task.completed_by} /></strong> {ago(task.completed_at)}{task.summary ? ":" : "."}
             {task.summary && <PlainText text={task.summary} />}
-            {task.send_back_until && <div className="ds-fine" style={{ marginTop: 4 }}>You can send it back until {dayName(task.send_back_until.slice(0, 10))}.</div>}
+            {task.send_back_until && askedByYou && <div className="ds-fine" style={{ marginTop: 4 }}>You can send it back until {dayName(task.send_back_until.slice(0, 10))}.</div>}
           </div>
         )}
+
+        {/* The OK rule: a friend's task is a request until you OK it for your agents. */}
+        {askOk && (
+          <p className="ds-fine ds-ok-why" style={{ margin: "12px 0 0" }}>
+            {task.agent_may_act.why} OK it and any of your agents with work access can take it.
+          </p>
+        )}
+        {!askOk && !task.created_by?.is_you && task.agent_may_act.ok && task.list.shared && ACTIVE.includes(st) && !elsewhere && (
+          <p className="ds-fine" style={{ margin: "12px 0 0" }}>
+            {/^you OK'd it/i.test(task.agent_may_act.why) ? "You OK'd this, so your agents can take it." : `Your agents can take this: ${task.agent_may_act.why}.`}
+          </p>
+        )}
+
+        {/* Reactions */}
+        <div style={{ marginTop: 12 }}>
+          <Reactions reactions={task.reactions} all disabled={locked || anyBusy} busy={busy.startsWith("react:") ? (busy.slice(6) as ReactionEmoji) : null}
+            onToggle={(emoji) => void run(`react:${emoji}`, () => listsApi.react(task.id, emoji))} />
+        </div>
 
         {/* Actions */}
         {!locked && actions.length > 0 && (
@@ -324,12 +384,19 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
           <div>
             <label className="ds-drawer-label" htmlFor="ds-task-for">For</label>
             <select id="ds-task-for" className="ds-select" value={assignee} disabled={locked || anyBusy}
-              onChange={(e) => void run("assignee", () => listsApi.updateTask(task.id, { assignee: e.target.value }))}>
-              <option value="nobody">Nobody yet</option>
-              <option value="me">Me</option>
-              <option value="my_agents">My agents</option>
-              {workAgents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              {lostAgent && task.assignee?.agent_id && <option value={task.assignee.agent_id} disabled>{task.assignee.agent} (no access)</option>}
+              onChange={(e) => {
+                const v = e.target.value;
+                // Only values offered as choices go to the API: never someone else's agent id.
+                if (v === assignee || !forOptions.some((o) => o.value === v)) return;
+                void run("assignee", () => listsApi.updateTask(task.id, { assignee: v }));
+              }}>
+              {forOptions.filter((o) => !o.group).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {others.length > 0 && (
+                <optgroup label="People on this list">
+                  {forOptions.filter((o) => o.group).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </optgroup>
+              )}
+              {!known && <option value={assignee} disabled>{currentLabel}</option>}
             </select>
           </div>
         </div>
@@ -372,11 +439,11 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
                   <WhoAvatar who={e.by} size={26} />
                   <div className={`ds-tl-bubble${e.kind === "progress" ? " progress" : ""}`}>
                     <div className="ds-tl-who">
-                      {whoName(e.by)}
+                      <span><Byline who={e.by} /></span>
                       {e.kind === "progress" && <Chip tone="acc">progress</Chip>}
                       <time className="ds-tl-time" dateTime={e.at ?? undefined} title={e.at ? new Date(e.at).toLocaleString() : undefined}>{ago(e.at)}</time>
                     </div>
-                    <PlainText className="ds-tl-text" text={e.text} />
+                    <MentionText className="ds-tl-text" text={e.text} dir={dir} author={e.by} />
                   </div>
                 </div>
               ),
@@ -390,16 +457,15 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
                 <button className={kind === "comment" ? "on" : ""} aria-pressed={kind === "comment"} onClick={() => setKind("comment")}>Comment</button>
                 <button className={kind === "progress" ? "on" : ""} aria-pressed={kind === "progress"} onClick={() => setKind("progress")}>Progress</button>
               </div>
-              <textarea
-                className="ds-textarea"
-                style={{ marginTop: 8 }}
-                rows={2}
-                maxLength={8000}
-                aria-label={kind === "comment" ? "Comment" : "Progress line"}
-                placeholder={kind === "comment" ? "Ask a question or leave a note for whoever picks this up." : "What just happened? e.g. Called the vendor, waiting to hear back."}
+              <MentionComposer
                 value={entryText}
-                onChange={(e) => setEntryText(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void post(); } }}
+                onChange={setEntryText}
+                onSubmit={() => void post()}
+                targets={targets}
+                ariaLabel={kind === "comment" ? "Comment" : "Progress line"}
+                placeholder={kind === "comment"
+                  ? targets.length ? "Ask a question or leave a note. Type @ to mention someone." : "Ask a question or leave a note for whoever picks this up."
+                  : "What just happened? e.g. Called the vendor, waiting to hear back."}
               />
               <div className="ds-actions" style={{ marginTop: 8, alignItems: "center" }}>
                 <button className="ds-btn ds-sm" disabled={anyBusy || !entryText.trim()} onClick={() => void post()}>{busy === "entry" ? "Posting…" : kind === "comment" ? "Comment" : "Add progress"}</button>
@@ -410,7 +476,7 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
         </div>
 
         <p className="ds-fine" style={{ marginTop: 22 }}>
-          Added by {whoName(task.created_by)} {ago(task.created_at)}
+          Added by <Byline who={task.created_by} /> {ago(task.created_at)}
           {task.updated_at && task.updated_at !== task.created_at ? <> · updated {ago(task.updated_at)}</> : null}
         </p>
       </>
@@ -423,7 +489,11 @@ export function TaskDrawer({ taskId, agents, isOwner, archived, refreshKey, onCl
       <div className="ds-drawer" role="dialog" aria-modal="true" aria-label={task ? `Task: ${task.title}` : "Task"} ref={panelRef} tabIndex={-1}>
         <div className="ds-drawer-head">
           <span className="ds-drawer-crumb">{task ? task.list.name : "Task"}</span>
-          {task && <Chip tone={task.status === "needs_review" ? "acc" : task.status === "blocked" ? "warn" : task.status === "done" ? "ok" : undefined}>{STATUS_LABEL[task.status]}</Chip>}
+          {task && (
+            <Chip tone={task.status === "needs_review" ? "acc" : task.status === "blocked" ? "warn" : task.status === "done" ? "ok" : undefined}>
+              {task.status === "needs_review" && !task.needs_review_by?.is_you ? "Waiting for a check" : STATUS_LABEL[task.status]}
+            </Chip>
+          )}
           <button className="ds-drawer-x" onClick={onClose} aria-label="Close">×</button>
         </div>
         <div className="ds-drawer-body">{body()}</div>
@@ -457,6 +527,84 @@ function ConflictBox({ conflict, busy, onMine, onSave, onTheirs }: {
         <button className="ds-btn ds-sm" disabled={!!busy || (conflict.field === "title" && !conflict.mine.trim())} onClick={onSave}>{busy === `save-${conflict.field}` ? "Saving…" : "Save yours"}</button>
         <button className="ds-btn ghost ds-sm" onClick={onTheirs}>Keep theirs</button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The comment box. Typing @ suggests the people on the list and the agents
+ * they allow, with the exact text that reaches each (see mentions.mjs).
+ * Arrow keys move, Enter or Tab picks, Escape closes the suggestions (and only
+ * them); Ctrl+Enter posts.
+ */
+function MentionComposer({ value, onChange, onSubmit, targets, ariaLabel, placeholder }: {
+  value: string; onChange: (v: string) => void; onSubmit: () => void; targets: MentionTarget[]; ariaLabel: string; placeholder: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const listId = useId();
+  const [query, setQuery] = useState<{ start: number; query: string } | null>(null);
+  const [index, setIndex] = useState(0);
+  const options = query && targets.length ? suggestMentions(targets, query.query) : [];
+  const open = options.length > 0;
+  const active = open ? Math.min(index, options.length - 1) : -1;
+
+  const sync = (el: HTMLTextAreaElement) => {
+    const q = mentionQuery(el.value, el.selectionStart ?? el.value.length);
+    if (q?.start === query?.start && q?.query === query?.query) return;
+    setQuery(q);
+    setIndex(0);
+  };
+
+  const pick = (t: MentionTarget) => {
+    const el = ref.current;
+    if (!el || !query) return;
+    const next = insertMention(value, query.start, el.selectionStart ?? value.length, t.mention);
+    onChange(next.text);
+    setQuery(null);
+    requestAnimationFrame(() => { el.focus(); el.setSelectionRange(next.caret, next.caret); });
+  };
+
+  return (
+    <div className="ds-composer">
+      <textarea
+        ref={ref}
+        className="ds-textarea"
+        style={{ marginTop: 8 }}
+        rows={2}
+        maxLength={8000}
+        aria-label={ariaLabel}
+        aria-autocomplete="list"
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={open ? `${listId}-${active}` : undefined}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => { onChange(e.target.value); sync(e.target); }}
+        onSelect={(e) => sync(e.currentTarget)}
+        onBlur={() => setQuery(null)}
+        onKeyDown={(e) => {
+          if (open && !e.ctrlKey && !e.metaKey) {
+            if (e.key === "ArrowDown") { e.preventDefault(); setIndex((active + 1) % options.length); return; }
+            if (e.key === "ArrowUp") { e.preventDefault(); setIndex((active - 1 + options.length) % options.length); return; }
+            if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(options[active]); return; }
+            if (e.key === "Escape") { e.preventDefault(); setQuery(null); return; }
+          }
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); onSubmit(); }
+        }}
+      />
+      {open && (
+        <ul className="ds-suggest" id={listId} role="listbox" aria-label="People and agents to mention">
+          {options.map((t, i) => (
+            <li key={t.mention} id={`${listId}-${i}`} role="option" aria-selected={i === active} className={i === active ? "on" : ""}
+              // Keep focus in the textarea, so picking doesn't blur it first.
+              onMouseDown={(e) => { e.preventDefault(); pick(t); }}
+              onMouseEnter={() => setIndex(i)}>
+              <span className="ds-suggest-name">{t.label}</span>
+              <span className="ds-suggest-detail">{t.mention}{t.kind === "agent" ? ` · ${t.detail}` : ""}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <span className="ds-sr-only" aria-live="polite">{open ? `${options.length} suggestion${options.length === 1 ? "" : "s"}` : ""}</span>
     </div>
   );
 }

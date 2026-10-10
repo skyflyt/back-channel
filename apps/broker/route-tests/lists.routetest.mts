@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
   installMocks, resetStore, state, holdUntil, serializationFailure, rest, ok, refused, rows, taskRow, listRow, entriesOf, eventsOf,
-  makeList, addTask, setAccess, catchUpClock, seedRow, as, SKYLAR, ALEX, A, B, A1, A2, A3, AR, B1, MIN, DAY, type Who, type Row,
+  makeList, addTask, setAccess, catchUpClock, seedRow, befriend, share, as, SKYLAR, ALEX, A, B, A1, A2, A3, AR, B1, MIN, DAY, type Who, type Row,
 } from "./lists-harness.mts";
 
 before(() => installMocks());
@@ -556,9 +556,9 @@ test("send back: within 7 days the person returns an agent's finished work to th
 });
 
 test("a friend's task on a shared list: their agent needs the OK, its finished work waits for the asker's look", async () => {
-  // Phase 2 sharing has no API yet; the rows are what it will write.
+  befriend(A, B);
   const id = await makeList("Trip", [A1]);
-  state.db.taskListMember.push({ listId: id, accountId: B.id, role: "member", agentsTakeFrom: "me", addedByAccountId: A.id, joinedAt: new Date() });
+  await share(id);
   refused(await setAccess(id, B1, "work"), 400, "invalid_agent", "Skylar can't grant Alex's agent");
   ok(await setAccess(id, B1, "work", ALEX), "Alex grants his own");
   const t = await addTask(id, SKYLAR, { title: "Book the Airbnb" });
@@ -578,6 +578,7 @@ test("a friend's task on a shared list: their agent needs the OK, its finished w
   ok(await rest("POST", `/tasks/${t.id}/review`, SKYLAR, { verdict: "accept" }));
   assert.equal(taskRow(t.id).status, "done");
   assert.deepEqual(eventsOf(t.id), ["created", "claimed", "needs_review", "accepted"]);
+  assert.deepEqual(rows("taskAgentOk").map((o) => [o.accountId, o.via, o.viaAgentId]), [[B.id, "list_setting", B1]], "taken under Alex's setting, and recorded as such");
 });
 
 // ── 7. edits ────────────────────────────────────────────────────────────────
@@ -700,7 +701,7 @@ test("an agent's plate: doing, up next and claimable, each by due date then posi
 
   assert.equal(await tasksWaitingForAgents(A.id), 3);
   const plate = ok(await rest("GET", "/plate", as(A1)));
-  assert.deepEqual(Object.keys(plate), ["lists", "doing", "up_next", "claimable", "waiting_on_you", "done_recently"]);
+  assert.deepEqual(Object.keys(plate), ["lists", "doing", "up_next", "claimable", "waiting_on_you", "ok_requests", "mentions", "done_recently"]);
   const ids = (xs: Row[]) => xs.map((x) => x.id);
   assert.deepEqual(ids(plate.doing), [dSooner.id, dLater.id]);
   assert.deepEqual(ids(plate.up_next), [uAgents.id, uA1.id]);
@@ -956,8 +957,11 @@ test("REST map: unknown paths and wrong methods are 404 not_found, before auth",
   const unknown: Array<[string, string]> = [
     ["GET", "/tasks"], ["POST", "/tasks"], ["POST", "/plate"], ["POST", "/search"], ["POST", "/changes"], ["PUT", ""], ["PATCH", ""],
     ["GET", `/${id}/agents`], ["POST", `/${id}/agents`], ["PATCH", `/${id}/agents`], ["GET", `/${id}/members`], ["PUT", `/${id}`], ["PUT", `/${id}/tasks`],
-    ["PUT", `/tasks/${t.id}`], ["POST", `/tasks/${t.id}`], ["GET", `/tasks/${t.id}/claim`], ["PATCH", `/tasks/${t.id}/done`], ["POST", `/tasks/${t.id}/ok`],
+    ["PUT", `/tasks/${t.id}`], ["POST", `/tasks/${t.id}`], ["GET", `/tasks/${t.id}/claim`], ["PATCH", `/tasks/${t.id}/done`], ["GET", `/tasks/${t.id}/ok`],
+    ["DELETE", `/tasks/${t.id}/ok`], ["GET", `/tasks/${t.id}/react`], ["DELETE", `/tasks/${t.id}`], ["DELETE", `/${id}`], ["DELETE", ""],
     ["PUT", `/tasks/${t.id}/entries`], ["GET", "/plate/today"],
+    ["PUT", `/${id}/members`], ["DELETE", `/${id}/members`], ["POST", `/${id}/members/alex`], ["PATCH", `/${id}/members/alex`],
+    ["GET", `/${id}/me`], ["PUT", `/${id}/me`], ["PATCH", `/${id}/me/settings`], ["DELETE", `/${id}/members/alex/now`],
     // Extra trailing segments must not silently alias a shorter route.
     ["GET", `/${id}/tasks/${t.id}`], ["PATCH", `/${id}/tasks/${t.id}`], ["POST", `/${id}/tasks/bulk`], ["PUT", `/${id}/agents/${A2}`],
     ["POST", `/tasks/${t.id}/claim/now`], ["GET", `/tasks/${t.id}/entries/older`], ["GET", `/${id}/x/y/z`],

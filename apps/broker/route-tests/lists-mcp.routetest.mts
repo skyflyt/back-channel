@@ -192,7 +192,10 @@ test("bc_check_inbox notes tasks waiting for this account's agents until one of 
   await addTask(work, SKYLAR, { title: "Renew cert", assignee: "my_agents" });
   await addTask(work, SKYLAR, { title: "Order toner", assignee: A1 });
   const body = await inbox();
-  assert.deepEqual(body.tasks_waiting_for_your_agents, { count: 2, next: "Call bc_tasks to see them." });
+  assert.deepEqual(body.tasks_waiting_for_your_agents, {
+    count: 2,
+    next: "Call bc_tasks to see them: tasks for your agents are in up_next, and comments that mention one of your agents are in mentions.",
+  });
   assert.deepEqual(body.sessions, [], "the rest of the inbox is unchanged");
   // Archived lists don't count.
   const old = await makeList("Old", [A1]);
