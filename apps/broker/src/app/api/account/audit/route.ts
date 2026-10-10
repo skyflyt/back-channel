@@ -36,6 +36,9 @@ const LABELS: Record<string, string> = {
   "friend.accepted": "You became friends with someone who invited you",
   "friend.added": "Someone you invited accepted — you're now friends",
   "agent_token.revoked": "You revoked an agent's access",
+  "passkey.added": "You added a passkey",
+  "passkey.removed": "You removed a passkey",
+  "step_up.confirmed": "You confirmed an action with your passkey",
 };
 
 // Only surface non-sensitive detail fields to the owner. (We never store raw

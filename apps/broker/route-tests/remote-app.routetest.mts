@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { NextRequest } from "next/server";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { fakeWebAuthn } from "./fake-webauthn.mts";
 
 type Row = Record<string, any>;
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -90,6 +91,9 @@ const db: any = {
   taskMention: table("taskMention", () => ({ id: crypto.randomUUID(), createdAt: new Date(), agentId: null, seenAt: null })),
   taskReaction: table("taskReaction", () => ({ createdAt: new Date(), agentId: null })),
   taskListEvent: table("taskListEvent", () => ({ id: crypto.randomUUID(), createdAt: new Date() })),
+  // The passkey step-up on approval (src/lib/step-up.ts, src/lib/passkeys.ts).
+  accountPasskey: table("accountPasskey", () => ({ id: crypto.randomUUID(), createdAt: new Date(), lastUsedAt: null, counter: 0n, transports: [] })),
+  passkeyChallenge: table("passkeyChallenge", () => ({ id: crypto.randomUUID(), createdAt: new Date(), action: null, targetId: null, answeredAt: null, grantHash: null, passkeyId: null, usedAt: null })),
 };
 const credentialFind = db.appBridgeCredential.findUnique;
 db.appBridgeCredential.findUnique = async (args: any) => {
@@ -112,8 +116,10 @@ const abort = () => new PrismaClientKnownRequestError("Transaction failed due to
 
 let limited = false;
 const hits = new Map<string, number>();
+const webauthn = fakeWebAuthn();
 before(() => {
   process.env.PUBLIC_APP_URL = "https://back-channel.app";
+  mock.module("@simplewebauthn/server", { namedExports: webauthn.lib });
   mock.module("@/lib/db", { namedExports: { prisma: db } });
   mock.module("@/lib/rate-limit", { namedExports: {
     rateLimit: (bucket: string, key: string, max: number) => { const k = `${bucket}:${key}`; const n = (hits.get(k) ?? 0) + 1; hits.set(k, n); return { ok: !limited && n <= max, retryAfterSec: 7 }; },
@@ -160,6 +166,8 @@ function reset() {
   limited = false; hits.clear(); transactionFaults = []; transactionCalls = 0;
   process.env.APPBRIDGE_REMOTE_ACCESS = "on";
   process.env.APPBRIDGE_RELAY_PUBLIC_KEY = RELAY_PUBLIC_KEY;
+  // The passkey step-up is off for the session tests; the "step-up:" tests below turn it on.
+  process.env.APPROVAL_STEP_UP = "off";
   const now = new Date();
   tables.account.push(
     { id: "acct-a", handle: "skylar@bc", displayName: "Skylar", cookie: "cs_a", emailVerifiedAt: now },
@@ -192,17 +200,18 @@ beforeEach(reset);
 
 // ── Helpers ──
 type Res = { status: number; body: any; headers: Headers };
-async function api(method: "GET" | "POST", path: string, o: { as?: string; cookie?: string; csrf?: boolean; body?: unknown } = {}): Promise<Res> {
+async function api(method: "GET" | "POST", path: string, o: { as?: string; cookie?: string; csrf?: boolean; body?: unknown; stepUp?: string } = {}): Promise<Res> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (o.as) headers.authorization = `Bearer ${o.as}`;
   if (o.cookie) { headers.cookie = `bc_session=${o.cookie}; bc_csrf=tok`; if (o.csrf !== false) headers["x-bc-csrf"] = "tok"; }
+  if (o.stepUp) headers["x-bc-step-up"] = o.stepUp;
   const req = new NextRequest(`https://back-channel.app/api/remote-app/${path}`, { method, headers, ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}) });
   const mod = await import("@/app/api/remote-app/[[...path]]/route");
   const res = await mod[method](req, { params: Promise.resolve({ path: path.split("/").filter(Boolean) }) });
   const text = await res.text();
   return { status: res.status, body: text ? JSON.parse(text) : null, headers: res.headers };
 }
-const person = (path: string, o: { cookie?: string; csrf?: boolean } = {}) => api("POST", path, { cookie: "cs_a", ...o });
+const person = (path: string, o: { cookie?: string; csrf?: boolean; stepUp?: string } = {}) => api("POST", path, { cookie: "cs_a", ...o });
 const startBody = (over: Row = {}) => ({ host: "Shop-PC", apps: ["QuickBooks"], minutes: 30, goal: "Enter this week's supplier invoices", taskId: TASK, ...over });
 async function start(over: Row = {}, as = KEY.starter): Promise<Res> { return api("POST", "sessions", { as, body: startBody(over) }); }
 async function startApproved(over: Row = {}): Promise<string> {
@@ -910,4 +919,153 @@ test("sessionsForHost: a desktop session that named no apps reaches only a 1.1.3
   // Stop from the PC works the same either way.
   assert.equal(await hostStop(id), 204);
   assert.deepEqual((await hostSessions()).body, { sessions: [] });
+});
+
+// ── The passkey step-up on approval (src/lib/step-up.ts; docs/remote-app-sessions.md, "Approvals need a passkey") ──
+
+function passkeyOn(accountId = "acct-a", over: Row = {}) {
+  const row = { id: crypto.randomUUID(), accountId, credentialId: `cred-${accountId}`, publicKey: Buffer.from([165, 1, 2, 3, 38]), counter: 0n, transports: ["internal"], label: "Office PC", createdAt: new Date(), lastUsedAt: null, ...over };
+  tables.accountPasskey.push(row);
+  return row;
+}
+/** A verified step-up's grant, exactly as passkeys.ts leaves it: on its ceremony's row, hashed, bound to one action and target. */
+function grantFor(action: string, targetId: string | null, over: Row = {}, accountId = "acct-a"): string {
+  const raw = ["bcsu", randomBytes(32).toString("base64url")].join("_");
+  const now = new Date();
+  tables.passkeyChallenge.push({ id: crypto.randomUUID(), accountId, kind: "step_up", action, targetId, challenge: `c${randomBytes(8).toString("hex")}`, createdAt: now,
+    answeredAt: now, grantHash: sha(raw), passkeyId: null, usedAt: null, expiresAt: new Date(now.getTime() + 2 * 60_000), ...over });
+  return raw;
+}
+const grantRow = (raw: string) => tables.passkeyChallenge.find(c => c.grantHash === sha(raw))!;
+async function passkeys(method: "GET" | "POST" | "DELETE", path: string, body?: unknown, o: { cookie?: string } = {}): Promise<Res> {
+  const headers: Record<string, string> = { "content-type": "application/json", cookie: `bc_session=${o.cookie ?? "cs_a"}; bc_csrf=tok`, "x-bc-csrf": "tok" };
+  const req = new NextRequest(`https://back-channel.app/api/account/passkeys/${path}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+  const mod = await import("@/app/api/account/passkeys/[[...path]]/route");
+  const res = await mod[method](req, { params: Promise.resolve({ path: path.split("/").filter(Boolean) }) });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null, headers: res.headers };
+}
+const approvedAudits = () => tables.accountAudit.filter(a => a.eventType === "remote_app.approved").length;
+
+test("step-up: approving needs the person's passkey for that session; with none on the account it's passkey_required, without a grant step_up_required, and nothing is approved", async () => {
+  process.env.APPROVAL_STEP_UP = "on";
+  const id = (await start()).body.session.id;
+  const none = await person(`sessions/${id}/approve`);
+  assert.equal(none.status, 403); assert.equal(none.body.error, "passkey_required"); assert.match(none.body.message, /passkey/);
+  assert.equal(none.headers.get("cache-control"), "no-store");
+  passkeyOn();
+  const bare = await person(`sessions/${id}/approve`);
+  assert.equal(bare.status, 403); assert.equal(bare.body.error, "step_up_required"); assert.match(bare.body.message, /Windows Hello or your phone/);
+  assert.equal(sessionRow(id).status, "awaiting_consent");
+  assert.equal(approvedAudits(), 0);
+  assert.equal((await agentLease(id)).body.error, "session_inactive", "still nothing on the PC");
+  // A request refused for another reason first never reaches the passkey (and never spends a grant).
+  const g = grantFor("approve_session", id);
+  assert.equal((await person(`sessions/${id}/approve`, { csrf: false, stepUp: g })).body.error, "csrf");
+  assert.equal(grantRow(g).usedAt, null);
+  const ok = await person(`sessions/${id}/approve`, { stepUp: g });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.session.status, "active");
+  assert.ok(grantRow(g).usedAt instanceof Date, "spent by the approval");
+  assert.equal(approvedAudits(), 1);
+});
+
+test("step-up: a grant for another session, another action or another account, an expired, spent or malformed one is refused, and a refusal spends nothing", async () => {
+  process.env.APPROVAL_STEP_UP = "on";
+  passkeyOn(); passkeyOn("acct-b");
+  const id = (await start()).body.session.id;
+  const now = Date.now();
+  const wrong: Array<[string, string]> = [
+    ["another session", grantFor("approve_session", crypto.randomUUID())],
+    ["a support approval", grantFor("approve_support", id)],
+    ["connecting an agent", grantFor("connect_agent", null)],
+    ["managing passkeys", grantFor("manage_passkeys", null)],
+    ["another account's", grantFor("approve_session", id, {}, "acct-b")],
+    ["expired", grantFor("approve_session", id, { expiresAt: new Date(now - 1) })],
+    ["already spent", grantFor("approve_session", id, { usedAt: new Date(now - 1000) })],
+    ["malformed", "bcsu_short"],
+    ["another shape", grantFor("approve_session", id).toUpperCase()],
+  ];
+  for (const [why, g] of wrong) {
+    const r = await person(`sessions/${id}/approve`, { stepUp: g });
+    assert.equal(r.status, 403, why); assert.equal(r.body.error, "step_up_required", why);
+    assert.match(r.body.message, /expired, was already used, or was for something else/, why);
+  }
+  assert.equal(sessionRow(id).status, "awaiting_consent");
+  assert.equal(tables.passkeyChallenge.filter(c => c.usedAt).length, 1, "only the one that was spent already");
+  // The right one works once; the same grant again finds nothing left to approve, and it stays spent.
+  const g = grantFor("approve_session", id);
+  assert.equal((await person(`sessions/${id}/approve`, { stepUp: g })).status, 200);
+  const again = await person(`sessions/${id}/approve`, { stepUp: g });
+  assert.equal(again.body.error, "already_decided");
+  // A grant for this session can't approve another one later either: a new request needs its own.
+  await person(`sessions/${id}/stop`);
+  const next = (await start()).body.session.id;
+  const reused = await person(`sessions/${next}/approve`, { stepUp: g });
+  assert.equal(reused.status, 403); assert.equal(reused.body.error, "step_up_required");
+  assert.equal(sessionRow(next).status, "awaiting_consent");
+});
+
+test("step-up: deny, Stop and 'go on' stay one click, an agent still can't approve even with a grant, and APPROVAL_STEP_UP=off skips the check", async () => {
+  process.env.APPROVAL_STEP_UP = "on";
+  passkeyOn();
+  const first = (await start()).body.session.id;
+  const denied = await person(`sessions/${first}/deny`);
+  assert.equal(denied.status, 200); assert.equal(denied.body.session.status, "denied");
+  const second = (await start()).body.session.id;
+  const g = grantFor("approve_session", second);
+  for (const o of [{ as: KEY.starter, stepUp: g }, { as: KEY.starter, cookie: "cs_a", stepUp: g }]) {
+    const no = await api("POST", `sessions/${second}/approve`, o);
+    assert.equal(no.status, 403); assert.equal(no.body.error, "people_only");
+  }
+  assert.equal(grantRow(g).usedAt, null, "an agent's request never touches the grant");
+  assert.equal((await person(`sessions/${second}/approve`, { stepUp: g })).status, 200);
+  sessionRow(second).status = "blocked";
+  assert.equal((await person(`sessions/${second}/resume`)).status, 200, "let it go on: ungated");
+  assert.equal((await person("stop-all")).body.stopped, 1, "Stop all: ungated");
+  // The emergency switch: no passkey, no grant, approved.
+  process.env.APPROVAL_STEP_UP = "off";
+  tables.accountPasskey.length = 0;
+  const third = (await start()).body.session.id;
+  const ok = await person(`sessions/${third}/approve`);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.session.status, "active");
+  // Any value but "off" enforces.
+  process.env.APPROVAL_STEP_UP = "OFFLINE";
+  await person(`sessions/${third}/stop`);
+  const fourth = (await start()).body.session.id;
+  assert.equal((await person(`sessions/${fourth}/approve`)).body.error, "passkey_required");
+});
+
+test("step-up: a conflict re-runs the approval whole; the grant is spent once, by the attempt that committed", async () => {
+  process.env.APPROVAL_STEP_UP = "on";
+  passkeyOn();
+  const id = (await start()).body.session.id;
+  const g = grantFor("approve_session", id);
+  transactionFaults = [abort()];
+  transactionCalls = 0;
+  const ok = await person(`sessions/${id}/approve`, { stepUp: g });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(transactionCalls, 2, "the first attempt rolled back, grant and all");
+  assert.ok(grantRow(g).usedAt instanceof Date);
+  assert.equal(approvedAudits(), 1);
+});
+
+test("step-up: the whole ceremony through /api/account/passkeys (WebAuthn faked at the library), then the approval", async () => {
+  process.env.APPROVAL_STEP_UP = "on";
+  const key = passkeyOn();
+  const id = (await start()).body.session.id;
+  const o = await passkeys("POST", "step-up/options", { action: "approve_session", targetId: id });
+  assert.equal(o.status, 200, JSON.stringify(o.body));
+  assert.deepEqual(o.body.options.allowCredentials.map((c: Row) => c.id), [key.credentialId]);
+  assert.equal(o.body.options.userVerification, "required");
+  assert.equal(o.body.options.rpId, "back-channel.app");
+  const v = await passkeys("POST", "step-up/verify", { ceremonyId: o.body.ceremonyId, response: webauthn.authentication(key.credentialId, o.body.options.challenge, { counter: 3 }) });
+  assert.equal(v.status, 200, JSON.stringify(v.body));
+  assert.equal(v.body.action, "approve_session"); assert.equal(v.body.targetId, id);
+  assert.match(v.body.grant, /^bcsu_[A-Za-z0-9_-]{43}$/);
+  assert.ok(new Date(v.body.expiresAt).getTime() - Date.now() <= 2 * 60_000, "at most 2 minutes");
+  assert.ok(!JSON.stringify(tables, (_, x) => typeof x === "bigint" ? String(x) : x).includes(v.body.grant), "only its hash is stored");
+  assert.equal(tables.accountPasskey[0].counter, 3n);
+  const ok = await person(`sessions/${id}/approve`, { stepUp: v.body.grant });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual(tables.accountAudit.map(a => a.eventType), ["remote_app.requested", "step_up.confirmed", "remote_app.approved"]);
 });

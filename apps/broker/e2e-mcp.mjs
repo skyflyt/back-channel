@@ -4,6 +4,8 @@
 // two-account thread driven ENTIRELY through MCP tools/call:
 // create invite → claim → send → check inbox → read (mark_read) → end.
 //   node e2e-mcp.mjs          (BC_BASE defaults to http://localhost:3300)
+// The dashboard mint needs a passkey step-up (src/lib/step-up.ts), which a script can't do: run the dev server
+// with APPROVAL_STEP_UP=off for this script.
 import { PrismaClient } from "@prisma/client";
 import { randomBytes, createHash } from "node:crypto";
 

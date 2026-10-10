@@ -76,6 +76,9 @@ model Account {
   // Lists (task lists for people and their agents): relation fields only, no Account columns.
   taskListsOwned        TaskList[]       @relation("TaskListOwner")
   taskListMemberships   TaskListMember[]
+  // Passkeys for the approval step-up (src/lib/step-up.ts): relation fields only, no Account columns.
+  passkeys              AccountPasskey[]
+  passkeyChallenges     PasskeyChallenge[]
 }
 
 // Invite-a-friend (Phase 3). An existing user invites someone by email; the
@@ -1019,4 +1022,47 @@ model ListsPreference {
   lastDigestAt DateTime?                 // when the last digest was claimed for sending
 
   @@index([digest])
+}
+
+// A passkey (WebAuthn: Windows Hello, a phone, a security key) on the account, used only for the approval
+// step-up (src/lib/step-up.ts, docs/remote-app-sessions.md "Approvals need a passkey"): approving an agent
+// session or a support request, and connecting an agent, need one just before the action. Public material only:
+// the private key never leaves the authenticator.
+model AccountPasskey {
+  id           String    @id @default(uuid())
+  accountId    String
+  credentialId String    @unique // base64url, as the browser reports it
+  publicKey    Bytes     // the COSE public key; not a secret
+  counter      BigInt    @default(0) // the authenticator's signature counter (uint32), kept to catch a cloned key
+  transports   String[]  // how the browser can reach it (internal, hybrid, usb, ...)
+  label        String    // the person's name for it, 1 to 60 characters
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+  account      Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+}
+
+// One WebAuthn ceremony (the challenge store) and, for a step-up that verified, the grant it issued. Server-side
+// so a grant is single-use across every instance (a signed cookie can't be spent once). The challenge is spent by
+// the first verify attempt (answeredAt), right or wrong. A step-up grant is bound to the account, the action and
+// its target, lives at most 2 minutes (expiresAt is moved to the grant's deadline) and is spent by the action
+// it was for (usedAt). Only the grant's sha256 is stored.
+model PasskeyChallenge {
+  id         String    @id @default(uuid())
+  accountId  String
+  kind       String    // "register" | "step_up"
+  action     String?   // step_up: "approve_session" | "approve_support" | "connect_agent" | "manage_passkeys";
+                       // register: "manage_passkeys" when a step-up authorized it (the account had a passkey), else null
+  targetId   String?   // approve_session: the RemoteAppSession id; approve_support: the SupportInvite id; else null
+  challenge  String    @unique // base64url, as sent to the browser
+  expiresAt  DateTime  // the ceremony's deadline (5 minutes); once a step-up verifies, the grant's (2 minutes)
+  answeredAt DateTime? // the first verify attempt spent the challenge
+  grantHash  String?   @unique // sha256 of the step-up grant handed to the browser; never the grant
+  passkeyId  String?   // which passkey confirmed it (no foreign key: a removed passkey leaves the record)
+  usedAt     DateTime? // the grant was spent by its action
+  createdAt  DateTime  @default(now())
+  account    Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
 }

@@ -16,6 +16,8 @@
  *    exactly like Dispatch: it lives on a hosted app's servers and has no business driving a PC.
  *  - Approve, deny, "go on" and Stop all: the person, in the dashboard (cookie + CSRF). A request that
  *    carries any bearer key is refused before anything else, so no agent can approve its own session.
+ *    Approve also needs the person's passkey step-up for that session (src/lib/step-up.ts): an agent driving
+ *    the PC, whose browser is signed in, can't complete a passkey prompt. Deny is never gated.
  *  - Stop: the person, the agent that asked, the agent driving, or the PC itself (remote-app-host.ts).
  *  - Steps (action reports): the agent driving the session only, with its own full-scope key.
  *
@@ -60,6 +62,8 @@ import { isSupportTool, supportTool } from "@/lib/remote-support";
 import * as R from "@/lib/remote-app/rules.mjs";
 // PC readiness for agents (the worker's reports, the six-step checklist): docs/remote-app-sessions.md, "Setting up a PC".
 import * as RD from "@/lib/remote-app/readiness.mjs";
+// The passkey step-up on approval (docs/remote-app-sessions.md, "Approvals need a passkey").
+import * as SU from "@/lib/step-up";
 
 type Tx = Prisma.TransactionClient;
 type Input = Record<string, unknown>;
@@ -69,7 +73,8 @@ type Patch = Prisma.RemoteAppSessionUpdateManyMutationInput;
 type Caller = { accountId: string; agentId: string | null };
 type Op = "machines" | "readiness" | "start" | "list" | "get" | "approve" | "deny" | "resume" | "stop" | "stopAll" | "report" | "end" | "surface" | "rotate";
 // viaTool: the request came through an MCP tool (a chat), never the executor's own worker.
-type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string; viaTool?: boolean };
+// stepUp: the person's passkey step-up grant (the x-bc-step-up header), for approve only.
+type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string; viaTool?: boolean; stepUp?: string | null };
 type Outcome = { status?: number; body: Record<string, unknown> };
 
 const PEOPLE_ONLY = new Set<Op>(["approve", "deny", "resume", "stopAll", "readiness"]);
@@ -469,7 +474,7 @@ async function opRotate({ tx, caller, now, id }: Ctx): Promise<Outcome> {
   return { body: { session: v, next: R.nextStep(v, roleOf(caller, s)) } };
 }
 
-async function opApprove({ tx, caller, now, id }: Ctx): Promise<Outcome> {
+async function opApprove({ tx, caller, now, id, stepUp }: Ctx): Promise<Outcome> {
   const s = await loadSession(tx, caller, id, now);
   R.decideCheck(s, now);
   if ((await liveOthers(tx, caller.accountId, now, R.RUNNING, s.id)).length) {
@@ -480,6 +485,10 @@ async function opApprove({ tx, caller, now, id }: Ctx): Promise<Outcome> {
   await pcReady(tx, caller.accountId, host!, now);
   const agents = await tx.agentToken.findMany({ where: { id: { in: [s.agentTokenId, R.executorOf(s)] } }, select: { id: true, accountId: true, revokedAt: true, scope: true } });
   if (!R.agentsAdmit(s, agents)) fail(409, "agent_unavailable", "The agent that asked, or the one that would drive the app, has been removed or can no longer use your PCs. Deny this request.");
+  // Last: the person's passkey, for this session only. A request refused above never spends a grant, and the grant is
+  // spent in this transaction, so it rolls back with it.
+  const refusal = await SU.requireStepUp(tx, { accountId: caller.accountId, action: "approve_session", targetId: s.id, grant: stepUp, now });
+  if (refusal) fail(refusal.status, refusal.error, refusal.message);
   const next = await apply(tx, s, R.approvePatch(s, caller.accountId, now));
   await audit(tx, caller.accountId, "remote_app.approved", { sessionId: s.id, hostDeviceId: s.hostDeviceId, minutes: s.minutes });
   const n = await names(tx, [next]);
@@ -644,11 +653,13 @@ async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input
     }
     const body = typeof input === "function" ? await input() : input;
     const origin = (process.env.PUBLIC_APP_URL ?? new URL(req.url).origin).replace(/\/$/, "");
+    // Only the person's own request carries a step-up grant (a bearer request never reaches approve).
+    const stepUp = caller.agentId ? null : req.headers.get(SU.STEP_UP_HEADER);
     let after: Array<() => void> = [];
     const result = await withSerializableRetry(
       () => effects.run((after = []), () => prisma.$transaction(async (tx: Tx): Promise<Outcome | { refusal: InstanceType<typeof R.RemoteRuleError> }> => {
         try {
-          return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin, viaTool });
+          return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin, viaTool, stepUp });
         } catch (e) {
           if (e instanceof R.RemoteRuleError && !(e instanceof RollBack)) return { refusal: e };
           throw e;
