@@ -16,6 +16,12 @@ export class Client {
         error.status = response.status;
         throw error;
     } return response.json(); }
+    /** PUT /api/agents/self/readiness with this agent's key: the non-secret readiness report. Resolves { status }; throws only on network errors. */
+    async reportReadiness(report) {
+        const response = await fetch(this.base + '/api/agents/self/readiness', { method: 'PUT', headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(report), signal: AbortSignal.timeout(10000), redirect: 'error' });
+        try { await response.arrayBuffer(); } catch { }
+        return { status: response.status };
+    }
     /** /api/remote-app with this agent's key. Resolves { status, body, retryAfter } for any HTTP answer; throws only on network errors. */
     async remoteApp(route, body) {
         const response = await fetch(this.base + '/api/remote-app' + route, { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10000), redirect: 'error' });

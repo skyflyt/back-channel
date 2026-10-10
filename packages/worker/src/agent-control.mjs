@@ -115,6 +115,7 @@ export class AgentControlClient {
     #executorSecret;
     #v1Fallback;
     #omitSecret = false;
+    #failure = 'error';
     constructor({ path: target, timeoutMs = TIMEOUT_MS, executorSecret, refusals = REFUSALS, words = AGENT_CONTROL_WORDS, v1Fallback = true } = {}) {
         if (executorSecret !== undefined && !isExecutorSecret(executorSecret)) throw Error('Invalid executor secret');
         this.target = target ?? defaultPipePath;
@@ -132,6 +133,8 @@ export class AgentControlClient {
         this.closed = false;
     }
     async #open() {
+        // How this attempt failed, for hello(): no pipe at all, a host that answered no, or anything else.
+        this.#failure = 'error';
         let where;
         try { where = typeof this.target === 'function' ? await this.target() : this.target; }
         catch { throw refusal('fail_closed', this.words.find); }
@@ -142,9 +145,9 @@ export class AgentControlClient {
             s.once('error', error => {
                 clearTimeout(timer);
                 // A named pipe that doesn't exist is ENOENT; a stale Unix socket is ECONNREFUSED.
-                reject(['ENOENT', 'ECONNREFUSED'].includes(error.code)
-                    ? refusal('needs_user', this.words.off)
-                    : refusal('fail_closed', this.words.connect));
+                const absent = ['ENOENT', 'ECONNREFUSED'].includes(error.code);
+                if (absent) this.#failure = 'absent';
+                reject(absent ? refusal('needs_user', this.words.off) : refusal('fail_closed', this.words.connect));
             });
         });
         let buffer = Buffer.alloc(0);
@@ -168,16 +171,20 @@ export class AgentControlClient {
         this.socket = socket;
         const withSecret = !!this.#executorSecret && !this.#omitSecret;
         const greeting = { op: 'hello', version: 1, ...(withSecret ? { executorSecret: this.#executorSecret } : {}) };
-        const hello = normalize(await this.#send(socket, greeting), this.refusals);
+        const answer = await this.#send(socket, greeting);
+        // A no from the host itself (its answer carries the request id), not a timeout, a dropped connection or a
+        // garbled answer, which are refusals made here.
+        const saidNo = !!answer && typeof answer === 'object' && answer.id !== undefined && answer.ok === false;
+        const hello = normalize(answer, this.refusals);
         if (!hello.ok && withSecret && this.#v1Fallback && hello.outcome === 'fail_closed' && hello.reason === V1_MALFORMED) {
             // A v1 host: it checks no secret, so greeting it without one gives nothing away. Once, on a fresh connection.
             this.#omitSecret = true;
             this.#drop(socket);
             return this.#open();
         }
-        if (!hello.ok) { this.#drop(socket); throw hello; }
+        if (!hello.ok) { if (saidNo) this.#failure = 'refused'; this.#drop(socket); throw hello; }
         if (hello.version !== 1) { this.#drop(socket); throw refusal('fail_closed', this.words.version); }
-        if (hello.agentControl !== true) { this.#drop(socket); throw refusal('needs_user', this.words.off); }
+        if (hello.agentControl !== true) { this.#failure = 'refused'; this.#drop(socket); throw refusal('needs_user', this.words.off); }
         this.host = hello.host && typeof hello.host.name === 'string' ? { name: bounded(hello.host.name, 120) } : null;
         return socket;
     }
@@ -210,6 +217,23 @@ export class AgentControlClient {
             return error && error.ok === false ? error : refusal('fail_closed', this.words.connect);
         }
         return normalize(await this.#send(socket, { op, ...fields }), this.refusals);
+    }
+    /**
+     * The readiness probe (vault design pc-agent-readiness.md): connect and greet with a v1 `hello`, and nothing
+     * else. No session op is sent. A client made for it holds no executor secret, so none is ever sent. Never rejects:
+     *   { pipe: "listening", hostName }  the host answered with "Allow agent control" on;
+     *   { pipe: "absent" }               no pipe: AppBridge isn't running here, or the switch is off;
+     *   { pipe: "refused" }              the host answered and said no;
+     *   { pipe: "error" }                anything else (no answer in time, another version, a garbled answer).
+     */
+    async hello() {
+        if (this.closed) return { pipe: 'error', hostName: null, reason: 'The connection to the PC is closed.' };
+        try {
+            if (!this.socket || this.socket.destroyed) await (this.connecting ??= this.#open().finally(() => { this.connecting = null; }));
+            return { pipe: 'listening', hostName: this.host?.name ?? null, reason: null };
+        } catch (error) {
+            return { pipe: this.#failure, hostName: null, reason: error && error.ok === false ? error.reason : this.words.connect };
+        }
     }
     sessions() { return this.request('sessions'); }
     open(sessionId, appId) { return this.request('open', { sessionId, appId }); }

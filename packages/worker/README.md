@@ -63,6 +63,19 @@ then `Start-ScheduledTask -TaskName 'BackChannel-Worker'`. Without that option,
 run the printed `run-worker.ps1` launcher after setup. The bootstrap does not
 start an incomplete worker or hold its setup lock.
 
+The task runs `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File run-worker.ps1` (the
+Windows default policy refuses `-File` otherwise). The launcher starts `run --parent-pid <its own PID>`, so stopping
+the task, which ends the launcher, also stops the worker within about 5 seconds. Running the bootstrap again updates
+an install: it stops a running worker (`stop`), installs the new launcher and task action (keeping the task's
+schedule and enabled state), and starts the task again if the worker was running.
+
+`stop` ends the worker running on this state directory and prints `{ "stopped": true, "wasRunning": true|false }`.
+It first checks that the process in `worker.lock` is a node running this CLI's `run` for this `--state` (another
+install of this CLI counts, so an update can stop the old one); anything else is `not_this_worker`, and nothing is
+touched. It ends that process tree, waits up to 15 seconds (`stop_timeout`), then clears the lock as `recover` does:
+interrupted work is never replayed. A stale lock (its process is gone) is cleared the same way. A recovery block
+(below) stays until you run `recover --confirm-stopped`.
+
 Run the daemon with `run`; `run --once` performs one reconciliation pass.
 Use `send --target AGENT_ID --profile review --objective-file task.txt
 --continue-profile review` on the originating machine. `--profile` selects the
@@ -101,6 +114,37 @@ reports every step, and stops the CLI when the session is stopped, runs out of t
 
 When Back Channel issued the session an executor secret (v1.1), add `--executor-secret-from FILE` (or `-` to read
 it from stdin). The worker sends it in the PC's pipe greeting and nowhere else. Without one, nothing changes.
+
+### Is this PC ready for agents?
+
+Six things must all be true before one of your agents can use an app on this PC: AppBridge 1.1.32 or newer, the PC
+registered with Back Channel, "Allow agent control" on, this worker set up and running, at least one agent allowed
+to hand it sessions, and claude signed in. AppBridge's owner console (Agents page) and the Remote page of the Back
+Channel dashboard show the same checklist. These commands feed both. Each prints one JSON object, or
+`{ "error": "<code>", "message": "<plain sentence>" }` with exit code 1. None prints the agent key or a private key.
+
+- `readiness` prints what this worker can tell: its agent id, name and key fingerprint, the AppBridge agent-control
+  pipe (`listening`, `absent`, `refused` or `error`, and the PC's name), whether claude is installed and signed in, and
+  which agents the `remote-app` profile accepts. The pipe probe is a v1 `hello` and nothing else (no session op, never
+  an executor secret). Sign-in comes from `claude auth status`: exit 0 is signed in, 1 is not, anything else is
+  `null`. The claude used is the `remote-app` profile's, or a native `claude` (`claude.exe`) on `PATH`. It runs with
+  fixed arguments, no shell and a 10-second limit, and only its exit code is read.
+- `readiness --report` also sends it to Back Channel (`PUT /api/agents/self/readiness`) without the claude path, the
+  pipe's reason or the senders' names. `run` does this at start and every 10 minutes (not with `--once`). A failed
+  report is logged and the run carries on. Back Channel calls a report older than 30 minutes "not reporting".
+- `candidates` lists your other Dispatch agents with their key fingerprints, and whether each is pinned and allowed.
+- `allow-sender --id AGENT --fingerprint XXXX-XXXX-XXXX-XXXX [--claude PATH]` lets that agent hand this PC remote app
+  sessions. Compare the fingerprint with the one that agent's own PC shows (its AppBridge checklist, or the dashboard).
+  The worker fetches the agent's keys from Back Channel, fingerprints them itself and refuses (`fingerprint_mismatch`)
+  unless they match, so a compromised Back Channel can't slip in a sender. It then pins the agent and adds it to the
+  `remote-app` profile. With no such profile it creates one: claude from `--claude` or `PATH`, `plan` mode, a one-hour
+  limit, and an empty `remote-app` folder beside the state directory as its working directory.
+- `revoke-sender --id AGENT` takes it off the `remote-app` profile, and unpins it if no other profile names it.
+
+The fingerprint is the first 16 hex characters of the uppercase SHA-256 of `signingKey + "\n" + encryptionKey` (the
+public Dispatch keys exactly as enrolled), in groups of four: `AB12-CD34-EF56-7890`. Back Channel computes it the same
+way. `allow-sender` and `revoke-sender` change the local profile, so the worker must be stopped first (`locked`
+otherwise): run `stop`, then `allow-sender` or `revoke-sender`, then start the task again if it was running.
 
 ### Support sessions
 

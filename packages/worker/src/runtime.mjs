@@ -51,7 +51,11 @@ export function runtimeArgs(p, { mcp } = {}) {
         return [...args, '-'];
     }
     if (p.adapter === 'claude') {
-        const args = ['--print', '--output-format', 'json', '--permission-mode', p.permissionMode ?? 'plan', '--json-schema', JSON.stringify(resultSchema)];
+        // With the worker's own MCP server (remote-app, remote-support, lists) the run is dontAsk: only --allowedTools run,
+        // everything else is denied without a prompt. Plan mode made Claude refuse every state-changing call, the worker's
+        // own tools included (seen live 2026-10-10: no remote_open, remote_act or even remote_end), so it can't be used there.
+        const mode = mcp ? 'dontAsk' : (p.permissionMode ?? 'plan');
+        const args = ['--print', '--output-format', 'json', '--permission-mode', mode, '--json-schema', JSON.stringify(resultSchema)];
         if (mcp) args.push('--mcp-config', JSON.stringify({ mcpServers: mcpServers(mcp) }), '--strict-mcp-config',
             '--allowedTools', allow.join(','), ...(deny.length ? ['--disallowedTools', deny.join(',')] : []));
         return args;
@@ -76,6 +80,29 @@ export async function terminateTree(child) {
         }
         catch { }
     }
+}
+/**
+ * Another process's name and command line, to check a PID before acting on it (bc-worker stop). Windows: the same
+ * Win32_Process query terminateTree uses. Elsewhere: /proc (with its working directory), or ps. null when unreadable.
+ */
+export async function processInfo(pid) {
+    if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+    if (process.platform === 'win32') {
+        const script = `[void][Reflection.Assembly]::LoadWithPartialName('System.Management'); $q=New-Object System.Management.ManagementObjectSearcher('SELECT Name,CommandLine FROM Win32_Process WHERE ProcessId=${pid}'); foreach($row in @($q.Get())) { $j=(@{ name=[string]$row['Name']; commandLine=[string]$row['CommandLine'] } | ConvertTo-Json -Compress); [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($j))) }`;
+        const out = (await runtimeHelper('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')])).trim();
+        try {
+            const info = JSON.parse(Buffer.from(out, 'base64').toString('utf8'));
+            return typeof info?.commandLine === 'string' && info.commandLine ? { name: String(info.name ?? ''), commandLine: info.commandLine } : null;
+        } catch { return null; }
+    }
+    try {
+        const argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+        let cwd;
+        try { cwd = fs.readlinkSync(`/proc/${pid}/cwd`); } catch { }
+        if (argv.length) return { name: path.basename(argv[0]), argv, cwd };
+    } catch { }
+    const args = (await runtimeHelper('ps', ['-ww', '-o', 'args=', '-p', String(pid)])).trim();
+    return args ? { name: path.basename(args.split(/\s+/)[0]), argv: args.split(/\s+/) } : null;
 }
 function runtimeHelper(executable, args) {
     return new Promise(resolve => {

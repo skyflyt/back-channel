@@ -532,7 +532,8 @@ test('remote-app runtime arguments are fixed: only the worker MCP server, no she
     assert.equal(codex.at(-1), '-');
     assert.equal(codex.at(-2), 'mcp_servers={bc_remote_app={command="C:\\\\Program Files\\\\nodejs\\\\node.exe",args=["C:\\\\w\\\\remote-app-mcp.mjs","--bridge","\\\\\\\\.\\\\pipe\\\\bc-remote-app-x","--nonce","ab"]}}');
     const claude = runtimeArgs({ adapter: 'claude' }, { mcp });
-    assert.deepEqual(claude.slice(0, 5), ['--print', '--output-format', 'json', '--permission-mode', 'plan']);
+    // The worker's own MCP server means dontAsk: plan mode refuses even the worker's tools.
+    assert.deepEqual(claude.slice(0, 5), ['--print', '--output-format', 'json', '--permission-mode', 'dontAsk']);
     assert.deepEqual(JSON.parse(claude[claude.indexOf('--mcp-config') + 1]), { mcpServers: { bc_remote_app: { type: 'stdio', command: mcp.command, args: mcp.args } } });
     assert.ok(claude.includes('--strict-mcp-config'));
     assert.equal(claude[claude.indexOf('--allowedTools') + 1], 'mcp__bc_remote_app');

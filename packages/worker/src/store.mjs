@@ -19,9 +19,17 @@ export function safeDirectory(directory) {
     }
     if (process.platform === 'win32') {
         const script = "$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); [System.IO.Directory]::SetAccessControl($env:BC_PROTECT_DIRECTORY,$acl)";
-        const acl = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, env: { ...process.env, BC_PROTECT_DIRECTORY: real } });
-        if (acl.status !== 0)
-            throw Error('Cannot protect worker state ACL: ' + (acl.stderr || acl.error?.message || 'unknown error'));
+        // One retry: on a busy machine (CI runners especially) powershell.exe occasionally fails to start or exits
+        // without saying why. A real refusal fails twice, and its message carries everything PowerShell said.
+        let acl;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            acl = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 60000, env: { ...process.env, BC_PROTECT_DIRECTORY: real } });
+            if (acl.status === 0) break;
+        }
+        if (acl.status !== 0) {
+            const said = [acl.stderr, acl.stdout].map(x => (x || '').trim()).filter(Boolean).join(' | ');
+            throw Error('Cannot protect worker state ACL: ' + (said || acl.error?.message || `powershell exited ${acl.status ?? 'without a status'}${acl.signal ? ` (${acl.signal})` : ''}`));
+        }
     }
     else
         fs.chmodSync(real, 0o700);

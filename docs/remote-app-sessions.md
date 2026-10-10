@@ -8,14 +8,19 @@ fixed phrase; you, the agent or the PC can stop it, and stopping is final.
 
 This document is the broker side, plus the executor on the PC, which is the Back Channel Dispatch worker
 (see [Executor](#executor-packagesworker)). The AppBridge side (the bounded UI Automation surface behind the
-local agent-control pipe, the on-screen banner and local Stop) lives in the AppBridge repo and is **not built
-yet**: see [What is not built yet](#what-is-not-built-yet).
+local agent-control pipe, the on-screen banner and local Stop) lives in the AppBridge repo (1.1.32 and newer).
+What a PC needs before an agent can use it, and how the person sees whether it has it, is in
+[Setting up a PC](#setting-up-a-pc).
 
 Code: `apps/broker/src/lib/remote-app/rules.mjs` (every decision, pure, `node --test`),
 `src/lib/remote-app.ts` (I/O), `src/lib/remote-app-host.ts` (the PC's routes), `src/lib/appbridge.ts` (the
 "agent" lease), `src/lib/mcp/remote-tools.mjs` (the MCP catalog), `src/app/account/remote/agent-sessions.tsx`
-(the dashboard card). Tests: `src/lib/remote-app/rules.test.mjs`, `route-tests/remote-app.routetest.mts`,
-`route-tests/appbridge.routetest.mts`.
+(the dashboard card). Readiness: `src/lib/remote-app/readiness.mjs` (the report's shape and the checklist, pure),
+`src/lib/agent-readiness.ts` (the worker's report), `src/app/account/remote/agents-readiness.tsx` (the card),
+`packages/worker/src/readiness.mjs` (the worker side). Tests: `src/lib/remote-app/rules.test.mjs`,
+`src/lib/remote-app/readiness.test.mjs`, `route-tests/remote-app.routetest.mts`,
+`route-tests/agent-readiness.routetest.mts`, `route-tests/appbridge.routetest.mts`,
+`packages/worker/test/readiness.test.mjs`.
 
 ## The rules
 
@@ -364,20 +369,76 @@ agent's end summary, and each step's kind, control or app name (at most 120 char
 pointer. Not stored: anything on the screen, any value or typed text, any screenshot. Sessions are kept (no
 retention rule yet); a deleted account's rows must be removed by `accountId` by hand (no foreign key).
 
-## What is not built yet
+## Setting up a PC
 
-- **The AppBridge side (AppBridge repo, design chunks A5 and A6):** the bounded UI Automation surface behind
-  the agent-control pipe, with the per-device "Allow agent control" grant and the password-field refusal; the
-  on-screen banner with a local Stop; and the PC's use of `/relay/agent-passes`. The executor that claims the
-  Dispatch task, drives the pipe and reports steps is built ([Executor](#executor-packagesworker)). Until the
-  host side exists, the executor's preflight answers "Allow agent control is off on this PC". The hosted
-  `bc_remote_app_open`, `bc_remote_observe` and `bc_remote_act` tools answer `not_available_yet`; an agent on
-  the PC uses the executor's own tools instead.
-- **The relay** accepting `purpose: "agent"` (backchannel-relay, a Cloudflare Worker).
-- **The v1.1 secret check on the PC** (AppBridge repo, contract PR-4): the agent-control pipe reading
-  `executorSecretSha256` and refusing a v1.1 session's `hello` without the matching secret; the worker sending it
-  (contract PR-5). The broker side is built here.
+For one of your agents to use an app on one of your PCs, six things must be true on that PC. Each is done on the PC
+itself, in AppBridge. The AppBridge owner console's **Agents** page lists them with one button per step. The Remote
+page of the dashboard shows the same checklist ("Agents on your PCs"), from what the Back Channel worker on each PC
+reports. Design: the vault's `pc-agent-readiness.md` (decided 2026-10-10: the worker ships inside AppBridge, and step
+5 trusts an agent by comparing key fingerprints).
+
+| # | Step | How Back Channel tells | Done on that PC, in AppBridge |
+|---|---|---|---|
+| 1 | AppBridge 1.1.32 or newer | its agent-control pipe answers the worker's `hello` at all | Updates → Install update |
+| 2 | PC registered with Back Channel | a registered PC (host, not revoked) whose name matches the one the pipe reports | Internet access → Register this PC |
+| 3 | "Allow agent control" on and listening | the pipe answers `hello` with agent control on | Agents → Allow agent control |
+| 4 | Back Channel worker set up, paired for Dispatch and running | a report from an enrolled worker in the last 30 minutes | Agents → Set up worker (Get a code), then Start |
+| 5 | Agents allowed to hand this PC a session | the worker's `remote-app` profile names at least one pinned agent | Agents → Choose agents…, comparing fingerprints |
+| 6 | `claude` signed in | `claude auth status` exits 0 | Agents → Sign in to Claude |
+
+Each step reads **done**, **needs action** or **unknown**: Back Channel never claims what it can't know. A worker that
+hasn't reported for 30 minutes is "not reporting: the worker isn't running on that PC", and every step it would tell
+becomes unknown. A badge sums each PC up: "Ready for agents", or "2 steps left".
+
+**How readiness reaches the dashboard.**
+1. The worker on the PC runs `bc-worker readiness` (it runs as the person, so it sees what an agent would). It greets
+   the agent-control pipe with a v1 `hello` and nothing else (no session op, never an executor secret), runs
+   `claude auth status` (fixed arguments, no shell, a short timeout; only the exit code is read), and reads its own
+   `remote-app` profile. The AppBridge console reads the JSON it prints. The fields are in
+   `packages/worker/README.md` ("Is this PC ready for agents?").
+2. `bc-worker run` sends it at start and every 10 minutes: `PUT /api/agents/self/readiness` with the worker's own
+   **full-scope** key. A connector key is `403 not_available_to_connectors`; the dashboard cookie alone is `401`. The
+   body is the contract's object, strictly: every field, no other (`400 unknown_field`), at most 8 KiB (`413`), the PC's
+   and the worker's names printable and at most 80 characters, the fingerprint `XXXX-XXXX-XXXX-XXXX`, and `agentId`
+   the caller's own (`400 agent_mismatch`). Back Channel keeps no free text from the PC beyond those two names: the
+   claude path, the pipe's reason and the senders' names are dropped. 120 reports per minute per agent at most. It is
+   stored on the agent's own row (`AgentToken.readiness`, and `readinessAt` from Back Channel's clock). A failed report
+   is logged and the worker carries on.
+3. The dashboard reads `GET /api/remote-app/readiness` (the person only; an agent's key is `403 people_only`):
+   ```jsonc
+   { "staleAfterMinutes": 30,
+     "agents": [{ "agentId", "name", "fingerprint",          // computed here from the agent's Dispatch keys
+                  "readiness", "readinessAt", "reporting",  // the last report (senders named as on the dashboard)
+                  "pc": { "hostDeviceId", "name" } | null,   // the registered PC it reports from: a name match
+                  "reportsFrom",                             // the PC's name as the worker reported it
+                  "steps": [{ "step", "key", "title", "state": "done|needed|unknown", "howTo" }],
+                  "ready", "missing": ["claude", ...] }],
+     "pcs": [{ "hostDeviceId", "name", "note": "No agent set up on this PC yet.", "steps", "ready": false, "missing" }] }
+   ```
+   `agents` are the account's live full-scope agents that are enrolled for Dispatch or have reported. A worker is
+   matched to a registered PC by the PC name it reports, ignoring case, and only when exactly one PC has that name. It
+   is shown as "reports from PC X", never as a hard link. `pcs` are the registered PCs no worker reports from.
+4. `bc_remote_machines` (`GET /machines`) gives agents the same, briefly: each machine's `agents`
+   (`[{ agentId, name, ready, missing }]`, the workers that report from it), a top-level `executors` list (every
+   Dispatch-enrolled agent, with `hostDeviceId`, `pc`, `reporting`, `ready` and `missing`) and `howToFix` (one line per
+   step). An agent names a ready executor, or tells the person what's missing instead of starting a session that can't
+   run.
+
+**Fingerprints (step 5).** A PC may take sessions only from agents its worker has pinned. **Choose agents…** lists your
+other Dispatch agents (`bc-worker candidates`), each with its key fingerprint: the first 16 hex characters of the
+uppercase SHA-256 of `signingKey + "\n" + encryptionKey`, the agent's public Dispatch keys exactly as enrolled (the SPKI
+PEM strings Back Channel stores), in groups of four (`AB12-CD34-EF56-7890`). You compare it with the fingerprint shown
+on that agent's own PC, or here on the dashboard. `bc-worker allow-sender` then fetches the agent's keys from Back
+Channel, fingerprints them itself and refuses unless they match what you confirmed. So even a compromised Back Channel
+can't slip a sender in: it would have to fool your own comparison. Changing senders needs the worker stopped:
+the console runs `bc-worker stop` (it ends only this state's own worker; the scheduled task's launcher also passes
+`--parent-pid`, so stopping the task stops the worker), then `allow-sender` or `revoke-sender`, then starts the task
+again if it was running.
+
+**Still open.**
 - A retention rule for ended sessions and their steps.
+- The hosted `bc_remote_app_open`, `bc_remote_observe` and `bc_remote_act` tools still answer `not_available_yet`. An
+  agent on the PC uses the executor's own tools ([Executor](#executor-packagesworker)).
 - Phase B (one-time remote support for someone else) is a separate document: [docs/remote-support.md](remote-support.md).
   Its sessions are `RemoteAppSession` rows with `kind: "support"`; every endpoint here, the PC's routes and the "agent"
   lease ignore or refuse them, and they have their own "support" lease.
@@ -393,3 +454,8 @@ production notice.
 `prisma/migrations/20261011090000_support_relay_path` adds `executorSecretHash` and `executorSecretIssuedAt` to
 `RemoteAppSession` (v1.1; a null hash marks a session created before it, which stays v1), with checks that the hash
 is a lowercase SHA-256 and an issued secret always has one. Apply it before deploying the code.
+
+`prisma/migrations/20261012090000_agent_readiness` adds the nullable `readiness` (JSONB) and `readinessAt` to
+`AgentToken` ([Setting up a PC](#setting-up-a-pc)), with checks that both are set together and the report is a small
+JSON object. Purely additive. Apply it before deploying the code: Prisma reads every column of `AgentToken` on every
+bearer-authenticated request.

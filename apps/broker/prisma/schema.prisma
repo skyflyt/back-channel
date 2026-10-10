@@ -123,6 +123,11 @@ model AgentToken {
   dispatchName String?
   dispatchEncryptionKey String?
   dispatchSigningKey String?
+  // PC readiness for agents: the Dispatch worker's last non-secret readiness report (PUT /api/agents/self/readiness,
+  // src/lib/agent-readiness.ts; shape in src/lib/remote-app/readiness.mjs) and when Back Channel received it. Shown only
+  // to the account owner, and to the account's agents as ready/missing in bc_remote_machines.
+  readiness   Json?
+  readinessAt DateTime?
   dispatchSent DispatchTask[] @relation("DispatchSender")
   dispatchReceived DispatchTask[] @relation("DispatchTarget")
   account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)

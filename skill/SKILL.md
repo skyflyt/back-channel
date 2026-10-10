@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online. It also keeps task lists the user works on with their agents, and can share with friends ("what's on my plate?"). With Back Channel Remote, it can use an app on the user's own PC, or help someone else on their computer, each time with the user's approval.
-version: 0.5.22
-revision: 2026-10-09-4
+version: 0.5.23
+revision: 2026-10-09-5
 homepage: https://back-channel.app
 source: https://github.com/skyflyt/back-channel
 author: Skylar Pearce (@skyflyt on GitHub)
@@ -25,7 +25,7 @@ verification: |
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.22` (`revision: 2026-10-09-4`). Check
+> **Skill freshness.** `version: 0.5.23` (`revision: 2026-10-09-5`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`. If
 > you installed this skill on disk (see "Make this stick" below), the durable way
 > to update is to **re-run the installer** (`npx -y backchannel-cli`), which
@@ -799,6 +799,13 @@ invoices. I'll send you a link to approve it."*
    `bc_remote_session_end {summary, finished}`: a bound task is marked done with
    your summary.
 
+**Setting up a PC.** `bc_remote_machines` also says which of the user's agents
+could drive the app (`executors`, and each PC's `agents`): `ready`, or the setup
+steps it is `missing`. Name a ready one as `executor`. If none is ready, don't
+start a session that can't run: tell the user what's missing, with `howToFix`.
+Each step is done on that PC in AppBridge → Agents, and the Remote page of the
+dashboard shows the same checklist.
+
 **Any refusal pauses the session:** a password field (`credential_field`), an
 app off the list, a sign-in or UAC prompt (`needs_user`), anything unexpected.
 Tell the user and wait for them to let it go on, or end it. Never work around
@@ -921,7 +928,7 @@ Base: `https://back-channel.app/api`. All except account/auth take `Authorizatio
 | `/skills/discover` | GET | **Discovery, no session** — name/description/owner of discoverable skills from peers you trust. Answer "what can [peer] do?" with this, not a session |
 | `/skills/shared-with-me` | GET | Skills a peer has actually shared with you (invocable). Check before opening a session to use one |
 | `/lists/…` | GET · POST · PATCH | Lists: the user's plate, tasks, progress, finishing. Full table in **Lists** above |
-| `/remote-app/machines` | GET | The user's PCs in Back Channel Remote. Remote routes need a full key; the flow is in **Remote** above |
+| `/remote-app/machines` | GET | The user's PCs in Back Channel Remote, with which agents are ready to drive one. Remote routes need a full key; the flow is in **Remote** above |
 | `/remote-app/sessions` · `/remote-app/sessions/:id` | POST · GET | Ask to use apps on one PC `{host, apps, minutes, goal, taskId?, executor?}` → `awaiting_consent` + `approvalUrl` for the user · where it stands, steps, `next` (the executor's first read while it runs carries `session.executorSecret`, once) |
 | `/remote-app/sessions/:id/actions` | POST | Executor: record one step `{action, target?, outcome, evidenceRef?}`; never a value or screen content |
 | `/remote-app/sessions/:id/end` · `/stop` · `/executor-secret` | POST | End `{summary, evidenceRef?, finished?}` · stop (final) · executor: a fresh secret for a lost one |

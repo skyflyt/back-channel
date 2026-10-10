@@ -358,12 +358,16 @@ export class SessionController {
         if (!r.ok) return r;
         const mine = this.learnApps(r.sessions);
         if (!mine) return { ok: true, session: null, reason: "This PC doesn't show the session as running right now." };
+        // Approved by the person but not published in AppBridge on this PC: the host can't open them, so say so plainly.
+        const published = [...this.apps.values()];
+        const notOnThisPC = (this.view.apps ?? []).filter(a => !published.some(n => inAllowList([a], n))).map(a => bounded(String(a), 60));
         return {
             ok: true,
             session: {
                 sessionId: this.id,
                 goal: this.view.goal,
                 apps: [...this.apps].map(([appId, name]) => ({ appId, name })),
+                ...(notOnThisPC.length ? { notOnThisPC, notOnThisPCReason: `Approved, but not published in AppBridge on this PC, so they can't be opened: ${notOnThisPC.join(', ')}. Your person publishes them on AppBridge's Apps page; this session can't use them.` } : {}),
                 endsAt: new Date(this.deadline).toISOString(),
                 status: this.paused ? 'paused' : 'running',
                 ...(this.paused ? { pausedBecause: this.pausedBecause } : {}),
@@ -551,6 +555,7 @@ export function remotePrompt(session, payload, deadline) {
         `- ${RULES}`,
         '- Use only the remote_* tools to see and use the app. Do not use a shell, change files, or use the web.',
         '- Every open and act is recorded with Back Channel. Any refusal pauses the session: then end it with remote_end (finished: false) and explain, or wait and check remote_sessions.',
+        "- If remote_sessions lists an app under notOnThisPC, it isn't published in AppBridge on this PC: don't look for it another way. End the session with remote_end (finished: false) and say which app your person needs to publish (AppBridge → Apps).",
         '- When the goal is done, call remote_end with a short summary in your own words and finished: true, then give your final answer.',
     );
     return lines.join('\n');
