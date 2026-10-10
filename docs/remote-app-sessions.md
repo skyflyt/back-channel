@@ -109,8 +109,9 @@ window):
 **The compatibility trap, and how it is handled.** AppBridge's agent-control parser refuses unknown members, so an
 AppBridge older than 1.1.33 would treat a `scope` member (or an empty `apps`) in `GET /hosts/self/agent-sessions` as
 a malformed reply and drop every session. So the broker sends `scope` only to a PC it knows runs 1.1.33 or newer:
-the newest readiness report of a live full-scope worker of the account that reports from that PC (matched by the
-PC's name exactly as the readiness card matches it: one registered PC with that name, ignoring case) says
+the newest readiness report of a live full-scope worker of the account that reports from that PC (matched exactly
+as the readiness card matches it: the computer name you confirmed for one PC, else one PC with that name, ignoring
+case) says
 `appbridge.version` >= 1.1.33 (the version its agent-control hello reported as `host.version`). Any other PC (no
 report, an older worker that doesn't report a version, an older AppBridge, an ambiguous name) gets the v1.1 shape:
 a desktop session is sent with the apps it expects to use, which that PC enforces as before, and a desktop session
@@ -533,7 +534,7 @@ reports. Design: the vault's `pc-agent-readiness.md` (decided 2026-10-10: the wo
 | # | Step | How Back Channel tells | Done on that PC, in AppBridge |
 |---|---|---|---|
 | 1 | AppBridge 1.1.33 or newer | the version its agent-control `hello` reports (`host.version`, sent as the report's `appbridge.version`): 1.1.33 or newer is done; an older one, or a hello with no version, needs the update; a worker too old to report it is unknown | Updates → Install update |
-| 2 | PC registered with Back Channel | a registered PC (host, not revoked) whose name matches the one the pipe reports | Internet access → Register this PC |
+| 2 | PC registered with Back Channel | a registered PC (host, not revoked) that matches the computer name the pipe reports: the name you confirmed for it under **Which PC is this?**, else its own name | Internet access → Register this PC |
 | 3 | "Allow agent control" on and listening | the pipe answers `hello` with agent control on | Agents → Allow agent control |
 | 4 | Back Channel worker set up, paired for Dispatch and running | a report from an enrolled worker in the last 30 minutes | Agents → Set up worker (Get a code), then Start |
 | 5 | Agents allowed to hand this PC a session | the worker's `remote-app` profile names at least one pinned agent | Agents → Choose agents…, comparing fingerprints |
@@ -564,15 +565,29 @@ becomes unknown. A badge sums each PC up: "Ready for agents", or "2 steps left".
    { "staleAfterMinutes": 30,
      "agents": [{ "agentId", "name", "fingerprint",          // computed here from the agent's Dispatch keys
                   "readiness", "readinessAt", "reporting",  // the last report (senders named as on the dashboard)
-                  "pc": { "hostDeviceId", "name" } | null,   // the registered PC it reports from: a name match
-                  "reportsFrom",                             // the PC's name as the worker reported it
+                  "pc": { "hostDeviceId", "name" } | null,   // the registered PC it reports from
+                  "pcMatchedBy": "confirmed" | "name" | null, // by the computer name you confirmed, or by the PC's name
+                  "reportsFrom",                             // the computer's name as the worker reported it
                   "steps": [{ "step", "key", "title", "state": "done|needed|unknown", "howTo" }],
                   "ready", "missing": ["claude", ...] }],
-     "pcs": [{ "hostDeviceId", "name", "note": "No agent set up on this PC yet.", "steps", "ready": false, "missing" }] }
+     "pcs": [{ "hostDeviceId", "name", "note": "No agent set up on this PC yet.", "steps", "ready": false, "missing" }],
+     "registered": [{ "hostDeviceId", "name", "agentHostName" }] }  // every registered PC, for "Which PC is this?"
    ```
-   `agents` are the account's live full-scope agents that are enrolled for Dispatch or have reported. A worker is
-   matched to a registered PC by the PC name it reports, ignoring case, and only when exactly one PC has that name. It
-   is shown as "reports from PC X", never as a hard link. `pcs` are the registered PCs no worker reports from.
+   `agents` are the account's live full-scope agents that are enrolled for Dispatch or have reported. A worker reports
+   the computer it runs on by its Windows computer name (the hello's `host.name`), which is often not the name the PC
+   was registered under ("Desktop"). It is matched to a registered PC, ignoring case: first to the one PC whose
+   computer name you confirmed, else to the one PC with that name. Two PCs either way, or none, is no match. It is shown
+   as "reports from PC X", never as a hard link. `pcs` are the registered PCs no worker reports from.
+
+   **Which PC is this?** A worker that matches no PC shows a picker of your registered PCs. Choosing one sends
+   `POST /api/remote-app/readiness/pc { hostDeviceId, hostName }` (the person only, with the CSRF header). It stores
+   that computer name on the PC (`AppBridgeDevice.agentHostName`), as the worker reported it.
+   - The name must be one a live worker of this account reports (`400 not_reported`).
+   - It is taken off any other PC, so it names one PC only.
+   - `hostName: null` forgets it (**Not this PC**).
+
+   Every worker on that computer then matches that PC, which affects the card, `bc_remote_machines`, and whether the PC
+   gets desktop-scope sessions. A wrong answer changes only those; the person still approves every session.
 4. `bc_remote_machines` (`GET /machines`) gives agents the same, briefly: each machine's `agents`
    (`[{ agentId, name, ready, missing }]`, the workers that report from it), a top-level `executors` list (every
    Dispatch-enrolled agent, with `hostDeviceId`, `pc`, `reporting`, `ready` and `missing`) and `howToFix` (one line per
@@ -620,6 +635,10 @@ signature counter, transports, label and dates) and `PasskeyChallenge` (the chal
 step-up's grant as a hash), both with a cascading foreign key to `Account` and checks on their own rows
 ([Approvals need a passkey](#approvals-need-a-passkey)). Purely additive. Apply it before deploying the code: every
 approval and "go on", and every agent connect on an account with a PC, reads `AccountPasskey`.
+
+`prisma/migrations/20261015090000_pc_agent_host_name` adds the nullable `agentHostName` to `AppBridgeDevice`: the
+computer name you confirmed for a PC ([Setting up a PC](#setting-up-a-pc), **Which PC is this?**), with a check that it is
+1 to 80 characters. Purely additive. Apply it before deploying the code: Prisma reads every column of `AppBridgeDevice`.
 
 `prisma/migrations/20261012090000_agent_readiness` adds the nullable `readiness` (JSONB) and `readinessAt` to
 `AgentToken` ([Setting up a PC](#setting-up-a-pc)), with checks that both are set together and the report is a small

@@ -192,17 +192,50 @@ export function storedReadiness(stored, agentId) {
 // ── Matching a report to a registered PC ────────────────────────────────────
 
 /**
- * The registered PC a worker reports from, best effort: the one PC whose name equals the report's hostName, ignoring
- * case and surrounding space. Two PCs with that name, or none, is no match. It is a name match, not a proof.
- * @template {{ hostDeviceId: string, name: string }} P
+ * The registered PC a worker reports from, best effort. A report names the computer (`hostName`, the Windows computer
+ * name AppBridge's hello gives), which is often not what the person called the PC when they registered it ("Desktop").
+ * So, ignoring case and surrounding space:
+ *   1. the one PC whose confirmed computer name (`agentHostName`, set by the person on the Remote page) equals it;
+ *   2. otherwise the one PC whose name equals it.
+ * Two PCs either way is no match, and so is none. A name match, not a proof.
+ * @template {{ hostDeviceId: string, name: string, agentHostName?: string | null }} P
  * @param {string | null | undefined} hostName @param {P[]} pcs
  * @returns {P | null}
  */
 export function matchPc(hostName, pcs) {
-  const want = typeof hostName === "string" ? hostName.trim().toLowerCase() : "";
+  const want = norm(hostName);
   if (!want) return null;
-  const hits = pcs.filter((p) => p.name.trim().toLowerCase() === want);
-  return hits.length === 1 ? hits[0] : null;
+  const confirmed = pcs.filter((p) => norm(p.agentHostName) === want);
+  if (confirmed.length) return confirmed.length === 1 ? confirmed[0] : null;
+  const named = pcs.filter((p) => norm(p.name) === want);
+  return named.length === 1 ? named[0] : null;
+}
+/** @param {unknown} v */
+const norm = (v) => (typeof v === "string" ? v.trim().toLowerCase() : "");
+
+/**
+ * How a worker's report was matched to its PC, for the card: "confirmed" by the person (the PC's agentHostName), by
+ * "name" (the PC's label), or null for no match.
+ * @param {string | null | undefined} hostName @param {{ agentHostName?: string | null } | null} pc
+ * @returns {"confirmed" | "name" | null}
+ */
+export function matchedBy(hostName, pc) {
+  if (!pc) return null;
+  return norm(pc.agentHostName) && norm(pc.agentHostName) === norm(hostName) ? "confirmed" : "name";
+}
+
+/**
+ * The computer name the person confirms for a PC (POST /api/remote-app/readiness/pc): the hostName exactly as one of
+ * the account's workers reported it, or null to forget it. Printable, 1 to 80 characters, like the report's own field.
+ * @param {unknown} v @returns {string | null}
+ */
+export function parseAgentHostName(v) {
+  if (v === null) return null;
+  const t = typeof v === "string" ? v.trim() : "";
+  if (!t || [...t].length > 80 || UNPRINTABLE.test(t)) {
+    throw new RemoteRuleError(400, "invalid_request", "hostName must be the computer name one of your workers reported (printable, 1 to 80 characters), or null to forget it.");
+  }
+  return t;
 }
 
 // ── The checklist ────────────────────────────────────────────────────────────
@@ -247,7 +280,7 @@ export function checklist({ report, readinessAt, now, pc }) {
     s.appbridge = appBridgeStep(r.appbridge);
     if (!pc) {
       s.registered = ["unknown", r.appbridge.hostName
-        ? `It reports as "${r.appbridge.hostName}", which matches no single PC registered here. If that PC isn't registered: ${STEPS[1].howTo}`
+        ? `It reports as "${r.appbridge.hostName}", which matches no single PC registered here. If it's one of your registered PCs, say which on the Remote page (Agents on your PCs → Which PC is this?). If it isn't registered: ${STEPS[1].howTo}`
         : `${CANT_TELL} If it isn't registered: ${STEPS[1].howTo}`];
     }
     s.agent_control = pipe === "listening" ? ["done", null]

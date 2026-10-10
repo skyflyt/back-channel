@@ -88,6 +88,31 @@ test("matching a report to a registered PC: by name, ignoring case; ambiguous or
   assert.equal(RD.matchPc("", pcs), null);
 });
 
+test("matchPc: a computer name the person confirmed for a PC wins over the PC names; two confirmations is no match", () => {
+  // Registered as "Desktop"; its workers report the Windows computer name.
+  const pcs = [{ hostDeviceId: "pc1", name: "Desktop", agentHostName: "JRR-IT-MZ013M7D" }, { hostDeviceId: "pc2", name: "Office PC", agentHostName: null },
+    { hostDeviceId: "pc3", name: "jrr-it-hhcvvg1n" }];
+  assert.equal(RD.matchPc(" jrr-it-mz013m7d ", pcs)?.hostDeviceId, "pc1", "by the confirmed computer name, ignoring case and space");
+  assert.equal(RD.matchPc("Desktop", pcs)?.hostDeviceId, "pc1", "its own name still matches");
+  assert.equal(RD.matchPc("JRR-IT-HHCVVG1N", pcs)?.hostDeviceId, "pc3", "a PC named after its computer, unchanged");
+  assert.equal(RD.matchPc("JRR-IT-OTHER", pcs), null);
+  // A confirmed computer name beats another PC that happens to be named that.
+  const named = [...pcs, { hostDeviceId: "pc4", name: "JRR-IT-MZ013M7D" }];
+  assert.equal(RD.matchPc("JRR-IT-MZ013M7D", named)?.hostDeviceId, "pc1");
+  // The same computer name confirmed for two PCs: no proof either way.
+  const twice = [...pcs, { hostDeviceId: "pc5", name: "Spare", agentHostName: "jrr-it-mz013m7d" }];
+  assert.equal(RD.matchPc("JRR-IT-MZ013M7D", twice), null);
+  assert.equal(RD.matchedBy("jrr-it-mz013m7d", pcs[0]), "confirmed");
+  assert.equal(RD.matchedBy("Desktop", pcs[0]), "name");
+  assert.equal(RD.matchedBy("Desktop", null), null);
+});
+
+test("parseAgentHostName: a reported computer name (trimmed, printable, 1 to 80 characters) or null", () => {
+  assert.equal(RD.parseAgentHostName("  JRR-IT-MZ013M7D "), "JRR-IT-MZ013M7D");
+  assert.equal(RD.parseAgentHostName(null), null);
+  for (const bad of ["", "   ", "x".repeat(81), "Desk\u0000top", "Desk‮top", 42, undefined, {}]) refused(() => RD.parseAgentHostName(bad), "invalid_request");
+});
+
 const states = (c) => Object.fromEntries(c.steps.map((s) => [s.key, s.state]));
 const howTo = (c, key) => c.steps.find((s) => s.key === key).howTo;
 const pc = { hostDeviceId: "pc1", name: "Shop-PC" };

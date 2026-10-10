@@ -71,15 +71,15 @@ type Session = RemoteAppSession;
 type Patch = Prisma.RemoteAppSessionUpdateManyMutationInput;
 /** agentId null: the person, signed in to the dashboard. */
 type Caller = { accountId: string; agentId: string | null };
-type Op = "machines" | "readiness" | "start" | "list" | "get" | "approve" | "deny" | "resume" | "stop" | "stopAll" | "report" | "end" | "surface" | "rotate";
+type Op = "machines" | "readiness" | "confirmPc" | "start" | "list" | "get" | "approve" | "deny" | "resume" | "stop" | "stopAll" | "report" | "end" | "surface" | "rotate";
 // viaTool: the request came through an MCP tool (a chat), never the executor's own worker.
 // stepUp: the person's passkey step-up grant (the x-bc-step-up header), for approve and resume.
 type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string; viaTool?: boolean; stepUp?: string | null };
 type Outcome = { status?: number; body: Record<string, unknown> };
 
-const PEOPLE_ONLY = new Set<Op>(["approve", "deny", "resume", "stopAll", "readiness"]);
+const PEOPLE_ONLY = new Set<Op>(["approve", "deny", "resume", "stopAll", "readiness", "confirmPc"]);
 const AGENTS_ONLY = new Set<Op>(["start", "report", "end", "surface", "rotate"]);
-const WRITES = new Set<Op>(["start", "approve", "deny", "resume", "stop", "stopAll", "report", "end", "rotate"]);
+const WRITES = new Set<Op>(["start", "approve", "deny", "resume", "stop", "stopAll", "report", "end", "rotate", "confirmPc"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DAY = 86_400_000;
 const MAX_BODY = 16 * 1024;
@@ -322,20 +322,30 @@ async function accessState(tx: Tx, accountId: string, now: Date) {
 }
 
 /**
+ * The account's registered PCs, for matching a worker's report to the PC it runs on (RD.matchPc): each one's name
+ * (its label) and the computer name the person confirmed for it on the Remote page, if any.
+ */
+async function registeredPcs(tx: Tx, accountId: string) {
+  const hosts = await tx.appBridgeDevice.findMany({ where: { accountId, role: "host", revokedAt: null }, orderBy: { createdAt: "asc" }, take: 50 });
+  return hosts.map((h) => ({ hostDeviceId: h.id, name: pcName(h), agentHostName: h.agentHostName ?? null }));
+}
+
+/**
  * PC readiness for agents: each of the account's live full-scope agents that is enrolled for Dispatch or has reported
  * readiness, with its key fingerprint (computed here from its Dispatch keys), its last report, the PC it reports from
- * (a best-effort name match, never a hard link) and the six-step checklist; and each registered PC no worker reports
- * from. The owner's "Agents on your PCs" card shows all of it; bc_remote_machines gives agents ready/missing.
+ * (best effort: the computer name the person confirmed for a PC, else the PC's name; never a hard link), how that was
+ * matched, and the six-step checklist; each registered PC no worker reports from; and every registered PC, for the
+ * card's "Which PC is this?". The owner's "Agents on your PCs" card shows all of it; bc_remote_machines gives agents
+ * ready/missing.
  */
 async function readinessOf(tx: Tx, accountId: string, now: Date) {
-  const [agents, hosts] = await Promise.all([
+  const [agents, pcs] = await Promise.all([
     tx.agentToken.findMany({
       where: { accountId, revokedAt: null, scope: "full", OR: [{ dispatchEncryptionKey: { not: null }, dispatchSigningKey: { not: null } }, { readinessAt: { not: null } }] },
       orderBy: { createdAt: "asc" }, take: 100,
     }),
-    tx.appBridgeDevice.findMany({ where: { accountId, role: "host", revokedAt: null }, orderBy: { createdAt: "asc" }, take: 50 }),
+    registeredPcs(tx, accountId),
   ]);
-  const pcs = hosts.map((h) => ({ hostDeviceId: h.id, name: pcName(h) }));
   const nameOf = new Map(agents.map((a) => [a.id, a.name || a.dispatchName || "agent"]));
   const matched = new Set<string>();
   const rows = agents.map((a) => {
@@ -349,16 +359,52 @@ async function readinessOf(tx: Tx, accountId: string, now: Date) {
     return {
       agentId: a.id, name: nameOf.get(a.id) as string, fingerprint: RD.fingerprint(a.dispatchSigningKey, a.dispatchEncryptionKey),
       readiness, readinessAt: report && a.readinessAt ? a.readinessAt.toISOString() : null, reporting: c.reporting,
-      pc, reportsFrom: report?.appbridge.hostName ?? null, steps: c.steps, ready: c.ready, missing: c.missing,
+      pc: pc && { hostDeviceId: pc.hostDeviceId, name: pc.name }, pcMatchedBy: RD.matchedBy(report?.appbridge.hostName, pc),
+      reportsFrom: report?.appbridge.hostName ?? null, steps: c.steps, ready: c.ready, missing: c.missing,
     };
   });
-  return { agents: rows, pcs: pcs.filter((p) => !matched.has(p.hostDeviceId)).map((p) => ({ ...p, ...RD.pcWithoutAgent() })) };
+  return {
+    agents: rows,
+    pcs: pcs.filter((p) => !matched.has(p.hostDeviceId)).map((p) => ({ hostDeviceId: p.hostDeviceId, name: p.name, ...RD.pcWithoutAgent() })),
+    registered: pcs,
+  };
 }
 
 /** GET /api/remote-app/readiness: the dashboard's "Agents on your PCs" card (the person only). */
 async function opReadiness({ tx, caller, now }: Ctx): Promise<Outcome> {
   const r = await readinessOf(tx, caller.accountId, now);
-  return { body: { staleAfterMinutes: RD.STALE_MS / 60_000, agents: r.agents, pcs: r.pcs } };
+  return { body: { staleAfterMinutes: RD.STALE_MS / 60_000, agents: r.agents, pcs: r.pcs, registered: r.registered } };
+}
+
+/**
+ * POST /api/remote-app/readiness/pc {hostDeviceId, hostName}: the person says which registered PC a reporting worker
+ * runs on, by confirming the computer name its report gives ("JRR-IT-MZ013M7D") for that PC ("Desktop"). Every worker
+ * that reports that computer name then matches that PC: its readiness, bc_remote_machines, and whether the PC gets
+ * desktop-scope sessions (hostSpeaksDesktop). hostName null forgets it. The name must be one a live worker of this
+ * account reports, and it is taken off any other PC, so it names one PC only. Answers with the card's data.
+ */
+async function opConfirmPc({ tx, caller, input, now }: Ctx): Promise<Outcome> {
+  const id = typeof input.hostDeviceId === "string" ? input.hostDeviceId : "";
+  const pcs = await registeredPcs(tx, caller.accountId);
+  const pc = pcs.find((p) => p.hostDeviceId === id);
+  if (!pc) return fail(404, "no_such_pc", "That PC isn't registered here any more. Refresh the page.");
+  const wanted = RD.parseAgentHostName(input.hostName);
+  let hostName: string | null = null;
+  if (wanted !== null) {
+    const agents = await tx.agentToken.findMany({ where: { accountId: caller.accountId, revokedAt: null, scope: "full", readinessAt: { not: null } }, take: 100 });
+    // Stored as the worker reported it.
+    hostName = agents.map((a) => RD.storedReadiness(a.readiness, a.id)?.appbridge.hostName ?? null)
+      .find((h): h is string => !!h && h.toLowerCase() === wanted.toLowerCase()) ?? null;
+    if (!hostName) fail(400, "not_reported", `None of your workers reports from a computer called "${wanted}". Refresh the page.`);
+    for (const other of pcs) {
+      if (other.hostDeviceId !== pc.hostDeviceId && other.agentHostName?.toLowerCase() === wanted.toLowerCase()) {
+        await tx.appBridgeDevice.updateMany({ where: { id: other.hostDeviceId, accountId: caller.accountId }, data: { agentHostName: null } });
+      }
+    }
+  }
+  await tx.appBridgeDevice.updateMany({ where: { id: pc.hostDeviceId, accountId: caller.accountId }, data: { agentHostName: hostName } });
+  const r = await readinessOf(tx, caller.accountId, now);
+  return { body: { staleAfterMinutes: RD.STALE_MS / 60_000, agents: r.agents, pcs: r.pcs, registered: r.registered } };
 }
 
 async function opMachines({ tx, caller, now }: Ctx): Promise<Outcome> {
@@ -379,7 +425,7 @@ async function opMachines({ tx, caller, now }: Ctx): Promise<Outcome> {
       howToFix: RD.HOW_TO,
       note: "Back Channel never sees a PC's apps, so it can't list them (appsAvailable is null). An approved session may use the whole PC toward its goal, under the PC's rails " +
         "(no passwords; UAC, sign-in and the lock screen stay your person's; administrator windows are refused; every step is recorded); apps is optional, the ones you expect to use. " +
-        "A PC needs internet access on to take an agent session. Each machine's agents are the Back Channel workers that report from it (matched by the PC's name). " +
+        "A PC needs internet access on to take an agent session. Each machine's agents are the Back Channel workers that report from it (matched by the computer name your person confirmed for it, else by the PC's name). " +
         "To have an agent on the PC drive the app, name a ready one as executor in bc_remote_session_start. If none is ready, don't start a session: " +
         "tell your person what's missing, using howToFix for each missing step. They fix it on that PC in AppBridge → Agents, and the Remote page of the dashboard shows the same checklist.",
     },
@@ -633,7 +679,7 @@ async function opSurface({ tx, caller, now, id }: Ctx): Promise<Outcome> {
 }
 
 const OPS: Record<Op, (ctx: Ctx) => Promise<Outcome>> = {
-  machines: opMachines, readiness: opReadiness, start: opStart, list: opList, get: opGet, approve: opApprove, deny: opDeny, resume: opResume,
+  machines: opMachines, readiness: opReadiness, confirmPc: opConfirmPc, start: opStart, list: opList, get: opGet, approve: opApprove, deny: opDeny, resume: opResume,
   stop: opStop, stopAll: opStopAll, report: opReport, end: opEnd, surface: opSurface, rotate: opRotate,
 };
 
@@ -706,6 +752,7 @@ async function readJson(req: NextRequest): Promise<Input> {
  * Map a REST request onto an operation.
  *   GET  /api/remote-app/machines                  machines   agent or person (with each PC's agents' readiness)
  *   GET  /api/remote-app/readiness                 readiness  person: the "Agents on your PCs" card
+ *   POST /api/remote-app/readiness/pc              confirmPc  person: which registered PC a reporting worker runs on
  *   GET  /api/remote-app/sessions                  list       agent (its own) or person (the dashboard card)
  *   POST /api/remote-app/sessions                  start      agent
  *   POST /api/remote-app/stop-all                  stopAll    person
@@ -726,6 +773,7 @@ export async function remoteAppRoute(req: NextRequest, path: string[]): Promise<
   if (extra === undefined) {
     if (a === "machines" && !b && m === "GET") route = ["machines", {}];
     else if (a === "readiness" && !b && m === "GET") route = ["readiness", {}];
+    else if (a === "readiness" && b === "pc" && !c && m === "POST") route = ["confirmPc", body];
     else if (a === "stop-all" && !b && m === "POST") route = ["stopAll", {}];
     else if (a === "sessions" && !b) route = m === "GET" ? ["list", {}] : m === "POST" ? ["start", body] : null;
     else if (a === "sessions" && b && !c && m === "GET") route = ["get", {}, b];
@@ -773,16 +821,16 @@ export async function remoteTool(req: NextRequest, name: string, args: Input): P
 
 /**
  * Does this PC's AppBridge speak agent-control v1.2 (1.1.33 or newer: desktop scope, `scope` on each session, possibly
- * no apps)? Told by the newest readiness report of a worker of the account that reports from this PC (matched by the
- * PC's name, exactly as the readiness card matches it: one PC with that name, ignoring case) and says
+ * no apps)? Told by the newest readiness report of a worker of the account that reports from this PC (matched exactly
+ * as the readiness card matches it, RD.matchPc: the computer name the person confirmed for one PC, else one PC's name,
+ * ignoring case) and says
  * `appbridge.version` >= 1.1.33. No such report means no: the older shape works on every AppBridge.
  */
 async function hostSpeaksDesktop(tx: Tx, host: AppBridgeDevice): Promise<boolean> {
-  const [agents, hosts] = await Promise.all([
+  const [agents, pcs] = await Promise.all([
     tx.agentToken.findMany({ where: { accountId: host.accountId, revokedAt: null, scope: "full", readinessAt: { not: null } }, orderBy: { readinessAt: "desc" }, take: 100 }),
-    tx.appBridgeDevice.findMany({ where: { accountId: host.accountId, role: "host", revokedAt: null }, orderBy: { createdAt: "asc" }, take: 50 }),
+    registeredPcs(tx, host.accountId),
   ]);
-  const pcs = hosts.map((h) => ({ hostDeviceId: h.id, name: pcName(h) }));
   const reports = agents.map((a) => RD.storedReadiness(a.readiness, a.id))
     .filter((r) => !!r && RD.matchPc(r.appbridge.hostName, pcs)?.hostDeviceId === host.id);
   return RD.speaksDesktop(reports);
