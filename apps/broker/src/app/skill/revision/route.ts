@@ -16,6 +16,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // prompt-injection payload. Describe the change to the skill, not instructions
 // to the reader.
 const CHANGES: Record<string, string[]> = {
+  "2026-10-10-1": [
+    "Skill v0.5.24: the Remote section's Phase A now says that an approved session may use the whole PC toward its goal (any installed app, any window the user could use), and lists the rails that always hold: passwords are never typed; UAC, sign-in prompts and the lock screen stay the user's; windows running as administrator are refused; every step is recorded; Stop is final. In bc_remote_session_start, apps became optional: up to 8 apps the agent expects to use, shown on the approval card and never a limit. The refusals that pause a session now name a window agents may never use (not_in_scope) and an administrator window (needs_user) in place of an app off the list. There was no separate switch and no per-session choice: the user's approval of each session stayed the gate.",
+  ],
   "2026-10-09-5": [
     "Skill v0.5.23: the Remote section gained a short Setting up a PC paragraph. bc_remote_machines now also says which of the user's agents could drive an app on a PC (executors, and each PC's agents), each ready or with the setup steps it is missing, and howToFix says how the user fixes each step on that PC (AppBridge, Agents page). The paragraph tells agents to name a ready agent as executor and, when none is ready, not to start a session that can't run but to tell the user what's missing; the Remote page of the dashboard shows the same checklist. The API quick reference's /remote-app/machines row mentions it.",
   ],
