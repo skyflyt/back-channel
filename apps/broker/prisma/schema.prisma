@@ -676,7 +676,10 @@ model RemoteAppSession {
   executorAgentId String? // the agent on the PC that drives the app; null = the agent that asked
   listTaskId      String? // the Lists task this session works on
   goal            String // "support": the exact task text the helped person was shown
-  appAllowList    String[] // app names as the person approved them; the PC enforces the list ("support": empty)
+  // "apps": the PC enforces the list (1..8; "support": empty). "desktop" (every new agent session, design
+  // agent-desktop-scope.md): the whole PC under the rails, and the list is only the apps it expects to use (0..8).
+  scope           String    @default("apps") // "apps" | "desktop"
+  appAllowList    String[] // app names as the person approved them
   status          String    @default("awaiting_consent") // awaiting_consent | active | blocked | ended | denied | lapsed
   consentBy       String? // the account that approved or denied it ("support": null; the helped person has no account)
   consentVia      String? // "web": the dashboard (Phase A); "helper": Allow on the helped person's own screen (support)

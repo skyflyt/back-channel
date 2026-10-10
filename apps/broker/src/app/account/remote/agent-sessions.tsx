@@ -3,14 +3,17 @@
 /**
  * "Live agent sessions": the Remote page's card for remote app sessions (docs/remote-app-sessions.md).
  *
- * When one of the person's agents asks to use an app on one of their PCs, the request lands here, and only
- * here: nothing happens on the PC until the person taps Approve. Running sessions can be stopped one by one or
+ * When one of the person's agents asks to use one of their PCs, the request lands here, and only here: nothing
+ * happens on the PC until the person taps Approve. Every new session may use the whole PC (desktop scope, vault design
+ * agent-desktop-scope.md) under the rails, and the card says so plainly; older sessions name their apps. Running sessions can be stopped one by one or
  * all at once; a paused one (it stopped to ask) can be let go on. Recent sessions show every step the agent
  * reported, as the broker's fixed phrases, never anything copied from the screen.
  *
  * Everything goes through the cookie-authenticated /api/remote-app routes; every change echoes the bc_csrf
  * cookie. An agent's one-tap approval link (?vt=...&approve=<id>) signs the person in through
  * consumeApprovalLink() and scrolls to that request's card.
+ *
+ * Plain text only: the page's Trusted Types CSP blanks it on any raw HTML, so every string here is a React text node.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -19,7 +22,7 @@ import { Chip } from "@/components/ui/primitives";
 interface Who { agentId: string; name: string }
 interface Step { at: string; action: string; target: string | null; outcome: string; text: string; evidenceRef?: string }
 interface AgentSession {
-  id: string; status: string; statusText: string; pc: { hostDeviceId: string; label: string }; apps: string[]; goal: string; minutes: number;
+  id: string; scope?: "apps" | "desktop"; status: string; statusText: string; pc: { hostDeviceId: string; label: string }; apps: string[]; goal: string; minutes: number;
   startedBy: Who; drivenBy: Who; task: { id: string; title: string | null } | null; requestedAt: string; approvalExpiresAt: string | null;
   startedAt: string | null; expiresAt: string | null; endedAt: string | null; endReason: string | null; pausedBecause?: string; summary?: string;
   evidenceRef?: string; actions?: Step[];
@@ -47,6 +50,9 @@ export async function consumeApprovalLink(): Promise<void> {
 }
 
 const appList = (apps: string[]) => (apps.length <= 1 ? apps.join("") : `${apps.slice(0, -1).join(", ")} and ${apps[apps.length - 1]}`);
+const desktop = (s: AgentSession) => s.scope === "desktop";
+/** The rails, in one line, on every desktop request (design agent-desktop-scope.md). */
+const RAILS = "It can open any app and use any window you can, except passwords, administrator (UAC) prompts and the lock screen. Every step is recorded; Stop ends it.";
 function clock(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -66,7 +72,7 @@ function demo(): Reply {
   const iso = (ms: number) => new Date(t + ms).toISOString();
   const base = { pc: { hostDeviceId: "demo-pc-1", label: "Office PC" }, startedBy: { agentId: "demo-a", name: "Claude Code" }, drivenBy: { agentId: "demo-a", name: "Claude Code" }, endReason: null, endedAt: null };
   return {
-    pending: [{ ...base, id: "demo-s1", status: "awaiting_consent", statusText: "waiting for approval", apps: ["QuickBooks"], goal: "Enter this week's three supplier invoices.", minutes: 20,
+    pending: [{ ...base, id: "demo-s1", scope: "desktop", status: "awaiting_consent", statusText: "waiting for approval", apps: ["QuickBooks"], goal: "Enter this week's three supplier invoices.", minutes: 20,
       task: { id: "demo-t1", title: "Enter supplier invoices" }, requestedAt: iso(-60_000), approvalExpiresAt: iso(9 * 60_000), startedAt: null, expiresAt: null }],
     live: [],
     recent: [{ ...base, id: "demo-s0", status: "ended", statusText: "finished", apps: ["Excel"], goal: "Update the inventory sheet.", minutes: 15, task: null,
@@ -186,17 +192,37 @@ export default function AgentSessions() {
         {active && <button className="ds-btn danger" disabled={busy === "stop-all"} onClick={stopAll}>Stop all</button>}
       </div>
       <p className="ds-cardsub">
-        When one of your agents asks to use an app on one of your PCs, the request shows up here. Nothing happens on the PC until you approve it.
-        The agent can use only the apps you see, on that PC, for that long, and never types a password. Stop ends a session within about a minute, and it can&apos;t restart without asking you again.
+        When one of your agents asks to use one of your PCs, the request shows up here. Nothing happens on the PC until you approve it.
+        Once approved, it can use that whole PC toward its goal, for that long, under the same rails every time: it never types a password, and administrator (UAC) prompts,
+        sign-in and the lock screen stay yours. Stop ends a session within about a minute, and it can&apos;t restart without asking you again.
       </p>
 
       {data.pending.map((s) => {
         const left = s.approvalExpiresAt ? new Date(s.approvalExpiresAt).getTime() - now : 0;
         return (
           <div key={s.id} id={`agent-session-${s.id}`} className="ds-item" style={{ display: "block", ...(focus === s.id ? { background: "var(--ds-acc-soft)", borderRadius: 10, padding: 12 } : {}) }}>
-            <div className="ds-iname"><Chip tone="acc">Needs your OK</Chip> {s.startedBy.name} wants to use {appList(s.apps)} on {s.pc.label}</div>
-            <div className="ds-imeta">For up to {s.minutes} minutes{drivenBy(s)}. Asked {when(s.requestedAt)}. {left > 0 ? `If you don't answer in ${clock(left)}, the request expires.` : "This request has expired."}</div>
-            {goalAndTask(s)}
+            {desktop(s) ? (
+              <>
+                <div className="ds-iname">
+                  <Chip tone="acc">Needs your OK</Chip> {s.startedBy.name} wants to use <strong>the whole PC</strong> ({s.pc.label}) for {s.minutes} minutes to: {s.goal}
+                </div>
+                <div className="ds-imeta">{s.drivenBy.agentId !== s.startedBy.agentId ? `Driven by ${s.drivenBy.name}. ` : ""}Asked {when(s.requestedAt)}. {left > 0 ? `If you don't answer in ${clock(left)}, the request expires.` : "This request has expired."}</div>
+                {(s.apps.length > 0 || s.task) && (
+                  <div className="ds-igoal">
+                    {s.apps.length > 0 && <>Expects to use: {appList(s.apps)}</>}
+                    {s.apps.length > 0 && s.task && <br />}
+                    {s.task && <>Task: {s.task.title ?? "a task you can no longer see"}</>}
+                  </div>
+                )}
+                <p className="ds-fine" style={{ margin: "8px 0 0" }}>{RAILS}</p>
+              </>
+            ) : (
+              <>
+                <div className="ds-iname"><Chip tone="acc">Needs your OK</Chip> {s.startedBy.name} wants to use {appList(s.apps)} on {s.pc.label}</div>
+                <div className="ds-imeta">For up to {s.minutes} minutes{drivenBy(s)}. Asked {when(s.requestedAt)}. {left > 0 ? `If you don't answer in ${clock(left)}, the request expires.` : "This request has expired."}</div>
+                {goalAndTask(s)}
+              </>
+            )}
             <p className="ds-fine" style={{ margin: "8px 0" }}>Approve only if you asked for this. Every step the agent takes is listed here{s.task ? " and on the task" : ""}.</p>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button className="ds-btn" disabled={!!busy || left <= 0} onClick={() => act(s, "approve")}>Approve</button>
@@ -213,7 +239,7 @@ export default function AgentSessions() {
           <div key={s.id} id={`agent-session-${s.id}`} className="ds-item" style={{ display: "block" }}>
             <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
               <div style={{ flex: 1, minWidth: 220 }}>
-                <div className="ds-iname">{paused ? <Chip tone="warn">Paused</Chip> : <Chip tone="ok">Running</Chip>} {s.startedBy.name} is using {appList(s.apps)} on {s.pc.label}</div>
+                <div className="ds-iname">{paused ? <Chip tone="warn">Paused</Chip> : <Chip tone="ok">Running</Chip>} {s.startedBy.name} is using {desktop(s) ? `the whole PC (${s.pc.label})` : `${appList(s.apps)} on ${s.pc.label}`}</div>
                 <div className="ds-imeta">{clock(left)} left of {s.minutes} minutes{drivenBy(s)}</div>
                 {goalAndTask(s)}
                 {paused && <p className="ds-fine" style={{ margin: "8px 0 0" }}>It stopped to ask: {s.pausedBecause ?? "something unexpected came up"}. Sort it out at the PC, then let it go on, or stop it.</p>}
@@ -238,7 +264,7 @@ export default function AgentSessions() {
             const steps = s.actions ?? [];
             return (
               <div key={s.id} className="ds-item" style={{ display: "block" }}>
-                <div className="ds-iname">{s.startedBy.name} {ran ? "used" : "asked to use"} {appList(s.apps)} on {s.pc.label}</div>
+                <div className="ds-iname">{s.startedBy.name} {ran ? "used" : "asked to use"} {desktop(s) ? `the whole PC (${s.pc.label})` : `${appList(s.apps)} on ${s.pc.label}`}</div>
                 <div className="ds-imeta">{s.statusText[0].toUpperCase() + s.statusText.slice(1)} · {when(s.endedAt ?? s.requestedAt)}{drivenBy(s)}</div>
                 {goalAndTask(s)}
                 {s.summary && <div className="ds-igoal">The agent&apos;s summary: {s.summary}</div>}

@@ -126,7 +126,7 @@ beforeEach(reset);
 const row = (id: string) => tables.agentToken.find(a => a.id === id)!;
 const report = (agentId: string | null, over: Row = {}) => ({
   v: 1, agentId, name: "shop-pc", enrolled: agentId !== null, fingerprint: agentId ? fp(row(agentId)) : null, workerVersion: "0.1.0",
-  appbridge: { pipe: "listening", hostName: "SHOP-PC", reason: null },
+  appbridge: { pipe: "listening", hostName: "SHOP-PC", reason: null, version: "1.1.33.0" },
   runtime: { adapter: "claude", path: null, installed: true, signedIn: true },
   profiles: { remoteApp: { present: true, senders: [{ agentId: A.laptop, name: null, pinned: true }] } },
   checkedAt: new Date().toISOString(),
@@ -158,7 +158,7 @@ const stateOf = (r: Row) => Object.fromEntries(r.steps.map((s: Row) => [s.key, s
 // ── PUT /api/agents/self/readiness ──
 
 test("report: a full agent key stores its own report (local-only text dropped) with the server's time", async () => {
-  const sent = report(A.shop, { appbridge: { pipe: "listening", hostName: "SHOP-PC", reason: "fine" },
+  const sent = report(A.shop, { appbridge: { pipe: "listening", hostName: "SHOP-PC", reason: "fine", version: "1.1.33.0" },
     runtime: { adapter: "claude", path: "C:\\Users\\someone\\claude.exe", installed: true, signedIn: true },
     profiles: { remoteApp: { present: true, senders: [{ agentId: A.laptop, name: "Laptop Claude", pinned: true }] } } });
   const before = Date.now();
@@ -196,6 +196,9 @@ test("report: strict shape, about itself, at most 8 KiB, rate-limited", async ()
     assert.equal(r.status, status, JSON.stringify(r.body)); assert.equal(r.body.error, error); assert.ok(r.body.message);
   };
   await refused({ ...report(A.shop), extra: true }, 400, "unknown_field");
+  // appbridge.version (agent-control v1.2): AppBridge's four-part version or null, and optional for an older worker.
+  await refused(report(A.shop, { appbridge: { pipe: "listening", hostName: "SHOP-PC", reason: null, version: "1.1.33" } }), 400, "invalid_readiness");
+  await refused(report(A.shop, { appbridge: { pipe: "listening", hostName: "SHOP-PC", reason: null, version: "latest" } }), 400, "invalid_readiness");
   await refused({ ...report(A.shop), runtime: { adapter: "claude", path: null, installed: true, signedIn: true, account: "x" } }, 400, "unknown_field");
   await refused(report(A.laptop), 400, "agent_mismatch");
   await refused(report(A.shop, { name: "x".repeat(81) }), 400, "invalid_readiness");
@@ -214,6 +217,10 @@ test("report: strict shape, about itself, at most 8 KiB, rate-limited", async ()
   assert.equal(Buffer.byteLength(padded), 8192);
   assert.equal((await put(null, { as: KEY.shop, raw: padded })).status, 200);
   await refused(null, 413, "too_large", { raw: padded.slice(0, -1) + " }" });
+  assert.equal((await put(report(A.shop, { appbridge: { pipe: "listening", hostName: "SHOP-PC", reason: null } }), { as: KEY.shop })).status, 200, "an older worker, without version");
+  assert.ok(!("version" in row(A.shop).readiness.appbridge));
+  assert.equal((await put(report(A.shop, { appbridge: { pipe: "listening", hostName: "SHOP-PC", reason: null, version: null } }), { as: KEY.shop })).status, 200);
+  assert.equal(row(A.shop).readiness.appbridge.version, null);
   limited = true;
   const r = await put(report(A.shop), { as: KEY.shop });
   assert.equal(r.status, 429); assert.equal(r.headers.get("retry-after"), "7");
@@ -278,7 +285,7 @@ test("owner view: stale, missing and matching", async () => {
 
 test("machines: each PC lists the agents reporting from it; executors says who is ready and what's missing; howToFix says how", async () => {
   await put(report(A.shop), { as: KEY.shop });
-  await put(report(A.office, { name: "office", appbridge: { pipe: "listening", hostName: "office pc", reason: null }, runtime: { adapter: "claude", path: null, installed: true, signedIn: false } }), { as: KEY.office });
+  await put(report(A.office, { name: "office", appbridge: { pipe: "listening", hostName: "office pc", reason: null, version: "1.1.33.0" }, runtime: { adapter: "claude", path: null, installed: true, signedIn: false } }), { as: KEY.office });
   const r = await get("machines", { as: KEY.laptop });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const byId = Object.fromEntries(r.body.machines.map((m: Row) => [m.hostDeviceId, m]));

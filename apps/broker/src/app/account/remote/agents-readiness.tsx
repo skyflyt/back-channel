@@ -38,7 +38,7 @@ const stepsLeft = (n: number) => `${n} step${n === 1 ? "" : "s"} left`;
 function demo(): Reply {
   const t = Date.now();
   const steps = (states: State[], howTo: (string | null)[]): Step[] => [
-    "AppBridge 1.1.32 or newer", "PC registered with Back Channel", "Allow agent control is on", "Back Channel worker set up and running",
+    "AppBridge 1.1.33 or newer", "PC registered with Back Channel", "Allow agent control is on", "Back Channel worker set up and running",
     "Agents allowed to hand it sessions", "Claude signed in",
   ].map((title, i) => ({ step: i + 1, key: ["appbridge", "registered", "agent_control", "worker", "senders", "claude"][i], title, state: states[i], howTo: states[i] === "done" ? null : howTo[i] }));
   const done: State[] = ["done", "done", "done", "done", "done", "done"];
@@ -132,7 +132,7 @@ export default function AgentsReadiness() {
     <div className="ds-card" id="agents-on-pcs">
       <div className="ds-cardh">Agents on your PCs</div>
       <p className="ds-cardsub">
-        For one of your agents to use an app on a PC, that PC needs the six steps below. Each is done on the PC itself, in AppBridge → Agents.
+        For one of your agents to use a PC, that PC needs the six steps below. Each is done on the PC itself, in AppBridge → Agents.
         This shows what the Back Channel worker on each PC reports (every 10 minutes). Anything it can&apos;t tell from here says Unknown.
       </p>
 
