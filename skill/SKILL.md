@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online. It also keeps task lists the user works on with their agents, and can share with friends ("what's on my plate?"). With Back Channel Remote, it can use an app on the user's own PC, or help someone else on their computer, each time with the user's approval.
-version: 0.5.23
-revision: 2026-10-09-5
+version: 0.5.24
+revision: 2026-10-10-1
 homepage: https://back-channel.app
 source: https://github.com/skyflyt/back-channel
 author: Skylar Pearce (@skyflyt on GitHub)
@@ -25,7 +25,7 @@ verification: |
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.23` (`revision: 2026-10-09-5`). Check
+> **Skill freshness.** `version: 0.5.24` (`revision: 2026-10-10-1`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`. If
 > you installed this skill on disk (see "Make this stick" below), the durable way
 > to update is to **re-run the installer** (`npx -y backchannel-cli`), which
@@ -773,28 +773,34 @@ Both need Back Channel Remote (the user's remote-desktop add-on) and a full
 per-agent key; a connector such as claude.ai or ChatGPT is refused. **The user
 approves every session on their dashboard; no tool, and no yes in chat, can.**
 
-### Phase A: an app on one of the user's own PCs
+### Phase A: one of the user's own PCs
 
 Triggers: *"open QuickBooks on my office PC and export last month's invoices."*
 
-**Before you ask, tell the user** which PC, which apps, for how long, and why:
-*"I'd like to use QuickBooks on Office-PC for 20 minutes to export last month's
-invoices. I'll send you a link to approve it."*
+**Before you ask, tell the user** which PC, for how long, and why:
+*"I'd like to use Office-PC for 20 minutes to export last month's invoices
+from QuickBooks. I'll send you a link to approve it."*
 
-1. `bc_remote_machines` lists their PCs. Back Channel can't see a PC's apps:
-   name the ones the user did.
+**An approved session may use the whole PC**, only toward its goal: any
+installed app, any window the user could use. The rails always hold: passwords
+are never typed; UAC, sign-in prompts and the lock screen stay the user's;
+windows running as administrator are refused; every step is recorded; Stop is
+final. `apps` is optional: up to 8 you expect to use, shown on the approval
+card, never a limit.
+
+1. `bc_remote_machines` lists their PCs.
 2. For a Lists task, claim it first (`bc_task_claim`). Then
-   `bc_remote_session_start {host, apps, minutes, goal, task_id?, executor?}`:
-   one PC, 1 to 8 apps by plain name, 1 to 60 minutes (never extended), a
-   one-sentence goal. It answers `awaiting_consent` with an `approvalUrl`: give
-   the user the link, don't open it yourself. Unanswered, it lapses in 10
-   minutes. One session per account at a time.
+   `bc_remote_session_start {host, minutes, goal, apps?, task_id?, executor?}`:
+   one PC, 1 to 60 minutes (never extended), a one-sentence goal. It answers
+   `awaiting_consent` with an `approvalUrl`: give the user the link, don't open
+   it yourself. Unanswered, it lapses in 10 minutes. One session per account at
+   a time.
 3. The user approves it on the Remote page of their dashboard.
-4. The executor, an agent running on that PC, drives the app: you, if you run
+4. The executor, an agent running on that PC, does the work: you, if you run
    there; otherwise name it as `executor` and hand it the session with Dispatch,
-   as the `next` text says. Only the approved apps, only toward the goal. Every
-   step is recorded on the session and its task as a fixed phrase ("Clicked
-   'Save' on Office-PC."), never a value, typed text or screen content.
+   as the `next` text says. Every step is recorded on the session and its task
+   as a fixed phrase ("Clicked 'Save' on Office-PC."), never a value, typed text
+   or screen content.
 5. Follow it with `bc_remote_session_status`. Finish with
    `bc_remote_session_end {summary, finished}`: a bound task is marked done with
    your summary.
@@ -806,8 +812,9 @@ start a session that can't run: tell the user what's missing, with `howToFix`.
 Each step is done on that PC in AppBridge → Agents, and the Remote page of the
 dashboard shows the same checklist.
 
-**Any refusal pauses the session:** a password field (`credential_field`), an
-app off the list, a sign-in or UAC prompt (`needs_user`), anything unexpected.
+**Any refusal pauses the session:** a password field (`credential_field`), a
+window agents may never use (`not_in_scope`), a sign-in, UAC prompt or
+administrator window (`needs_user`), anything unexpected.
 Tell the user and wait for them to let it go on, or end it. Never work around
 it. **Stop is final**, whether it comes from the dashboard, the PC or you: going
 again takes a new request and a new approval.

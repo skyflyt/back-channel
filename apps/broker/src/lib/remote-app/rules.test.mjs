@@ -237,3 +237,64 @@ test("v1.1: a new session is born with its executor secret's hash; the executor 
   assert.match(next, /shown this once/); assert.match(next, /hello on the PC's agent-control pipe/);
   assert.match(next, new RegExp(`POST /api/remote-app/sessions/${plain.id}/executor-secret`));
 });
+
+test("desktop scope: every new session may use the whole PC; apps are optional, only what it expects to use", () => {
+  assert.deepEqual(R.parseStart({ host: "pc", minutes: 5, goal: "g" }).apps, [], "apps left out");
+  assert.deepEqual(R.parseStart({ host: "pc", apps: [], minutes: 5, goal: "g" }).apps, [], "or empty");
+  assert.deepEqual(R.parseStart({ host: "pc", apps: null, minutes: 5, goal: "g" }).apps, []);
+  assert.deepEqual(R.parseStart({ host: "pc", apps: ["Notepad", "notepad"], minutes: 5, goal: "g" }).apps, ["Notepad"]);
+  refused(() => R.parseStart({ host: "pc", apps: Array.from({ length: 9 }, (_, i) => `App${i}`), minutes: 5, goal: "g" }), "invalid_apps", 400);
+  for (const bad of ["*", "C:\Windows\notepad.exe", "a/b"]) refused(() => R.parseStart({ host: "pc", apps: [bad], minutes: 5, goal: "g" }), "invalid_apps", 400);
+  refused(() => R.parseStart({ host: "pc", apps: "", minutes: 5, goal: "g" }), "invalid_apps", 400);
+  refused(() => R.parseStart({ host: "pc", apps: { a: 1 }, minutes: 5, goal: "g" }), "invalid_apps", 400);
+  assert.deepEqual(R.parseApps(undefined, { optional: true }), []);
+  refused(() => R.parseApps([]), "invalid_apps", 400);
+  const s = R.newSession({ accountId: "acct", hostDeviceId: "pc-1", agentId: "agent-a", executorAgentId: null, goal: "g", apps: [], minutes: 5, executorSecretHash: "e".repeat(64) });
+  assert.equal(s.scope, "desktop");
+  assert.deepEqual(s.appAllowList, []);
+  assert.equal(R.scopeOf(s), "desktop");
+  assert.equal(R.scopeOf(session()), "apps", "a session from before scope existed is apps scope");
+  assert.equal(R.scopeOf({ scope: "anything else" }), "apps");
+  assert.deepEqual(R.SCOPES, ["apps", "desktop"]);
+});
+
+test("desktop scope: reportDecision has no allow-list; every other rule still holds", () => {
+  const desk = (over = {}) => running({ scope: "desktop", appAllowList: [], ...over });
+  const step = (over) => ({ action: "open", target: "Outlook", outcome: "ok", evidenceRef: null, ...over });
+  assert.deepEqual(R.reportDecision(desk(), step(), at(1), 0), { row: step(), pause: false, refused: null }, "any app may open");
+  assert.deepEqual(R.reportDecision(desk({ appAllowList: ["Notepad"] }), step(), at(1), 0).pause, false, "the apps it expected don't limit it");
+  for (const outcome of R.FAIL_CLOSED) {
+    const d = R.reportDecision(desk(), step({ outcome }), at(1), 0);
+    assert.deepEqual([d.pause, d.refused, d.row.outcome], [true, null, outcome], outcome);
+  }
+  refused(() => R.reportDecision(desk({ status: "blocked" }), step(), at(1), 0), "paused", 409);
+  refused(() => R.reportDecision(desk(), step(), at(30), 0), "session_over", 409);
+  refused(() => R.reportDecision(desk(), step(), at(1), R.LIMITS.actionsPerSession), "too_many_steps", 429);
+  // Apps scope is unchanged.
+  assert.equal(R.reportDecision(running(), step(), at(1), 0).refused, "not_in_scope");
+});
+
+test("desktop scope: views, phrases and next steps describe the whole PC and the rails", () => {
+  const names = { pc: "Shop-PC", startedBy: "Claude Code", drivenBy: "Shop agent" };
+  const desk = (over = {}) => running({ scope: "desktop", appAllowList: ["Notepad"], ...over });
+  assert.equal(R.sessionView(desk(), { now: at(1), ...names }).scope, "desktop");
+  assert.equal(R.sessionView(running(), { now: at(1), ...names }).scope, "apps");
+  const driver = R.nextStep(R.sessionView(desk(), { now: at(1), ...names }), { role: "driver", sameAgent: true });
+  assert.match(driver, /You may use the whole PC \(Shop-PC\), only toward the goal/);
+  assert.match(driver, /except passwords, administrator \(UAC\) prompts, sign-in prompts and the lock screen/);
+  assert.match(driver, /Every step is recorded, and Stop is final\./);
+  assert.doesNotMatch(driver, /Work only in/);
+  const handOff = R.nextStep(R.sessionView(desk({ executorAgentId: "agent-b" }), { now: at(1), ...names }), { role: "starter", sameAgent: false });
+  assert.match(handOff, /Shop agent drives the whole PC \(Shop-PC\), not you\./);
+  assert.match(R.nextStep(R.sessionView(running(), { now: at(1), ...names }), { role: "driver", sameAgent: true }), /Work only in QuickBooks on Shop-PC/, "apps scope as before");
+  assert.equal(R.actionPhrase({ action: "open", target: "Registry Editor", outcome: "not_in_scope" }, { pc: "Shop-PC", scope: "desktop" }),
+    "Tried to open Registry Editor on Shop-PC, and stopped: that's off limits to agents.");
+  assert.equal(R.actionPhrase({ action: "blocked", outcome: "not_in_scope" }, { scope: "desktop" }), "Stopped and asked: that's off limits to agents.");
+  assert.equal(R.actionPhrase({ action: "open", target: "Outlook", outcome: "not_in_scope" }), "Tried to open Outlook, and stopped: that's outside the apps you approved.");
+  assert.equal(R.outcomePhrase("needs_user", "desktop"), "it needs you at the PC");
+  assert.equal(R.outcomePhrase("nonsense", "desktop"), "something unexpected came up");
+  assert.equal(R.actionView({ at: at(2), action: "open", target: "Paint", outcome: "not_in_scope" }, { scope: "desktop" }).text, "Tried to open Paint, and stopped: that's off limits to agents.");
+  assert.equal(R.reachPhrase(desk(), "Shop-PC"), "the whole PC (Shop-PC)");
+  assert.equal(R.reachPhrase(running({ appAllowList: ["QuickBooks", "Excel", "Word"] }), "Shop-PC"), "QuickBooks, Excel and Word on Shop-PC");
+  assert.equal(R.appList(["A", "B"]), "A and B");
+});

@@ -280,6 +280,8 @@ test("consent: start returns awaiting_consent and a one-tap approval link; only 
   assert.equal(r.status, 200); assert.equal(r.headers.get("cache-control"), "no-store");
   const id = r.body.session.id;
   assert.equal(r.body.session.status, "awaiting_consent");
+  assert.equal(r.body.session.scope, "desktop", "every new session may use the whole PC");
+  assert.equal(sessionRow(id).scope, "desktop");
   assert.deepEqual(r.body.session.pc, { hostDeviceId: PC1, label: "Shop-PC" });
   assert.deepEqual(r.body.session.task, { id: TASK, title: "Enter this week's supplier invoices" });
   const url = new URL(r.body.approvalUrl);
@@ -310,8 +312,8 @@ test("consent: start returns awaiting_consent and a one-tap approval link; only 
   assert.equal(row.expiresAt.getTime() - row.startedAt.getTime(), 30 * 60_000, "exactly the minutes approved");
   assert.equal((await person(`sessions/${id}/approve`)).body.error, "already_decided");
   assert.deepEqual(entries().map(e => [e.kind, e.authorAgentId, e.body]), [
-    ["progress", A.starter, "Asked to use QuickBooks on Shop-PC for 30 minutes. Waiting for approval."],
-    ["progress", null, "Approved Claude Code to use QuickBooks on Shop-PC for 30 minutes."],
+    ["progress", A.starter, "Asked to use the whole PC (Shop-PC) for 30 minutes. Expects to use QuickBooks. Waiting for approval."],
+    ["progress", null, "Approved Claude Code to use the whole PC (Shop-PC) for 30 minutes."],
   ]);
   assert.deepEqual(tables.accountAudit.map(a => a.eventType), ["remote_app.requested", "remote_app.approved"]);
 });
@@ -324,7 +326,7 @@ test("denial and expiry are final: a denied or lapsed request never starts", asy
   const seen = await api("GET", `sessions/${first}`, { as: KEY.starter });
   assert.equal(seen.body.session.status, "denied"); assert.match(seen.body.next, /new approval/);
   assert.equal((await step(first, { action: "invoke", target: "Save", outcome: "ok" }, KEY.starter)).body.error, "session_over");
-  assert.ok(entries().some(e => e.authorAgentId === null && e.body === "Said no to using QuickBooks on Shop-PC."));
+  assert.ok(entries().some(e => e.authorAgentId === null && e.body === "Said no to using the whole PC (Shop-PC)."));
   // Ten minutes with no answer: the request lapses, for good.
   const second = (await start()).body.session.id;
   sessionRow(second).createdAt = new Date(Date.now() - 10 * 60_000 - 1);
@@ -380,8 +382,10 @@ test("scope at start: minutes cap, app allow-list shape, the PC, the task claim 
   assert.deepEqual(ok.body.session.drivenBy, { agentId: A.exec, name: "Shop agent" });
 });
 
-test("an app off the allow-list is not_in_scope: recorded, the session pauses, and the PC's lease ends in the same transaction", async () => {
+test("apps scope (a session from before desktop scope): an app off the allow-list is not_in_scope: recorded, the session pauses, and the PC's lease ends in the same transaction", async () => {
   const id = await startApproved({ executor: A.exec });
+  sessionRow(id).scope = "apps"; // as every session created before 20261013090000_remote_desktop_scope is
+  assert.equal((await api("GET", `sessions/${id}`, { as: KEY.starter })).body.session.scope, "apps");
   const lease = await agentLease(id);
   assert.equal(lease.status, 200);
   const r = await step(id, { action: "open", target: "Outlook", outcome: "ok" });
@@ -538,7 +542,7 @@ test("MCP: machines, start, status and end through the tools", async () => {
   assert.equal(withdrawn.isError, false);
   assert.deepEqual([withdrawn.json.session.status, withdrawn.json.session.endReason], ["ended", "agent_stop"]);
   assert.deepEqual(withdrawn.json.task, { done: false, updated: true });
-  assert.equal(entries().at(-1)!.body, "Withdrew the request to use QuickBooks on Shop-PC: Not needed after all.");
+  assert.equal(entries().at(-1)!.body, "Withdrew the request to use the whole PC (Shop-PC): Not needed after all.");
   assert.equal(tables.taskItem[0].status, "in_progress", "not finished, so the task stays open");
 });
 
@@ -561,7 +565,7 @@ test("the whole Phase A loop with a fake executor: start, approve, Dispatch hand
   // can't seal for agents, so the payload's reference to this session is the starter's to write.)
   // 4. The fake executor reads its session, as the driver.
   const mine = await api("GET", `sessions/${id}`, { as: KEY.exec });
-  assert.equal(mine.status, 200); assert.deepEqual(mine.body.session.apps, ["QuickBooks"]); assert.match(mine.body.next, /Work only in QuickBooks on Shop-PC/);
+  assert.equal(mine.status, 200); assert.deepEqual(mine.body.session.apps, ["QuickBooks"]); assert.match(mine.body.next, /You may use the whole PC \(Shop-PC\), only toward the goal/);
   // v1.1: its first read hands it the executor secret, once, for the hello on the PC's agent-control pipe.
   const secret: string = mine.body.session.executorSecret;
   assert.match(secret, SECRET); assert.match(mine.body.next, /shown this once/);
@@ -603,8 +607,8 @@ test("the whole Phase A loop with a fake executor: start, approve, Dispatch hand
   assert.deepEqual([task.status, task.completedByAgentId], ["done", A.starter]);
   assert.equal(task.summary, "Entered 3 supplier bills in QuickBooks and saved them; the totals match the invoices.\n\nEvidence: kept on Shop-PC: audit:2026-10-09:0042");
   assert.deepEqual(entries().filter(e => e.kind === "progress").map(e => e.body), [
-    "Asked to use QuickBooks on Shop-PC for 15 minutes. Waiting for approval.",
-    "Approved Claude Code to use QuickBooks on Shop-PC for 15 minutes.",
+    "Asked to use the whole PC (Shop-PC) for 15 minutes. Expects to use QuickBooks. Waiting for approval.",
+    "Approved Claude Code to use the whole PC (Shop-PC) for 15 minutes.",
     "Shop agent: Opened QuickBooks on Shop-PC.",
     "Shop agent: Clicked 'Enter Bills' on Shop-PC.",
     "Shop agent: Filled in 'Amount due' on Shop-PC.",
@@ -779,4 +783,131 @@ test("v1.1: a conflict re-runs the hand-out whole: handed out once, and the repl
   assert.equal(r.status, 200); assert.equal(transactionCalls, 2);
   assert.equal(sessionRow(id).executorSecretHash, sha(r.body.session.executorSecret));
   assert.equal((await hostSessions()).body.sessions[0].executorSecretSha256, sha(r.body.session.executorSecret));
+});
+
+// ── Desktop scope (vault design agent-desktop-scope.md) ──
+
+test("desktop scope: a start without apps; any app may open and be recorded; a refusal pauses as 'off limits'; the words say the whole PC", async () => {
+  const r = await start({ apps: undefined, executor: A.exec });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const id = r.body.session.id;
+  assert.deepEqual([r.body.session.scope, r.body.session.apps], ["desktop", []]);
+  assert.deepEqual([sessionRow(id).scope, sessionRow(id).appAllowList], ["desktop", []]);
+  assert.equal(entries().at(-1)!.body, "Asked to use the whole PC (Shop-PC) for 30 minutes. Waiting for approval.", "no 'expects to use' when it named none");
+  assert.equal((await start({ apps: [], executor: A.exec, taskId: undefined })).body.error, "session_in_progress", "an empty list is fine too (one at a time, though)");
+  assert.equal((await start({ apps: Array.from({ length: 9 }, (_, i) => `App ${i}`) })).body.error, "invalid_apps", "still at most 8");
+  // The dashboard card's view carries the scope.
+  const card = await api("GET", "sessions", { cookie: "cs_a" });
+  assert.deepEqual(card.body.pending.map((s: Row) => [s.id, s.scope, s.apps]), [[id, "desktop", []]]);
+  assert.equal((await person(`sessions/${id}/approve`)).status, 200);
+  const lease = await agentLease(id);
+  assert.equal(lease.status, 200);
+  // reportDecision has no allow-list in desktop scope: any app the PC opened is recorded as it is.
+  for (const target of ["Registry Editor", "Notepad", "Outlook"]) {
+    const ok = await step(id, { action: "open", target, outcome: "ok" });
+    assert.equal(ok.status, 200, target); assert.equal(ok.body.session.status, "active");
+  }
+  assert.equal(await renew(lease.body.leaseId), 200, "and the PC keeps its lease");
+  // A rail the PC enforces (a window agents may never use) still pauses it, in the session's own words.
+  const off = await step(id, { action: "open", target: "Windows Security", outcome: "not_in_scope" });
+  assert.equal(off.status, 200, "recorded as reported: not the apps-scope 409");
+  assert.equal(off.body.session.status, "blocked");
+  assert.equal(off.body.session.pausedBecause, "that's off limits to agents");
+  assert.equal(off.body.step.text, "Tried to open Windows Security on Shop-PC, and stopped: that's off limits to agents.");
+  assert.equal(entries().at(-1)!.body, "Shop agent: Tried to open Windows Security on Shop-PC, and stopped: that's off limits to agents.");
+  assert.equal(await renew(lease.body.leaseId), 404, "paused: the lease is gone");
+  assert.equal((await person(`sessions/${id}/resume`)).body.session.status, "active");
+  const admin = await step(id, { action: "observe", outcome: "needs_user" });
+  assert.equal(admin.body.session.pausedBecause, "it needs you at the PC");
+  assert.deepEqual(tables.actionLog.map(l => [l.action, l.target, l.outcome]), [
+    ["open", "Registry Editor", "ok"], ["open", "Notepad", "ok"], ["open", "Outlook", "ok"], ["open", "Windows Security", "not_in_scope"], ["observe", null, "needs_user"],
+  ]);
+  const stopped = await person(`sessions/${id}/stop`);
+  assert.equal(stopped.body.session.status, "ended");
+  assert.equal(entries().at(-1)!.body, "Stopped the remote session on Shop-PC.");
+});
+
+test("desktop scope through MCP: bc_remote_session_start needs no apps, and its description states the reach and the rails", async () => {
+  const listed = await mcp(KEY.starter, "tools/list");
+  const startTool = listed.result.tools.find((t: Row) => t.name === "bc_remote_session_start");
+  assert.deepEqual(startTool.inputSchema.required, ["host", "minutes", "goal"]);
+  assert.match(startTool.inputSchema.properties.apps.description, /^Optional: the apps you expect to use/);
+  for (const words of [/use the whole PC toward the goal/, /passwords are never typed/, /UAC, sign-in prompts and the lock screen stay your person's/,
+    /windows running as administrator are refused/, /every step is recorded/, /Stop, from the dashboard or the PC, is final/]) assert.match(startTool.description, words);
+  assert.ok(!JSON.stringify(listed.result.tools).includes("Nothing else on the PC may be touched"));
+  const started = await tool(KEY.starter, "bc_remote_session_start", { host: "Shop-PC", minutes: 10, goal: "Tidy the desktop shortcuts" });
+  assert.equal(started.isError, false, started.text);
+  assert.deepEqual([started.json.session.scope, started.json.session.apps], ["desktop", []]);
+  const named = await tool(KEY.starter, "bc_remote_session_end", { remote_session_id: started.json.session.id, summary: "Withdrawn.", finished: false });
+  assert.equal(named.isError, false);
+});
+
+/** A worker's readiness report as Back Channel stores it (agent-readiness.ts), reporting from `hostName`. */
+function reportOn(agentId: string, hostName: string, version: string | null | undefined, at = new Date()) {
+  const agent = tables.agentToken.find(a => a.id === agentId)!;
+  agent.readinessAt = at;
+  agent.readiness = { v: 1, agentId, name: "worker", enrolled: false, fingerprint: null, workerVersion: "0.2.0",
+    appbridge: { pipe: "listening", hostName, reason: null, ...(version === undefined ? {} : { version }) },
+    runtime: { adapter: "claude", path: null, installed: true, signedIn: true }, profiles: { remoteApp: { present: true, senders: [] } }, checkedAt: at.toISOString() };
+}
+const V11_KEYS = ["apps", "drivenBy", "executorSecretSha256", "expiresAt", "goal", "id", "startedAt", "startedBy", "status", "task"];
+
+test("sessionsForHost: scope only to a PC whose worker reports AppBridge 1.1.33 or newer; any other PC gets the v1.1 shape it can parse", async () => {
+  const id = await startApproved({ executor: A.exec, apps: ["Notepad"] });
+  // No readiness report from that PC: the v1.1 shape, the expected apps as its list (the old PC enforces them as before).
+  let list = await hostSessions();
+  assert.equal(list.status, 200);
+  assert.deepEqual(Object.keys(list.body.sessions[0]).sort(), V11_KEYS, "no scope member for a PC that may refuse it");
+  assert.deepEqual(list.body.sessions[0].apps, ["Notepad"]);
+  // Its worker reports AppBridge 1.1.32: still the v1.1 shape.
+  reportOn(A.exec, "Shop-PC", "1.1.32.0");
+  assert.deepEqual(Object.keys((await hostSessions()).body.sessions[0]).sort(), V11_KEYS);
+  // A worker from before version reporting (no version at all), or an AppBridge that gave none: the v1.1 shape.
+  reportOn(A.exec, "Shop-PC", undefined);
+  assert.ok(!("scope" in (await hostSessions()).body.sessions[0]));
+  reportOn(A.exec, "Shop-PC", null);
+  assert.ok(!("scope" in (await hostSessions()).body.sessions[0]));
+  // 1.1.33 reported from another PC says nothing about this one.
+  reportOn(A.plain, "Office PC", "1.1.33.0");
+  assert.ok(!("scope" in (await hostSessions()).body.sessions[0]));
+  // 1.1.33 or newer from this PC (matched by its name, ignoring case): v1.2, with scope.
+  reportOn(A.exec, "SHOP-PC", "1.1.33.0");
+  list = await hostSessions();
+  assert.deepEqual(Object.keys(list.body.sessions[0]).sort(), [...V11_KEYS, "scope"].sort());
+  assert.deepEqual([list.body.sessions[0].id, list.body.sessions[0].scope, list.body.sessions[0].apps], [id, "desktop", ["Notepad"]]);
+  assert.ok(!("scope" in (await hostSessions(CRED2)).body), "the list itself gains no member");
+  // The newest report from this PC decides: a newer one from another of its workers saying 1.1.32 (it went back).
+  reportOn(A.starter, "Shop-PC", "1.1.32.5", new Date(Date.now() + 1000));
+  assert.ok(!("scope" in (await hostSessions()).body.sessions[0]));
+  reportOn(A.starter, "Shop-PC", "1.2.0.0", new Date(Date.now() + 2000));
+  assert.equal((await hostSessions()).body.sessions[0].scope, "desktop");
+  // A name two PCs share matches neither: no proof, so the v1.1 shape.
+  tables.device.find(d => d.id === PC2)!.label = "Shop-PC";
+  assert.ok(!("scope" in (await hostSessions()).body.sessions[0]));
+  tables.device.find(d => d.id === PC2)!.label = "Office PC";
+  // A revoked agent's report no longer counts.
+  tables.agentToken.find(a => a.id === A.starter)!.revokedAt = new Date();
+  reportOn(A.exec, "Shop-PC", "1.1.32.0");
+  assert.ok(!("scope" in (await hostSessions()).body.sessions[0]));
+  tables.agentToken.find(a => a.id === A.starter)!.revokedAt = null;
+  // An apps-scope session (from before) says so to a v1.2 PC.
+  reportOn(A.starter, "Shop-PC", "1.1.33.0", new Date(Date.now() + 3000));
+  sessionRow(id).scope = "apps";
+  assert.equal((await hostSessions()).body.sessions[0].scope, "apps");
+});
+
+test("sessionsForHost: a desktop session that named no apps reaches only a 1.1.33 PC; an older one never sees it, and nothing else changes", async () => {
+  const id = await startApproved({ executor: A.exec, apps: undefined });
+  assert.deepEqual((await hostSessions()).body, { sessions: [] }, "an older PC can't run it, so it isn't sent (an empty list is what that PC parses)");
+  reportOn(A.exec, "Shop-PC", "1.1.32.0");
+  assert.deepEqual((await hostSessions()).body, { sessions: [] });
+  // The session is still running on Back Channel, and the PC's lease still works: only the list leaves it out.
+  assert.equal(sessionRow(id).status, "active");
+  assert.equal((await agentLease(id)).status, 200);
+  reportOn(A.exec, "Shop-PC", "1.1.33.0");
+  const list = await hostSessions();
+  assert.deepEqual(list.body.sessions.map((s: Row) => [s.id, s.scope, s.apps]), [[id, "desktop", []]]);
+  // Stop from the PC works the same either way.
+  assert.equal(await hostStop(id), 204);
+  assert.deepEqual((await hostSessions()).body, { sessions: [] });
 });

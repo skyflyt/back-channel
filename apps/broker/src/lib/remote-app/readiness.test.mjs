@@ -10,7 +10,7 @@ const T0 = new Date("2026-10-10T12:00:00.000Z");
 const minutes = (m) => new Date(T0.getTime() + m * 60_000);
 const report = (over = {}) => ({
   v: 1, agentId: ME, name: "Shop agent", enrolled: true, fingerprint: "AB12-CD34-EF56-7890", workerVersion: "0.1.0",
-  appbridge: { pipe: "listening", hostName: "Shop-PC", reason: null },
+  appbridge: { pipe: "listening", hostName: "Shop-PC", reason: null, version: "1.1.33.0" },
   runtime: { adapter: "claude", path: null, installed: true, signedIn: true },
   profiles: { remoteApp: { present: true, senders: [{ agentId: PEER, name: null, pinned: true }] } },
   checkedAt: T0.toISOString(),
@@ -41,7 +41,15 @@ test("report: the contract's shape is accepted and the local-only text is droppe
 
 test("report: strict, every field and no other, values bounded", () => {
   refused(() => parse(report({ extra: 1 })), "unknown_field");
-  refused(() => parse({ ...report(), appbridge: { pipe: "listening", hostName: null, reason: null, version: "1.1.32" } }), "unknown_field");
+  refused(() => parse({ ...report(), appbridge: { pipe: "listening", hostName: null, reason: null, version: "1.1.33.0", build: "x" } }), "unknown_field");
+  // appbridge.version is the one optional field: AppBridge's four-part version, or null; a worker from before it leaves it out.
+  for (const version of ["1.1.32", "1.1.33.0.1", "v1.1.33.0", "1.1.33.0; rm -rf", "1.1.33.x", "", 1133, true, {}]) {
+    refused(() => parse(report({ appbridge: { pipe: "listening", hostName: null, reason: null, version } })), "invalid_readiness");
+  }
+  refused(() => parse(report({ appbridge: { pipe: "listening", hostName: null, reason: null, version: "1".repeat(38) + ".1.1.1" } })), "invalid_readiness");
+  assert.equal(parse(report({ appbridge: { pipe: "listening", hostName: null, reason: null, version: "1.2.0.4" } })).appbridge.version, "1.2.0.4");
+  assert.equal(parse(report({ appbridge: { pipe: "listening", hostName: null, reason: null, version: null } })).appbridge.version, null);
+  assert.ok(!("version" in parse(report({ appbridge: { pipe: "listening", hostName: null, reason: null } })).appbridge), "an older worker's report stays without one");
   refused(() => parse({ ...report(), runtime: { adapter: "claude", path: null, installed: true, signedIn: true, email: "x" } }), "unknown_field");
   refused(() => parse({ ...report(), profiles: { remoteApp: { present: true, senders: [] }, lists: {} } }), "unknown_field");
   refused(() => parse({ ...report(), profiles: { remoteApp: { present: true, senders: [{ agentId: PEER, name: null, pinned: true, key: "x" }] } } }), "unknown_field");
@@ -101,7 +109,7 @@ test("checklist: a fresh, complete report is ready; each step says what's missin
   const off = RD.checklist({ report: parse(report({ appbridge: { pipe: "absent", hostName: null, reason: null } })), readinessAt: T0, now: T0, pc });
   assert.deepEqual([states(off).appbridge, states(off).agent_control], ["unknown", "needed"]);
   assert.match(howTo(off, "agent_control"), /turn on Allow agent control/);
-  const refusedPipe = RD.checklist({ report: parse(report({ appbridge: { pipe: "refused", hostName: null, reason: null } })), readinessAt: T0, now: T0, pc });
+  const refusedPipe = RD.checklist({ report: parse(report({ appbridge: { pipe: "refused", hostName: null, reason: null, version: "1.1.33.0" } })), readinessAt: T0, now: T0, pc });
   assert.deepEqual([states(refusedPipe).appbridge, states(refusedPipe).agent_control], ["done", "needed"]);
   assert.equal(states(RD.checklist({ report: parse(report({ appbridge: { pipe: "error", hostName: null, reason: null } })), readinessAt: T0, now: T0, pc })).agent_control, "unknown");
 
@@ -118,6 +126,41 @@ test("checklist: a fresh, complete report is ready; each step says what's missin
   assert.deepEqual(unmatched.missing, ["registered"]);
   assert.equal(states(unmatched).registered, "unknown", "a name that matches no PC is not proof it isn't registered");
   assert.match(howTo(unmatched, "registered"), /reports as "Shop-PC"/);
+});
+
+test("step 1 is AppBridge 1.1.33 or newer, told by the version the worker's hello learned", () => {
+  const step1 = (appbridge) => {
+    const c = RD.checklist({ report: parse(report({ appbridge: { hostName: "Shop-PC", reason: null, ...appbridge } })), readinessAt: T0, now: T0, pc });
+    return [states(c).appbridge, howTo(c, "appbridge")];
+  };
+  assert.equal(RD.STEPS[0].title, "AppBridge 1.1.33 or newer");
+  assert.deepEqual(step1({ pipe: "listening", version: "1.1.33.0" }), ["done", null]);
+  assert.deepEqual(step1({ pipe: "listening", version: "1.2.0.0" })[0], "done");
+  assert.deepEqual(step1({ pipe: "refused", version: "2.0.0.0" })[0], "done", "agent control off still said its version");
+  const old = step1({ pipe: "listening", version: "1.1.32.9" });
+  assert.equal(old[0], "needed");
+  assert.match(old[1], /It has AppBridge 1\.1\.32\.9; agents need 1\.1\.33 or newer to use the whole PC\. On that PC, open AppBridge → Updates → Install update\./);
+  const silent = step1({ pipe: "listening", version: null });
+  assert.equal(silent[0], "needed", "an AppBridge that answers without a version is older than 1.1.33");
+  assert.match(silent[1], /older than 1\.1\.33/);
+  const olderWorker = step1({ pipe: "listening" });
+  assert.equal(olderWorker[0], "unknown", "a worker from before version reporting can't tell");
+  assert.match(olderWorker[1], /doesn't report AppBridge's version yet/);
+  assert.equal(step1({ pipe: "refused", version: null })[0], "unknown");
+  assert.equal(step1({ pipe: "absent", version: null })[0], "unknown");
+  assert.match(step1({ pipe: "error", version: null })[1], /isn't answering/);
+});
+
+test("the AppBridge version compares as four numbers; a PC speaks desktop scope only from its newest report", () => {
+  for (const v of ["1.1.33.0", "1.1.33.1", "1.1.34.0", "1.2.0.0", "2.0.0.0", "1.1.100.0"]) assert.equal(RD.appBridgeAtLeast(v), true, v);
+  for (const v of ["1.1.32.99", "1.0.99.99", "0.9.0.0", "1.1.3.30", null, undefined, "", "1.1.33", "1.1.33.0 ", 1133]) assert.equal(RD.appBridgeAtLeast(v), false, String(v));
+  const at = (version) => parse(report({ appbridge: { pipe: "listening", hostName: "Shop-PC", reason: null, ...(version === undefined ? {} : { version }) } }));
+  assert.equal(RD.speaksDesktop([at("1.1.33.0")]), true);
+  assert.equal(RD.speaksDesktop([null, at("1.1.33.0")]), true, "a stored report that no longer parses is skipped");
+  assert.equal(RD.speaksDesktop([at("1.1.32.0"), at("1.1.33.0")]), false, "the newest report decides: a PC that went back to an older AppBridge");
+  assert.equal(RD.speaksDesktop([at(null)]), false);
+  assert.equal(RD.speaksDesktop([at(undefined)]), false, "an older worker: no");
+  assert.equal(RD.speaksDesktop([]), false, "no report at all: no");
 });
 
 test("checklist: a report older than 30 minutes is 'not reporting': the worker isn't running, and nothing else is claimed", () => {

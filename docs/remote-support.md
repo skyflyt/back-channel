@@ -258,8 +258,8 @@ It reaches the helped person's PC only through that PC's AppBridge support conne
      `executorSecretSha256` from its support-client pass and refuses a wrong secret.
    - With no client to start (off Windows), a missing pipe is `waiting_user`: "The support connector isn't running
      on this PC. Turn on 'Allow this PC to reach helpers I approve' in AppBridge."
-4. The CLI gets one worker-owned MCP server, `bc_remote_support`, with the same tools and schemas as remote app
-   sessions (`remote_sessions`, `remote_open`, `remote_observe`, `remote_act`, `remote_note`, `remote_end`).
+4. The CLI gets one worker-owned MCP server, `bc_remote_support`, with the six tools remote app sessions always
+   had, in their v1 schemas (no `remote_windows`, apps by `appId`: `remote_sessions`, `remote_open`, `remote_observe`, `remote_act`, `remote_note`, `remote_end`).
    The wording and the prompt say:
    - the person at the other PC confirms each open and act;
    - if they say no, don't work around it;

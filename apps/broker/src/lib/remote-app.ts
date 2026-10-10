@@ -27,6 +27,10 @@
  * Content-blind by construction: the broker stores fixed action kinds, a bounded control or app name, an
  * outcome and a pointer into the PC's own evidence store. Never screen content, typed text or a screenshot.
  *
+ * Desktop scope (vault design agent-desktop-scope.md, decided 2026-10-10): every new agent session may use the whole
+ * PC under the rails, and its apps are only what it expects to use. Sessions from before stay "apps" scope. The PC's
+ * sessions list (sessionsForHost) carries `scope` only to an AppBridge that understands it (1.1.33, agent-control v1.2).
+ *
  * The executor secret (agent-control v1.1, the support relay path contract §5): every session is born with a
  * secret's hash (the raw value is discarded). The executor (executorAgentId, or the agent that asked when it drives
  * itself) is handed a fresh value ONCE, in its first GET /sessions/{id} while the session runs, and sends it in the
@@ -90,7 +94,9 @@ const NOT_FOUND = () => fail(404, "not_found", "That remote session isn't availa
 const respond = (data: unknown, status = 200) => NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
 const conflict = (e: unknown) => isSerializationFailure(e) || (!!e && typeof e === "object" && "code" in e && (e as { code?: unknown }).code === "P2002");
 const pcName = (d: Pick<AppBridgeDevice, "id" | "label"> | null | undefined, id?: string) => d?.label?.trim() || `PC ${(d?.id ?? id ?? "").slice(0, 6)}`;
-const appList = (apps: string[]) => (apps.length <= 1 ? apps.join("") : `${apps.slice(0, -1).join(", ")} and ${apps[apps.length - 1]}`);
+const appList = R.appList;
+/** "Expects to use Notepad." for a desktop session that named apps; nothing otherwise. */
+const expects = (s: Pick<Session, "scope" | "appAllowList">) => (R.scopeOf(s) === "desktop" && s.appAllowList.length ? ` Expects to use ${appList(s.appAllowList)}.` : "");
 
 // ── auth ────────────────────────────────────────────────────────────────────
 
@@ -199,7 +205,7 @@ async function names(tx: Tx, sessions: Session[]): Promise<Names> {
 async function pausedBecause(tx: Tx, s: Session): Promise<string | null> {
   if (s.status !== "blocked") return null;
   const last = await tx.remoteAppActionLog.findFirst({ where: { sessionId: s.id, outcome: { not: "ok" } }, orderBy: [{ at: "desc" }, { id: "desc" }] });
-  return last ? (R.OUTCOME_PHRASES as Record<string, string>)[last.outcome] ?? null : null;
+  return last ? R.outcomePhrase(last.outcome, R.scopeOf(s)) : null;
 }
 
 async function view(tx: Tx, s: Session, n: Names, now: Date) {
@@ -216,7 +222,7 @@ async function view(tx: Tx, s: Session, n: Names, now: Date) {
 
 async function actions(tx: Tx, s: Session, take: number, pc?: string) {
   const rows = await tx.remoteAppActionLog.findMany({ where: { sessionId: s.id }, orderBy: [{ at: "desc" }, { id: "desc" }], take });
-  return rows.reverse().map((r) => R.actionView(r, { pc }));
+  return rows.reverse().map((r) => R.actionView(r, { pc, scope: R.scopeOf(s) }));
 }
 
 /**
@@ -366,7 +372,8 @@ async function opMachines({ tx, caller, now }: Ctx): Promise<Outcome> {
       // Every agent that could drive an app on a PC (enrolled for Dispatch), where it reports from, and what's missing.
       executors: ready.agents.filter((a) => a.fingerprint).map((a) => ({ ...brief(a), hostDeviceId: a.pc?.hostDeviceId ?? null, pc: a.pc?.name ?? null, reporting: a.reporting })),
       howToFix: RD.HOW_TO,
-      note: "Back Channel never sees a PC's apps, so it can't list them (appsAvailable is null). Name the apps your person mentioned; the PC enforces the list. " +
+      note: "Back Channel never sees a PC's apps, so it can't list them (appsAvailable is null). An approved session may use the whole PC toward its goal, under the PC's rails " +
+        "(no passwords; UAC, sign-in and the lock screen stay your person's; administrator windows are refused; every step is recorded); apps is optional, the ones you expect to use. " +
         "A PC needs internet access on to take an agent session. Each machine's agents are the Back Channel workers that report from it (matched by the PC's name). " +
         "To have an agent on the PC drive the app, name a ready one as executor in bc_remote_session_start. If none is ready, don't start a session: " +
         "tell your person what's missing, using howToFix for each missing step. They fix it on that PC in AppBridge → Agents, and the Remote page of the dashboard shows the same checklist.",
@@ -393,7 +400,7 @@ async function opStart({ tx, caller, input, now, origin }: Ctx): Promise<Outcome
   const linkExpiresAt = auth.viewTokenExpiry();
   await tx.viewToken.create({ data: { token: auth.hashToken(raw), accountId: caller.accountId, purpose: "account", expiresAt: linkExpiresAt } });
   await audit(tx, caller.accountId, "remote_app.requested", { sessionId: created.id, hostDeviceId: host.id, agentId: me.id });
-  if (task) await mirror(tx, created, "starter", `Asked to use ${appList(p.apps)} on ${pcName(host)} for ${p.minutes} minutes. Waiting for approval.`, now);
+  if (task) await mirror(tx, created, "starter", `Asked to use ${R.reachPhrase(created, pcName(host))} for ${p.minutes} minutes.${expects(created)} Waiting for approval.`, now);
   const v = await view(tx, created, await names(tx, [created]), now);
   return {
     body: {
@@ -477,7 +484,7 @@ async function opApprove({ tx, caller, now, id }: Ctx): Promise<Outcome> {
   await audit(tx, caller.accountId, "remote_app.approved", { sessionId: s.id, hostDeviceId: s.hostDeviceId, minutes: s.minutes });
   const n = await names(tx, [next]);
   const starter = n.agents.get(s.agentTokenId)?.name ?? "the agent";
-  await mirror(tx, next, "person", `Approved ${starter} to use ${appList(s.appAllowList)} on ${pcName(n.pcs.get(s.hostDeviceId), s.hostDeviceId)} for ${s.minutes} minutes.`, now);
+  await mirror(tx, next, "person", `Approved ${starter} to use ${R.reachPhrase(s, pcName(n.pcs.get(s.hostDeviceId), s.hostDeviceId))} for ${s.minutes} minutes.`, now);
   return { body: { session: await view(tx, next, n, now) } };
 }
 
@@ -487,7 +494,7 @@ async function opDeny({ tx, caller, now, id }: Ctx): Promise<Outcome> {
   const next = await apply(tx, s, R.denyPatch(caller.accountId, now));
   await audit(tx, caller.accountId, "remote_app.denied", { sessionId: s.id, hostDeviceId: s.hostDeviceId });
   const n = await names(tx, [next]);
-  await mirror(tx, next, "person", `Said no to using ${appList(s.appAllowList)} on ${pcName(n.pcs.get(s.hostDeviceId), s.hostDeviceId)}.`, now);
+  await mirror(tx, next, "person", `Said no to using ${R.reachPhrase(s, pcName(n.pcs.get(s.hostDeviceId), s.hostDeviceId))}.`, now);
   return { body: { session: await view(tx, next, n, now) } };
 }
 
@@ -512,7 +519,7 @@ export async function stopInTx(tx: Tx, row: Session, who: "person" | "host" | "a
   await audit(tx, s.accountId, "remote_app.stopped", { sessionId: s.id, by: who });
   const n = await names(tx, [s]);
   const pc = pcName(n.pcs.get(s.hostDeviceId), s.hostDeviceId);
-  const text = next.status === "denied" ? `Said no to using ${appList(s.appAllowList)} on ${pc}.`
+  const text = next.status === "denied" ? `Said no to using ${R.reachPhrase(s, pc)}.`
     : who === "person" ? `Stopped the remote session on ${pc}.`
     : who === "host" ? `The remote session on ${pc} was stopped at the PC.`
     : `The remote session on ${pc} was stopped by the agent.`;
@@ -544,12 +551,12 @@ async function opReport({ tx, caller, input, now, id }: Ctx): Promise<Outcome> {
   const n = await names(tx, [s]);
   const pc = pcName(n.pcs.get(s.hostDeviceId), s.hostDeviceId);
   const driver = s.executorAgentId ? `${n.agents.get(s.executorAgentId)?.name ?? "The agent on the PC"}: ` : "";
-  const mirrored = await mirror(tx, next, "starter", `${driver}${R.actionPhrase(d.row, { pc })}`, now);
+  const mirrored = await mirror(tx, next, "starter", `${driver}${R.actionPhrase(d.row, { pc, scope: R.scopeOf(s) })}`, now);
   if (d.pause) await audit(tx, s.accountId, "remote_app.paused", { sessionId: s.id, outcome: d.row.outcome });
   const v = await view(tx, next, n, now);
   const body: Record<string, unknown> = {
     recorded: true,
-    step: R.actionView({ ...d.row, at: now }, { pc }),
+    step: R.actionView({ ...d.row, at: now }, { pc, scope: R.scopeOf(s) }),
     session: v,
     task: s.listTaskId ? { updated: mirrored } : null,
     ...(d.pause ? { next: R.nextStep(v, roleOf(caller, s)) } : {}),
@@ -579,7 +586,7 @@ async function opEnd({ tx, caller, input, now, id }: Ctx): Promise<Outcome> {
       const r = await listsInTx(tx, as, "done", { task_id: s.listTaskId, summary, ...(evidenceRef ? { evidence: `kept on ${pc}: ${evidenceRef}` } : {}) }, now, effects.getStore());
       task = r.ok ? { done: true, status: (r.result.task as { status?: string }).status ?? null } : { done: false, why: r.message };
     } else {
-      const text = s.status === "awaiting_consent" ? `Withdrew the request to use ${appList(s.appAllowList)} on ${pc}: ${summary}`
+      const text = s.status === "awaiting_consent" ? `Withdrew the request to use ${R.reachPhrase(s, pc)}: ${summary}`
         : `Ended the remote session on ${pc} without finishing: ${summary}`;
       const ok = await mirror(tx, next, "starter", text, now);
       task = { done: false, updated: ok };
@@ -750,11 +757,34 @@ export async function remoteTool(req: NextRequest, name: string, args: Input): P
 // ── The PC (remote-app-host.ts) ─────────────────────────────────────────────
 
 /**
- * The running sessions bound to one PC, for its banner and its own scope enforcement: which apps, toward what
- * goal, until when, started by and driven by which agent, for which task. Waiting requests are not shown to
- * the PC: only the person's approval in the dashboard starts anything. executorSecretSha256 (v1.1): the hash the
+ * Does this PC's AppBridge speak agent-control v1.2 (1.1.33 or newer: desktop scope, `scope` on each session, possibly
+ * no apps)? Told by the newest readiness report of a worker of the account that reports from this PC (matched by the
+ * PC's name, exactly as the readiness card matches it: one PC with that name, ignoring case) and says
+ * `appbridge.version` >= 1.1.33. No such report means no: the older shape works on every AppBridge.
+ */
+async function hostSpeaksDesktop(tx: Tx, host: AppBridgeDevice): Promise<boolean> {
+  const [agents, hosts] = await Promise.all([
+    tx.agentToken.findMany({ where: { accountId: host.accountId, revokedAt: null, scope: "full", readinessAt: { not: null } }, orderBy: { readinessAt: "desc" }, take: 100 }),
+    tx.appBridgeDevice.findMany({ where: { accountId: host.accountId, role: "host", revokedAt: null }, orderBy: { createdAt: "asc" }, take: 50 }),
+  ]);
+  const pcs = hosts.map((h) => ({ hostDeviceId: h.id, name: pcName(h) }));
+  const reports = agents.map((a) => RD.storedReadiness(a.readiness, a.id))
+    .filter((r) => !!r && RD.matchPc(r.appbridge.hostName, pcs)?.hostDeviceId === host.id);
+  return RD.speaksDesktop(reports);
+}
+
+/**
+ * The running sessions bound to one PC, for its banner and its own scope enforcement: which apps (or the whole PC),
+ * toward what goal, until when, started by and driven by which agent, for which task. Waiting requests are not shown
+ * to the PC: only the person's approval in the dashboard starts anything. executorSecretSha256 (v1.1): the hash the
  * PC's agent-control pipe checks the executor's hello against; null for a v1 session, whose hello needs no secret.
  * It changes when the secret is handed out or rotated, so a pipe whose check fails re-reads this before it refuses.
+ *
+ * The compatibility trap: AppBridge refuses unknown members in this list, so an AppBridge older than 1.1.33 would treat
+ * a `scope` member (or an empty `apps`) as a malformed reply and drop every session. So `scope` goes only to a PC known
+ * to run 1.1.33 or newer (hostSpeaksDesktop). Any other PC gets the v1.1 shape: a desktop session is sent as the apps it
+ * expects to use, which that PC enforces as before (an apps session in effect), and a desktop session that named no
+ * apps is left out, since an older PC can't run it. The readiness card says "AppBridge 1.1.33 or newer" for that PC.
  */
 export async function sessionsForHost(tx: Tx, host: AppBridgeDevice, now: Date) {
   const rows = await tx.remoteAppSession.findMany({ where: { accountId: host.accountId, hostDeviceId: host.id, kind: "agent", status: { in: [...R.RUNNING] } }, orderBy: { createdAt: "desc" }, take: 5 });
@@ -763,11 +793,13 @@ export async function sessionsForHost(tx: Tx, host: AppBridgeDevice, now: Date) 
     const s = await settleInTx(tx, r, now);
     if (R.RUNNING.includes(s.status)) settled.push(s);
   }
+  const v12 = settled.length ? await hostSpeaksDesktop(tx, host) : false;
   const n = await names(tx, settled);
   const out = [];
   for (const s of settled) {
     const v = await view(tx, s, n, now);
-    out.push({ id: v.id, status: v.status, apps: v.apps, goal: v.goal, startedAt: v.startedAt, expiresAt: v.expiresAt,
+    if (!v12 && v.scope === "desktop" && !v.apps.length) continue;
+    out.push({ id: v.id, status: v.status, ...(v12 ? { scope: v.scope } : {}), apps: v.apps, goal: v.goal, startedAt: v.startedAt, expiresAt: v.expiresAt,
       startedBy: v.startedBy.name, drivenBy: v.drivenBy.name, task: v.task?.title ?? null, executorSecretSha256: s.executorSecretHash ?? null,
       ...(s.status === "blocked" ? { pausedBecause: (v as { pausedBecause?: string }).pausedBecause } : {}) });
   }
