@@ -63,6 +63,19 @@ then `Start-ScheduledTask -TaskName 'BackChannel-Worker'`. Without that option,
 run the printed `run-worker.ps1` launcher after setup. The bootstrap does not
 start an incomplete worker or hold its setup lock.
 
+The task runs `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File run-worker.ps1` (the
+Windows default policy refuses `-File` otherwise). The launcher starts `run --parent-pid <its own PID>`, so stopping
+the task, which ends the launcher, also stops the worker within about 5 seconds. Running the bootstrap again updates
+an install: it stops a running worker (`stop`), installs the new launcher and task action (keeping the task's
+schedule and enabled state), and starts the task again if the worker was running.
+
+`stop` ends the worker running on this state directory and prints `{ "stopped": true, "wasRunning": true|false }`.
+It first checks that the process in `worker.lock` is a node running this CLI's `run` for this `--state` (another
+install of this CLI counts, so an update can stop the old one); anything else is `not_this_worker`, and nothing is
+touched. It ends that process tree, waits up to 15 seconds (`stop_timeout`), then clears the lock as `recover` does:
+interrupted work is never replayed. A stale lock (its process is gone) is cleared the same way. A recovery block
+(below) stays until you run `recover --confirm-stopped`.
+
 Run the daemon with `run`; `run --once` performs one reconciliation pass.
 Use `send --target AGENT_ID --profile review --objective-file task.txt
 --continue-profile review` on the originating machine. `--profile` selects the
@@ -130,7 +143,8 @@ Channel dashboard show the same checklist. These commands feed both. Each prints
 
 The fingerprint is the first 16 hex characters of the uppercase SHA-256 of `signingKey + "\n" + encryptionKey` (the
 public Dispatch keys exactly as enrolled), in groups of four: `AB12-CD34-EF56-7890`. Back Channel computes it the same
-way. `allow-sender` and `revoke-sender` change the local profile, so stop the worker first (`locked` otherwise).
+way. `allow-sender` and `revoke-sender` change the local profile, so the worker must be stopped first (`locked`
+otherwise): run `stop`, then `allow-sender` or `revoke-sender`, then start the task again if it was running.
 
 ### Support sessions
 
