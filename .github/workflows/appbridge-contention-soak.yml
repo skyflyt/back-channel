@@ -5,7 +5,8 @@ name: appbridge contention soak (temporary)
 # side on the same runner population.
 #   sequence: each iteration resets the database and replays the postgres-roundtrip job's steps in order
 #             (dispatch, lists, then appbridge), the way the flaky step actually runs;
-#   slowdb:   the Postgres container is held to half a CPU, so every transaction is slow.
+#   slowdb:   the Postgres container is held to half a CPU, so every transaction is slow;
+#   burst:    scripts/appbridge-burst-soak.mts, the largest bursts the caps allow (8 pairs at once).
 # Removed before the PR is marked ready.
 on:
   push:
@@ -28,8 +29,8 @@ jobs:
       fail-fast: false
       matrix:
         code: [baseline, branch]
-        mode: [sequence, slowdb]
-        shard: [1, 2, 3]
+        mode: [burst, burst-slowdb]
+        shard: [1]
     defaults:
       run:
         working-directory: apps/broker
@@ -63,7 +64,7 @@ jobs:
         if: matrix.code == 'baseline'
         run: git checkout "$BASELINE_SHA" -- src scripts prisma && git -C ../.. status --short
       - name: Hold Postgres to half a CPU
-        if: matrix.mode == 'slowdb'
+        if: endsWith(matrix.mode, 'slowdb')
         run: |
           pg=$(docker ps -q --filter ancestor=postgres:16)
           docker update --cpus 0.5 "$pg"
@@ -79,12 +80,13 @@ jobs:
               run lists-integration.mts || { other=$((other+1)); echo "lists-integration failed (iter $i)"; tail -5 lists-integration.mts.out; }
             fi
             start=$(date +%s%N)
-            if run appbridge-integration.mts; then pass=$((pass+1)); r=PASS; else fail=$((fail+1)); r=FAIL; fi
+            script=appbridge-integration.mts; case "${{ matrix.mode }}" in burst*) script=appbridge-burst-soak.mts;; esac
+            if run "$script"; then pass=$((pass+1)); r=PASS; else fail=$((fail+1)); r=FAIL; fi
             ms=$(( ($(date +%s%N) - start) / 1000000 ))
-            where=$(grep -o 'appbridge-integration.mts:[0-9]*' appbridge-integration.mts.out | head -1)
-            actual=$(grep -o 'actual: \[[^]]*\]' appbridge-integration.mts.out | head -1)
+            where=$(grep -o '[a-z-]*.mts:[0-9]*' "$script.out" | head -1)
+            actual=$(grep -o 'actual: \[[^]]*\]\|BURST session=.*' "$script.out" | head -1)
             echo "SOAK ${{ matrix.code }} ${{ matrix.mode }} shard=${{ matrix.shard }} iter=$i $r ${ms}ms $where $actual"
-            if [ "$r" = FAIL ]; then grep -v '^PASS' appbridge-integration.mts.out | head -20; fi
+            if [ "$r" = FAIL ]; then grep -v '^PASS' "$script.out" | head -20; fi
           done
           echo "SOAK-SUMMARY code=${{ matrix.code }} mode=${{ matrix.mode }} shard=${{ matrix.shard }} pass=$pass fail=$fail other_step_failures=$other"
           echo "code=${{ matrix.code }} mode=${{ matrix.mode }} shard=${{ matrix.shard }}: pass=$pass fail=$fail (other steps failed: $other)" >> "$GITHUB_STEP_SUMMARY"
