@@ -288,3 +288,31 @@ test("shared feed: one feed for the page; a later subscriber gets its own initia
   shared.subscribe(() => {})();
   assert.equal(made, 2, "a new subscriber after that starts a fresh feed");
 });
+
+test("default timers work like a browser's: never called as methods of another object (Illegal invocation)", async () => {
+  // A browser's timer functions throw unless `this` is the global object (or undefined); Node's don't, so emulate it.
+  const real = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout, setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval };
+  const strict = (name) => function (...args) {
+    if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+    return real[name].apply(globalThis, args);
+  };
+  for (const name of Object.keys(real)) globalThis[name] = strict(name);
+  let feed;
+  try {
+    let changes = 0;
+    feed = createListsFeed({
+      onChange: () => { changes++; },
+      fetchChanges: async () => ({ at: new Date().toISOString(), changed: false }),
+      openStream: null, // no EventSource: the feed polls, the path that threw on /account
+      isVisible: () => true,
+      watchVisibility: () => () => {},
+    });
+    assert.doesNotThrow(() => feed.start());
+    await new Promise((resolve) => real.setTimeout(resolve, 20));
+    assert.equal(feed.state(), "polling");
+    assert.ok(changes >= 1, "the initial load ran");
+  } finally {
+    feed?.stop();
+    Object.assign(globalThis, real);
+  }
+});

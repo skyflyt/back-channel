@@ -49,7 +49,14 @@ export const STREAM_URL = "/api/lists/stream";
  * @param {FeedDeps} deps
  */
 export function createListsFeed(deps) {
-  const t = deps.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
+  // Called through globalThis: a browser's timers throw "Illegal invocation" when called as methods of another
+  // object (t.setInterval(...) with `this` = t), which blanked /account for every signed-in user. Node doesn't care.
+  const t = deps.timers ?? {
+    setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+    clearTimeout: (id) => globalThis.clearTimeout(id),
+    setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
+    clearInterval: (id) => globalThis.clearInterval(id),
+  };
   const pollMs = deps.pollMs ?? POLL_MS;
   const firstRetry = deps.retryMs ?? RETRY_MS;
   const maxRetry = deps.maxRetryMs ?? MAX_RETRY_MS;
