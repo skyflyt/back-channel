@@ -1,5 +1,6 @@
 // Client for the AppBridge host's local agent-control pipe (contract: "Agent control — local IPC
-// contract v1"), and for the support connector's pipe, which speaks the same JSON across the support
+// contract v1", with v1.1's executor secret and v1.2's desktop scope: `windows`, `open` by installed name and the
+// hello's `host.version`, AppBridge 1.1.33 and newer), and for the support connector's pipe, which speaks the same JSON across the support
 // relay to the helper on another PC (support relay contract v1 §4-§5). Newline-delimited UTF-8 JSON,
 // one request then one response per line, each carrying a client-chosen id. Zero dependencies:
 // node:net speaks Windows named pipes and Unix sockets alike, so tests inject a socket path and run
@@ -34,6 +35,19 @@ export const V1_MALFORMED = "That request isn't valid for agent control v1.";
 /** v1.1: a host refuses a hello whose secret matches no session it knows (it re-reads Back Channel first), and any op on a session bound to a secret this connection did not present. */
 export const NEEDS_EXECUTOR_SECRET = "this pipe needs the session's executor secret";
 const MAX_MESSAGE = 1024 * 1024;
+/** AppBridge's version as its v1.2 hello says it (`host.version`): four numbers, "1.1.33.0". */
+export const HOST_VERSION = /^\d+\.\d+\.\d+\.\d+$/;
+/** The first AppBridge whose agent-control speaks v1.2 (desktop scope, `windows`, `open` by name). */
+export const DESKTOP_HOST = Object.freeze([1, 1, 33, 0]);
+/** Is this host version (as the hello said it) 1.1.33 or newer? false for no version, or anything that isn't four numbers. */
+export function speaksDesktop(version) {
+    if (typeof version !== 'string' || version.length > 40 || !HOST_VERSION.test(version)) return false;
+    const parts = version.split('.').map(Number);
+    for (let i = 0; i < 4; i++) if (parts[i] !== DESKTOP_HOST[i]) return parts[i] > DESKTOP_HOST[i];
+    return true;
+}
+/** v1.2: a host's answer to an `open` by name that matches more than one installed app lists at most this many. */
+export const MAX_CANDIDATES = 10;
 // v1.1 (contract §5): `abx_` and 43 base64url characters, issued by Back Channel once per session.
 const EXECUTOR_SECRET = /^abx_[A-Za-z0-9_-]{43}$/;
 /** Is this an executor secret's shape? Never echo the value in an error. */
@@ -184,8 +198,10 @@ export class AgentControlClient {
         }
         if (!hello.ok) { if (saidNo) this.#failure = 'refused'; this.#drop(socket); throw hello; }
         if (hello.version !== 1) { this.#drop(socket); throw refusal('fail_closed', this.words.version); }
+        // v1.2 (AppBridge 1.1.33): the hello says the host's version. Kept even when agent control is off, for readiness.
+        const version = typeof hello.host?.version === 'string' && hello.host.version.length <= 40 && HOST_VERSION.test(hello.host.version) ? hello.host.version : null;
+        this.host = hello.host && typeof hello.host.name === 'string' ? { name: bounded(hello.host.name, 120), version } : version ? { name: null, version } : null;
         if (hello.agentControl !== true) { this.#failure = 'refused'; this.#drop(socket); throw refusal('needs_user', this.words.off); }
-        this.host = hello.host && typeof hello.host.name === 'string' ? { name: bounded(hello.host.name, 120) } : null;
         return socket;
     }
     #drop(socket, reason = 'The connection to the PC closed.') {
@@ -208,7 +224,7 @@ export class AgentControlClient {
             socket.write(line);
         });
     }
-    async request(op, fields = {}) {
+    async request(op, fields = {}, { candidates = false } = {}) {
         if (this.closed) return refusal('fail_closed', 'The connection to the PC is closed.');
         let socket;
         try {
@@ -216,8 +232,11 @@ export class AgentControlClient {
         } catch (error) {
             return error && error.ok === false ? error : refusal('fail_closed', this.words.connect);
         }
-        return normalize(await this.#send(socket, { op, ...fields }), this.refusals);
+        const answer = await this.#send(socket, { op, ...fields });
+        return candidates ? normalizeOpen(answer, this.refusals) : normalize(answer, this.refusals);
     }
+    /** Does the host this client last greeted speak v1.2 (AppBridge 1.1.33 or newer)? */
+    get speaksDesktop() { return speaksDesktop(this.host?.version); }
     /**
      * The readiness probe (vault design pc-agent-readiness.md): connect and greet with a v1 `hello`, and nothing
      * else. No session op is sent. A client made for it holds no executor secret, so none is ever sent. Never rejects:
@@ -230,13 +249,17 @@ export class AgentControlClient {
         if (this.closed) return { pipe: 'error', hostName: null, reason: 'The connection to the PC is closed.' };
         try {
             if (!this.socket || this.socket.destroyed) await (this.connecting ??= this.#open().finally(() => { this.connecting = null; }));
-            return { pipe: 'listening', hostName: this.host?.name ?? null, reason: null };
+            return { pipe: 'listening', hostName: this.host?.name ?? null, version: this.host?.version ?? null, reason: null };
         } catch (error) {
-            return { pipe: this.#failure, hostName: null, reason: error && error.ok === false ? error.reason : this.words.connect };
+            return { pipe: this.#failure, hostName: null, version: this.#failure === 'refused' ? this.host?.version ?? null : null, reason: error && error.ok === false ? error.reason : this.words.connect };
         }
     }
     sessions() { return this.request('sessions'); }
     open(sessionId, appId) { return this.request('open', { sessionId, appId }); }
+    /** v1.2: open an installed app by its name. An ambiguous name is invalid_request with the host's candidates. */
+    openApp(sessionId, app) { return this.request('open', { sessionId, app }, { candidates: true }); }
+    /** v1.2: the windows the session may use (`{ ok, windows: [{ windowId, title, app: { name }, focused, minimized }] }`). */
+    windows(sessionId) { return this.request('windows', { sessionId }); }
     observe(sessionId, windowId) { return this.request('observe', { sessionId, windowId }); }
     act(sessionId, windowId, ref, action, value) {
         return this.request('act', { sessionId, windowId, ref, action, ...(value === undefined ? {} : { value }) });
@@ -258,6 +281,20 @@ export class SupportConnectorClient extends AgentControlClient {
         if (!isExecutorSecret(executorSecret)) throw Error("The support connector needs the session's executor secret");
         super({ path: target ?? defaultSupportPipePath, timeoutMs, executorSecret, refusals: SUPPORT_REFUSALS, words: SUPPORT_WORDS, v1Fallback: false });
     }
+}
+
+/**
+ * v1.2 `open` by name: as normalize, except that an ambiguous name stays `invalid_request` (nothing happened on the PC)
+ * and keeps the host's candidates, bounded: at most 10 names of at most 60 characters.
+ */
+export function normalizeOpen(response, refusals = REFUSALS) {
+    if (response && typeof response === 'object' && !Array.isArray(response) && response.ok === false && response.outcome === 'invalid_request') {
+        const candidates = Array.isArray(response.candidates)
+            ? response.candidates.filter(c => typeof c === 'string' && c.trim()).slice(0, MAX_CANDIDATES).map(c => bounded(c, 60)) : [];
+        const reason = typeof response.reason === 'string' && response.reason.trim() ? bounded(response.reason, 300) : 'More than one installed app has that name.';
+        return { ok: false, outcome: 'invalid_request', reason, candidates };
+    }
+    return normalize(response, refusals);
 }
 
 /** Never "best effort": anything but a well-formed ok answer is one of the refusals (the four of v1, by default). */

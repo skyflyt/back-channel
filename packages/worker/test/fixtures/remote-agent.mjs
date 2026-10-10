@@ -76,6 +76,25 @@ if (scenario === 'happy') {
 } else if (scenario === 'silent') {
     // Finishes without ending the session: the worker must end it.
     steps.open = await call('remote_open', { appId });
+} else if (scenario === 'desktop') {
+    // Desktop scope (agent-control v1.2): list windows, open apps by installed name, and stop at a rail.
+    steps.windows = await call('remote_windows');
+    steps.observeListed = await call('remote_observe', { windowId: steps.windows.windows?.[1]?.windowId });
+    steps.ambiguous = await call('remote_open', { app: 'pad' });
+    steps.missing = await call('remote_open', { app: 'Nope' });
+    steps.pathy = await call('remote_open', { app: 'C:/Windows/System32/cmd.exe' });
+    steps.open = await call('remote_open', { app: 'notepad' });
+    const windowId = steps.open.windowId;
+    steps.fill = await call('remote_act', { windowId, ref: 'e2', action: 'set_value', value: 'VALUE-MARKER-41' });
+    steps.save = await call('remote_act', { windowId, ref: 'e1', action: 'invoke' });
+    steps.admin = await call('remote_open', { app: 'Registry Editor' });
+    steps.end = await call('remote_end', { summary: 'Saved the memo; Registry Editor runs as administrator, so I stopped and asked.', finished: false });
+} else if (scenario === 'old-host') {
+    // A desktop session on an AppBridge older than 1.1.33: the v1 tools only.
+    steps.windows = await call('remote_windows');
+    steps.byName = await call('remote_open', { app: 'Notepad' });
+    steps.open = await call('remote_open', { appId });
+    steps.end = await call('remote_end', { summary: 'Opened Notepad by its appId.', finished: true });
 } else if (scenario === 'support-happy') {
     // A support session: one act is declined on the other PC, and the agent goes on with something else.
     steps.open = await call('remote_open', { appId });

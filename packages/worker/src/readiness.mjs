@@ -4,13 +4,14 @@
 // comparing key fingerprints (never by trusting Back Channel's word for the keys).
 //
 // Nothing here ever prints or sends the agent key, a private key or another agent's secrets. The pipe probe is a v1
-// `hello` and nothing else (no session op, never an executor secret). `claude auth status` runs with fixed arguments,
+// `hello` and nothing else (no session op, never an executor secret). From AppBridge 1.1.33 the hello also says the
+// host's version (agent-control v1.2), reported as appbridge.version: step 1 is "AppBridge 1.1.33 or newer". `claude auth status` runs with fixed arguments,
 // no shell and a short timeout, and only its exit code is read.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { AgentControlClient } from './agent-control.mjs';
+import { AgentControlClient, HOST_VERSION } from './agent-control.mjs';
 import { REMOTE_APP_PROFILE, validateRemoteAppProfile } from './remote-app.mjs';
 
 export const READINESS_VERSION = 1;
@@ -67,7 +68,8 @@ export async function probeAgentControl({ path: target, timeoutMs = PROBE_TIMEOU
     const client = new AgentControlClient({ path: target, timeoutMs });
     try {
         const r = await client.hello();
-        return { pipe: PIPE_STATES.includes(r.pipe) ? r.pipe : 'error', hostName: r.hostName ? bounded(r.hostName, 80) || null : null, reason: r.reason ? bounded(r.reason, 300) : null };
+        return { pipe: PIPE_STATES.includes(r.pipe) ? r.pipe : 'error', hostName: r.hostName ? bounded(r.hostName, 80) || null : null,
+            version: typeof r.version === 'string' && HOST_VERSION.test(r.version) ? r.version : null, reason: r.reason ? bounded(r.reason, 300) : null };
     } finally {
         client.close();
     }
@@ -141,7 +143,8 @@ export async function collectReadiness({ config, pipePath, probe = probeAgentCon
         enrolled,
         fingerprint: enrolled ? fingerprint(config.identity?.signingKey, config.identity?.encryptionKey) : null,
         workerVersion: WORKER_VERSION,
-        appbridge: { pipe: pipe.pipe, hostName: pipe.hostName ?? null, reason: pipe.reason ?? null },
+        // version: AppBridge's own (agent-control v1.2, the hello's host.version), null from an AppBridge older than 1.1.33.
+        appbridge: { pipe: pipe.pipe, hostName: pipe.hostName ?? null, reason: pipe.reason ?? null, version: pipe.version ?? null },
         runtime: { adapter: 'claude', path: claude.path ?? null, installed: claude.installed === true, signedIn: typeof claude.signedIn === 'boolean' ? claude.signedIn : null },
         profiles: { remoteApp: { present: !!profile, senders: senders.slice(0, MAX_SENDERS).map(id => ({
             agentId: id, name: typeof config.senderNames?.[id] === 'string' ? bounded(config.senderNames[id], 80) || null : null, pinned: !!config.peers?.[id],

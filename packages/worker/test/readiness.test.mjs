@@ -48,7 +48,7 @@ function assertNoSecrets(text, config, where) {
 }
 
 /** A fake AppBridge host. hello: the answer to give (or null: never answer). Records every message it got. */
-async function fakeHost(t, { hello = { ok: true, version: 1, host: { name: 'Shop-PC' }, agentControl: true } } = {}) {
+async function fakeHost(t, { hello = { ok: true, version: 1, host: { name: 'Shop-PC', version: '1.1.33.0' }, agentControl: true } } = {}) {
     const where = socketPath(t);
     const log = [];
     const sockets = new Set();
@@ -128,7 +128,7 @@ test('fingerprint: uppercase SHA-256 of signingKey + "\\n" + encryptionKey, firs
 
 test('pipe probe: listening with the PC name; absent with no pipe; refused when the switch is off; error when it never answers. Only a hello, never a secret', async t => {
     const on = await fakeHost(t);
-    assert.deepEqual(await probeAgentControl({ path: on.path }), { pipe: 'listening', hostName: 'Shop-PC', reason: null });
+    assert.deepEqual(await probeAgentControl({ path: on.path }), { pipe: 'listening', hostName: 'Shop-PC', version: '1.1.33.0', reason: null });
     assert.deepEqual(on.log.map(m => Object.keys(m).sort()), [['id', 'op', 'version']], 'one hello: no session op, no executor secret');
     assert.equal(on.log[0].op, 'hello');
 
@@ -136,10 +136,18 @@ test('pipe probe: listening with the PC name; absent with no pipe; refused when 
     assert.equal(missing.pipe, 'absent');
     assert.equal(missing.hostName, null);
 
-    const off = await fakeHost(t, { hello: { ok: true, version: 1, host: { name: 'Shop-PC' }, agentControl: false } });
-    assert.equal((await probeAgentControl({ path: off.path })).pipe, 'refused');
+    // AppBridge 1.1.33 (agent-control v1.2) says its version in the hello; an older one doesn't, and a malformed one is dropped.
+    const old = await fakeHost(t, { hello: { ok: true, version: 1, host: { name: 'Shop-PC' }, agentControl: true } });
+    assert.deepEqual(await probeAgentControl({ path: old.path }), { pipe: 'listening', hostName: 'Shop-PC', version: null, reason: null });
+    for (const version of ['1.1.33', '1.1.33.0; x', 1133, '9'.repeat(41) + '.1.1.1']) {
+        const odd = await fakeHost(t, { hello: { ok: true, version: 1, host: { name: 'Shop-PC', version }, agentControl: true } });
+        assert.equal((await probeAgentControl({ path: odd.path })).version, null, String(version));
+    }
+    const off = await fakeHost(t, { hello: { ok: true, version: 1, host: { name: 'Shop-PC', version: '1.1.34.0' }, agentControl: false } });
+    const offProbe = await probeAgentControl({ path: off.path });
+    assert.deepEqual([offProbe.pipe, offProbe.version], ['refused', '1.1.34.0'], 'the version is known even with agent control off');
     const no = await fakeHost(t, { hello: { ok: false, outcome: 'needs_user', reason: 'Not now.' } });
-    assert.deepEqual(await probeAgentControl({ path: no.path }), { pipe: 'refused', hostName: null, reason: 'Not now.' });
+    assert.deepEqual(await probeAgentControl({ path: no.path }), { pipe: 'refused', hostName: null, version: null, reason: 'Not now.' });
 
     const silent = await fakeHost(t, { hello: null });
     assert.equal((await probeAgentControl({ path: silent.path, timeoutMs: 150 })).pipe, 'error');
@@ -205,12 +213,12 @@ test('readiness: exactly the contract shape; the report leaves out the path, the
     const at = new Date('2026-10-10T12:00:00.000Z');
     const probes = [];
     const r = await collectReadiness({ config: s.config, pipePath: 'pipe-x', now: () => at,
-        probe: async o => { probes.push(o); return { pipe: 'listening', hostName: 'Shop-PC', reason: null }; },
+        probe: async o => { probes.push(o); return { pipe: 'listening', hostName: 'Shop-PC', version: '1.1.33.0', reason: null }; },
         runtime: async exe => ({ adapter: 'claude', path: exe, installed: true, signedIn: true }) });
     assert.deepEqual(probes, [{ path: 'pipe-x' }]);
     assert.deepEqual(r, {
         v: 1, agentId: ME, name: 'Shop agent', enrolled: true, fingerprint: fingerprint(s.keys.me.signingKey, s.keys.me.encryptionKey), workerVersion: WORKER_VERSION,
-        appbridge: { pipe: 'listening', hostName: 'Shop-PC', reason: null },
+        appbridge: { pipe: 'listening', hostName: 'Shop-PC', reason: null, version: '1.1.33.0' },
         runtime: { adapter: 'claude', path: process.execPath, installed: true, signedIn: true },
         profiles: { remoteApp: { present: true, senders: [{ agentId: PEER, name: 'Laptop Claude', pinned: true }, { agentId: OTHER, name: null, pinned: false }] } },
         checkedAt: at.toISOString(),
@@ -222,12 +230,15 @@ test('readiness: exactly the contract shape; the report leaves out the path, the
     assert.deepEqual(report.profiles.remoteApp.senders.map(x => x.name), [null, null]);
     assert.equal(r.runtime.path, process.execPath, 'the local object keeps them');
     assert.deepEqual(B.parseReadiness(report, { agentId: ME }).profiles.remoteApp.senders.map(x => x.agentId), [PEER, OTHER]);
+    assert.equal(B.parseReadiness(report, { agentId: ME }).appbridge.version, '1.1.33.0', 'Back Channel keeps the AppBridge version');
     assert.ok(Buffer.byteLength(JSON.stringify(report)) < 8192);
 
     // Not enrolled (a Lists-only worker): no agent id, no fingerprint; no remote-app profile.
     const plain = await collectReadiness({ config: { ...s.config, agentId: undefined, profiles: {} },
         probe: async () => ({ pipe: 'absent', hostName: null, reason: 'off' }), runtime: async () => ({ adapter: 'claude', path: null, installed: false, signedIn: null }) });
     assert.deepEqual([plain.agentId, plain.enrolled, plain.fingerprint, plain.profiles.remoteApp], [null, false, null, { present: false, senders: [] }]);
+    assert.equal(plain.appbridge.version, null, 'no hello, no version: sent as null');
+    assert.equal(B.parseReadiness(reportOf(plain), { agentId: ME }).appbridge.version, null);
 
     // At most MAX_SENDERS, so a report always fits.
     const many = Array.from({ length: MAX_SENDERS + 5 }, () => randomUUID());

@@ -108,7 +108,10 @@ over in `allowedSenders`. That agent sends with
 `send --target THIS_AGENT --profile remote-app --remote-session SESSION_ID --objective-file goal.txt`.
 
 The worker checks the session with Back Channel first and runs the CLI with one extra capability, its own MCP
-server (`remote_sessions`, `remote_open`, `remote_observe`, `remote_act`, `remote_note`, `remote_end`). It
+server (`remote_sessions`, `remote_windows`, `remote_open`, `remote_observe`, `remote_act`, `remote_note`,
+`remote_end`). A desktop-scope session (every new one) may use the whole PC under the rails AppBridge enforces:
+`remote_windows` lists the windows it may use and `remote_open { app }` opens any installed app by name (AppBridge
+1.1.33, agent-control v1.2); an older session or AppBridge uses its apps by `appId`. It
 reports every step, and stops the CLI when the session is stopped, runs out of time or loses its lease. See
 `docs/remote-app-sessions.md` ("Executor").
 
@@ -117,14 +120,15 @@ it from stdin). The worker sends it in the PC's pipe greeting and nowhere else. 
 
 ### Is this PC ready for agents?
 
-Six things must all be true before one of your agents can use an app on this PC: AppBridge 1.1.32 or newer, the PC
+Six things must all be true before one of your agents can use this PC: AppBridge 1.1.33 or newer, the PC
 registered with Back Channel, "Allow agent control" on, this worker set up and running, at least one agent allowed
 to hand it sessions, and claude signed in. AppBridge's owner console (Agents page) and the Remote page of the Back
 Channel dashboard show the same checklist. These commands feed both. Each prints one JSON object, or
 `{ "error": "<code>", "message": "<plain sentence>" }` with exit code 1. None prints the agent key or a private key.
 
 - `readiness` prints what this worker can tell: its agent id, name and key fingerprint, the AppBridge agent-control
-  pipe (`listening`, `absent`, `refused` or `error`, and the PC's name), whether claude is installed and signed in, and
+  pipe (`listening`, `absent`, `refused` or `error`, the PC's name, and AppBridge's `version` from the hello's
+  `host.version`, `null` before 1.1.33), whether claude is installed and signed in, and
   which agents the `remote-app` profile accepts. The pipe probe is a v1 `hello` and nothing else (no session op, never
   an executor secret). Sign-in comes from `claude auth status`: exit 0 is signed in, 1 is not, anything else is
   `null`. The claude used is the `remote-app` profile's, or a native `claude` (`claude.exe`) on `PATH`. It runs with
@@ -162,7 +166,8 @@ send --target THIS_AGENT --profile remote-support --remote-session SESSION_ID --
 
 The secret is never taken on a command line, where other processes could read it. Delete the file afterwards.
 
-The CLI gets the same six `remote_*` tools as `remote-app`, worded for the person in control: they confirm each
+The CLI gets the six `remote_*` tools `remote-app` always had (no `remote_windows`, apps by `appId`), worded for the
+person in control: they confirm each
 open and act on their own screen, and when they say no (`declined`), the agent is told not to work around it.
 Nothing pauses, and **this worker records nothing with Back Channel**: the helper on the other PC records every step.
 At the end the worker sends `end` over the pipe and returns the agent's summary in the sealed result. The asking agent
