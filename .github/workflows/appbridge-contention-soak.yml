@@ -28,9 +28,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        code: [baseline, branch]
-        mode: [burst, burst-slowdb]
-        shard: [1]
+        code: [branch]
+        mode: [sequence, slowdb, burst-slowdb]
+        shard: [1, 2, 3, 4]
     defaults:
       run:
         working-directory: apps/broker
