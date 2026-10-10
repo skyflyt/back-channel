@@ -153,6 +153,16 @@ async function get(path: string, o: { as?: string; cookie?: string } = {}): Prom
   const t = await res.text();
   return { status: res.status, body: t ? JSON.parse(t) : null, headers: res.headers };
 }
+async function post(path: string, body: unknown, o: { as?: string; cookie?: string; csrf?: string | null } = {}): Promise<Res> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (o.as) headers.authorization = `Bearer ${o.as}`;
+  if (o.cookie) headers.cookie = `bc_session=${o.cookie}; bc_csrf=tok`;
+  if (o.csrf !== null) headers["x-bc-csrf"] = o.csrf ?? "tok";
+  const mod = await import("@/app/api/remote-app/[[...path]]/route");
+  const res = await mod.POST(new NextRequest(`https://back-channel.app/api/remote-app/${path}`, { method: "POST", headers, body: JSON.stringify(body) }), { params: Promise.resolve({ path: path.split("/") }) });
+  const t = await res.text();
+  return { status: res.status, body: t ? JSON.parse(t) : null, headers: res.headers };
+}
 const stateOf = (r: Row) => Object.fromEntries(r.steps.map((s: Row) => [s.key, s.state]));
 
 // ── PUT /api/agents/self/readiness ──
@@ -279,6 +289,71 @@ test("owner view: stale, missing and matching", async () => {
   row(A.office).readiness = { v: 1, junk: true };
   const again = await get("readiness", { cookie: "cs_a" });
   assert.deepEqual([again.body.agents[2].readiness, again.body.agents[2].reporting], [null, false]);
+});
+
+// ── POST /api/remote-app/readiness/pc: "Which PC is this?" ──
+
+test("which PC: a worker reporting a computer name no PC is called matches once the person confirms that name for a PC", async () => {
+  // Registered as "Office PC"; the worker on it reports the Windows computer name.
+  await put(report(A.office, { name: "office", appbridge: { pipe: "listening", hostName: "JRR-IT-MZ013M7D", reason: null, version: "1.1.33.0" } }), { as: KEY.office });
+  let r = await get("readiness", { cookie: "cs_a" });
+  let office = r.body.agents.find((a: Row) => a.agentId === A.office);
+  assert.deepEqual([office.pc, office.pcMatchedBy, office.reportsFrom, stateOf(office).registered], [null, null, "JRR-IT-MZ013M7D", "unknown"]);
+  assert.match(office.steps.find((s: Row) => s.key === "registered").howTo, /Which PC is this\?/);
+  assert.deepEqual(r.body.registered.map((p: Row) => [p.hostDeviceId, p.name, p.agentHostName]),
+    [[PC1, "Shop-PC", null], [PC2, "Office PC", null], [PC3, "Twin", null], [PC4, "twin", null]], "every registered PC of this account, for the picker");
+
+  r = await post("readiness/pc", { hostDeviceId: PC2, hostName: "jrr-it-mz013m7d" }, { cookie: "cs_a" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.headers.get("cache-control"), "no-store");
+  assert.equal(tables.device.find(d => d.id === PC2)!.agentHostName, "JRR-IT-MZ013M7D", "stored as the worker reported it");
+  office = r.body.agents.find((a: Row) => a.agentId === A.office);
+  assert.deepEqual([office.pc, office.pcMatchedBy, office.ready], [{ hostDeviceId: PC2, name: "Office PC" }, "confirmed", true]);
+  assert.ok(!r.body.pcs.some((p: Row) => p.hostDeviceId === PC2), "no longer listed as a PC without an agent");
+  // Agents see it too: the PC lists that agent, ready.
+  const m = await get("machines", { as: KEY.laptop });
+  assert.deepEqual(m.body.machines.find((x: Row) => x.hostDeviceId === PC2).agents, [{ agentId: A.office, name: "Office agent", ready: true, missing: [] }]);
+  assert.equal(m.body.executors.find((x: Row) => x.agentId === A.office).pc, "Office PC");
+  // A worker matched by its PC's name says so.
+  await put(report(A.shop), { as: KEY.shop });
+  assert.equal((await get("readiness", { cookie: "cs_a" })).body.agents.find((a: Row) => a.agentId === A.shop).pcMatchedBy, "name");
+
+  // Confirming the same computer name for another PC moves it: one PC per computer name.
+  r = await post("readiness/pc", { hostDeviceId: PC1, hostName: "JRR-IT-MZ013M7D" }, { cookie: "cs_a" });
+  assert.equal(r.status, 200);
+  assert.deepEqual([tables.device.find(d => d.id === PC1)!.agentHostName, tables.device.find(d => d.id === PC2)!.agentHostName], ["JRR-IT-MZ013M7D", null]);
+  assert.deepEqual(r.body.agents.find((a: Row) => a.agentId === A.office).pc, { hostDeviceId: PC1, name: "Shop-PC" });
+  // null forgets it.
+  r = await post("readiness/pc", { hostDeviceId: PC1, hostName: null }, { cookie: "cs_a" });
+  assert.equal(r.status, 200);
+  assert.equal(tables.device.find(d => d.id === PC1)!.agentHostName, null);
+  assert.equal(r.body.agents.find((a: Row) => a.agentId === A.office).pc, null);
+});
+
+test("which PC: the person only, with the CSRF header; a name no worker reports, a PC that isn't theirs, or junk is refused", async () => {
+  await put(report(A.office, { name: "office", appbridge: { pipe: "listening", hostName: "JRR-IT-MZ013M7D", reason: null, version: "1.1.33.0" } }), { as: KEY.office });
+  const body = { hostDeviceId: PC2, hostName: "JRR-IT-MZ013M7D" };
+  const refused = async (res: Promise<Res>, status: number, error: string) => {
+    const r = await res;
+    assert.equal(r.status, status, JSON.stringify(r.body)); assert.equal(r.body.error, error);
+  };
+  await refused(post("readiness/pc", body), 401, "unauthorized");
+  await refused(post("readiness/pc", body, { as: KEY.office }), 403, "people_only");
+  await refused(post("readiness/pc", body, { cookie: "cs_a", csrf: null }), 403, "csrf");
+  await refused(post("readiness/pc", body, { cookie: "cs_a", csrf: "wrong" }), 403, "csrf");
+  await refused(post("readiness/pc", { ...body, hostName: "SOMEONE-ELSES-PC" }, { cookie: "cs_a" }), 400, "not_reported");
+  await refused(post("readiness/pc", { ...body, hostName: "" }, { cookie: "cs_a" }), 400, "invalid_request");
+  await refused(post("readiness/pc", { ...body, hostName: "x".repeat(81) }, { cookie: "cs_a" }), 400, "invalid_request");
+  await refused(post("readiness/pc", { hostDeviceId: PC5, hostName: "JRR-IT-MZ013M7D" }, { cookie: "cs_a" }), 404, "no_such_pc");
+  await refused(post("readiness/pc", { hostDeviceId: "pcRevoked0000000000000", hostName: "JRR-IT-MZ013M7D" }, { cookie: "cs_a" }), 404, "no_such_pc");
+  await refused(post("readiness/pc", { hostDeviceId: "phone00000000000000000", hostName: "JRR-IT-MZ013M7D" }, { cookie: "cs_a" }), 404, "no_such_pc");
+  // Another account's worker reporting that name doesn't make it one of this account's.
+  await put(report(A.other, { name: "theirs", appbridge: { pipe: "listening", hostName: "THEIR-BOX", reason: null, version: "1.1.33.0" } }), { as: KEY.other });
+  await refused(post("readiness/pc", { ...body, hostName: "THEIR-BOX" }, { cookie: "cs_a" }), 400, "not_reported");
+  // A revoked worker's report doesn't count either.
+  row(A.office).revokedAt = new Date();
+  await refused(post("readiness/pc", body, { cookie: "cs_a" }), 400, "not_reported");
+  assert.ok(tables.device.every(d => !d.agentHostName), "nothing written by any refusal");
 });
 
 // ── bc_remote_machines: what agents see ──

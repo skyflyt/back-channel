@@ -7,8 +7,12 @@
  * registered PC, which steps are done, which need action and which can't be told from here, with one line saying where
  * on that PC each is done (AppBridge → Agents). It also shows each agent's key fingerprint, for comparing in step 5.
  *
- * Read-only: GET /api/remote-app/readiness (cookie). Plain text only, no HTML strings (the site runs a Trusted Types
- * CSP). Timers are the global functions, called directly.
+ * A worker reports the computer it runs on by its Windows name, which is often not the name the PC was registered
+ * under. When no registered PC matches, the card asks "Which PC is this?", and the person's answer (POST
+ * /api/remote-app/readiness/pc, cookie + bc_csrf) records that computer name for that PC.
+ *
+ * GET /api/remote-app/readiness (cookie). Plain text only, no HTML strings (the site runs a Trusted Types CSP).
+ * Timers are the global functions, called directly.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -20,10 +24,48 @@ interface Sender { agentId: string; name: string | null; pinned: boolean }
 interface Report { appbridge: { pipe: string; hostName: string | null }; profiles: { remoteApp: { present: boolean; senders: Sender[] } } }
 interface AgentRow {
   agentId: string; name: string; fingerprint: string | null; readiness: Report | null; readinessAt: string | null; reporting: boolean;
-  pc: { hostDeviceId: string; name: string } | null; reportsFrom: string | null; steps: Step[]; ready: boolean; missing: string[];
+  pc: { hostDeviceId: string; name: string } | null; pcMatchedBy: "confirmed" | "name" | null; reportsFrom: string | null;
+  steps: Step[]; ready: boolean; missing: string[];
 }
 interface PcRow { hostDeviceId: string; name: string; note: string; steps: Step[]; ready: boolean; missing: string[] }
-interface Reply { staleAfterMinutes: number; agents: AgentRow[]; pcs: PcRow[] }
+interface Registered { hostDeviceId: string; name: string; agentHostName: string | null }
+interface Reply { staleAfterMinutes: number; agents: AgentRow[]; pcs: PcRow[]; registered: Registered[] }
+
+const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
+/** Record (or, with hostName null, forget) the computer name a PC's workers report. Resolves to the card's new data. */
+async function confirmPc(hostDeviceId: string, hostName: string | null): Promise<Reply> {
+  const r = await fetch("/api/remote-app/readiness/pc", {
+    method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
+    body: JSON.stringify({ hostDeviceId, hostName }),
+  });
+  const body = await r.json().catch(() => null);
+  if (!r.ok) throw new Error((body && typeof body.message === "string" && body.message) || "Couldn't save that. Refresh the page and try again.");
+  return body as Reply;
+}
+
+/** "Which PC is this?" for a worker whose computer name matches no registered PC. */
+function WhichPc({ hostName, registered, onSaved }: { hostName: string; registered: Registered[]; onSaved: (r: Reply) => void }) {
+  const [choice, setChoice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!registered.length) return null;
+  const save = async () => {
+    if (!choice) return;
+    setBusy(true); setError(null);
+    try { onSaved(await confirmPc(choice, hostName)); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <label className="ds-fine" htmlFor={`which-${hostName}`}>Which PC is this?</label>
+      <select id={`which-${hostName}`} className="ds-select" style={{ width: "auto", minWidth: 160 }} value={choice} disabled={busy} onChange={(e) => setChoice(e.target.value)}>
+        <option value="">Choose one of your PCs…</option>
+        {registered.map((p) => <option key={p.hostDeviceId} value={p.hostDeviceId}>{p.name}</option>)}
+      </select>
+      <button className="ds-btn" disabled={busy || !choice} onClick={save}>{busy ? "Saving…" : `"${hostName}" is this PC`}</button>
+      {error && <div className="ds-fine" role="alert" style={{ color: "var(--ds-warn)", flexBasis: "100%" }}>{error}</div>}
+    </div>
+  );
+}
 
 function ago(iso: string, now: number): string {
   const secs = Math.max(0, (now - new Date(iso).getTime()) / 1000);
@@ -47,12 +89,18 @@ function demo(): Reply {
     staleAfterMinutes: 30,
     agents: [
       { agentId: "demo-1", name: "Office agent", fingerprint: "3F2A-91C0-7B4D-E215", readiness: report("Office PC"), readinessAt: new Date(t - 4 * 60_000).toISOString(), reporting: true,
-        pc: { hostDeviceId: "demo-pc-1", name: "Office PC" }, reportsFrom: "Office PC", steps: steps(done, []), ready: true, missing: [] },
+        pc: { hostDeviceId: "demo-pc-1", name: "Office PC" }, pcMatchedBy: "name", reportsFrom: "Office PC", steps: steps(done, []), ready: true, missing: [] },
       { agentId: "demo-2", name: "Shop agent", fingerprint: "A0C4-5521-9E7B-08DD", readiness: report("Shop-PC"), readinessAt: new Date(t - 2 * 60_000).toISOString(), reporting: true,
-        pc: { hostDeviceId: "demo-pc-2", name: "Shop-PC" }, reportsFrom: "Shop-PC",
+        pc: { hostDeviceId: "demo-pc-2", name: "Shop-PC" }, pcMatchedBy: "confirmed", reportsFrom: "SHOP-7Q2M",
         steps: steps(["done", "done", "done", "done", "needed", "needed"], [null, null, null, null, "On that PC, open AppBridge → Agents → Choose agents…, and check each fingerprint matches the one Back Channel shows for that agent.", "On that PC, open AppBridge → Agents → Sign in to Claude."]),
         ready: false, missing: ["senders", "claude"] },
+      { agentId: "demo-4", name: "Desk agent", fingerprint: "77B1-0C3E-D942-5AF0", readiness: report("DESKTOP-K81Q"), readinessAt: new Date(t - 6 * 60_000).toISOString(), reporting: true,
+        pc: null, pcMatchedBy: null, reportsFrom: "DESKTOP-K81Q",
+        steps: steps(["done", "unknown", "done", "done", "done", "done"], [null, "It reports as \"DESKTOP-K81Q\", which matches no single PC registered here. If it's one of your registered PCs, say which on the Remote page (Agents on your PCs → Which PC is this?). If it isn't registered: On that PC, open AppBridge → Internet access → Register this PC, with a code from \"Add a device\" on the Remote page.", null, null, null, null]),
+        ready: false, missing: ["registered"] },
     ],
+    registered: [{ hostDeviceId: "demo-pc-1", name: "Office PC", agentHostName: null }, { hostDeviceId: "demo-pc-2", name: "Shop-PC", agentHostName: "SHOP-7Q2M" },
+      { hostDeviceId: "demo-pc-3", name: "Warehouse PC", agentHostName: null }],
     pcs: [{ hostDeviceId: "demo-pc-3", name: "Warehouse PC", note: "No agent set up on this PC yet.", ready: false, missing: ["appbridge", "agent_control", "worker", "senders", "claude"],
       steps: steps(["unknown", "done", "unknown", "needed", "unknown", "unknown"], Array(6).fill("Back Channel learns this once the worker on that PC reports.").map((x, i) => (i === 3 ? "On that PC, open AppBridge → Agents → Set up worker (Get a code gives it a connect code), then Start." : x))) }],
   };
@@ -123,7 +171,12 @@ export default function AgentsReadiness() {
 
   const where = (a: AgentRow) => {
     const from = a.reporting ? "Reports from" : "Reported from";
-    return a.pc ? `${from} PC ${a.pc.name}` : a.reportsFrom ? `${from} a PC called "${a.reportsFrom}", not matched to a PC registered here` : "Couldn't tell which PC it reports from";
+    if (a.pc && a.pcMatchedBy === "confirmed") return `${from} PC ${a.pc.name} (its computer, "${a.reportsFrom}", as you confirmed)`;
+    return a.pc ? `${from} PC ${a.pc.name}` : a.reportsFrom ? `${from} a computer called "${a.reportsFrom}", which matches no PC registered here` : "Couldn't tell which PC it reports from";
+  };
+  const forget = async (a: AgentRow) => {
+    if (!a.pc) return;
+    try { setData(await confirmPc(a.pc.hostDeviceId, null)); } catch { load(); }
   };
   const when = (a: AgentRow) => (!a.readinessAt ? "" : a.reporting ? `last reported ${ago(a.readinessAt, now)}`
     : `not reporting: the worker isn't running on that PC (last reported ${ago(a.readinessAt, now)})`);
@@ -143,7 +196,13 @@ export default function AgentsReadiness() {
         return (
           <div key={a.agentId} className="ds-item" style={{ display: "block" }}>
             <div className="ds-iname"><Badge ready={a.ready} missing={a.missing.length} stale={!a.reporting} /> {a.name}{a.pc ? ` on ${a.pc.name}` : ""}</div>
-            <div className="ds-imeta">{where(a)} · {when(a)}.</div>
+            <div className="ds-imeta">
+              {where(a)} · {when(a)}.
+              {a.pcMatchedBy === "confirmed" && (
+                <>{" "}<button className="ds-btn ghost" style={{ padding: "2px 8px", fontSize: 12 }} onClick={() => forget(a)}>Not this PC</button></>
+              )}
+            </div>
+            {!a.pc && a.reportsFrom && <WhichPc hostName={a.reportsFrom} registered={data.registered ?? []} onSaved={setData} />}
             {a.fingerprint && (
               <div className="ds-fine" style={{ marginTop: 4 }}>
                 Fingerprint <span className="ds-mono" style={{ color: "var(--ds-ink)" }}>{a.fingerprint}</span>. When another PC lists this agent under Choose agents…, check it shows the same.

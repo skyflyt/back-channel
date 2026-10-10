@@ -905,6 +905,19 @@ test("sessionsForHost: scope only to a PC whose worker reports AppBridge 1.1.33 
   assert.equal((await hostSessions()).body.sessions[0].scope, "apps");
 });
 
+test("sessionsForHost: a worker whose computer name isn't the PC's name counts once the person confirms that name for this PC", async () => {
+  const id = await startApproved({ executor: A.exec, apps: undefined });
+  // Registered as "Shop-PC"; the worker on it reports the Windows computer name.
+  reportOn(A.exec, "JRR-IT-MZ013M7D", "1.1.33.0");
+  assert.deepEqual((await hostSessions()).body, { sessions: [] }, "unmatched: no proof this PC speaks v1.2");
+  tables.device.find(d => d.id === PC1)!.agentHostName = "jrr-it-mz013m7d";
+  assert.deepEqual((await hostSessions()).body.sessions.map((s: Row) => [s.id, s.scope, s.apps]), [[id, "desktop", []]]);
+  // Confirmed for the other PC instead: it says nothing about this one.
+  tables.device.find(d => d.id === PC1)!.agentHostName = null;
+  tables.device.find(d => d.id === PC2)!.agentHostName = "JRR-IT-MZ013M7D";
+  assert.deepEqual((await hostSessions()).body, { sessions: [] });
+});
+
 test("sessionsForHost: a desktop session that named no apps reaches only a 1.1.33 PC; an older one never sees it, and nothing else changes", async () => {
   const id = await startApproved({ executor: A.exec, apps: undefined });
   assert.deepEqual((await hostSessions()).body, { sessions: [] }, "an older PC can't run it, so it isn't sent (an empty list is what that PC parses)");

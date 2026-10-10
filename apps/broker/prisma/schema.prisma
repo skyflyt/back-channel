@@ -536,6 +536,10 @@ model AppBridgeDevice {
   accountId           String
   role                String // "host" | "remote"
   label               String? // owner-chosen name, shown on the dashboard only
+  // Hosts: the computer name this PC's Back Channel workers report (readiness appbridge.hostName, from AppBridge's
+  // agent-control hello), as the person confirmed it on the Remote page. Matches a worker to this PC when the
+  // label differs from the computer name. Null until confirmed.
+  agentHostName       String?
   connectorSpki       String // base64 DER SubjectPublicKeyInfo (P-256)
   connectorSpkiSha256 String // uppercase hex SHA-256 of the DER
   enabled             Boolean               @default(true)
