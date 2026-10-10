@@ -99,6 +99,9 @@ const db: any = {
   taskMention: table("taskMention", () => ({ id: crypto.randomUUID(), createdAt: new Date(), agentId: null, seenAt: null })),
   taskReaction: table("taskReaction", () => ({ createdAt: new Date(), agentId: null })),
   taskListEvent: table("taskListEvent", () => ({ id: crypto.randomUUID(), createdAt: new Date() })),
+  // The passkey step-up on approval (src/lib/step-up.ts).
+  accountPasskey: table("accountPasskey", () => ({ id: crypto.randomUUID(), createdAt: new Date(), lastUsedAt: null, counter: 0n, transports: [] })),
+  passkeyChallenge: table("passkeyChallenge", () => ({ id: crypto.randomUUID(), createdAt: new Date(), action: null, targetId: null, answeredAt: null, grantHash: null, passkeyId: null, usedAt: null })),
 };
 const credentialFind = db.appBridgeCredential.findUnique;
 db.appBridgeCredential.findUnique = async (args: any) => {
@@ -175,6 +178,8 @@ function reset() {
   process.env.APPBRIDGE_REMOTE_ACCESS = "on";
   process.env.APPBRIDGE_RELAY_PUBLIC_KEY = RELAY_PUBLIC_KEY;
   process.env.ADMIN_EMAILS = OWNER_EMAIL;
+  // The passkey step-up is off for the support tests; the "step-up:" tests below turn it on.
+  process.env.APPROVAL_STEP_UP = "off";
   const now = new Date();
   tables.account.push(
     { id: "acct-a", handle: "skylar@bc", displayName: "Skylar", email: OWNER_EMAIL, emailVerifiedAt: now, reserved: false, cookie: "cs_a" },
@@ -207,10 +212,11 @@ beforeEach(reset);
 
 // ── Helpers ──
 type Res = { status: number; body: any; headers: Headers };
-async function api(method: "GET" | "POST", path: string, o: { as?: string; cookie?: string; csrf?: boolean; body?: unknown } = {}): Promise<Res> {
+async function api(method: "GET" | "POST", path: string, o: { as?: string; cookie?: string; csrf?: boolean; body?: unknown; stepUp?: string } = {}): Promise<Res> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (o.as) headers.authorization = `Bearer ${o.as}`;
   if (o.cookie) { headers.cookie = `bc_session=${o.cookie}; bc_csrf=tok`; if (o.csrf !== false) headers["x-bc-csrf"] = "tok"; }
+  if (o.stepUp) headers["x-bc-step-up"] = o.stepUp;
   const req = new NextRequest(`https://back-channel.app/api/support/${path}`, { method, headers, ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}) });
   const mod = await import("@/app/api/support/[[...path]]/route");
   const res = await mod[method](req, { params: Promise.resolve({ path: path.split("/").filter(Boolean) }) });
@@ -223,7 +229,7 @@ function p256(): Key {
   const der = publicKey.export({ type: "spki", format: "der" });
   return { spki: der.toString("base64"), fp: createHash("sha256").update(der).digest("hex").toUpperCase(), sign: m => sign("sha256", Buffer.from(m), { key: privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url") };
 }
-const person = (path: string, o: { cookie?: string; csrf?: boolean } = {}) => api("POST", path, { cookie: "cs_a", ...o });
+const person = (path: string, o: { cookie?: string; csrf?: boolean; stepUp?: string } = {}) => api("POST", path, { cookie: "cs_a", ...o });
 const client = (method: "GET" | "POST", path: string, cred: string, body?: unknown) => api(method, `client/${path}`, { as: cred, body });
 const inviteBody = (over: Row = {}) => ({ for: "Mom", task: "Get the printer working again", minutes: 30, ...over });
 const request = (over: Row = {}, as = KEY.starter) => api("POST", "invites", { as, body: inviteBody(over) });
@@ -929,4 +935,72 @@ test("every way a support session ends deletes the issuer connector's leg with t
     // Codes are capped at 5 a day; age this one out so the next ending gets a fresh code.
     for (const i of tables.supportInvite) if (i.mintedAt) i.mintedAt = new Date(Date.now() - 25 * 3_600_000);
   }
+});
+
+// ── The passkey step-up on approval (src/lib/step-up.ts; docs/remote-support.md, "Approving needs a passkey") ──
+
+function passkeyOn(accountId = "acct-a") {
+  tables.accountPasskey.push({ id: crypto.randomUUID(), accountId, credentialId: `cred-${accountId}`, publicKey: Buffer.from([165, 1, 2, 3, 38]), counter: 0n, transports: ["internal"], label: "Office PC", createdAt: new Date(), lastUsedAt: null });
+}
+/** A verified step-up's grant, exactly as passkeys.ts leaves it: on its ceremony's row, hashed, bound to one action and target. */
+function grantFor(action: string, targetId: string | null, over: Row = {}, accountId = "acct-a"): string {
+  const raw = ["bcsu", randomBytes(32).toString("base64url")].join("_");
+  const now = new Date();
+  tables.passkeyChallenge.push({ id: crypto.randomUUID(), accountId, kind: "step_up", action, targetId, challenge: `c${randomBytes(8).toString("hex")}`, createdAt: now,
+    answeredAt: now, grantHash: sha(raw), passkeyId: null, usedAt: null, expiresAt: new Date(now.getTime() + 2 * 60_000), ...over });
+  return raw;
+}
+const grantRow = (raw: string) => tables.passkeyChallenge.find(c => c.grantHash === sha(raw))!;
+
+test("step-up: minting a support code needs the person's passkey for that request; without one no code is made, shown or stored", async () => {
+  process.env.APPROVAL_STEP_UP = "on";
+  const id = (await request()).body.support.id;
+  const none = await person(`invites/${id}/approve`);
+  assert.equal(none.status, 403); assert.equal(none.body.error, "passkey_required");
+  passkeyOn();
+  const bare = await person(`invites/${id}/approve`);
+  assert.equal(bare.status, 403); assert.equal(bare.body.error, "step_up_required");
+  const other = (await request({ for: "Dad" })).body.support.id;
+  const now = Date.now();
+  for (const [why, g] of [
+    ["the agent-session approval with this id", grantFor("approve_session", id)],
+    ["another support request", grantFor("approve_support", other)],
+    ["connecting an agent", grantFor("connect_agent", null)],
+    ["expired", grantFor("approve_support", id, { expiresAt: new Date(now - 1) })],
+    ["already spent", grantFor("approve_support", id, { usedAt: new Date(now - 1000) })],
+  ] as Array<[string, string]>) {
+    const r = await person(`invites/${id}/approve`, { stepUp: g });
+    assert.equal(r.status, 403, why); assert.equal(r.body.error, "step_up_required", why);
+  }
+  for (const r of [none, bare]) assert.ok(!("code" in r.body) && !("url" in r.body));
+  assert.equal(inviteRow(id).status, "requested"); assert.equal(inviteRow(id).codeHash, null);
+  assert.equal(tables.accountAudit.filter(a => a.eventType === "support.minted").length, 0);
+  const g = grantFor("approve_support", id);
+  const ok = await person(`invites/${id}/approve`, { stepUp: g });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.match(ok.body.code, /^BCS-/);
+  assert.equal(inviteRow(id).status, "minted");
+  assert.ok(grantRow(g).usedAt instanceof Date, "spent by the mint");
+  // The same grant can't mint the other request's code.
+  assert.equal((await person(`invites/${other}/approve`, { stepUp: g })).body.error, "step_up_required");
+  assert.equal(inviteRow(other).codeHash, null);
+});
+
+test("step-up: deny and cancelling a code stay one click, an agent still can't mint, and APPROVAL_STEP_UP=off skips the check", async () => {
+  process.env.APPROVAL_STEP_UP = "on";
+  passkeyOn();
+  const first = (await request()).body.support.id;
+  const denied = await person(`invites/${first}/deny`);
+  assert.equal(denied.status, 200); assert.equal(denied.body.support.status, "denied");
+  const second = (await request({ for: "Dad" })).body.support.id;
+  const g = grantFor("approve_support", second);
+  const agent = await api("POST", `invites/${second}/approve`, { as: KEY.starter, cookie: "cs_a", stepUp: g });
+  assert.equal(agent.status, 403); assert.equal(agent.body.error, "people_only");
+  assert.equal(grantRow(g).usedAt, null);
+  assert.equal((await person(`invites/${second}/approve`, { stepUp: g })).status, 200);
+  assert.equal((await person(`invites/${second}/void`)).status, 200, "cancelling the code: ungated");
+  process.env.APPROVAL_STEP_UP = "off";
+  tables.accountPasskey.length = 0;
+  const third = (await request({ for: "Gran" })).body.support.id;
+  const ok = await person(`invites/${third}/approve`);
+  assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.match(ok.body.code, /^BCS-/);
 });

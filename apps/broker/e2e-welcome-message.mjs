@@ -6,6 +6,8 @@
 // the skill/bash path curls), and that a pre-existing account (already has an
 // agent) never gets one retroactively.
 //   node e2e-welcome-message.mjs          (BC_BASE defaults to http://localhost:3300)
+// Both mints need a passkey step-up (src/lib/step-up.ts), which a script can't do: run the dev server with
+// APPROVAL_STEP_UP=off for this script.
 import { PrismaClient } from "@prisma/client";
 import { randomBytes, createHash } from "node:crypto";
 

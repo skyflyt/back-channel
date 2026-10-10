@@ -13,11 +13,17 @@
  * cookie. An agent's one-tap approval link (?vt=...&approve=<id>) signs the person in through
  * consumeApprovalLink() and scrolls to that request's card.
  *
+ * Approve and "Let it go on" ask for the person's passkey (Windows Hello or their phone) for that one session, so an
+ * agent driving a PC whose browser is signed in can't approve or un-pause itself (src/lib/step-up.ts). An account with
+ * no passkey gets "Add a passkey" right there. Deny, Stop and Stop all stay one click.
+ *
  * Plain text only: the page's Trusted Types CSP blanks it on any raw HTML, so every string here is a React text node.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Chip } from "@/components/ui/primitives";
+import { sendWithStepUp } from "../passkey-client";
+import { AddPasskeyInline, usePasskeys } from "../passkeys";
 
 interface Who { agentId: string; name: string }
 interface Step { at: string; action: string; target: string | null; outcome: string; text: string; evidenceRef?: string }
@@ -30,7 +36,8 @@ interface AgentSession {
 interface Reply { pending: AgentSession[]; live: AgentSession[]; recent: AgentSession[] }
 
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
-const post = (path: string) => fetch(path, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() } });
+const post = (path: string, headers: Record<string, string> = {}) =>
+  fetch(path, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf(), ...headers } });
 
 /**
  * Sign in from an agent's approval link. The single-use token is spent by this POST, never by loading the
@@ -113,7 +120,9 @@ export default function AgentSessions() {
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
   const [focus, setFocus] = useState<string | null>(null);
+  const [needsPasskey, setNeedsPasskey] = useState<string | null>(null); // the request whose Approve needs a passkey added first
   const scrolled = useRef(false);
+  const passkeys = usePasskeys(state === "ready");
 
   const load = useCallback(async () => {
     try {
@@ -144,17 +153,36 @@ export default function AgentSessions() {
     document.getElementById(`agent-session-${focus}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [state, focus]);
 
-  async function act(s: AgentSession, what: "approve" | "deny" | "resume" | "stop") {
-    setBusy(`${what}:${s.id}`); setMessage("");
+  const clearFocus = (s: AgentSession) => {
+    if (focus !== s.id) return;
+    setFocus(null);
+    const url = new URL(window.location.href); url.searchParams.delete("approve");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  };
+
+  /**
+   * Approve, or let a paused session go on: the person's passkey for this session and this action (asked first when
+   * the account has one), then the request.
+   */
+  async function stepped(s: AgentSession, what: "approve" | "resume") {
+    setBusy(`${what}:${s.id}`); setMessage(""); setNeedsPasskey(null);
+    const action = what === "approve" ? "approve_session" : "resume_session";
+    const r = await sendWithStepUp(action, s.id, (h) => post(`/api/remote-app/sessions/${encodeURIComponent(s.id)}/${what}`, h), passkeys.hint);
+    if (r.ok) { setMessage(DONE[what]); clearFocus(s); }
+    else if (r.needsPasskey) setNeedsPasskey(s.id);
+    else setMessage(r.message ?? "That didn't work. Try again.");
+    setBusy("");
+    load();
+  }
+  const approve = (s: AgentSession) => stepped(s, "approve");
+
+  async function act(s: AgentSession, what: "deny" | "stop") {
+    setBusy(`${what}:${s.id}`); setMessage(""); setNeedsPasskey(null);
     try {
       const r = await post(`/api/remote-app/sessions/${encodeURIComponent(s.id)}/${what}`);
       const j = await r.json().catch(() => ({}));
       setMessage(r.ok ? DONE[what] : typeof j.message === "string" ? j.message : "That didn't work. Try again.");
-      if (r.ok && focus === s.id) {
-        setFocus(null);
-        const url = new URL(window.location.href); url.searchParams.delete("approve");
-        window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-      }
+      if (r.ok) clearFocus(s);
     } catch { setMessage("Couldn't reach Back Channel. Try again."); }
     setBusy("");
     load();
@@ -223,11 +251,14 @@ export default function AgentSessions() {
                 {goalAndTask(s)}
               </>
             )}
-            <p className="ds-fine" style={{ margin: "8px 0" }}>Approve only if you asked for this. Every step the agent takes is listed here{s.task ? " and on the task" : ""}.</p>
+            <p className="ds-fine" style={{ margin: "8px 0" }}>Approve only if you asked for this. Approving asks for your passkey (Windows Hello or your phone). Every step the agent takes is listed here{s.task ? " and on the task" : ""}.</p>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button className="ds-btn" disabled={!!busy || left <= 0} onClick={() => act(s, "approve")}>Approve</button>
+              <button className="ds-btn" disabled={!!busy || left <= 0} onClick={() => approve(s)}>{busy !== `approve:${s.id}` ? "Approve" : passkeys.hint ? "Waiting for your passkey…" : "Approving…"}</button>
               <button className="ds-btn ghost" disabled={!!busy} onClick={() => act(s, "deny")}>Deny</button>
             </div>
+            {needsPasskey === s.id && (
+              <AddPasskeyInline action="Approving" onCancel={() => setNeedsPasskey(null)} onAdded={() => { void passkeys.reload(); void approve(s); }} />
+            )}
           </div>
         );
       })}
@@ -242,13 +273,16 @@ export default function AgentSessions() {
                 <div className="ds-iname">{paused ? <Chip tone="warn">Paused</Chip> : <Chip tone="ok">Running</Chip>} {s.startedBy.name} is using {desktop(s) ? `the whole PC (${s.pc.label})` : `${appList(s.apps)} on ${s.pc.label}`}</div>
                 <div className="ds-imeta">{clock(left)} left of {s.minutes} minutes{drivenBy(s)}</div>
                 {goalAndTask(s)}
-                {paused && <p className="ds-fine" style={{ margin: "8px 0 0" }}>It stopped to ask: {s.pausedBecause ?? "something unexpected came up"}. Sort it out at the PC, then let it go on, or stop it.</p>}
+                {paused && <p className="ds-fine" style={{ margin: "8px 0 0" }}>It stopped to ask: {s.pausedBecause ?? "something unexpected came up"}. Sort it out at the PC, then let it go on (that asks for your passkey), or stop it.</p>}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                {paused && <button className="ds-btn ghost" disabled={!!busy} onClick={() => act(s, "resume")}>Let it go on</button>}
+                {paused && <button className="ds-btn ghost" disabled={!!busy} onClick={() => stepped(s, "resume")}>{busy !== `resume:${s.id}` ? "Let it go on" : passkeys.hint ? "Waiting for your passkey…" : "…"}</button>}
                 <button className="ds-btn danger" disabled={busy === `stop:${s.id}`} onClick={() => act(s, "stop")}>Stop</button>
               </div>
             </div>
+            {paused && needsPasskey === s.id && (
+              <AddPasskeyInline action="Letting it go on" onCancel={() => setNeedsPasskey(null)} onAdded={() => { void passkeys.reload(); void stepped(s, "resume"); }} />
+            )}
             <Steps steps={s.actions ?? []} />
           </div>
         );

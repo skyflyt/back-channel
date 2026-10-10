@@ -143,6 +143,9 @@ const prismaMock = {
 };
 
 before(() => {
+  // These tests are about how a rotated key is stored; the passkey step-up in front of rotation has its own tests
+  // (passkeys.routetest.mts), so it's off here.
+  process.env.APPROVAL_STEP_UP = "off";
   mock.module("@/lib/db", { namedExports: { prisma: prismaMock } });
   // NOTE: @/lib/auth is intentionally NOT mocked here -- the whole point of
   // this test file is to exercise the real hashToken/upsertOriginalAgentToken/

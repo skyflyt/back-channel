@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid, hashToken, generateExchangeCode, exchangeCodeExpiry } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 import { exchangePastePrompt } from "@/lib/notify.mjs";
+import { requireConnectStepUp, STEP_UP_HEADER } from "@/lib/step-up";
 
 export const runtime = "nodejs";
 
@@ -11,6 +12,10 @@ export const runtime = "nodejs";
  * code for the signed-in account (cookie + CSRF). The user pastes ONLY the code
  * to their agent, which trades it at POST /api/auth/exchange for the real bc_
  * key — so the raw key never lands in a chat transcript. Stored hashed at rest.
+ *
+ * On an account with a PC in Back Channel Remote, needs the person's passkey step-up
+ * (connect_agent, src/lib/step-up.ts): an agent driving that PC, whose browser is
+ * signed in, can't mint itself a new agent key. Other accounts: as before.
  */
 export async function POST(req: NextRequest) {
   const account = await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value);
@@ -19,6 +24,8 @@ export async function POST(req: NextRequest) {
   // SEC H1: gate on verification, not the legacy Account.apiKey column (nothing
   // writes it anymore — see /api/account/agents for the same pattern).
   if (!account.emailVerifiedAt) return NextResponse.json({ error: "no_api_key", message: "Verify your email first — your account doesn't have a key yet." }, { status: 409 });
+  const refusal = await requireConnectStepUp(prisma, { accountId: account.id, grant: req.headers.get(STEP_UP_HEADER), now: new Date() });
+  if (refusal) return NextResponse.json({ error: refusal.error, message: refusal.message }, { status: refusal.status });
 
   // Cap pre-emptive code-grabbing: 15 mints/hour/account (5 was too low — a user
   // wiring several runtimes, each needing its own code, hit it; plus accidental

@@ -12,7 +12,7 @@
  *   Friends   — people cards + per-friend page (?friend=)
  *   Toolkit   — saved tools, shared-with-you, discoverable in circle
  *   Agents    — registered agents + connect-a-new-agent flows (MCP primary)
- *   Settings  — notifications/cadence, browser access, API key, activity
+ *   Settings  — notifications/cadence, passkeys (approval step-up), browser access, API key, activity
  *
  * Data + auth are unchanged from before the redesign: everything loads client-side
  * from /api/* with the bc_session cookie. In non-production builds an unauthenticated
@@ -33,6 +33,9 @@ import { AppShell, type ShellTab } from "@/components/ui/shell";
 import { type PaletteItem } from "@/components/ui/command-palette";
 import { Chip, EmptyState, HealthDot, MetricCard, PersonAvatar, SkeletonRows, agoShort, shortHandle, initialsOf } from "@/components/ui/primitives";
 import { DEMO_ACCOUNT } from "@/lib/demo-data";
+// Connecting an agent (any route that mints an agent key) asks for the person's passkey: src/lib/step-up.ts.
+import { AddPasskeyInline, PasskeysCard, usePasskeys } from "./passkeys";
+import { sendWithStepUp, type Guarded } from "./passkey-client";
 
 interface Me {
   admin?: boolean; // present (true) only for the owner: shows the Admin tab
@@ -235,6 +238,10 @@ export default function AccountPage() {
   const [fiNote, setFiNote] = useState("");
   const [fiSent, setFiSent] = useState(false);
   const [fiErr, setFiErr] = useState("");
+  // Minting an agent key needs a passkey step-up; with no passkey yet, "Add a passkey" shows in place, then retries.
+  const passkeys = usePasskeys(state === "ok");
+  const [passkeyFor, setPasskeyFor] = useState<{ where: "connect" | "key"; retry: () => void } | null>(null);
+  const [keyErr, setKeyErr] = useState(""); // a refused key rotation, in words
 
   const loadSessions = useCallback(async () => {
     try {
@@ -361,24 +368,22 @@ export default function AccountPage() {
     setBusy(""); loadSessions();
   };
 
-  const rotateKey = async () => {
-    if (!confirm("Rotate your API key? Any agent still using the old key will stop working until you give it the new one.")) return;
-    setBusy("key");
-    try {
-      const r = await fetch("/api/account/key/rotate", { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf() } });
-      const j = await r.json();
-      if (r.ok && j.api_key) setNewKey(j.api_key);
-    } catch { /* ignore */ }
+  const rotateKey = async (confirmed = false) => {
+    if (!confirmed && !confirm("Rotate your API key? Any agent still using the old key will stop working until you give it the new one.")) return;
+    setBusy("key"); setKeyErr(""); setPasskeyFor(null);
+    const r = await sendWithStepUp("connect_agent", null, (h) => fetch("/api/account/key/rotate", { method: "POST", credentials: "include", headers: { "x-bc-csrf": csrf(), ...h } }), passkeys.connectHint);
+    if (r.ok && typeof r.body.api_key === "string") setNewKey(r.body.api_key);
+    else if (r.needsPasskey) setPasskeyFor({ where: "key", retry: () => { void passkeys.reload(); void rotateKey(true); } });
+    else setKeyErr(mintError(r));
     setBusy("");
   };
 
   const revealBootstrap = async () => {
-    setBusy("bootstrap");
-    try {
-      const r = await fetch("/api/account/bootstrap-prompt", { credentials: "include" });
-      const j = await r.json();
-      if (r.ok && j.prompt) setBootstrap(j.prompt);
-    } catch { /* ignore */ }
+    setBusy("bootstrap"); setExErr(""); setPasskeyFor(null);
+    const r = await sendWithStepUp("connect_agent", null, (h) => fetch("/api/account/bootstrap-prompt", { credentials: "include", headers: h }), passkeys.connectHint);
+    if (r.ok && typeof r.body.prompt === "string") setBootstrap(r.body.prompt);
+    else if (r.needsPasskey) setPasskeyFor({ where: "connect", retry: () => { void passkeys.reload(); void revealBootstrap(); } });
+    else setExErr(mintError(r));
     setBusy("");
   };
 
@@ -400,47 +405,47 @@ export default function AccountPage() {
   }, [exCode, exExpiry]);
 
   // Map a failed exchange-code mint to a plain-language message.
-  const exchangeErrorMessage = (status: number, j: { message?: string }) =>
+  const exchangeErrorMessage = (status: number, j: { error?: unknown; message?: unknown }) =>
     status === 429 ? "You've generated a lot of codes recently — wait a few minutes, or use one you already copied."
+    : status === 403 && (j.error === "step_up_required" || j.error === "passkey_required") && typeof j.message === "string" ? j.message
     : status === 403 ? "Your sign-in session expired. Refresh the page and try again."
     : status === 409 ? "Your email isn't verified yet — check your inbox for the sign-in link."
-    : (j.message || `Couldn't generate a code (error ${status}). Try again in a moment.`);
+    : ((typeof j.message === "string" && j.message) || `Couldn't generate a code (error ${status}). Try again in a moment.`);
+  // A mint that went through the passkey step-up: the server's answer, or the prompt's own (cancelled, no network).
+  const mintError = (r: Guarded) => (r.status ? exchangeErrorMessage(r.status, r.body) : r.message ?? "Couldn't reach Back Channel. Check your connection and try again.");
 
-  // MCP connector: mint a per-agent key straight from the dashboard.
+  // MCP connector: mint a per-agent key straight from the dashboard (after the person's passkey).
   const MCP_CLIENT_RUNTIME: Record<string, string> = { claude_desktop: "cowork", claude_code: "claude_code", codex: "codex", other: "other" };
   const MCP_CLIENT_LABEL: Record<string, string> = { claude_desktop: "Claude Desktop", claude_code: "Claude Code", codex: "Codex app / CLI", other: "Other MCP client" };
   const mintMcpToken = async () => {
-    setBusy("mcp-mint"); setMcpErr("");
-    try {
-      const r = await fetch("/api/account/agents", {
-        method: "POST", credentials: "include",
-        headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
-        body: JSON.stringify({ agent_name: agentName.trim() || MCP_CLIENT_LABEL[mcpClient], runtime_type: MCP_CLIENT_RUNTIME[mcpClient] }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (r.ok && j.api_key) { setMcpToken(j.api_key); setAgentFormOpen(false); setMcpCopied(""); loadAgents(); }
-      else setMcpErr(exchangeErrorMessage(r.status, j));
-    } catch { setMcpErr("Couldn't reach Back Channel. Check your connection and try again."); }
+    setBusy("mcp-mint"); setMcpErr(""); setPasskeyFor(null);
+    const r = await sendWithStepUp("connect_agent", null, (h) => fetch("/api/account/agents", {
+      method: "POST", credentials: "include",
+      headers: { "content-type": "application/json", "x-bc-csrf": csrf(), ...h },
+      body: JSON.stringify({ agent_name: agentName.trim() || MCP_CLIENT_LABEL[mcpClient], runtime_type: MCP_CLIENT_RUNTIME[mcpClient] }),
+    }), passkeys.connectHint);
+    if (r.ok && typeof r.body.api_key === "string") { setMcpToken(r.body.api_key); setAgentFormOpen(false); setMcpCopied(""); loadAgents(); }
+    else if (r.needsPasskey) setPasskeyFor({ where: "connect", retry: () => { void passkeys.reload(); void mintMcpToken(); } });
+    else setMcpErr(mintError(r));
     setBusy("");
   };
 
   const connectNewAgent = async (plugin = false) => {
-    setBusy("exchange"); setExErr("");
+    setBusy("exchange"); setExErr(""); setPasskeyFor(null);
     if (plugin) setLegacyOpen(true);
-    try {
-      const r = await fetch("/api/auth/exchange-code", {
-        method: "POST", credentials: "include",
-        headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
-        body: JSON.stringify({ agent_name: agentName.trim() || (plugin ? "Codex" : "New agent"), runtime_type: plugin ? "codex" : agentRuntime === "claude_web" ? "other" : agentRuntime }),
-      });
-      const j = await r.json().catch(() => ({}));
-      if (r.ok && j.code) {
-        setExCode(j.code); setExPrompt(plugin ? `Connect Back Channel with code ${j.code} using the installed Back Channel plugin.` : j.paste_prompt);
-        setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setLegacyFormOpen(false);
-        if (plugin) { setConnectTrack("quick"); setLegacyOpen(true); setAgentFormOpen(false); }
-      }
-      else setExErr(exchangeErrorMessage(r.status, j));
-    } catch { setExErr("Couldn't reach Back Channel. Check your connection and try again."); }
+    const r = await sendWithStepUp("connect_agent", null, (h) => fetch("/api/auth/exchange-code", {
+      method: "POST", credentials: "include",
+      headers: { "content-type": "application/json", "x-bc-csrf": csrf(), ...h },
+      body: JSON.stringify({ agent_name: agentName.trim() || (plugin ? "Codex" : "New agent"), runtime_type: plugin ? "codex" : agentRuntime === "claude_web" ? "other" : agentRuntime }),
+    }), passkeys.connectHint);
+    const j = r.body as { code?: string; paste_prompt?: string; expires_at?: string };
+    if (r.ok && j.code) {
+      setExCode(j.code); setExPrompt(plugin ? `Connect Back Channel with code ${j.code} using the installed Back Channel plugin.` : j.paste_prompt ?? "");
+      setExExpiry(new Date(j.expires_at ?? 0).getTime()); setExCopied(false); setLegacyFormOpen(false);
+      if (plugin) { setConnectTrack("quick"); setLegacyOpen(true); setAgentFormOpen(false); }
+    }
+    else if (r.needsPasskey) setPasskeyFor({ where: "connect", retry: () => { void passkeys.reload(); void connectNewAgent(plugin); } });
+    else setExErr(mintError(r));
     setBusy("");
   };
 
@@ -454,24 +459,24 @@ export default function AccountPage() {
   // Mint a fresh exchange code carrying this agent's name+runtime, so the user can
   // re-paste it to their agent and re-bind a new BC token (e.g. after host-auth died).
   const reconnectAgent = async (a: AgentRow) => {
-    setBusy(`reconnect:${a.id}`); setExErr("");
-    try {
-      const r = await fetch("/api/auth/exchange-code", {
-        method: "POST", credentials: "include",
-        headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
-        body: JSON.stringify({ agent_name: a.name, runtime_type: a.runtime_type }),
-      });
-      const j = await r.json().catch(() => ({}));
-      // Reconnect rides the legacy exchange-code panel — make sure it's visible.
-      setLegacyOpen(true);
-      if (r.ok && j.code) {
-        setExCode(j.code); setExPrompt(a.runtime_type === "codex" ? `Connect Back Channel with code ${j.code} using the installed Back Channel plugin.` : j.paste_prompt); setExExpiry(new Date(j.expires_at).getTime()); setExCopied(false); setLegacyFormOpen(false);
-        if (a.runtime_type === "codex") setConnectTrack("quick");
-      } else {
-        setExErr(exchangeErrorMessage(r.status, j));
-      }
-      setTimeout(() => document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
-    } catch { setExErr("Couldn't reach Back Channel. Check your connection and try again."); }
+    setBusy(`reconnect:${a.id}`); setExErr(""); setPasskeyFor(null);
+    const r = await sendWithStepUp("connect_agent", null, (h) => fetch("/api/auth/exchange-code", {
+      method: "POST", credentials: "include",
+      headers: { "content-type": "application/json", "x-bc-csrf": csrf(), ...h },
+      body: JSON.stringify({ agent_name: a.name, runtime_type: a.runtime_type }),
+    }), passkeys.connectHint);
+    const j = r.body as { code?: string; paste_prompt?: string; expires_at?: string };
+    // Reconnect rides the legacy exchange-code panel — make sure it's visible.
+    setLegacyOpen(true);
+    if (r.ok && j.code) {
+      setExCode(j.code); setExPrompt(a.runtime_type === "codex" ? `Connect Back Channel with code ${j.code} using the installed Back Channel plugin.` : j.paste_prompt ?? ""); setExExpiry(new Date(j.expires_at ?? 0).getTime()); setExCopied(false); setLegacyFormOpen(false);
+      if (a.runtime_type === "codex") setConnectTrack("quick");
+    } else if (r.needsPasskey) {
+      setPasskeyFor({ where: "connect", retry: () => { void passkeys.reload(); void reconnectAgent(a); } });
+    } else {
+      setExErr(mintError(r));
+    }
+    setTimeout(() => document.querySelector("#connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     setBusy("");
   };
 
@@ -1364,8 +1369,13 @@ export default function AccountPage() {
           own settings; the agent is never asked to run anything to establish trust. */}
       <div className="ds-card" id="connect-agent">
         <h2 className="ds-cardh">Connect a new agent</h2>
-        <p className="ds-cardsub">Choose your AI client below. The Codex plugin connects with a one-time code; other MCP clients can use a token in their settings. Signing in to this website does not connect your assistant.</p>
+        <p className="ds-cardsub">Choose your AI client below. The Codex plugin connects with a one-time code; other MCP clients can use a token in their settings. Signing in to this website does not connect your assistant.{passkeys.state?.connectStepUp === "on" ? " Because you use Back Channel Remote, getting a token or a code asks for your passkey (Windows Hello or your phone), so an agent working on one of your PCs can't connect itself." : ""}</p>
         {mcpErr && <p className="ds-call danger" style={{ marginBottom: 12 }}>⚠ {mcpErr}</p>}
+        {passkeyFor?.where === "connect" && (
+          <div style={{ marginBottom: 12 }}>
+            <AddPasskeyInline action="Connecting an agent" onCancel={() => setPasskeyFor(null)} onAdded={() => { const retry = passkeyFor.retry; setPasskeyFor(null); retry(); }} />
+          </div>
+        )}
         {mcpToken ? (() => {
           const mcpUrl = `${typeof window !== "undefined" ? window.location.origin : "https://back-channel.app"}/api/mcp`;
           const copyBtn = (id: string, text: string, label = "Copy") => (
@@ -1584,6 +1594,9 @@ export default function AccountPage() {
         )}
       </div>
 
+      {/* Passkeys for approvals and agent connections (src/lib/step-up.ts) */}
+      <PasskeysCard demoMode={demoMode} />
+
       {/* Browser access (key mirror) — global enroll/devices entry point (QA H2) */}
       <div className="ds-card" style={{ marginBottom: 14 }}>
         <h2 className="ds-cardh">Browser access</h2>
@@ -1617,9 +1630,13 @@ export default function AccountPage() {
           <>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <code className="ds-mono" style={{ background: "#f8fafc", border: "1px solid var(--ds-line)", borderRadius: 8, padding: "6px 10px", fontSize: 13 }}>{m.api_key_masked ?? "—"}</code>
-              <button className="ds-btn ghost" onClick={rotateKey} disabled={busy === "key" || demoMode}>{busy === "key" ? "Rotating…" : "Rotate key"}</button>
+              <button className="ds-btn ghost" onClick={() => rotateKey()} disabled={busy === "key" || demoMode}>{busy === "key" ? "Rotating…" : "Rotate key"}</button>
             </div>
-            <p className="ds-fine" style={{ marginTop: 8 }}>Last used {lastUsed}. We never show the full key here — only the last 4 characters. <button className="ds-link" onClick={() => setShowDevKey(false)}>Hide</button></p>
+            <p className="ds-fine" style={{ marginTop: 8 }}>Last used {lastUsed}. We never show the full key here — only the last 4 characters.{passkeys.state?.connectStepUp === "on" ? " Rotating asks for your passkey." : ""} <button className="ds-link" onClick={() => setShowDevKey(false)}>Hide</button></p>
+            {keyErr && <p className="ds-call danger" style={{ marginTop: 8 }}>⚠ {keyErr}</p>}
+            {passkeyFor?.where === "key" && (
+              <AddPasskeyInline action="Rotating your key" onCancel={() => setPasskeyFor(null)} onAdded={() => { const retry = passkeyFor.retry; setPasskeyFor(null); retry(); }} />
+            )}
           </>
         )}
       </div>

@@ -29,7 +29,8 @@ redeem and issuer-pin races in `scripts/appbridge-integration.mts`.
    a full-scope agent key. This creates a *request*, never a code, and returns a one-tap approval link (a
    single-use, 15-minute dashboard sign-in, the view-token pattern Phase A uses). The agent gives the link to its
    person. **No response to an agent ever carries a code.**
-2. **The person approves, and the code is minted.** Only on the Remote page (cookie + CSRF), only the owner in v1.
+2. **The person approves, and the code is minted.** Only on the Remote page (cookie + CSRF), only the owner in v1,
+   and only with the person's passkey (see [Approving needs a passkey](#approving-needs-a-passkey)).
    Approving mints a single-use code `BCS-XXXX-XXXX` (31^8 possibilities, from an alphabet without 0/O/1/I/L) and
    shows it **once**, with its link `https://back-channel.app/support/BCS-XXXX-XXXX`, to the person. Only its
    SHA-256 is stored, so nobody can show it again: not the dashboard, not the agent, not an operator. The person
@@ -60,7 +61,7 @@ redeem and issuer-pin races in `scripts/appbridge-integration.mts`.
 |---|---|
 | Who can issue | the owner only (v1): an account whose verified email is in `ADMIN_EMAILS` (`src/lib/owner.ts`), with Back Channel Remote (`remoteAccessSource`), while `APPBRIDGE_REMOTE_ACCESS` is `on`. Checked when the agent asks, when the person approves, when the code is redeemed and at Allow; the relay gate re-checks the entitlement at every pass, redemption and renewal. |
 | Who asks | an agent with a full-scope key; a connector key (claude.ai, ChatGPT) is refused |
-| Who mints | the person, cookie + CSRF; any request carrying a bearer key is refused first (`403 people_only`) |
+| Who mints | the person, cookie + CSRF, with a passkey step-up for that request; any request carrying a bearer key is refused first (`403 people_only`) |
 | The task | one plain sentence, at most 300 characters, shown word for word; no links, email addresses or phone numbers (`422 no_contact_details`); nothing code- or secret-shaped (`422 secret_like`); invisible and direction-changing characters stripped |
 | `for` | who it's for, in the agent's words (at most 60 characters); shown to the issuer only, never to the helped person |
 | Minutes | 1 to 45, never extended |
@@ -118,6 +119,24 @@ each action, so a refusal on their screen is recorded and the session goes on.
   refused). No `screenshot`: nothing is kept on a machine that removes itself. Outcomes: `ok`, `declined`,
   `credential_field`, `not_in_scope`, `needs_user` (for example a Windows permission prompt, which the person answers
   on the real prompt), `fail_closed`.
+
+## Approving needs a passkey
+
+Decided by Skylar on 2026-10-10 (the vault's `agent-desktop-scope.md`, "Security decisions after the build"). An
+agent may use the whole of one of the person's PCs, and that PC's browser is usually signed in to back-channel.app.
+Without this, an agent could open the Remote page there, approve its own support request and read the code off the
+screen: a code it must never see.
+
+- Approving (`POST /invites/{id}/approve`) needs a WebAuthn step-up just before it: a passkey, which is Windows Hello
+  on the PC, the person's phone, or a security key. An agent can't complete one: it's a credential prompt, on the
+  PC's off-limits list, and a phone passkey needs the phone.
+- The grant is for `approve_support` and this one request only. It lasts at most 2 minutes and is spent by the mint,
+  inside its serializable transaction, after every other check (so a refused request never spends it).
+- Without a valid grant, approve is `403 step_up_required` and no code is made. With no passkey on the account, it's
+  `403 passkey_required`, and the card offers **Add a passkey** in place.
+- **Deny, cancelling a code and Stop are not gated.**
+- The passkeys, their routes, the grant and the `APPROVAL_STEP_UP` emergency switch are described once, in
+  [remote app sessions](remote-app-sessions.md#approvals-need-a-passkey).
 
 ## The temporary client's credential and relay admission
 
@@ -302,7 +321,7 @@ Serializable conflicts that outlast the retry budget are `503 { error: "busy", r
 | `GET /invites/{id}` | the agent that asked, or the person | | `{ support, steps?, transcript?, next? }`; the agent's first read after Allow also carries `support.session.executorSecret`, once (see [The executor secret](#the-executor-secret)) |
 | `POST /invites/{id}/end` | the agent that asked | `{ finished? }` | withdraws a request or an unused code; ends a session (`done` when finished, else `agent_stop`); `{ support, transcript?, task, next }` |
 | `POST /invites/{id}/executor-secret` | the agent that asked | | a fresh executor secret, in this reply only (`support.session.executorSecret`), the old one stops working: `{ support, next }`; only while running |
-| `POST /invites/{id}/approve` | person (owner) | | `{ support, code, url, codeExpiresAt, note }`: **the only response that ever carries the code** |
+| `POST /invites/{id}/approve` | person (owner), with a passkey step-up for this request in `x-bc-step-up` | | `{ support, code, url, codeExpiresAt, note }`: **the only response that ever carries the code**; `403 step_up_required` or `passkey_required` without one |
 | `POST /invites/{id}/deny` | person | | `{ support }` |
 | `POST /invites/{id}/void` | person | | cancels an unused code: `{ support }` |
 | `POST /invites/{id}/stop` | person | | ends the session (`user_stop`), deletes its relay lease; idempotent: `{ support, transcript }` |
@@ -414,7 +433,7 @@ out for anything but a full-scope agent key, and a call from a connector key is 
 | # | Threat | Mitigation here |
 |---|---|---|
 | T2 | Session hijack | The helper's lease is re-gated on every renewal and presented with the key pinned at redemption; its credential is bound to that key (Allow and the receipt are signed by it). The issuer connector's lease is pinned to one device's key at its first pass, re-gated on every renewal, and the helper pins that key (`peer`) for the inner TLS. Every ending deletes both leases in the same transaction. A rotated credential (same-key re-redeem) ends the old one. |
-| T10 | An injected agent or rogue process of the issuer's own | Codes are minted by people only; the issuer connector's pipe admits only the session's executor secret, handed out once to the agent that asked (hash-only at rest, rotatable only by that agent), so another process of the same user can't drive the helped computer. |
+| T10 | An injected agent or rogue process of the issuer's own | Codes are minted by people only, with the person's passkey for that request, so an agent driving the issuer's PC (whose browser is signed in) can't mint one and read it off the screen; the issuer connector's pipe admits only the session's executor secret, handed out once to the agent that asked (hash-only at rest, rotatable only by that agent), so another process of the same user can't drive the helped computer. |
 | T3 | Code interception or forwarding | Single use, 15 minutes, bound to the issuer and the exact task, minted only for the person and shown once, stored hashed; the agent never sees it; pinned to the first key (a second key gets the uniform answer); the consent screen shows the real issuer; "I didn't ask for this" voids it. The page sends no Referer. A code in a request log (the path) is still single-use and short-lived, and whoever redeems it sees the consent screen, not the helped person's machine. |
 | T5 | Privilege escalation, UAC | `needs_user` is recorded and the helped person answers the real Windows prompt; the client (B3) can't bypass or auto-accept it. |
 | T6 | Persistence | No device enrollment, no `AppBridgeDevice`, a credential that can't be renewed and expires on its own, a relay identity that dies with the session, and a signed removal receipt; an unconfirmed removal is said plainly. |
@@ -439,6 +458,7 @@ No retention rule yet; a deleted account's rows must be removed by `accountId` b
 | `ADMIN_EMAILS` | Who may issue support codes in v1 (the owner gate, `src/lib/owner.ts`). Unset: nobody. |
 | `APPBRIDGE_REMOTE_ACCESS` | `on` enables support (and all relay access). Anything else refuses requests, mints, redemptions, Allow and every support lease. |
 | `SUPPORT_CLIENT_URL` | The signed helper's download (https). Unset: the landing page says the helper isn't available yet. |
+| `APPROVAL_STEP_UP` | Default `on`: approving needs the person's passkey. `off` skips that check: an emergency switch only ([remote app sessions](remote-app-sessions.md#approvals-need-a-passkey)). |
 
 ## What is not built
 

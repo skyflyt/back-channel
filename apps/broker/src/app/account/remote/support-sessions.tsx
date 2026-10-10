@@ -13,10 +13,16 @@
  * through the cookie-authenticated /api/support routes; every change echoes the bc_csrf cookie. An agent's one-tap
  * approval link (?vt=...&support=<id>) signs the person in through the page's consumeApprovalLink() and brings that
  * request into view.
+ *
+ * Approve asks for the person's passkey (Windows Hello or their phone) for that one request, so an agent driving a PC
+ * whose browser is signed in can't mint a code and read it off the screen (src/lib/step-up.ts). An account with no
+ * passkey gets "Add a passkey" right there. Deny, cancel and Stop stay one click.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Chip } from "@/components/ui/primitives";
+import { sendWithStepUp } from "../passkey-client";
+import { AddPasskeyInline, usePasskeys } from "../passkeys";
 
 interface Step { at: string; text: string; outcome: string }
 interface Session {
@@ -37,7 +43,8 @@ interface Reply {
 interface Minted { id: string; code: string; url: string; expiresAt: string; for: string }
 
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
-const post = (path: string) => fetch(path, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() } });
+const post = (path: string, headers: Record<string, string> = {}) =>
+  fetch(path, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf(), ...headers } });
 function clock(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -100,7 +107,9 @@ export default function SupportSessions() {
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
   const [focus, setFocus] = useState<string | null>(null);
+  const [needsPasskey, setNeedsPasskey] = useState<string | null>(null); // the request whose Approve needs a passkey added first
   const scrolled = useRef(false);
+  const passkeys = usePasskeys(state === "ready");
 
   const load = useCallback(async () => {
     try {
@@ -138,20 +147,21 @@ export default function SupportSessions() {
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   };
 
+  /** Approve: the person's passkey for this request (asked first when the account has one), then the code, shown once. */
   async function approve(s: Support) {
-    setBusy(`approve:${s.id}`); setMessage(""); setCopied("");
-    try {
-      const r = await post(`/api/support/invites/${encodeURIComponent(s.id)}/approve`);
-      const j = await r.json().catch(() => ({}));
-      if (r.ok && typeof j.code === "string") { setMinted({ id: s.id, code: j.code, url: j.url, expiresAt: j.codeExpiresAt, for: s.for }); clearFocus(s.id); }
-      else setMessage(typeof j.message === "string" ? j.message : "That didn't work. Try again.");
-    } catch { setMessage("Couldn't reach Back Channel. Try again."); }
+    setBusy(`approve:${s.id}`); setMessage(""); setCopied(""); setNeedsPasskey(null);
+    const r = await sendWithStepUp("approve_support", s.id, (h) => post(`/api/support/invites/${encodeURIComponent(s.id)}/approve`, h), passkeys.hint);
+    const j = r.body;
+    if (r.ok && typeof j.code === "string") {
+      setMinted({ id: s.id, code: j.code, url: String(j.url ?? ""), expiresAt: String(j.codeExpiresAt ?? ""), for: s.for }); clearFocus(s.id);
+    } else if (r.needsPasskey) setNeedsPasskey(s.id);
+    else setMessage(r.message ?? "That didn't work. Try again.");
     setBusy("");
     load();
   }
 
   async function act(s: Support, what: "deny" | "void" | "stop") {
-    setBusy(`${what}:${s.id}`); setMessage("");
+    setBusy(`${what}:${s.id}`); setMessage(""); setNeedsPasskey(null);
     try {
       const r = await post(`/api/support/invites/${encodeURIComponent(s.id)}/${what}`);
       const j = await r.json().catch(() => ({}));
@@ -222,11 +232,14 @@ export default function SupportSessions() {
             <div className="ds-iname"><Chip tone="acc">Needs your OK</Chip> {s.requestedBy.name} wants a support code to help {s.for}</div>
             <div className="ds-imeta">For up to {s.minutes} minutes once they allow it. Asked {when(s.requestedAt)}. {left > 0 ? `If you don't answer in ${clock(left)}, the request expires.` : "This request has expired."}</div>
             <div className="ds-igoal">They will read: &ldquo;{s.task}&rdquo;{s.listTask && <><br />Task: {s.listTask.title ?? "a task you can no longer see"}</>}</div>
-            <p className="ds-fine" style={{ margin: "8px 0" }}>Approve only if {s.for} asked you for help. You&apos;ll see the code once, here, and send it yourself.</p>
+            <p className="ds-fine" style={{ margin: "8px 0" }}>Approve only if {s.for} asked you for help. Approving asks for your passkey (Windows Hello or your phone). You&apos;ll see the code once, here, and send it yourself.</p>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button className="ds-btn" disabled={!!busy || left <= 0} onClick={() => approve(s)}>Approve and show the code</button>
+              <button className="ds-btn" disabled={!!busy || left <= 0} onClick={() => approve(s)}>{busy !== `approve:${s.id}` ? "Approve and show the code" : passkeys.hint ? "Waiting for your passkey…" : "Approving…"}</button>
               <button className="ds-btn ghost" disabled={!!busy} onClick={() => act(s, "deny")}>Deny</button>
             </div>
+            {needsPasskey === s.id && (
+              <AddPasskeyInline action="Approving a support code" onCancel={() => setNeedsPasskey(null)} onAdded={() => { void passkeys.reload(); void approve(s); }} />
+            )}
           </div>
         );
       })}

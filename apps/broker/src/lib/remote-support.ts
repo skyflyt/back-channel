@@ -19,7 +19,8 @@
  *    like Dispatch and remote app sessions). An agent never sees a code: no response to an agent carries one.
  *  - Approve (mint), deny, cancel a code, stop a session: the person, in the dashboard (cookie + CSRF), and in
  *    v1 only the owner (ADMIN_EMAILS, verified email, src/lib/owner.ts), on an account with Back Channel Remote.
- *    Any request that carries a bearer key is refused before anything else.
+ *    Any request that carries a bearer key is refused before anything else. Approve also needs the person's
+ *    passkey step-up for that request (src/lib/step-up.ts); deny, cancel and stop never do.
  *  - Redeem a code, or say "I didn't ask for this" from the landing page: anyone holding the code.
  *  - Allow, stop, report, record steps, send the removal receipt, read the session and transcript: the temporary
  *    client, with the abs_ credential its redemption returned (bound to the key that redeemed; Allow and the
@@ -54,6 +55,8 @@ import { SUPPORT_TOOL_NAMES } from "@/lib/mcp/remote-tools.mjs";
 import * as R from "@/lib/remote-app/rules.mjs";
 import * as S from "@/lib/remote-support/rules.mjs";
 import * as P from "@/lib/remote-support/proof.mjs";
+// The passkey step-up on approval (docs/remote-support.md, "Approving needs a passkey").
+import * as SU from "@/lib/step-up";
 
 type Tx = Prisma.TransactionClient;
 type Input = Record<string, unknown>;
@@ -69,7 +72,8 @@ type Caller =
 type Op =
   | "request" | "list" | "get" | "end" | "rotate" | "approve" | "deny" | "void" | "stop" | "redeem" | "report"
   | "clientGet" | "allow" | "clientReport" | "clientStop" | "step" | "receipt" | "transcript";
-type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string };
+// stepUp: the person's passkey step-up grant (the x-bc-step-up header), for approve only.
+type Ctx = { tx: Tx; caller: Caller; input: Input; now: Date; id?: string; origin: string; stepUp?: string | null };
 type Outcome = { status?: number; body: Record<string, unknown> };
 
 const AGENTS_ONLY = new Set<Op>(["request", "end", "rotate"]);
@@ -448,13 +452,17 @@ async function opGet({ tx, caller, now, id }: Ctx): Promise<Outcome> {
 
 // ── the person (dashboard; owner-only in v1) ────────────────────────────────
 
-async function opApprove({ tx, caller, now, id, origin }: Ctx): Promise<Outcome> {
+async function opApprove({ tx, caller, now, id, origin, stepUp }: Ctx): Promise<Outcome> {
   const inv = await loadInvite(tx, caller, id, now);
   S.decideCheck(inv, now);
   await issuerReady(tx, inv.accountId, now);
   S.mintsCheck(await tx.supportInvite.count({ where: { accountId: inv.accountId, mintedAt: { gt: new Date(now.getTime() - S.DAY_MS) } } }));
   const agent = await tx.agentToken.findFirst({ where: { id: inv.agentTokenId, accountId: inv.accountId, revokedAt: null } });
   if (!agent || agent.scope !== "full") fail(409, "agent_unavailable", "The agent that asked has been removed or can no longer ask for support codes. Deny this request.");
+  // Last: the person's passkey, for this request only, so an agent driving the PC can't mint a code and read it off the
+  // screen. A request refused above never spends a grant; the grant is spent in this transaction and rolls back with it.
+  const refusal = await SU.requireStepUp(tx, { accountId: inv.accountId, action: "approve_support", targetId: inv.id, grant: stepUp, now });
+  if (refusal) fail(refusal.status, refusal.error, refusal.message);
   // Minted here, in the person's request, and shown to them only. Only its hash is stored. A clash with another
   // code's hash is a unique conflict: the whole attempt re-runs with a new code.
   const code = S.newCode((n) => randomInt(0, n));
@@ -716,11 +724,13 @@ async function run(req: NextRequest, op: Op, input: Input | (() => Promise<Input
     }
     const body = typeof input === "function" ? await input() : input;
     const origin = (process.env.PUBLIC_APP_URL ?? new URL(req.url).origin).replace(/\/$/, "");
+    // Only the person's own request carries a step-up grant.
+    const stepUp = caller.kind === "person" ? req.headers.get(SU.STEP_UP_HEADER) : null;
     let after: Array<() => void> = [];
     const result = await withSerializableRetry(
       () => effects.run((after = []), () => prisma.$transaction(async (tx: Tx): Promise<Outcome | { refusal: InstanceType<typeof R.RemoteRuleError> }> => {
         try {
-          return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin });
+          return await OPS[op]({ tx, caller, input: body, now: new Date(), id, origin, stepUp });
         } catch (e) {
           if (e instanceof R.RemoteRuleError && !(e instanceof RollBack)) return { refusal: e };
           throw e;

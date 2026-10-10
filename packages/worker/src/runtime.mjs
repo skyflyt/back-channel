@@ -54,9 +54,12 @@ export function runtimeArgs(p, { mcp } = {}) {
         // With the worker's own MCP server (remote-app, remote-support, lists) the run is dontAsk: only --allowedTools run,
         // everything else is denied without a prompt. Plan mode made Claude refuse every state-changing call, the worker's
         // own tools included (seen live 2026-10-10: no remote_open, remote_act or even remote_end), so it can't be used there.
+        // Those runs also load only project settings, from the profile's own empty working folder: an agent using the
+        // whole PC can reach any file through an app's Open/Save dialog, so it could otherwise widen its own CLI by editing
+        // Claude Code's user settings (vault design agent-desktop-scope.md, decision 3). Sign-in isn't a setting source.
         const mode = mcp ? 'dontAsk' : (p.permissionMode ?? 'plan');
         const args = ['--print', '--output-format', 'json', '--permission-mode', mode, '--json-schema', JSON.stringify(resultSchema)];
-        if (mcp) args.push('--mcp-config', JSON.stringify({ mcpServers: mcpServers(mcp) }), '--strict-mcp-config',
+        if (mcp) args.push('--setting-sources', 'project', '--mcp-config', JSON.stringify({ mcpServers: mcpServers(mcp) }), '--strict-mcp-config',
             '--allowedTools', allow.join(','), ...(deny.length ? ['--disallowedTools', deny.join(',')] : []));
         return args;
     }
