@@ -175,11 +175,16 @@ export default function SecretsCard() {
   useEffect(() => { void load(); }, [load]);
   const waiting = !!data && data.requests.some((r) => r.status === "open");
   const working = !!data && data.machines.some((m) => m.job && ["requested", "sent", "running"].includes(m.job.state));
+  // A PC whose broker trusts one of your passkeys can raise a request at any moment, and a request lives about 90 s:
+  // every 30 s let one expire unseen (seen 2026-10-20), so look every 5 s while this page is open on the screen.
+  const listening = !!data && data.machines.some((m) => m.passkeys.some((p) => p.trusted));
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 1000);
-    const refresh = setInterval(() => { if (document.visibilityState === "visible") void load(); }, waiting || working ? 3000 : 30_000);
-    return () => { clearInterval(tick); clearInterval(refresh); };
-  }, [waiting, working, load]);
+    const refresh = setInterval(() => { if (document.visibilityState === "visible") void load(); }, waiting || working ? 3000 : listening ? 5000 : 30_000);
+    const back = () => { if (document.visibilityState === "visible") void load(); };
+    document.addEventListener("visibilitychange", back);
+    return () => { clearInterval(tick); clearInterval(refresh); document.removeEventListener("visibilitychange", back); };
+  }, [waiting, working, listening, load]);
   // From the phone notification's link (#secrets): bring the card into view.
   useEffect(() => {
     if (state === "ready" && typeof window !== "undefined" && window.location.hash === "#secrets") document.getElementById("secrets")?.scrollIntoView({ block: "start" });
