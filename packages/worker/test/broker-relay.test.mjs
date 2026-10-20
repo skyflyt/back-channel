@@ -1,9 +1,9 @@
-// The secret broker side of the worker (src/secrets.mjs; docs/secrets-epic.md §3.1, §3.4): requests out, the person's
+// The secret broker side of the worker (src/broker-relay.mjs; docs/secrets-epic.md §3.1, §3.4): requests out, the person's
 // passkey answers into the broker, and the install / update / enrol / lockdown jobs. Fakes stand in for the broker's
 // relay, git and the elevated launch; nothing here touches a real broker.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyDecisions, collectPending, fetchRelease, launchElevated, runJob, startSecretsSync } from '../src/secrets.mjs';
+import { applyDecisions, collectPending, fetchRelease, launchElevated, runJob, startSecretsSync } from '../src/broker-relay.mjs';
 
 const C = 'c'.repeat(40), T = 'd'.repeat(40);
 function fakeRelay(answers = {}) {
