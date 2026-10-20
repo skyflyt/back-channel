@@ -107,14 +107,17 @@ function MachineRow({ m, busy, onJob }: { m: Machine; busy: string; onJob: (m: M
   const status = !b.installed ? <Chip tone="warn">Not installed</Chip>
     : b.lockdown ? <Chip tone="warn">Locked down</Chip>
     : b.healthy === false ? <Chip tone="warn">Not healthy</Chip>
-    : <Chip tone="ok">Healthy</Chip>;
+    : b.healthy === true ? <Chip tone="ok">Healthy</Chip>
+    // A broker from before `doctor --json`, or one whose doctor didn't answer, hasn't said either way.
+    : <Chip title="The broker there didn't report its health. Update it, or run secret-broker doctor at the PC.">Health unknown</Chip>;
+  const lockdown = b.lockdown === true ? "on" : b.lockdown === false ? "off" : "unknown";
   const running = m.job && ["requested", "sent", "running"].includes(m.job.state);
   const steps = Object.entries(m.job?.progress?.steps ?? {});
   return (
     <div className="ds-item" style={{ display: "block" }} id={`secret-pc-${m.agentId}`}>
       <div className="ds-iname">{status} {m.name}</div>
       <div className="ds-imeta">
-        {b.installed ? `Secret broker at ${short(b.commit)} · ${b.names ?? "?"} names · lockdown ${b.lockdown ? "on" : "off"}` : "No secret broker on this PC yet"}
+        {b.installed ? `Secret broker at ${short(b.commit)} · ${b.names ?? "?"} names · lockdown ${lockdown}` : "No secret broker on this PC yet"}
         {` · checked ${ago(m.brokerAt)}`}{!m.current ? " (the worker isn't reporting right now)" : ""}
       </div>
       {b.checks.some((c) => !c.ok) && <div className="ds-fine">Failing: {b.checks.filter((c) => !c.ok).map((c) => c.label).join(", ")}</div>}
