@@ -284,6 +284,10 @@ test("jobs: install, update and enrol need the step-up for that PC; lockdown nev
   await sync({ v: 1, broker: brokerStatus({ commit: "c".repeat(40) }), jobs: [{ id: up.id, state: "done", steps: { installer_started: true, service_running: true, doctor_healthy: true } }] });
   const v = await view();
   assert.deepEqual([v.body.machines[0].updateAvailable, v.body.machines[0].job.state], [false, "done"]);
+  // An older broker that can't report its commit still gets the Update.
+  await sync({ v: 1, broker: brokerStatus({ commit: null, tree: null }) });
+  assert.equal((await view()).body.machines[0].updateAvailable, true);
+  await sync({ v: 1, broker: brokerStatus({ commit: "c".repeat(40) }) });
   // Enrol: the passkey's public key and its fingerprint, for the broker to show at the machine.
   r = await machine(AGENT.pc, "enrol", { passkeyId: key.id }, { stepUp: await su(AGENT.pc) });
   assert.equal(r.status, 200, JSON.stringify(r.body));

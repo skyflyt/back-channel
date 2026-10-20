@@ -274,7 +274,8 @@ export async function viewForPerson(account: Account, now: Date) {
     return {
       agentId: a.id, name: a.name, broker, brokerAt: a.secretBrokerAt?.toISOString() ?? null,
       current: !!a.secretBrokerAt && now.getTime() - a.secretBrokerAt.getTime() <= BROKER_FRESH_MS,
-      updateAvailable: !!(broker.installed && broker.pin && broker.commit && broker.pin.commit !== broker.commit),
+      // An installed broker that can't say its commit (one from before `relay` and `status` reported it) isn't at the pin.
+      updateAvailable: !!(broker.installed && broker.pin && broker.pin.commit !== broker.commit),
       passkeys: keyed.map((p) => ({ ...p, trusted: trusted.has(p.fingerprint) })),
       job: latest && { id: latest.id, kind: latest.kind, state: latest.state, progress: latest.progress, failure: latest.failure,
         createdAt: latest.createdAt.toISOString(), finishedAt: latest.finishedAt?.toISOString() ?? null },
