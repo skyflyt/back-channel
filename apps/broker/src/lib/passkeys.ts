@@ -34,6 +34,7 @@ import { prisma } from "@/lib/db";
 import * as auth from "@/lib/auth";
 import * as limits from "@/lib/rate-limit";
 import * as SU from "@/lib/step-up";
+import * as secrets from "@/lib/secrets";
 
 const MAX_PASSKEYS = 10;
 const MAX_BODY = 64 * 1024;
@@ -219,14 +220,26 @@ async function opStepUpOptions(account: Account, req: NextRequest, input: Record
   if (targetId === undefined) {
     fail(400, "invalid_target", SU.actionTakesTarget(action) ? "targetId is the id of what you're approving." : "This action has no targetId.");
   }
-  const passkeys = await prisma.accountPasskey.findMany({ where: { accountId: account.id }, select: { credentialId: true, transports: true } });
+  let passkeys = await prisma.accountPasskey.findMany({ where: { accountId: account.id }, select: { credentialId: true, transports: true } });
   if (!passkeys.length) fail(403, "passkey_required", "Add a passkey to your account first (Windows Hello on this PC, or your phone).");
+  // approve_secret: the challenge is the broker's own digest for the grant chosen, and only a passkey that PC's broker
+  // trusts can answer (src/lib/secrets.ts). An earlier ceremony for the same digest (abandoned, or answered wrongly) is
+  // dropped first, as the column is unique; one that approved can't exist here, as its request is no longer open.
+  let fixed: string | null = null;
+  if (action === "approve_secret") {
+    const a = await secrets.approvalChallenge(account.id, targetId as string, input.option, now);
+    fixed = a.digest;
+    passkeys = a.passkeys;
+    await prisma.passkeyChallenge.deleteMany({ where: { accountId: account.id, challenge: fixed, kind: "step_up", action: "approve_secret" } });
+  }
   const options = await generateAuthenticationOptions({
     rpID: rp.rpID,
     allowCredentials: passkeys.map((p) => ({ id: p.credentialId, transports: p.transports ?? [] })),
     userVerification: "required",
     timeout: 60_000,
+    ...(fixed ? { challenge: new Uint8Array(Buffer.from(fixed, "base64url")) } : {}),
   });
+  if (fixed && options.challenge !== fixed) fail(503, "unavailable", "The passkey prompt couldn't be prepared for this request. Try again.");
   await prune(account.id, now);
   const row = await prisma.passkeyChallenge.create({
     data: { accountId: account.id, kind: "step_up", action, targetId: targetId ?? null, challenge: options.challenge, expiresAt: new Date(now.getTime() + SU.CEREMONY_TTL_MS) },
@@ -257,6 +270,15 @@ async function opStepUpVerify(account: Account, req: NextRequest, input: Record<
     data: { counter: BigInt(verified.authenticationInfo.newCounter), lastUsedAt: now },
   });
   if (bumped.count !== 1) fail(409, "passkey_busy", "That passkey was used at the same moment. Try again.");
+  if (row.action === "approve_secret") {
+    // The ceremony is the approval: its assertion goes to the PC's broker, which checks it itself. No grant.
+    const out = await secrets.recordApproval(account.id, row.targetId as string, row.challenge, passkey.id, {
+      credentialId: response.id, authenticatorData: response.response.authenticatorData,
+      clientDataJson: response.response.clientDataJSON, signature: response.response.signature,
+    }, now);
+    await audit(account.id, "step_up.confirmed", { action: row.action, target: row.targetId, passkey_id: passkey.id });
+    return { approved: true, option: out.option, action: row.action, targetId: row.targetId };
+  }
   const grant = SU.newGrant();
   const expiresAt = new Date(now.getTime() + SU.GRANT_TTL_MS);
   await prisma.passkeyChallenge.update({ where: { id: row.id }, data: { grantHash: grant.hash, expiresAt, passkeyId: passkey.id } });
@@ -314,6 +336,7 @@ export async function passkeysRoute(req: NextRequest, path: string[]): Promise<N
     }
   } catch (e) {
     if (e instanceof Refusal) return respond({ error: e.code, message: e.message }, e.status);
+    if (e instanceof secrets.SecretsError) return respond({ error: e.code, message: e.message }, e.status);
     // Never log bodies, challenges, credentials or grants.
     console.error("[passkeys] failed:", e instanceof Error ? e.name : typeof e);
     return respond({ error: "unavailable", message: "Passkeys are unavailable right now. Try again shortly." }, 503);

@@ -14,6 +14,7 @@ import { LISTS_PROFILE, ListsAgent, validateListsProfile } from '../src/lists.mj
 import { fileURLToPath } from 'node:url';
 import { stopWorker, watchParent } from '../src/stop.mjs';
 import { ReadinessError, allowSender, candidates, collectReadiness, revokeSender, sendReport, startReadinessReports } from '../src/readiness.mjs';
+import { startSecretsSync } from '../src/broker-relay.mjs';
 const help = `bc-worker (Node 22+)\ninit --broker URL --name NAME     Token from BC_AGENT_TOKEN\nenroll                           Register public keys; prints peer trust JSON\nagents                           List enrolled peers (does not trust them)\ntrust --file peer.json            Pin {id,encryptionKey,signingKey} from owner-verified source\nprofile --name NAME --file FILE   Install local approved runtime profile ("remote-app" and "remote-support" must be\n                                 read-only claude; "lists" takes no allowedSenders and is read-only unless it says otherwise)\nsend --target ID --profile NAME --objective-file FILE [--continue-profile NAME] [--remote-session ID]\n     [--executor-secret-from FILE|-]\n                                 --remote-session hands an approved remote app session to --profile remote-app,\n                                 or a running support session to --profile remote-support, which also needs the\n                                 session's executor secret: --executor-secret-from a private file holding it, or -\n                                 to read it from stdin. It is never taken on the command line. remote-app takes one\n                                 too when Back Channel issued it (v1.1)\nrun [--once] [--lists] [--parent-pid PID]\n                                 Poll and execute approved work/continuations; --lists also works the Lists\n                                 tasks assigned to this agent, one at a time, with the local "lists" profile\n                                 (without Dispatch enrollment, --lists works Lists only). Without --once it also\n                                 reports readiness to Back Channel at start and every 10 minutes. --parent-pid: stop\n                                 by itself (checked every 5 s) once that process, the launcher, has ended\nstop                             End the worker running on this state: only if the lock's process is this CLI's run\n                                 for this --state (else not_this_worker, nothing touched). Waits up to 15 s, then\n                                 clears the lock as recover does (interrupted work never replays)\nstatus                           Print durable local journal\ncancel --id UUID                 Cancel your outbound task\nrecover --confirm-stopped        Remove stale lock after owner stops previous worker/tree\nreadiness [--report]             Can an agent use apps on this PC? Non-secret JSON: the AppBridge agent-control pipe\n                                 (a hello only), claude's sign-in (claude auth status) and the agents the remote-app\n                                 profile accepts. --report also sends it to Back Channel\ncandidates                       Your other Dispatch agents, each with its key fingerprint, and whether it is pinned\n                                 and allowed to hand this PC remote app sessions\nallow-sender --id ID --fingerprint XXXX-XXXX-XXXX-XXXX [--claude PATH]\n                                 Let that agent hand this PC remote app sessions. Refused unless its keys from Back\n                                 Channel match the fingerprint you compared on its own PC. Pins it and adds it to the\n                                 remote-app profile (created if missing: claude from --claude or PATH, plan mode)\nrevoke-sender --id ID            Take it off the remote-app profile; unpin it if no other profile names it\nAll commands accept --state DIRECTORY (outside any repository/vault).\nExit 0 success; 1 failure. Enrollment and trust are separate.\nreadiness, candidates, allow-sender, revoke-sender and stop print one JSON object; on failure {"error","message"}.\nNo command prints the agent key or a private key.\n`;
 /** The executor secret from a file, or stdin for "-": one secret and nothing else. The error never shows what was read. */
 function readExecutorSecret(from) {
@@ -200,10 +201,14 @@ async function main() {
             // Readiness for the dashboard and the AppBridge console: at start and every 10 minutes. A failed report is
             // logged and the run carries on. Not with --once (a single pass), nor when recovery is required (it exits).
             const reports = v.once || worker.journal.recoveryRequired ? null : startReadinessReports({ config, client: worker.client, log: message => console.error(message) });
+            // The secret broker on this PC (src/broker-relay.mjs): its status and remote-approvable requests to Back Channel,
+            // the person's passkey answers and jobs back. Same conditions as readiness; config.secrets.backends carries
+            // the non-secret backend ids an install needs.
+            const secrets = reports && config.secrets?.enabled !== false ? startSecretsSync({ client: worker.client, log: message => console.error(message), backends: config.secrets?.backends ?? {} }) : null;
             // A stop also ends the wait between cycles, so the run winds down at once.
             let wake = () => { }, parent = null;
             const pause = ms => new Promise(resolve => { const timer = globalThis.setTimeout(resolve, ms); wake = () => { globalThis.clearTimeout(timer); resolve(); }; });
-            const stop = () => { stopped = true; parent?.stop(); reports?.stop(); worker.stop(); lists?.stop(); wake(); };
+            const stop = () => { stopped = true; parent?.stop(); reports?.stop(); secrets?.stop(); worker.stop(); lists?.stop(); wake(); };
             process.on('SIGINT', stop);
             process.on('SIGTERM', stop);
             // --parent-pid: the launcher that started this worker (the scheduled task's PowerShell). Once it is gone (the
@@ -239,6 +244,7 @@ async function main() {
             finally {
                 parent?.stop();
                 reports?.stop();
+                secrets?.stop();
                 process.off('SIGINT', stop);
                 process.off('SIGTERM', stop);
             }

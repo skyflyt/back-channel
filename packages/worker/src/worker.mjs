@@ -22,6 +22,13 @@ export class Client {
         try { await response.arrayBuffer(); } catch { }
         return { status: response.status };
     }
+    /** POST /api/agents/self/secret-broker/sync: the secret broker's status and requests out, decisions and jobs back (src/broker-relay.mjs). Resolves { status, body }; throws only on network errors. */
+    async secretsSync(body) {
+        const response = await fetch(this.base + '/api/agents/self/secret-broker/sync', { method: 'POST', headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000), redirect: 'error' });
+        let data = null;
+        try { data = await response.json(); } catch { }
+        return { status: response.status, body: data };
+    }
     /** /api/remote-app with this agent's key. Resolves { status, body, retryAfter } for any HTTP answer; throws only on network errors. */
     async remoteApp(route, body) {
         const response = await fetch(this.base + '/api/remote-app' + route, { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10000), redirect: 'error' });
