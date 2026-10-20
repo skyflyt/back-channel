@@ -37,9 +37,8 @@ One local service per machine, running as its own OS principal (`NT SERVICE\Loby
 LaunchDaemon on macOS), loopback only, code in an admin-only folder, state under ACLs no agent can read.
 
 - **Names, not values.** `secret://<prefix>/<path>`. The prefix picks a backend: `home/*` and `work/*` are
-  two Bitwarden Secrets Manager projects read by one machine account per machine (the original plan put
-  `work/*` in the employer's Devolutions Server; ruled otherwise 2026-10-19). Leaving the employer means
-  deleting the `work/*` project; nothing else notices.
+  two Bitwarden Secrets Manager projects read by one machine account per machine. Each prefix can be cut
+  off on its own (delete its project or its backend line) and the other keeps working.
 - **Modes.** A policy entry says how a name may be used, never "give me the value":
   - `inject`: run a command with the value in an environment variable; the child's output is redacted
     (raw, base64, hex, URL and JSON/HTML-escaped forms) before the agent sees it.
@@ -213,8 +212,7 @@ No value column exists. `target` is stored without query or fragment and truncat
 1. **Public?** **Back Channel stays public; the broker stays private.** Back Channel's install story rests
    on its source being public (the skill tells other people's agents to check it). The broker's history
    carries operational detail of one person's estate (an acceptance log naming machines, hosts and audit
-   rows; a policy example with home IPs and cert pins), and parts of it were built on an employer's machine
-   about the employer's systems, so publishing it would need a cleaned fresh repo and an ownership check
+   rows; a policy example with home IPs and cert pins), so publishing it would need a cleaned fresh repo
    first. Not doing that now.
 2. **Where it lives.** **The private sibling repo `skyflyt/secret-broker`**, not a package here. Back
    Channel publishes the generic parts (the phone-approval API and the passkey step-up for a caller-supplied
