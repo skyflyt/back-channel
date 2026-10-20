@@ -1,8 +1,9 @@
 # Epic: Secrets — an agent uses a secret without ever seeing it (design, not yet built)
 
-**Status:** design only, 2026-10-17. The local broker this builds on exists and runs on Skylar's desktop
-(private repo `skyflyt/secret-broker`, Python, 92 tests, two adversarial review passes); nothing in this
-repo knows about it yet. **Decision pending: whether that code moves here and becomes public** (§9.1).
+**Status:** design only, 2026-10-17; **§9 ruled by Skylar 2026-10-20**. The local broker this builds on runs
+on all three of Skylar's machines (private repo `skyflyt/secret-broker`, Python, 111 tests, two adversarial
+review passes); nothing in this repo knows about it yet. **It stays private and separate** (§9.1–9.2): this
+public repo gets the approval protocol, the dashboard and the worker side; the broker enrols as a client.
 Sequenced after Remote app sessions Phase A and the passkey step-up, which it reuses.
 
 ---
@@ -35,9 +36,10 @@ secrets under the same rails as everything else it does there.
 One local service per machine, running as its own OS principal (`NT SERVICE\LobySecretBroker`, a
 LaunchDaemon on macOS), loopback only, code in an admin-only folder, state under ACLs no agent can read.
 
-- **Names, not values.** `secret://<prefix>/<path>`. The prefix picks a backend: `home/*` is Bitwarden
-  Secrets Manager (one machine account per machine); `work/*` is an employer's vault (Devolutions Server,
-  application identity). Leaving the employer breaks only `work/*`; nothing else notices.
+- **Names, not values.** `secret://<prefix>/<path>`. The prefix picks a backend: `home/*` and `work/*` are
+  two Bitwarden Secrets Manager projects read by one machine account per machine (the original plan put
+  `work/*` in the employer's Devolutions Server; ruled otherwise 2026-10-19). Leaving the employer means
+  deleting the `work/*` project; nothing else notices.
 - **Modes.** A policy entry says how a name may be used, never "give me the value":
   - `inject`: run a command with the value in an environment variable; the child's output is redacted
     (raw, base64, hex, URL and JSON/HTML-escaped forms) before the agent sees it.
@@ -153,8 +155,12 @@ listed so nobody builds it by accident.
 5. **Offline is normal.** No tier-0 path and no local approval path depends on back-channel.app. If the
    worker cannot reach the broker service, the broker is unreachable, not insecure; if it cannot reach
    Back Channel, approvals fall back to local only.
-6. **Public code, private policy.** The repo holds the broker, the worker's bridge and the dashboard. The
-   names, tiers, hosts, pins and the inventory of what exists stay in the person's own config and vault.
+6. **Public protocol, private broker, private policy** (ruled 2026-10-20). This repo holds the approval
+   protocol (`SecretRequest`, the routes, the `approve_secret` step-up), the dashboard and the worker's
+   bridge, and documents the broker's loopback interface it talks to. The broker's code stays in the private
+   sibling repo. The names, tiers, hosts, pins and the inventory of what exists stay in the person's own
+   config and vault. Nothing in this repo may need the broker's source to build or test: worker tests run
+   against a fake broker that speaks the documented interface.
 
 ## 5. Threat model additions (over `docs/threat-model.md`)
 
@@ -202,25 +208,27 @@ No value column exists. `target` is stored without query or fragment and truncat
   your agent, which may use your secrets under your policy; the requester never names one.
 - Agents approving for other agents.
 
-## 9. Decisions needed from Skylar
+## 9. Decisions (ruled by Skylar, 2026-10-20)
 
-1. **Public.** The broker code is private today. Moving it here makes it MIT and public, including the
-   installer, the approver helpers and the redaction rules. The inventory, policy and anything naming a real
-   host stay in the vault either way. *Recommendation: yes; the design is stronger reviewed, and rule 6
-   already separates what must stay private.*
-2. **Where it lives.** `packages/secret-broker` (Python) inside this TS monorepo, with its own tests in CI,
-   or a sibling public repo `skyflyt/secret-broker` that this repo depends on by pinned commit (the install
-   trust root already pins commits). *Recommendation: sibling repo; the installer's "admin-only clone of a
-   pinned commit" rule is simpler against a small repo.*
-3. **Remote approval of tier 2.** Allow from the phone (as 3.1) or keep tier 2 local-only and make the
-   phone path tier 1 only. *Recommendation: allow tier 2 except `proxy:kvm-type` and large policy diffs.*
-4. **Phase order.** 3.1 + 3.3 first (approvals and readiness; no new agent capability), 3.2 after.
+1. **Public?** **Back Channel stays public; the broker stays private.** Back Channel's install story rests
+   on its source being public (the skill tells other people's agents to check it). The broker's history
+   carries operational detail of one person's estate (an acceptance log naming machines, hosts and audit
+   rows; a policy example with home IPs and cert pins), and parts of it were built on an employer's machine
+   about the employer's systems, so publishing it would need a cleaned fresh repo and an ownership check
+   first. Not doing that now.
+2. **Where it lives.** **The private sibling repo `skyflyt/secret-broker`**, not a package here. Back
+   Channel publishes the generic parts (the phone-approval API and the passkey step-up for a caller-supplied
+   challenge), which any local approver could use, and the broker enrols with it as a client (§3.1). The
+   broker's installer keeps its "admin-only clone of a pinned commit" trust root against its own repo.
+3. **Remote approval of tier 2.** **Allowed from the phone**, except `proxy:kvm-type` and policy diffs over
+   10 field changes, which stay local only (as §3.1).
+4. **Phase order.** **3.1 + 3.3 first** (approvals and readiness; no new agent capability), 3.2 after.
 
 ## 10. Phases
 
 - **Phase 0** (this doc; the private broker as shipped).
-- **Phase 1** — broker: second approver kind `webauthn` (verify an assertion over the digest against a
-  stored COSE key; enrolment op). Back Channel: `SecretRequest`, the routes, the inbox card, `approve_secret`
+- **Phase 1** — broker (in `skyflyt/secret-broker`, private): second approver kind `webauthn` (verify an
+  assertion over the digest against a stored COSE key; enrolment op). Back Channel (here, public): `SecretRequest`, the routes, the inbox card, `approve_secret`
   step-up action with caller-supplied challenge, readiness line, audit events. Tests: rules pure under
   `node --test`; a route test that proves an approve without a step-up is `403`, that a step-up for another
   request's id does not spend, and that no response body anywhere carries a field named like a value.
