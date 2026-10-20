@@ -10,7 +10,7 @@
  *   repo pins (the UAC prompt at the PC is still yours); which of your passkeys it trusts for approvals from here; and
  *   Lockdown, one click.
  *
- * GET /api/secrets (cookie); changes with bc_csrf. Plain text only (the site runs a Trusted Types CSP). Timers are the
+ * GET /api/secret-broker (cookie); changes with bc_csrf. Plain text only (the site runs a Trusted Types CSP). Timers are the
  * global functions, called directly.
  */
 
@@ -161,7 +161,7 @@ export default function SecretsCard() {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch("/api/secrets", { credentials: "include" });
+      const r = await fetch("/api/secret-broker", { credentials: "include" });
       if (r.status === 401) { setState("none"); return; }
       if (!r.ok) { setState("error"); return; }
       const j = (await r.json()) as Reply;
@@ -197,7 +197,7 @@ export default function SecretsCard() {
   async function deny(r: Req) {
     setBusy(`deny:${r.id}`); setMessage("");
     try {
-      const res = await post(`/api/secrets/requests/${encodeURIComponent(r.id)}/deny`, {});
+      const res = await post(`/api/secret-broker/requests/${encodeURIComponent(r.id)}/deny`, {});
       const j = await res.json().catch(() => ({}));
       setMessage(res.ok ? `Denied. The agent on ${r.machine} gets nothing.` : typeof j.message === "string" ? j.message : "That didn't work. Try again.");
     } catch { setMessage("Couldn't reach Back Channel. Try again."); }
@@ -205,7 +205,7 @@ export default function SecretsCard() {
   }
   async function job(m: Machine, kind: string, body: unknown = {}) {
     setBusy(`${kind}:${m.agentId}`); setMessage("");
-    const path = `/api/secrets/machines/${encodeURIComponent(m.agentId)}/${kind}`;
+    const path = `/api/secret-broker/machines/${encodeURIComponent(m.agentId)}/${kind}`;
     const r = kind === "lockdown"
       ? await post(path, body).then(async (res) => ({ ok: res.ok, message: res.ok ? null : ((await res.json().catch(() => ({}))) as { message?: string }).message ?? "That didn't work.", needsPasskey: false }))
         .catch(() => ({ ok: false, message: "Couldn't reach Back Channel. Try again.", needsPasskey: false }))

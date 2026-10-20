@@ -80,7 +80,7 @@ in the person's pocket that holds the passkey.
   Channel never holds a key that can approve anything** and never sees a secret: it carries a challenge out
   and a signature back.
 - Flow: broker raises a request → the machine's worker posts `{ machine, name, mode, target, tier,
-  request_code, digest }` to `POST /api/secrets/requests` (its own key) → the inbox rings (doorbell kind
+  request_code, digest }` to `POST /api/secret-broker/requests` (its own key) → the inbox rings (doorbell kind
   `secret`) → the dashboard card shows the request in the broker's own display text, request code first and
   last → the person taps Approve → WebAuthn step-up with `action = approve_secret`, `rpId` back-channel.app,
   **challenge = the broker's digest** → the assertion goes back to the worker → the worker hands it to the
@@ -137,7 +137,7 @@ worker on that PC does what it can unattended; the person does the three steps t
 machine on purpose. Setting up a machine today is a dozen hand-typed commands across two shells, which is
 exactly the hand-off the broker exists to remove.
 
-1. **Ask.** The person clicks Install on that PC's card → `POST /api/secrets/install/{machine}` (person,
+1. **Ask.** The person clicks Install on that PC's card → `POST /api/secret-broker/install/{machine}` (person,
    step-up) records an install intent for the commit the card shows. The worker picks it up on its next
    poll (`GET /api/agents/self/secret-install`, worker key).
 2. **Fetch and launch.** The worker fetches the broker at that commit with the machine's own GitHub login,
@@ -230,14 +230,14 @@ No value column exists. `target` is stored without query or fragment and truncat
 
 ## 7. Endpoints and tools
 
-- `POST /api/secrets/requests` (worker key) — raise; `GET /api/secrets/requests?open=1` (person) — list.
-- `POST /api/secrets/requests/{id}/approve` — needs `x-bc-step-up` grant for `approve_secret` + this id,
+- `POST /api/secret-broker/requests` (worker key) — raise; `GET /api/secret-broker/requests?open=1` (person) — list.
+- `POST /api/secret-broker/requests/{id}/approve` — needs `x-bc-step-up` grant for `approve_secret` + this id,
   whose WebAuthn challenge **was the broker's digest**; returns the assertion for the worker to collect at
-  `GET /api/secrets/requests/{id}` (worker key, once).
-- `POST /api/secrets/requests/{id}/deny`, `POST /api/secrets/lockdown/{machine}` — one click, not gated.
-- `POST /api/secrets/enrol` (worker key, with a step-up by the person) — register the passkey public key for
+  `GET /api/secret-broker/requests/{id}` (worker key, once).
+- `POST /api/secret-broker/requests/{id}/deny`, `POST /api/secret-broker/lockdown/{machine}` — one click, not gated.
+- `POST /api/secret-broker/enrol` (worker key, with a step-up by the person) — register the passkey public key for
   a machine; the broker itself completes enrolment locally under a signed admin op.
-- `POST /api/secrets/install/{machine}` (person, step-up) — ask that PC's worker to install or update the
+- `POST /api/secret-broker/install/{machine}` (person, step-up) — ask that PC's worker to install or update the
   pinned broker release (§3.4); `GET /api/agents/self/secret-install` (worker key) — pick up the intent;
   `POST /api/agents/self/secret-install/{id}/progress` (worker key) — tick checklist steps.
 - MCP (full-scope keys): `bc_secret_requests`, `bc_secret_deny`, `bc_secret_lockdown`. **No approve tool**:

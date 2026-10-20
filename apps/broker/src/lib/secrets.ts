@@ -11,10 +11,10 @@
  *      PC verifies it against the passkey it was told to trust under a signed admin op at the machine.
  *   3. The broker decides; Back Channel displays. A forged card has no valid digest, so nothing would accept its answer.
  *
- * Worker side (a FULL-SCOPE per-agent key, about itself only): POST /api/agents/self/secrets/sync carries the broker's
+ * Worker side (a FULL-SCOPE per-agent key, about itself only): POST /api/agents/self/secret-broker/sync carries the broker's
  * status and its remote-approvable requests out, and the person's decisions and the jobs back.
- * Person side (dashboard cookie, bc_csrf on changes, no bearer): GET /api/secrets, POST
- * /api/secrets/requests/:id/deny, POST /api/secrets/machines/:agentId/{install,update,enrol,lockdown}.
+ * Person side (dashboard cookie, bc_csrf on changes, no bearer): GET /api/secret-broker, POST
+ * /api/secret-broker/requests/:id/deny, POST /api/secret-broker/machines/:agentId/{install,update,enrol,lockdown}.
  */
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";

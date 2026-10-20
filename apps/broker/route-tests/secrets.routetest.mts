@@ -131,11 +131,11 @@ function req(method: string, url: string, body?: unknown, o: Opts = {}) {
   return new NextRequest(`https://back-channel.app${url}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
 }
 const read = async (res: Response): Promise<Res> => { const t = await res.text(); return { status: res.status, body: t ? JSON.parse(t) : null }; };
-const sync = async (body: unknown, bearer = KEY.pc) => read(await (await import("@/app/api/agents/self/secrets/sync/route")).POST(req("POST", "/api/agents/self/secrets/sync", body, { cookie: null, bearer })));
-const view = async (o: Opts = {}) => read(await (await import("@/app/api/secrets/route")).GET(req("GET", "/api/secrets", undefined, o)));
-const deny = async (id: string, o: Opts = {}) => read(await (await import("@/app/api/secrets/requests/[id]/deny/route")).POST(req("POST", `/api/secrets/requests/${id}/deny`, {}, o), { params: Promise.resolve({ id }) }));
+const sync = async (body: unknown, bearer = KEY.pc) => read(await (await import("@/app/api/agents/self/secret-broker/sync/route")).POST(req("POST", "/api/agents/self/secret-broker/sync", body, { cookie: null, bearer })));
+const view = async (o: Opts = {}) => read(await (await import("@/app/api/secret-broker/route")).GET(req("GET", "/api/secret-broker", undefined, o)));
+const deny = async (id: string, o: Opts = {}) => read(await (await import("@/app/api/secret-broker/requests/[id]/deny/route")).POST(req("POST", `/api/secret-broker/requests/${id}/deny`, {}, o), { params: Promise.resolve({ id }) }));
 const machine = async (agentId: string, action: string, body: unknown = {}, o: Opts = {}) =>
-  read(await (await import("@/app/api/secrets/machines/[agentId]/[action]/route")).POST(req("POST", `/api/secrets/machines/${agentId}/${action}`, body, o), { params: Promise.resolve({ agentId, action }) }));
+  read(await (await import("@/app/api/secret-broker/machines/[agentId]/[action]/route")).POST(req("POST", `/api/secret-broker/machines/${agentId}/${action}`, body, o), { params: Promise.resolve({ agentId, action }) }));
 async function pk(path: string, body: unknown, o: Opts = {}): Promise<Res> {
   const mod = await import("@/app/api/account/passkeys/[[...path]]/route");
   return read(await mod.POST(req("POST", `/api/account/passkeys/${path}`, body, o), { params: Promise.resolve({ path: path.split("/").filter(Boolean) }) }));
@@ -170,7 +170,7 @@ function valueShapedKeys(x: unknown, path = ""): string[] {
 
 test("sync: a full-scope worker key only; it stores the broker status and the requests, once each, and closes what the broker no longer lists", async () => {
   assert.equal((await sync({ v: 1, broker: brokerStatus() }, KEY.connector)).status, 403, "a hosted connector has no PC");
-  assert.equal((await read(await (await import("@/app/api/agents/self/secrets/sync/route")).POST(req("POST", "/api/agents/self/secrets/sync", { v: 1 })))).status, 401, "a cookie is not a worker");
+  assert.equal((await read(await (await import("@/app/api/agents/self/secret-broker/sync/route")).POST(req("POST", "/api/agents/self/secret-broker/sync", { v: 1 })))).status, 401, "a cookie is not a worker");
   const p = withDigests(pendingItem());
   const r1 = await sync({ v: 1, broker: brokerStatus(), pending: [p] });
   assert.equal(r1.status, 200, JSON.stringify(r1.body));

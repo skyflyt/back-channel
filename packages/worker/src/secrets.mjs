@@ -1,7 +1,7 @@
 // The secret broker on this PC, for Back Channel (apps/broker/docs/secrets-epic.md §3.1, §3.3, §3.4).
 //
 // `run` syncs every few seconds: the broker's status and the requests it would take a phone answer for go out
-// (POST /api/agents/self/secrets/sync); the person's decisions come back and go to the broker, which checks the
+// (POST /api/agents/self/secret-broker/sync); the person's decisions come back and go to the broker, which checks the
 // passkey's assertion itself; and jobs the person asked for (install, update, enrol, lockdown) run here.
 //
 // What this module never does: ask the broker for a secret, collect what an approval serves, or launch anything
