@@ -26,7 +26,7 @@ export function fakeWebAuthn() {
     const auth = unb64(r.response.authenticatorData ?? r.response.attestationObject);
     if (client.type !== type) throw new Error(`Unexpected type ${client.type}`);
     if (client.challenge !== o.expectedChallenge) throw new Error("Unexpected authentication response challenge");
-    if (client.origin !== o.expectedOrigin) throw new Error(`Unexpected origin ${client.origin}`);
+    if (!(Array.isArray(o.expectedOrigin) ? o.expectedOrigin : [o.expectedOrigin]).includes(client.origin)) throw new Error(`Unexpected origin ${client.origin}`);
     if (auth.rpId !== o.expectedRPID) throw new Error("Unexpected RP ID hash");
     if (o.requireUserVerification !== false && !auth.uv) throw new Error("User verification required, but user could not be verified");
     return auth;

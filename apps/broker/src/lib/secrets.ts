@@ -310,14 +310,14 @@ export async function viewForPerson(account: Account, now: Date) {
   return { machines, requests };
 }
 
-export async function denyRequest(account: Account, id: string, now: Date) {
+export async function denyRequest(account: Pick<Account, "id">, id: string, now: Date, by: Record<string, unknown> = {}) {
   if (!UUID.test(id)) fail(404, "not_found", "That request isn't on your account.");
   const done = await prisma.secretRequest.updateMany({
     where: { id, accountId: account.id, status: "open", expiresAt: { gt: now } },
     data: { status: "denied", decidedAt: now, decidedBy: "deny" },
   });
   if (done.count !== 1) fail(410, "request_closed", "That request was already answered or has expired.");
-  await audit(account.id, "secret.denied", { request_id: id });
+  await audit(account.id, "secret.denied", { request_id: id, ...by });
   return { denied: true };
 }
 

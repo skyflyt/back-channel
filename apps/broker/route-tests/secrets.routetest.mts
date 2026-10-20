@@ -68,6 +68,7 @@ const db: any = {
   secretRequest: table("secretRequest", () => ({ id: crypto.randomUUID(), status: "open", option: null, assertion: null, decidedBy: null, raisedAt: new Date(), decidedAt: null, deliveredAt: null }), [["agentId", "ref"]]),
   secretJob: table("secretJob", () => ({ id: crypto.randomUUID(), state: "requested", progress: null, failure: null, createdAt: new Date(), updatedAt: new Date(), finishedAt: null })),
   appBridgeDevice: table("appBridgeDevice"),
+  appBridgeCredential: table("appBridgeCredential", () => ({ revokedAt: null, replacesKeyHash: null }), [["keyHash"]]),
 };
 // Joins the real code asks for.
 const cookieFind = db.sessionCookie.findUnique;
@@ -84,6 +85,17 @@ const requestFind = db.secretRequest.findFirst;
 db.secretRequest.findFirst = async (args: any) => {
   const r = await requestFind(args);
   return r && args.include?.agent ? { ...r, agent: copy(tables.agentToken.find(a => a.id === r.agentId)) } : r;
+};
+
+const credFind = db.appBridgeCredential.findUnique;
+db.appBridgeCredential.findUnique = async (args: any) => {
+  const c = await credFind(args);
+  return c && args.include?.device ? { ...c, device: copy(tables.appBridgeDevice.find(d => d.id === c.deviceId)) } : c;
+};
+const requestMany = db.secretRequest.findMany;
+db.secretRequest.findMany = async (args: any = {}) => {
+  const rows = await requestMany(args);
+  return args.include?.agent ? rows.map((r: Row) => ({ ...r, agent: copy(tables.agentToken.find(a => a.id === r.agentId)) })) : rows;
 };
 
 const webauthn = fakeWebAuthn();
@@ -225,6 +237,80 @@ test("approve: only a passkey the PC's broker trusts; the challenge IS the broke
   // The ceremony can't be answered again, and a closed request can't be approved.
   assert.equal((await pk("step-up/options", { action: "approve_secret", targetId: id, option: 2 })).status, 410);
   assert.deepEqual(tables.accountAudit.map(a => a.eventType).filter(t => t.startsWith("secret.")), ["secret.requested", "secret.approved"]);
+});
+
+test("the BC Remote app: its device credential sees and denies; approving takes a trusted passkey answered from the release app", async () => {
+  const { androidOrigins } = await import("@/lib/android-app");
+  const key = passkeyOn();
+  const p = withDigests(pendingItem());
+  const q = withDigests(pendingItem({ code: "Z9W8V7" }));
+  await sync({ v: 1, broker: brokerStatus({ approvers: [{ fingerprint: await fingerprintOf(key.credentialId, COSE), label: "Skylar's phone" }] }), pending: [p, q] });
+  const [idP, idQ] = [p, q].map((x) => tables.secretRequest.find((r) => r.ref === x.ref).id);
+  // Built at runtime, so no credential-shaped literal sits in the file.
+  const phone = (scopes: string[], accountId = "acct-a", role = "remote") => {
+    const deviceId = crypto.randomUUID();
+    const raw = ["ab", randomBytes(32).toString("base64url")].join("_");
+    tables.appBridgeDevice.push({ id: deviceId, accountId, role, enabled: true, revokedAt: null });
+    tables.appBridgeCredential.push({ keyHash: sha(raw), deviceId, accountId, scopes, expiresAt: new Date(Date.now() + 86_400_000), revokedAt: null, replacesKeyHash: null });
+    return raw;
+  };
+  const all = ["appbridge.device", "appbridge.relay.pass", "appbridge.secrets"];
+  const mine = phone(all);
+  const appView = async (bearer: string | null, o: Opts = {}) =>
+    read(await (await import("@/app/api/appbridge/v1/devices/self/secret-broker/route")).GET(req("GET", "/api/appbridge/v1/devices/self/secret-broker", undefined, { cookie: null, ...o, ...(bearer ? { bearer } : {}) })));
+  const appPost = async (id: string, action: string, body: unknown, bearer = mine) =>
+    read(await (await import("@/app/api/appbridge/v1/devices/self/secret-broker/requests/[id]/[action]/route")).POST(
+      req("POST", `/api/appbridge/v1/devices/self/secret-broker/requests/${id}/${action}`, body, { cookie: null, bearer }), { params: Promise.resolve({ id, action }) }));
+
+  assert.equal((await appView(null)).status, 401, "no credential");
+  assert.equal((await appView(null, { cookie: COOKIE.a })).status, 401, "the dashboard cookie isn't a device");
+  assert.equal((await appView(KEY.pc)).status, 401, "an agent key isn't a device");
+  assert.equal((await appView(phone(["appbridge.device", "appbridge.relay.pass"]))).status, 403, "a phone registered before appbridge.secrets");
+  assert.equal((await appView(phone(all, "acct-a", "host"))).status, 403, "a PC's credential");
+  assert.deepEqual((await appView(phone(all, "acct-b"))).body.requests, [], "another account's phone sees none of these");
+  const v = await appView(mine);
+  assert.equal(v.status, 200, JSON.stringify(v.body));
+  const seen = v.body.requests.find((r: Row) => r.id === idP);
+  assert.equal(seen.code, "K7Q2MX");
+  assert.deepEqual(seen.options.map((o: Row) => Object.keys(o).sort()), [["index", "label"], ["index", "label"], ["index", "label"]], "labels, not digests");
+  assert.equal(seen.digest, undefined);
+  assert.deepEqual(valueShapedKeys(v.body), []);
+
+  let opt = await appPost(idP, "approve-options", { option: 2 });
+  assert.equal(opt.status, 200, JSON.stringify(opt.body));
+  assert.equal(opt.body.options.challenge, p.options[2].digest, "the broker's digest for '8 hours'");
+  assert.deepEqual(opt.body.options.allowCredentials.map((c: Row) => c.id), [key.credentialId]);
+  // The website's origin isn't the app: refused, and the request stays open.
+  const web = await appPost(idP, "approve-verify", { ceremonyId: opt.body.ceremonyId, response: webauthn.authentication(key.credentialId, opt.body.options.challenge) });
+  assert.equal(web.status, 400); assert.equal(web.body.error, "not_verified");
+  assert.equal(tables.secretRequest.find((r) => r.id === idP).status, "open");
+  // A ceremony for one request can't approve another.
+  const optQ = await appPost(idQ, "approve-options", {});
+  assert.equal((await appPost(idP, "approve-verify", { ceremonyId: optQ.body.ceremonyId,
+    response: webauthn.authentication(key.credentialId, optQ.body.options.challenge, { origin: androidOrigins()[0] }) })).status, 404);
+  assert.equal(tables.secretRequest.find((r) => r.id === idQ).status, "open");
+  // From the release app, over the broker's digest: approved, and the worker collects it as before.
+  opt = await appPost(idP, "approve-options", { option: 2 });
+  const ok = await appPost(idP, "approve-verify", { ceremonyId: opt.body.ceremonyId,
+    response: webauthn.authentication(key.credentialId, opt.body.options.challenge, { origin: androidOrigins()[0] }) });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual(ok.body, { approved: true, option: 2 }, "no grant");
+  assert.equal(tables.secretRequest.find((r) => r.id === idP).status, "approved");
+  const s = await sync({ v: 1, broker: brokerStatus(), pending: [p, q] });
+  assert.deepEqual(s.body.decisions.map((d: Row) => [d.ref, d.decision, d.option]), [[p.ref, "approve", 2]]);
+  // Deny needs only the credential, and says which phone did it.
+  assert.equal((await appPost(idQ, "deny", {})).status, 200);
+  assert.equal((await appPost(idQ, "deny", {})).status, 410, "already answered");
+  assert.ok(tables.accountAudit.some((a) => a.eventType === "secret.denied" && a.detail.device_id));
+  passkeyOn("acct-b");
+  assert.equal((await appPost(idQ, "approve-options", {}, phone(all, "acct-b"))).status, 404, "another account's phone");
+});
+
+test("assetlinks: back-channel.app lets only the release app use its passkeys", async () => {
+  const res = await (await import("@/app/.well-known/assetlinks.json/route")).GET();
+  const links = await res.json();
+  assert.deepEqual(links.map((l: Row) => [l.relation, l.target.package_name]), [[["delegate_permission/common.get_login_creds"], "dev.appbridge.android.pilot"]]);
+  assert.match(links[0].target.sha256_cert_fingerprints[0], /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
 });
 
 test("deny: one click, no passkey; the worker gets the deny; another account can't touch it", async () => {
