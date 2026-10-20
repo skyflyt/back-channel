@@ -17,6 +17,12 @@
  *                     prompt with a key (/api/account/bootstrap-prompt); no target. ONLY on an account that can be
  *                     driven: one with a live AppBridge PC (accountHasPc). Elsewhere those routes are as they were.
  *   manage_passkeys   adding a passkey when the account already has one, or removing one; no target
+ *   approve_secret    approving a secret broker request on a PC (src/lib/secrets.ts, docs/secrets-epic.md §3.1); target:
+ *                     the SecretRequest id. Unlike the others the ceremony IS the approval: its WebAuthn challenge is the
+ *                     broker's own digest, and the broker on the PC checks the assertion itself. So APPROVAL_STEP_UP=off
+ *                     cannot skip it (there is nothing to skip to), and its grant is never spent.
+ *   secret_broker_admin  asking a PC's worker to install or update the secret broker, or to trust a passkey for phone
+ *                     approvals (§3.4); target: that worker's agent id
  * Denying, stopping and cancelling are never gated: refusing stays one click. Agent (bearer) routes are unchanged.
  *
  * The grant: POST /api/account/passkeys/step-up/verify (src/lib/passkeys.ts) answers a verified ceremony with a random
@@ -35,7 +41,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 
 export const STEP_UP_HEADER = "x-bc-step-up";
-export const STEP_UP_ACTIONS = ["approve_session", "resume_session", "approve_support", "connect_agent", "manage_passkeys"] as const;
+export const STEP_UP_ACTIONS = ["approve_session", "resume_session", "approve_support", "connect_agent", "manage_passkeys", "approve_secret", "secret_broker_admin"] as const;
 export type StepUpAction = (typeof STEP_UP_ACTIONS)[number];
 /** A ceremony (the WebAuthn prompt) may take this long; the browser's own timeout is 60 seconds. */
 export const CEREMONY_TTL_MS = 5 * 60_000;
@@ -55,9 +61,10 @@ export function isStepUpAction(v: unknown): v is StepUpAction {
   return typeof v === "string" && (STEP_UP_ACTIONS as readonly string[]).includes(v);
 }
 
-/** The approvals and "go on" name the session or support request they are for; the other actions name nothing. */
+/** The approvals, "go on" and the secret broker actions name what they are for; the other actions name nothing. */
 export function actionTakesTarget(action: StepUpAction): boolean {
-  return action === "approve_session" || action === "resume_session" || action === "approve_support";
+  return action === "approve_session" || action === "resume_session" || action === "approve_support"
+    || action === "approve_secret" || action === "secret_broker_admin";
 }
 
 /** A target id as the approvals use them (a UUID), or null. */

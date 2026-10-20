@@ -20,6 +20,7 @@ import { useIsOwner } from "@/components/ui/use-is-owner";
 import AgentSessions, { consumeApprovalLink } from "./agent-sessions";
 import SupportSessions from "./support-sessions";
 import AgentsReadiness from "./agents-readiness";
+import SecretsCard from "./secrets-card";
 
 // Where the apps are published (a public repository; the source repository is private). The page
 // links to it rather than fetching it: connect-src is 'self', and a download list that is always
@@ -234,6 +235,8 @@ export default function RemotePage() {
             </div>
 
             <AgentSessions />
+
+            <SecretsCard />
 
             <AgentsReadiness />
 

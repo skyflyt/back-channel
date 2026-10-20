@@ -79,6 +79,8 @@ model Account {
   // Passkeys for the approval step-up (src/lib/step-up.ts): relation fields only, no Account columns.
   passkeys              AccountPasskey[]
   passkeyChallenges     PasskeyChallenge[]
+  secretRequests        SecretRequest[]
+  secretJobs            SecretJob[]
 }
 
 // Invite-a-friend (Phase 3). An existing user invites someone by email; the
@@ -131,6 +133,12 @@ model AgentToken {
   // to the account owner, and to the account's agents as ready/missing in bc_remote_machines.
   readiness   Json?
   readinessAt DateTime?
+  // The secret broker on this PC (docs/secrets-epic.md §3.3): the worker's last non-secret status of it (installed
+  // commit, healthy, name count, lockdown, the release pin, which passkeys it trusts), sent on every secrets sync.
+  secretBroker   Json?
+  secretBrokerAt DateTime?
+  secretRequests SecretRequest[]
+  secretJobs     SecretJob[]
   dispatchSent DispatchTask[] @relation("DispatchSender")
   dispatchReceived DispatchTask[] @relation("DispatchTarget")
   account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
@@ -1056,10 +1064,12 @@ model PasskeyChallenge {
   id         String    @id @default(uuid())
   accountId  String
   kind       String    // "register" | "step_up"
-  action     String?   // step_up: "approve_session" | "resume_session" | "approve_support" | "connect_agent" | "manage_passkeys";
+  action     String?   // step_up: "approve_session" | "resume_session" | "approve_support" | "connect_agent" | "manage_passkeys"
+                       //   | "approve_secret" | "secret_broker_admin";
                        // register: "manage_passkeys" when a step-up authorized it (the account had a passkey), else null
-  targetId   String?   // approve_session, resume_session: the RemoteAppSession id; approve_support: the SupportInvite id; else null
-  challenge  String    @unique // base64url, as sent to the browser
+  targetId   String?   // approve_session, resume_session: the RemoteAppSession id; approve_support: the SupportInvite id;
+                       // approve_secret: the SecretRequest id; secret_broker_admin: the PC's worker (AgentToken id); else null
+  challenge  String    @unique // base64url, as sent to the browser (approve_secret: the broker's digest for the chosen grant)
   expiresAt  DateTime  // the ceremony's deadline (5 minutes); once a step-up verifies, the grant's (2 minutes)
   answeredAt DateTime? // the first verify attempt spent the challenge
   grantHash  String?   @unique // sha256 of the step-up grant handed to the browser; never the grant
@@ -1068,5 +1078,61 @@ model PasskeyChallenge {
   createdAt  DateTime  @default(now())
   account    Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
+  @@index([accountId, createdAt])
+}
+
+// A secret broker approval waiting on the person (docs/secrets-epic.md §3.1). The worker on the PC copies what the
+// broker shows at its own prompt (never a value: names, modes, hosts, the request code) and the broker's digests; the
+// person approves with a passkey whose WebAuthn challenge IS the digest of the grant they chose, and the worker hands
+// that assertion back to the broker, which checks it itself. Back Channel holds no key that can approve and no secret.
+model SecretRequest {
+  id          String     @id @default(uuid())
+  accountId   String
+  agentId     String     // the worker on the PC (its AgentToken)
+  ref         String     // the broker's remote reference; the broker's own challenge id never leaves the PC
+  kind        String     // serve | unlock | policy | import | rotation-check
+  name        String     // a secret's name or broker/<admin op>; never a value
+  mode        String
+  tier        Int?
+  target      String?
+  requestCode String
+  display     String     // the broker's approval text, as its own prompt shows it
+  digest      String     // base64url: the request's digest (grant option 0)
+  options     Json       // [{ index, label, digest }]: tier-1 grant choices, each with its own digest
+  requester   Json?      // { agent, session } as the asking agent reported itself
+  status      String     @default("open") // open | approved | denied | expired | closed
+  option      Int?       // the grant option the person approved
+  assertion   Json?      // the passkey's answer for the broker (not a secret); cleared once the worker collected it
+  decidedBy   String?    // the passkey's id, or "deny"
+  raisedAt    DateTime   @default(now())
+  expiresAt   DateTime
+  decidedAt   DateTime?
+  deliveredAt DateTime?
+  account     Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  agent       AgentToken @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, ref])
+  @@index([accountId, status, raisedAt])
+}
+
+// Something the person asked a PC's worker to do with its secret broker (docs/secrets-epic.md §3.4): install or update
+// the release the broker repo pins, trust a passkey for phone approvals, or lock down. The worker picks it up on its
+// next secrets sync and reports progress as booleans; the elevation, Hello and token steps happen at the machine.
+model SecretJob {
+  id         String     @id @default(uuid())
+  accountId  String
+  agentId    String
+  kind       String     // install | update | enrol | lockdown
+  payload    Json       // install, update: { commit, tree }; enrol: { passkeyId, credentialId, publicKeyCose, label, fingerprint }
+  state      String     @default("requested") // requested | sent | running | done | failed
+  progress   Json?      // { steps: { name: boolean }, fingerprint? }
+  failure    String?    // a short code, never free text from the PC
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  finishedAt DateTime?
+  account    Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  agent      AgentToken @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, state])
   @@index([accountId, createdAt])
 }

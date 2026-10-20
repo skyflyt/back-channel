@@ -57,7 +57,9 @@ export function fakeWebAuthn() {
     generateAuthenticationOptions: async (o: Opts) => {
       calls.push(["generateAuthenticationOptions", o]);
       return {
-        challenge: challenge(), rpId: o.rpID, timeout: o.timeout, userVerification: o.userVerification,
+        // Like the library: a caller-supplied challenge (bytes) comes back base64url; otherwise a fresh one.
+        challenge: o.challenge instanceof Uint8Array ? Buffer.from(o.challenge).toString("base64url") : challenge(),
+        rpId: o.rpID, timeout: o.timeout, userVerification: o.userVerification,
         allowCredentials: (o.allowCredentials ?? []).map((c: Opts) => ({ ...c, type: "public-key" })),
       };
     },

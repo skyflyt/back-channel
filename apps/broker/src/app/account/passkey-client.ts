@@ -8,7 +8,8 @@
  */
 import { browserSupportsWebAuthn, startAuthentication, startRegistration } from "@simplewebauthn/browser";
 
-export type StepUpAction = "approve_session" | "resume_session" | "approve_support" | "connect_agent" | "manage_passkeys";
+export type StepUpAction = "approve_session" | "resume_session" | "approve_support" | "connect_agent" | "manage_passkeys"
+  | "approve_secret" | "secret_broker_admin";
 /** "needed": the page knows the account has a passkey and the step-up is on, so the prompt comes first. */
 export type StepUpHint = "needed" | undefined;
 export const STEP_UP_HEADER = "x-bc-step-up";
@@ -72,6 +73,24 @@ export async function stepUp(action: StepUpAction, targetId?: string | null): Pr
   const v = await postJson("/api/account/passkeys/step-up/verify", { ceremonyId: o.body.ceremonyId, response });
   if (!v.res.ok || typeof v.body.grant !== "string") throw new PasskeyError(text(v.body.error, "failed"), text(v.body.message, "Your passkey couldn't be checked. Try again."));
   return v.body.grant;
+}
+
+/**
+ * Approve a secret broker request (src/lib/secrets.ts): the passkey prompt IS the approval. Its challenge is the PC's
+ * broker's own digest for the grant chosen, and the assertion goes to that broker, which checks it itself. Resolves
+ * the approved option; throws PasskeyError (cancelled, not_trusted, request_closed, …) otherwise.
+ */
+export async function approveSecret(requestId: string, option: number): Promise<number> {
+  if (!browserSupportsWebAuthn()) throw new PasskeyError("unsupported", UNSUPPORTED);
+  const o = await postJson("/api/account/passkeys/step-up/options", { action: "approve_secret", targetId: requestId, option });
+  if (!o.res.ok) throw new PasskeyError(text(o.body.error, "failed"), text(o.body.message, "Couldn't start the passkey prompt. Try again."));
+  let response: Awaited<ReturnType<typeof startAuthentication>>;
+  try {
+    response = await startAuthentication({ optionsJSON: o.body.options as Parameters<typeof startAuthentication>[0]["optionsJSON"] });
+  } catch (e) { throw fromPrompt(e, "confirm"); }
+  const v = await postJson("/api/account/passkeys/step-up/verify", { ceremonyId: o.body.ceremonyId, response });
+  if (!v.res.ok || v.body.approved !== true) throw new PasskeyError(text(v.body.error, "failed"), text(v.body.message, "Your passkey couldn't be checked. Try again."));
+  return typeof v.body.option === "number" ? v.body.option : option;
 }
 
 export interface Guarded { ok: boolean; status: number; body: Record<string, unknown>; needsPasskey: boolean; message: string | null }
