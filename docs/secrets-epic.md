@@ -122,7 +122,7 @@ machine changes nothing until the person opts a name in, under a signed policy c
 
 ### 3.3 Readiness and the audit view (Phase 1, small)
 
-- The readiness card (`src/app/account/remote/agents-readiness.tsx`) gains a line per PC: *secret broker:
+- The readiness card (`apps/broker/src/app/account/remote/agents-readiness.tsx`) gains a line per PC: *secret broker:
   installed 0.3.1 at commit `abc1234`, service running, 14 names, lockdown off, last approval 2 h ago* or
   *not installed*. The worker reads `secret-broker status --json` for it; nothing else is sent.
 - The account audit gains event types `secret.requested`, `secret.approved`, `secret.denied`,
@@ -130,7 +130,44 @@ machine changes nothing until the person opts a name in, under a signed policy c
   and how (local / passkey). Never the target URL's query, never a value, never the redacted output. The
   broker's own hash-chained log stays the record; this is the person's cross-machine view of it.
 
-### 3.4 Later, maybe: `ask` answered from the phone (Phase 3, undecided)
+### 3.4 Install and set up from the readiness card (Phase 1)
+
+When a PC's broker line says *not installed* or *out of date*, the card offers **Install** or **Update**. The
+worker on that PC does what it can unattended; the person does the three steps that must happen at the
+machine on purpose. Setting up a machine today is a dozen hand-typed commands across two shells, which is
+exactly the hand-off the broker exists to remove.
+
+1. **Ask.** The person clicks Install on that PC's card → `POST /api/secrets/install/{machine}` (person,
+   step-up) records an install intent for the commit the card shows. The worker picks it up on its next
+   poll (`GET /api/agents/self/secret-install`, worker key).
+2. **Fetch and launch.** The worker fetches the broker at that commit with the machine's own GitHub login,
+   checks the fetched tree against the pin (below), and launches the broker's own bootstrap elevated
+   (Windows: `Start-Process -Verb RunAs`; macOS: the system administrator-password dialog). **The UAC or
+   macOS prompt on the machine is the gate.** The worker itself never runs elevated, and it passes nothing
+   to the bootstrap except the commit and the backend project ids, which are not secrets.
+3. **Checklist.** The card ticks each step from what the worker can observe without touching a secret
+   (`secret-broker status --json` and `doctor --json`, exit codes):
+   - installer started, then finished (exit code)
+   - service running at the expected commit
+   - local approver enrolled: **Hello / Touch ID gesture at the machine**
+   - backend machine token stored: **typed into the broker's type-once box on that machine**, never into the
+     dashboard (rule 1)
+   - doctor healthy (canary reachable)
+   - optional: phone approvals enrolled (§3.1): a step-up here plus a signed admin op on the broker
+4. **Update** is the same flow with the broker's update-only mode; the card shows *from → to* commit and the
+   checklist shrinks to installer, service, doctor.
+
+Constraints:
+- **Only for the owner of the broker repo.** The broker is private (§9.1), so the fetch uses that machine's
+  GitHub login. A machine without access shows *cannot fetch the broker* and a link to set up `gh` there.
+- **Back Channel cannot choose the code.** The broker repo publishes its current release pin (commit and tree
+  hash) on its main branch; the dashboard shows it and the worker refuses any fetched tree that does not
+  match it. A compromised Back Channel account can at most offer the release the broker repo already pins,
+  and the person still has to accept the UAC prompt at the machine.
+- **No secret crosses Back Channel.** The checklist is booleans and commit ids. The machine token, the Hello
+  enrolment and the UAC consent all stay on the machine.
+
+### 3.5 Later, maybe: `ask` answered from the phone (Phase 3, undecided)
 
 An MFA code typed on the phone instead of walking to the machine. It is tempting and it is the one place
 this design would move a secret value through Back Channel. It would have to be sealed on the phone to the
@@ -174,6 +211,8 @@ listed so nobody builds it by accident.
 | Dispatched run exfiltrates via a proxy call | Host and header allow-lists per name; `runs` opt-in per name; redaction on `inject`; counts-only reporting |
 | Value lands in a transcript | Tool replies carry responses and `[REDACTED]`, never values; `ask` returns `done` |
 | Replay of an old assertion | Nonce single-use; digest binds name, mode, target, session, policy hash, time window |
+| Back Channel account used to push bad code through Install (§3.4) | The worker installs only the commit and tree hash the broker repo pins; the fetch needs the machine's own GitHub access; the UAC or macOS admin prompt at the machine is the final gate |
+| Install flow used to capture the machine token | The token is typed into the broker's type-once box on the machine; the dashboard has no field for it and the checklist carries booleans only |
 
 ## 6. Data (broker side of Back Channel)
 
@@ -182,6 +221,9 @@ SecretRequest   id, accountId, agentId (the worker), machine, name, mode, tier, 
                 requestCode, digest, status (open|approved|denied|expired|closed_by_broker), raisedAt, expiresAt,
                 decidedAt, decidedBy (passkey credential id | 'local' | null)
 SecretEnrolment accountId, machine, credentialId, publicKey (COSE), enrolledAt, revokedAt
+SecretInstall   id, accountId, agentId (the worker), machine, kind (install|update), commit, treeHash,
+                state (requested|fetching|awaiting_elevation|running|done|failed), steps (booleans per §3.4),
+                requestedAt, finishedAt, failure (short code, no free text from the machine)
 AccountAudit    + secret.requested / approved / denied / lockdown / unlock / enrolled / revoked
 ```
 No value column exists. `target` is stored without query or fragment and truncated at 200 characters.
@@ -195,8 +237,12 @@ No value column exists. `target` is stored without query or fragment and truncat
 - `POST /api/secrets/requests/{id}/deny`, `POST /api/secrets/lockdown/{machine}` — one click, not gated.
 - `POST /api/secrets/enrol` (worker key, with a step-up by the person) — register the passkey public key for
   a machine; the broker itself completes enrolment locally under a signed admin op.
+- `POST /api/secrets/install/{machine}` (person, step-up) — ask that PC's worker to install or update the
+  pinned broker release (§3.4); `GET /api/agents/self/secret-install` (worker key) — pick up the intent;
+  `POST /api/agents/self/secret-install/{id}/progress` (worker key) — tick checklist steps.
 - MCP (full-scope keys): `bc_secret_requests`, `bc_secret_deny`, `bc_secret_lockdown`. **No approve tool**:
-  approving needs the step-up a tool can't do.
+  approving needs the step-up a tool can't do. **No install tool either**: an install starts from the
+  dashboard with a step-up, never from an agent.
 - Worker: `bc_secrets` MCP server for runs (§3.2), readiness line (§3.3).
 
 ## 8. Non-goals
@@ -226,9 +272,13 @@ No value column exists. `target` is stored without query or fragment and truncat
 
 - **Phase 0** (this doc; the private broker as shipped).
 - **Phase 1** — broker (in `skyflyt/secret-broker`, private): second approver kind `webauthn` (verify an
-  assertion over the digest against a stored COSE key; enrolment op). Back Channel (here, public): `SecretRequest`, the routes, the inbox card, `approve_secret`
-  step-up action with caller-supplied challenge, readiness line, audit events. Tests: rules pure under
-  `node --test`; a route test that proves an approve without a step-up is `403`, that a step-up for another
-  request's id does not spend, and that no response body anywhere carries a field named like a value.
+  assertion over the digest against a stored COSE key; enrolment op); `status --json` / `doctor --json`;
+  a published release pin (commit + tree hash). Back Channel (here, public): `SecretRequest`, the routes, the
+  inbox card, `approve_secret` step-up action with caller-supplied challenge, readiness line, audit events,
+  and Install / Update from the readiness card (§3.4: `SecretInstall`, the worker's fetch-verify-elevate step,
+  the checklist). Tests: rules pure under `node --test`; a route test that proves an approve without a
+  step-up is `403`, that a step-up for another request's id does not spend, that no response body anywhere
+  carries a field named like a value, that an install without a step-up is `403`, and a worker test that a
+  fetched tree not matching the pin is refused before anything is launched.
 - **Phase 2** — worker `bc_secrets` bridge and `runs` policy field; broker learns run identity.
-- **Phase 3** — undecided (§3.4).
+- **Phase 3** — undecided (§3.5).
