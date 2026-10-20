@@ -298,6 +298,27 @@ test("jobs: install, update and enrol need the step-up for that PC; lockdown nev
   assert.deepEqual(valueShapedKeys(s.body), []);
 });
 
+test("jobs: one whose worker stopped reporting (reinstalled mid-update) times out instead of blocking the PC for good", async () => {
+  const key = passkeyOn();
+  await sync({ v: 1, broker: brokerStatus() });
+  const su = async () => {
+    const opt = await pk("step-up/options", { action: "secret_broker_admin", targetId: AGENT.pc });
+    const v = await pk("step-up/verify", { ceremonyId: opt.body.ceremonyId, response: webauthn.authentication(key.credentialId, opt.body.options.challenge, { counter: Number(tables.accountPasskey[0].counter) + 1 }) });
+    return v.body.grant as string;
+  };
+  assert.equal((await machine(AGENT.pc, "update", {}, { stepUp: await su() })).status, 200);
+  const [up] = (await sync({ v: 1, broker: brokerStatus() })).body.jobs;
+  await sync({ v: 1, broker: brokerStatus(), jobs: [{ id: up.id, state: "running", steps: { fetched: true } }] });
+  const row = tables.secretJob.find((j: Row) => j.id === up.id)!;
+  row.updatedAt = new Date(Date.now() - 14 * 60_000);
+  assert.equal((await machine(AGENT.pc, "update", {}, { stepUp: await su() })).status, 409, "still busy within 15 minutes");
+  row.updatedAt = new Date(Date.now() - 16 * 60_000);
+  assert.equal((await view()).body.machines[0].job.state, "failed");
+  assert.equal(row.failure, "timed_out");
+  assert.ok(tables.accountAudit.some((a: Row) => a.eventType === "secret.update_failed" && a.detail.failure === "timed_out"));
+  assert.equal((await machine(AGENT.pc, "update", {}, { stepUp: await su() })).status, 200, "a new Update goes through");
+});
+
 test("the emergency switch can't skip the passkey for a secret: approving still is a ceremony over the broker's digest", async () => {
   process.env.APPROVAL_STEP_UP = "off";
   const key = passkeyOn();

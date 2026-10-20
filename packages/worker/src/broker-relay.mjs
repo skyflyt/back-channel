@@ -36,9 +36,9 @@ export function brokerPaths({ platform = process.platform, env = process.env } =
 
 /** `secret-broker relay`: one JSON line in, one out, over the installed broker's own Python. Never a value. */
 export class Relay {
-    constructor({ python, spawnImpl = spawn, timeoutMs = RELAY_TIMEOUT_MS } = {}) { this.python = python; this.spawnImpl = spawnImpl; this.timeoutMs = timeoutMs; this.child = null; this.queue = []; }
+    constructor({ python, spawnImpl = spawn, timeoutMs = RELAY_TIMEOUT_MS } = {}) { this.python = python; this.spawnImpl = spawnImpl; this.timeoutMs = timeoutMs; this.child = null; this.queue = []; this.paused = false; }
     start() {
-        if (this.child) return;
+        if (this.child || this.paused) return;
         const child = this.spawnImpl(this.python, ['-I', '-m', 'secret_broker', 'relay'], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, shell: false });
         this.child = child;
         const lines = createInterface({ input: child.stdout });
@@ -58,6 +58,9 @@ export class Relay {
         });
     }
     stop() { try { this.child?.stdin.end(); this.child?.kill(); } catch { } this.child = null; }
+    /** The installer replaces the venv this relay runs on: a running relay holds its python.exe open. */
+    pause() { this.paused = true; this.stop(); }
+    resume() { this.paused = false; }
 }
 
 /** The broker repo's release pin, fetched with this PC's own GitHub login (the repo is private). null if unavailable. */
@@ -247,7 +250,11 @@ export async function runJob({ job, relay, paths, report, log = () => { }, launc
             try { await fetch({ payload: job.payload, dir: check }); } catch (e) { steps.fetched = false; return tick('failed', e.code ?? 'fetch_failed'); }
             finally { fs.rmSync(check, { recursive: true, force: true }); }
             steps.fetched = true; await tick('running');
-            const launched = await launch({ payload: job.payload, kind: job.kind, backends });
+            // Nothing of the worker's may run on the broker's Python while the installer rebuilds its venv (seen
+            // 2026-10-20: the relay, respawned by the sync, left install.ps1 "Access ... python.exe is denied").
+            relay?.pause?.();
+            let launched;
+            try { launched = await launch({ payload: job.payload, kind: job.kind, backends }); } finally { relay?.resume?.(); }
             if (!launched.ok) { steps.installer_started = false; return tick('failed', launched.code ?? 'uac_declined'); }
             steps.installer_started = true; steps.installer_finished = true; await tick('running');
             await new Promise(r => globalThis.setTimeout(r, waitMs));
@@ -280,8 +287,10 @@ export function startSecretsSync({ client, paths = brokerPaths(), relay = paths 
         running = (async () => {
             try {
                 const installed = !!paths && fs.existsSync(paths.python);
-                if (!broker || Date.now() - lastBroker > 60_000 || !installed) { broker = await collect({ relay, paths: installed ? paths : null }); lastBroker = Date.now(); }
-                const list = installed && relay ? await pending(relay).catch(() => []) : [];
+                // While an install or update runs, nothing starts the broker's Python (status, doctor, pending).
+                const held = !!relay?.paused;
+                if (!held && (!broker || Date.now() - lastBroker > 60_000 || !installed)) { broker = await collect({ relay, paths: installed ? paths : null }); lastBroker = Date.now(); }
+                const list = installed && relay && !held ? await pending(relay).catch(() => []) : [];
                 const r = await client.secretsSync({ v: 1, broker, pending: list, jobs: [] });
                 if (r.status !== 200 || !r.body) { if (r.status) log(`Secrets sync not accepted by Back Channel (HTTP ${r.status}); the worker carries on.`); return; }
                 if (relay && r.body.decisions?.length) await apply(relay, r.body.decisions, log);

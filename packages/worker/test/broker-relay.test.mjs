@@ -3,7 +3,7 @@
 // relay, git and the elevated launch; nothing here touches a real broker.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyDecisions, collectPending, fetchRelease, launchElevated, runJob, startSecretsSync } from '../src/broker-relay.mjs';
+import { applyDecisions, collectPending, fetchRelease, launchElevated, Relay, runJob, startSecretsSync } from '../src/broker-relay.mjs';
 
 const C = 'c'.repeat(40), T = 'd'.repeat(40);
 function fakeRelay(answers = {}) {
@@ -60,6 +60,39 @@ test('update: fetched and checked, launched (UAC at the PC), then the service an
     await runJob({ job: { id: 'j3', kind: 'update', payload: { commit: C, tree: T } }, relay, paths, report: async (...a) => reports.push(a.slice(1)),
         fetch: async () => '.', launch: async () => ({ code: 'uac_declined' }) });
     assert.deepEqual(reports.at(-1)[2], 'uac_declined');
+});
+
+test('update: the relay is paused while the installer replaces the venv, and resumed after, a failed launch included', async () => {
+    const relay = { ...fakeRelay({ status: { status: 'ok', commit: C } }), paused: false, log: [] };
+    relay.pause = () => { relay.paused = true; relay.log.push('pause'); };
+    relay.resume = () => { relay.paused = false; relay.log.push('resume'); };
+    let pausedAtLaunch = null;
+    await runJob({ job: { id: 'j6', kind: 'update', payload: { commit: C, tree: T } }, relay, paths, waitMs: 1, report: async () => { },
+        fetch: async () => '.', launch: async () => { pausedAtLaunch = relay.paused; return { ok: true }; }, doctor: async () => ({ healthy: true, checks: [] }) });
+    assert.equal(pausedAtLaunch, true);
+    assert.deepEqual(relay.log, ['pause', 'resume']);
+    relay.log.length = 0;
+    await runJob({ job: { id: 'j7', kind: 'install', payload: { commit: C, tree: T } }, relay, paths, report: async () => { },
+        fetch: async () => '.', launch: async () => { throw Error('spawn failed'); } });
+    assert.deepEqual(relay.log, ['pause', 'resume']);
+});
+
+test('relay: a paused relay starts no Python, and the sync leaves the broker alone until it resumes', async () => {
+    let spawned = 0;
+    const r = new Relay({ python: 'python.exe', spawnImpl: () => { spawned++; throw Error('unexpected spawn'); } });
+    r.pause();
+    await assert.rejects(r.call({ op: 'status' }), /could not start/);
+    assert.equal(spawned, 0);
+    const relay = { ...fakeRelay({ 'remote-pending': { status: 'ok', pending: [] } }), paused: true };
+    let collected = 0;
+    const sent = [];
+    const s = startSecretsSync({ client: { secretsSync: async body => { sent.push(body); return { status: 200, body: { decisions: [], jobs: [] } }; } },
+        paths: { python: process.execPath }, relay, everyMs: 60_000, collect: async () => { collected++; return { installed: true }; } });
+    await s.first;
+    s.stop();
+    assert.equal(collected, 0);
+    assert.deepEqual(relay.calls, []);
+    assert.deepEqual(sent[0].pending, []);
 });
 
 test('enrol and lockdown: the broker\'s own card decides an enrolment; lockdown is relayed at once', async () => {
