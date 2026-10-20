@@ -30,6 +30,8 @@ import { hasFullScope } from "@/lib/agent-scope";
 export const MAX_SYNC_BYTES = 256 * 1024;
 /** The broker status is "current" while the worker synced within this long (it syncs every few seconds). */
 export const BROKER_FRESH_MS = 3 * 60_000;
+/** A sent or running job with no progress for this long lost its worker (restarted mid-job): it is failed, not "busy" forever. */
+export const JOB_STALE_MS = 15 * 60_000;
 const MAX_PENDING = 20, MAX_OPTIONS = 32, MAX_JOBS = 10, MAX_APPROVERS = 10, MAX_CHECKS = 20;
 const HEX40 = /^[0-9a-f]{40}$/;
 const B64U_DIGEST = /^[A-Za-z0-9_-]{43}$/;
@@ -186,6 +188,17 @@ async function audit(accountId: string, eventType: string, detail: Record<string
   await prisma.accountAudit.create({ data: { accountId, eventType, detail: detail as Prisma.InputJsonValue } }).catch(() => {});
 }
 
+/** Fail the account's jobs that stopped reporting (seen 2026-10-20: a worker reinstalled mid-update left one "running"). */
+async function expireStaleJobs(accountId: string, now: Date) {
+  const stale = await prisma.secretJob.findMany({
+    where: { accountId, state: { in: ["sent", "running"] }, updatedAt: { lt: new Date(now.getTime() - JOB_STALE_MS) } }, take: 50,
+  });
+  for (const job of stale) {
+    const done = await prisma.secretJob.updateMany({ where: { id: job.id, state: job.state }, data: { state: "failed", failure: "timed_out", finishedAt: now } });
+    if (done.count === 1) await audit(accountId, `secret.${job.kind}_failed`, { agent_id: job.agentId, job_id: job.id, failure: "timed_out" });
+  }
+}
+
 // ── the worker's sync ───────────────────────────────────────────────────────
 
 export async function syncForWorker(agent: { id: string; accountId: string }, body: Record<string, unknown>, now: Date) {
@@ -266,6 +279,7 @@ export async function viewForPerson(account: Account, now: Date) {
   });
   const passkeys = await prisma.accountPasskey.findMany({ where: { accountId: account.id }, select: { id: true, label: true, credentialId: true, publicKey: true } });
   const keyed = passkeys.map((p) => ({ id: p.id, label: p.label, fingerprint: passkeyFingerprint(p.credentialId, new Uint8Array(p.publicKey)) }));
+  await expireStaleJobs(account.id, now);
   const jobs = await prisma.secretJob.findMany({ where: { accountId: account.id }, orderBy: { createdAt: "desc" }, take: 100 });
   const machines = agents.map((a) => {
     const broker = a.secretBroker as unknown as BrokerStatus;
@@ -372,6 +386,7 @@ export async function createJob(account: Account, agentId: string, kind: string,
     const refusal = await SU.requireStepUp(prisma, { accountId: account.id, action: "secret_broker_admin", targetId: agentId, grant, now });
     if (refusal) fail(refusal.status, refusal.error, refusal.message);
   }
+  await expireStaleJobs(account.id, now);
   if (await prisma.secretJob.count({ where: { agentId, state: { in: ["requested", "sent", "running"] }, kind: { not: "lockdown" } } }) && kind !== "lockdown") {
     fail(409, "busy", "That PC already has a broker job in progress. Wait for it to finish.");
   }
