@@ -21,7 +21,9 @@ export function androidOrigins(): string[] {
 /** The Digital Asset Links statement: these apps share back-channel.app's sign-in credentials (passkeys). */
 export function assetLinks() {
   return ANDROID_APPS.map((a) => ({
-    relation: ["delegate_permission/common.get_login_creds"],
+    // Both, as Google's passkey guide for Android apps lists: Play Services refused get_login_creds alone on the
+    // phone ("[50152] RP ID cannot be validated", 2026-10-20) though the Digital Asset Links API said linked.
+    relation: ["delegate_permission/common.handle_all_urls", "delegate_permission/common.get_login_creds"],
     target: { namespace: "android_app", package_name: a.packageName, sha256_cert_fingerprints: [colonHex(a.certSha256)] },
   }));
 }
