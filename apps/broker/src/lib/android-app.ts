@@ -5,10 +5,10 @@
  *
  * Only the release ("pilot") signing identity, ruled 2026-10-20: the development build is debuggable, so anything on a
  * PC with ADB to the phone could drive its approval screen. The PC's secret broker pins the same origin itself
- * (secret-broker webauthn ANDROID_APP_ORIGINS); listing an app here alone lets nothing approve.
+ * (secret-broker webauthn.ANDROID_APP_CERTS); listing an app here alone lets nothing approve.
  */
 export const ANDROID_APPS: readonly { packageName: string; certSha256: string }[] = [
-  { packageName: "dev.appbridge.android.pilot", certSha256: "7ff0d86add017df8b61c7a0bdb69fe63a654ae4ad3fb17591abe93c745ea345e" },
+  { packageName: "dev.appbridge.android.pilot", certSha256: "8e8d2d500fa2234e4d71570a4fffc558d6362f4914201093b5b28c31bb721295" },
 ];
 
 const colonHex = (hex: string) => hex.toUpperCase().match(/../g)!.join(":");
