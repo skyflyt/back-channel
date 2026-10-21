@@ -166,7 +166,7 @@ const FP1 = "A1".repeat(32);
 const ISSUER = "issuerLaptop0000000000", ISSUER2 = "issuerDesktop000000000";
 const CRED_ISS = "ab_" + "D".repeat(43), CRED_ISS2 = "ab_" + "E".repeat(43);
 const FP_ISS = "D4".repeat(32), FP_ISS2 = "E5".repeat(32);
-const REMOTE_SCOPES = ["appbridge.device", "appbridge.relay.pass"];
+const REMOTE_SCOPES = ["appbridge.device", "appbridge.relay.pass", "appbridge.secrets"];
 const LIST = "b0000000-0000-4000-8000-000000000001", TASK = "c0000000-0000-4000-8000-000000000001";
 const relayKeys = generateKeyPairSync("ed25519");
 const RELAY_PUBLIC_KEY = relayKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64");

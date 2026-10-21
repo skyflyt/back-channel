@@ -35,6 +35,7 @@ import * as auth from "@/lib/auth";
 import * as limits from "@/lib/rate-limit";
 import * as SU from "@/lib/step-up";
 import * as secrets from "@/lib/secrets";
+import { androidOrigins } from "@/lib/android-app";
 
 const MAX_PASSKEYS = 10;
 const MAX_BODY = 64 * 1024;
@@ -212,25 +213,24 @@ async function opRemove(account: Account, req: NextRequest, id: string, now: Dat
   return { removed: true, remaining: await prisma.accountPasskey.count({ where: { accountId: account.id } }) };
 }
 
-async function opStepUpOptions(account: Account, req: NextRequest, input: Record<string, unknown>, now: Date) {
-  const rp = relyingParty(req.url);
+async function opStepUpOptions(accountId: string, rp: { rpID: string }, input: Record<string, unknown>, now: Date) {
   const action = input.action;
   if (!SU.isStepUpAction(action)) return fail(400, "invalid_action", `action is one of ${SU.STEP_UP_ACTIONS.join(", ")}.`);
   const targetId = SU.cleanTarget(action, input.targetId);
   if (targetId === undefined) {
     fail(400, "invalid_target", SU.actionTakesTarget(action) ? "targetId is the id of what you're approving." : "This action has no targetId.");
   }
-  let passkeys = await prisma.accountPasskey.findMany({ where: { accountId: account.id }, select: { credentialId: true, transports: true } });
+  let passkeys = await prisma.accountPasskey.findMany({ where: { accountId: accountId }, select: { credentialId: true, transports: true } });
   if (!passkeys.length) fail(403, "passkey_required", "Add a passkey to your account first (Windows Hello on this PC, or your phone).");
   // approve_secret: the challenge is the broker's own digest for the grant chosen, and only a passkey that PC's broker
   // trusts can answer (src/lib/secrets.ts). An earlier ceremony for the same digest (abandoned, or answered wrongly) is
   // dropped first, as the column is unique; one that approved can't exist here, as its request is no longer open.
   let fixed: string | null = null;
   if (action === "approve_secret") {
-    const a = await secrets.approvalChallenge(account.id, targetId as string, input.option, now);
+    const a = await secrets.approvalChallenge(accountId, targetId as string, input.option, now);
     fixed = a.digest;
     passkeys = a.passkeys;
-    await prisma.passkeyChallenge.deleteMany({ where: { accountId: account.id, challenge: fixed, kind: "step_up", action: "approve_secret" } });
+    await prisma.passkeyChallenge.deleteMany({ where: { accountId: accountId, challenge: fixed, kind: "step_up", action: "approve_secret" } });
   }
   const options = await generateAuthenticationOptions({
     rpID: rp.rpID,
@@ -240,24 +240,23 @@ async function opStepUpOptions(account: Account, req: NextRequest, input: Record
     ...(fixed ? { challenge: new Uint8Array(Buffer.from(fixed, "base64url")) } : {}),
   });
   if (fixed && options.challenge !== fixed) fail(503, "unavailable", "The passkey prompt couldn't be prepared for this request. Try again.");
-  await prune(account.id, now);
+  await prune(accountId, now);
   const row = await prisma.passkeyChallenge.create({
-    data: { accountId: account.id, kind: "step_up", action, targetId: targetId ?? null, challenge: options.challenge, expiresAt: new Date(now.getTime() + SU.CEREMONY_TTL_MS) },
+    data: { accountId: accountId, kind: "step_up", action, targetId: targetId ?? null, challenge: options.challenge, expiresAt: new Date(now.getTime() + SU.CEREMONY_TTL_MS) },
   });
   return { ceremonyId: row.id, options };
 }
 
-async function opStepUpVerify(account: Account, req: NextRequest, input: Record<string, unknown>, now: Date) {
-  const rp = relyingParty(req.url);
+async function opStepUpVerify(accountId: string, rp: { rpID: string }, input: Record<string, unknown>, now: Date, origins: string | string[]) {
   const id = ceremonyId(input);
   const response = answer<AuthenticationResponseJSON>(input);
-  const row = await spendCeremony(account.id, id, "step_up", now);
-  const passkey = await prisma.accountPasskey.findFirst({ where: { accountId: account.id, credentialId: response.id } });
+  const row = await spendCeremony(accountId, id, "step_up", now);
+  const passkey = await prisma.accountPasskey.findFirst({ where: { accountId: accountId, credentialId: response.id } });
   if (!passkey) return fail(400, "unknown_passkey", "That passkey isn't on your account. Use one listed in Settings → Passkeys.");
   let verified: Awaited<ReturnType<typeof verifyAuthenticationResponse>>;
   try {
     verified = await verifyAuthenticationResponse({
-      response, expectedChallenge: row.challenge, expectedOrigin: rp.origin, expectedRPID: rp.rpID, requireUserVerification: true,
+      response, expectedChallenge: row.challenge, expectedOrigin: origins, expectedRPID: rp.rpID, requireUserVerification: true,
       credential: { id: passkey.credentialId, publicKey: new Uint8Array(passkey.publicKey), counter: Number(passkey.counter), transports: passkey.transports ?? [] },
     });
   } catch {
@@ -272,18 +271,38 @@ async function opStepUpVerify(account: Account, req: NextRequest, input: Record<
   if (bumped.count !== 1) fail(409, "passkey_busy", "That passkey was used at the same moment. Try again.");
   if (row.action === "approve_secret") {
     // The ceremony is the approval: its assertion goes to the PC's broker, which checks it itself. No grant.
-    const out = await secrets.recordApproval(account.id, row.targetId as string, row.challenge, passkey.id, {
+    const out = await secrets.recordApproval(accountId, row.targetId as string, row.challenge, passkey.id, {
       credentialId: response.id, authenticatorData: response.response.authenticatorData,
       clientDataJson: response.response.clientDataJSON, signature: response.response.signature,
     }, now);
-    await audit(account.id, "step_up.confirmed", { action: row.action, target: row.targetId, passkey_id: passkey.id });
+    await audit(accountId, "step_up.confirmed", { action: row.action, target: row.targetId, passkey_id: passkey.id });
     return { approved: true, option: out.option, action: row.action, targetId: row.targetId };
   }
   const grant = SU.newGrant();
   const expiresAt = new Date(now.getTime() + SU.GRANT_TTL_MS);
   await prisma.passkeyChallenge.update({ where: { id: row.id }, data: { grantHash: grant.hash, expiresAt, passkeyId: passkey.id } });
-  await audit(account.id, "step_up.confirmed", { action: row.action, ...(row.targetId ? { target: row.targetId } : {}), passkey_id: passkey.id });
+  await audit(accountId, "step_up.confirmed", { action: row.action, ...(row.targetId ? { target: row.targetId } : {}), passkey_id: passkey.id });
   return { grant: grant.raw, action: row.action, targetId: row.targetId, expiresAt: expiresAt.toISOString() };
+}
+
+// ── the BC Remote app (src/lib/secrets-device.ts) ─────────────────────────────
+
+export { Refusal as PasskeyRefusal };
+
+/**
+ * The app's approval of a secret request: the dashboard's approve_secret ceremony, raised by the app's own passkey
+ * prompt. Only approve_secret: a device never gets a step-up grant, so it can't confirm anything else.
+ */
+export function appApprovalOptions(accountId: string, requestUrl: string, requestId: string, option: unknown, now: Date) {
+  return opStepUpOptions(accountId, relyingParty(requestUrl), { action: "approve_secret", targetId: requestId, option }, now);
+}
+
+/** Only the app's origin (its release signing key) answers here; the website's answers go through the dashboard. */
+export async function appApprovalVerify(accountId: string, requestUrl: string, requestId: string, input: Record<string, unknown>, now: Date) {
+  const row = await prisma.passkeyChallenge.findFirst({ where: { id: ceremonyId(input), accountId, kind: "step_up" }, select: { action: true, targetId: true } });
+  if (row?.action !== "approve_secret" || row.targetId !== requestId) fail(404, "no_ceremony", "That passkey prompt isn't available. Start again.");
+  const out = await opStepUpVerify(accountId, relyingParty(requestUrl), input, now, androidOrigins());
+  return { approved: true as const, option: (out as { option: number }).option };
 }
 
 // ── REST ────────────────────────────────────────────────────────────────────
@@ -331,8 +350,8 @@ export async function passkeysRoute(req: NextRequest, path: string[]): Promise<N
       case "registerOptions": return respond(await opRegisterOptions(account, req, now));
       case "registerVerify": return respond(await opRegisterVerify(account, req, await readJson(req), now));
       case "remove": return respond(await opRemove(account, req, a, now));
-      case "stepUpOptions": return respond(await opStepUpOptions(account, req, await readJson(req), now));
-      case "stepUpVerify": return respond(await opStepUpVerify(account, req, await readJson(req), now));
+      case "stepUpOptions": return respond(await opStepUpOptions(account.id, relyingParty(req.url), await readJson(req), now));
+      case "stepUpVerify": { const rp = relyingParty(req.url); return respond(await opStepUpVerify(account.id, rp, await readJson(req), now, rp.origin)); }
     }
   } catch (e) {
     if (e instanceof Refusal) return respond({ error: e.code, message: e.message }, e.status);

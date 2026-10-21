@@ -224,7 +224,7 @@ test("device routes accept only an ab_ credential: bc_ keys, cookies, garbage an
 test("scopes follow the role: a remote cannot ask for presence passes or flip a relay switch; a host cannot ask for session passes", async () => {
   const { host, remote } = await ready();
   assert.deepEqual(host.scopes, ["appbridge.device", "appbridge.host.relay", "appbridge.relay.presence"]);
-  assert.deepEqual(remote.scopes, ["appbridge.device", "appbridge.relay.pass"]);
+  assert.deepEqual(remote.scopes, ["appbridge.device", "appbridge.relay.pass", "appbridge.secrets"]);
   assert.equal((await (await routes.presence()).POST(req("POST", {}, bearer(remote.credential)))).status, 403);
   assert.equal((await (await routes.relaySwitch()).PUT(req("PUT", { enabled: true }, bearer(remote.credential)))).status, 403);
   assert.equal((await sessionPass(host, host.deviceId)).status, 403);

@@ -97,10 +97,12 @@ const CODE = /^ABD-[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{4}-[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{
 const CREDENTIAL = /^ab_[A-Za-z0-9_-]{43}$/;
 export const SCOPES = {
   host: ["appbridge.device", "appbridge.host.relay", "appbridge.relay.presence"],
-  remote: ["appbridge.device", "appbridge.relay.pass"],
+  // appbridge.secrets: see and answer secret broker requests (src/lib/secrets-device.ts). Phones registered before it
+  // existed don't have it, and rotation keeps a credential's scopes: re-register to get it.
+  remote: ["appbridge.device", "appbridge.relay.pass", "appbridge.secrets"],
 } as const;
 type Role = keyof typeof SCOPES;
-type Scope = "appbridge.device" | "appbridge.host.relay" | "appbridge.relay.presence" | "appbridge.relay.pass";
+type Scope = "appbridge.device" | "appbridge.host.relay" | "appbridge.relay.presence" | "appbridge.relay.pass" | "appbridge.secrets";
 type Body = Record<string, unknown>;
 type Refusal = "rollout_off" | "not_entitled" | "relay_off" | "device_revoked" | "not_paired" | "not_found" | "session_inactive" | "support_client_pinned";
 type Purpose = "session" | "presence" | "agent" | "support" | "support-client";
@@ -262,6 +264,13 @@ async function deviceContext(req: NextRequest, scope: Scope): Promise<{ device: 
     });
   }
   return { device: cred.device, keyHash: cred.keyHash, scopes: cred.scopes };
+}
+
+/** A phone's credential for the secret broker routes (src/lib/secrets-device.ts): a remote device with appbridge.secrets. */
+export async function secretsDevice(req: NextRequest): Promise<AppBridgeDevice> {
+  const { device } = await deviceContext(req, "appbridge.secrets");
+  if (device.role !== "remote") fail(403, "scope");
+  return device;
 }
 
 // The relay (a Cloudflare Worker) signs every request with its Ed25519 key; the broker holds only the
