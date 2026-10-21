@@ -309,7 +309,7 @@ test("the BC Remote app: its device credential sees and denies; approving takes 
 test("assetlinks: back-channel.app lets only the release app use its passkeys", async () => {
   const res = await (await import("@/app/.well-known/assetlinks.json/route")).GET();
   const links = await res.json();
-  assert.deepEqual(links.map((l: Row) => [l.relation, l.target.package_name]), [[["delegate_permission/common.get_login_creds"], "dev.appbridge.android.pilot"]]);
+  assert.deepEqual(links.map((l: Row) => [l.relation, l.target.package_name]), [[["delegate_permission/common.handle_all_urls", "delegate_permission/common.get_login_creds"], "dev.appbridge.android.pilot"]]);
   assert.match(links[0].target.sha256_cert_fingerprints[0], /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
 });
 
