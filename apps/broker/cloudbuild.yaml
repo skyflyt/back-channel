@@ -55,7 +55,10 @@ steps:
       # this list is comma-delimited.
       # STRIPE_REMOTE_PRICE_ID: the Remote tier's recurring Stripe price (not secret), from the
       # _STRIPE_REMOTE_PRICE_ID substitution below. Empty = billing off: the billing routes answer 503.
-      - "--set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production,EMAIL_FROM=Back Channel <noreply@back-channel.app>,APPBRIDGE_REMOTE_ACCESS=on,APPBRIDGE_RELAY_PUBLIC_KEY=MCowBQYDK2VwAyEAtClOBnMMcWUwQca1P5kz8QkdovbAgl7OxL3old1j2uU=,ADMIN_EMAILS=skyflyt86@gmail.com,STRIPE_REMOTE_PRICE_ID=${_STRIPE_REMOTE_PRICE_ID}"
+      # FCM_PUSH=on: the BC Remote app's push nudge (src/lib/push.ts, docs/secrets-epic.md §3.6), signed with
+      # the service account's application default credentials; the Firebase project is this GCP project,
+      # so no new secret. Anything else turns the nudge off and the app falls back to its long-poll.
+      - "--set-env-vars=PUBLIC_APP_URL=https://back-channel.app,NODE_ENV=production,EMAIL_FROM=Back Channel <noreply@back-channel.app>,APPBRIDGE_REMOTE_ACCESS=on,APPBRIDGE_RELAY_PUBLIC_KEY=MCowBQYDK2VwAyEAtClOBnMMcWUwQca1P5kz8QkdovbAgl7OxL3old1j2uU=,ADMIN_EMAILS=skyflyt86@gmail.com,STRIPE_REMOTE_PRICE_ID=${_STRIPE_REMOTE_PRICE_ID},FCM_PUSH=on"
       # Stripe secrets come from Secret Manager, never from --set-env-vars. Both secrets MUST exist
       # before a deploy with this line (a placeholder value is fine: an invalid key keeps billing off).
       - --set-secrets=DATABASE_URL=DATABASE_URL:latest,RESEND_API_KEY=RESEND_API_KEY:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest
