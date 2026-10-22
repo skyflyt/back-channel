@@ -44,6 +44,7 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, v
 import { NextRequest, NextResponse } from "next/server";
 import type { AppBridgeDevice, Prisma, RemoteAppSession } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { PUSH_TOKEN, pushEnabled } from "@/lib/push";
 import { rateLimit, rateLimitPeek } from "@/lib/rate-limit";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
 import { checkOwnerAdmin, ownerGateInput } from "@/lib/admin";
@@ -524,6 +525,25 @@ export const deleteSelf = (req: NextRequest) => handle(async () => {
   return new NextResponse(null, { status: 204, headers: { "Cache-Control": "no-store" } });
 });
 
+/**
+ * PUT /devices/self/push { token } / DELETE /devices/self/push — the BC Remote app's push token for the secret request
+ * nudge (src/lib/push.ts). Phones only, with the secrets scope: a PC has no notifications to receive. The token is
+ * replaced whole; it is cleared here, on revoke and on unregister.
+ */
+export const setPushToken = (req: NextRequest) => handle(async () => {
+  const { device } = await deviceContext(req, "appbridge.secrets");
+  if (device.role !== "remote") fail(403, "scope");
+  let token: string | null = null;
+  if (req.method === "PUT") {
+    const body = await readBody(req);
+    exact(body, ["token"]);
+    if (typeof body.token !== "string" || !PUSH_TOKEN.test(body.token)) fail(400, "invalid_request");
+    token = body.token;
+  } else if (req.method !== "DELETE") fail(405, "method_not_allowed");
+  await prisma.appBridgeDevice.update({ where: { id: device.id }, data: { pushToken: token, pushUpdatedAt: new Date() } });
+  return json({ push: token !== null, enabled: pushEnabled() });
+});
+
 /** PUT /devices/self/connector — rotate the connector key, proven by both the old and the new key. */
 export const rotateConnector = (req: NextRequest) => handle(async () => {
   const { device } = await deviceContext(req, "appbridge.device");
@@ -970,7 +990,7 @@ export const listDevices = (req: NextRequest) => handle(async () => {
  * session ends within one renewal interval (about a minute) instead of riding out a refused renewal.
  */
 async function revokeInTx(tx: Prisma.TransactionClient, deviceId: string, now: Date): Promise<void> {
-  await tx.appBridgeDevice.update({ where: { id: deviceId }, data: { revokedAt: now, enabled: false, relayEnabled: false } });
+  await tx.appBridgeDevice.update({ where: { id: deviceId }, data: { revokedAt: now, enabled: false, relayEnabled: false, pushToken: null, pushUpdatedAt: now } });
   await tx.appBridgeCredential.updateMany({ where: { deviceId, revokedAt: null }, data: { revokedAt: now } });
   await tx.appBridgePairing.updateMany({ where: { OR: [{ hostDeviceId: deviceId }, { remoteDeviceId: deviceId }], withdrawnAt: null }, data: { withdrawnAt: now } });
   await tx.appBridgeLease.deleteMany({ where: { OR: [{ hostDeviceId: deviceId }, { remoteDeviceId: deviceId }] } });

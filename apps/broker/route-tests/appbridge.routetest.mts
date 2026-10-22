@@ -440,8 +440,10 @@ test("revoking a device from the dashboard ends its credentials, pairings and li
   const revoke = (await routes.device()).DELETE;
   assert.equal((await revoke(req("DELETE", undefined, cookie("b")), params({ id: remote.deviceId }))).status, 404, "another account's device");
   assert.equal((await revoke(req("DELETE", undefined, cookie("a", false)), params({ id: remote.deviceId }))).status, 403, "csrf");
+  tables.device.find((d: any) => d.id === remote.deviceId).pushToken = "a:token-the-phone-gave-us";
   assert.equal((await revoke(req("DELETE", undefined, cookie("a")), params({ id: remote.deviceId }))).status, 204);
   assert.equal(tables.lease.length, 0, "its live leases are deleted in the revoking transaction");
+  assert.equal(tables.device.find((d: any) => d.id === remote.deviceId).pushToken, null, "a revoked phone is never nudged again");
   assert.equal((await renew(grant.leaseId)).status, 404, "so the relay's next renewal fails");
   assert.equal((await (await routes.self()).GET(req("GET", undefined, bearer(remote.credential)))).status, 401);
   assert.ok(tables.pairing[0].withdrawnAt);

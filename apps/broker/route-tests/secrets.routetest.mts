@@ -424,3 +424,168 @@ test("fingerprint: the same bytes the broker hashes (credential id, a zero byte,
   const want = createHash("sha256").update(Buffer.concat([Buffer.from("cred"), Buffer.from([0]), Buffer.from([1, 2, 3])])).digest("hex").toUpperCase().slice(0, 16).match(/.{4}/g)!.join("-");
   assert.equal(fp, want);
 });
+
+// ── Phase 1b: the phone's channel, the push nudge and the checklist (docs/secrets-epic.md §3.6) ──
+
+/** A phone registered to an account, built at runtime so no credential-shaped literal sits in the file. */
+function phoneOn(scopes = ["appbridge.device", "appbridge.relay.pass", "appbridge.secrets"], accountId = "acct-a", role = "remote") {
+  const deviceId = crypto.randomUUID();
+  const raw = ["ab", randomBytes(32).toString("base64url")].join("_");
+  tables.appBridgeDevice.push({ id: deviceId, accountId, role, enabled: true, revokedAt: null, relayEnabled: false, pushToken: null, pushUpdatedAt: null });
+  tables.appBridgeCredential.push({ keyHash: sha(raw), deviceId, accountId, scopes, expiresAt: new Date(Date.now() + 86_400_000), revokedAt: null, replacesKeyHash: null });
+  return { raw, deviceId };
+}
+const appView = async (bearer: string, query = "") =>
+  read(await (await import("@/app/api/appbridge/v1/devices/self/secret-broker/route")).GET(req("GET", `/api/appbridge/v1/devices/self/secret-broker${query}`, undefined, { cookie: null, bearer })));
+const appMachine = async (bearer: string, agentId: string, action: string, body: unknown = {}) =>
+  read(await (await import("@/app/api/appbridge/v1/devices/self/secret-broker/machines/[agentId]/[action]/route")).POST(
+    req("POST", `/api/appbridge/v1/devices/self/secret-broker/machines/${agentId}/${action}`, body, { cookie: null, bearer }), { params: Promise.resolve({ agentId, action }) }));
+const appPush = async (bearer: string, method: "PUT" | "DELETE", body?: unknown) => {
+  const mod = await import("@/app/api/appbridge/v1/devices/self/push/route");
+  const r = req(method, "/api/appbridge/v1/devices/self/push", body, { cookie: null, bearer });
+  return read(await (method === "PUT" ? mod.PUT(r) : mod.DELETE(r)));
+};
+const tick = () => new Promise((r) => setTimeout(r, 5));
+
+test("the phone's long-poll: a read with `wait` holds until a request is raised, answered or closed, and answers the new version at once after", async () => {
+  const { raw } = phoneOn();
+  const first = await appView(raw);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(typeof first.body.version, "number");
+  assert.deepEqual(first.body.machines, [], "no PC has synced yet");
+  assert.equal((await appView(raw, "?wait=99")).status, 400, "wait is bounded");
+  assert.equal((await appView(raw, "?wait=5&since=x")).status, 400);
+
+  // Parked: nothing has changed since `first`.
+  let answered: Res | null = null;
+  const parked = appView(raw, `?wait=5&since=${first.body.version}`).then((r) => { answered = r; return r; });
+  await tick();
+  assert.equal(answered, null, "still waiting");
+  // The worker reports a new request: the wait ends with it in the list.
+  const p = withDigests(pendingItem());
+  await sync({ v: 1, broker: brokerStatus(), pending: [p] });
+  const woke = await parked;
+  assert.equal(woke.status, 200);
+  assert.equal(woke.body.version, first.body.version + 1);
+  assert.equal(woke.body.requests.length, 1);
+  assert.equal(woke.body.requests[0].agentId, AGENT.pc);
+  assert.equal(woke.body.machines[0].name, "Desktop worker");
+  // Behind the current version: answered without waiting.
+  const stale = await appView(raw, `?wait=5&since=${first.body.version}`);
+  assert.equal(stale.body.version, woke.body.version);
+  // A deny moves the version too (the phone that denied, and every other phone, drops its notification).
+  const parked2 = appView(raw, `?wait=5&since=${woke.body.version}`);
+  await tick();
+  const id = tables.secretRequest[0].id;
+  const denied = await read(await (await import("@/app/api/appbridge/v1/devices/self/secret-broker/requests/[id]/[action]/route")).POST(
+    req("POST", `/api/appbridge/v1/devices/self/secret-broker/requests/${id}/deny`, {}, { cookie: null, bearer: raw }), { params: Promise.resolve({ id, action: "deny" }) }));
+  assert.equal(denied.status, 200);
+  const after = await parked2;
+  assert.equal(after.body.version, woke.body.version + 1);
+  assert.deepEqual(after.body.requests, []);
+  // A request the broker stops listing (answered at the PC) wakes the phones as well.
+  const q = withDigests(pendingItem({ code: "Z9W8V7" }));
+  await sync({ v: 1, broker: brokerStatus(), pending: [q] });
+  const v3 = (await appView(raw)).body.version;
+  const parked3 = appView(raw, `?wait=5&since=${v3}`);
+  await tick();
+  await sync({ v: 1, broker: brokerStatus(), pending: [] });
+  assert.equal((await parked3).body.version, v3 + 1);
+  assert.deepEqual(valueShapedKeys(after.body), []);
+});
+
+test("the push nudge: a phone's token is kept (phones only), each change nudges every phone of the account with tokens alone, and a gone token is cleared", async () => {
+  const push = await import("@/lib/push");
+  const sent: string[][] = [];
+  const gone = new Set<string>();
+  push._setSender(async (tokens) => { sent.push(tokens); return tokens.map((token) => ({ token, ok: !gone.has(token), gone: gone.has(token) })); });
+  try {
+    const a = phoneOn(), b = phoneOn();
+    const other = phoneOn(undefined, "acct-b");
+    const token = (n: string) => `${n}:APA91b${randomBytes(40).toString("base64url")}`;
+    const [ta, tb, tc] = [token("a"), token("b"), token("c")];
+    assert.equal((await appPush(phoneOn(["appbridge.device", "appbridge.relay.pass"]).raw, "PUT", { token: ta })).status, 403, "needs the secrets scope");
+    assert.equal((await appPush(phoneOn(undefined, "acct-a", "host").raw, "PUT", { token: ta })).status, 403, "a PC has no notifications");
+    assert.equal((await appPush(a.raw, "PUT", { token: "short" })).status, 400);
+    assert.equal((await appPush(a.raw, "PUT", { token: ta, extra: 1 })).status, 400);
+    const put = await appPush(a.raw, "PUT", { token: ta });
+    assert.equal(put.status, 200, JSON.stringify(put.body));
+    assert.deepEqual(put.body, { push: true, enabled: false }, "FCM_PUSH is off here; the route still keeps the token");
+    assert.equal((await appPush(b.raw, "PUT", { token: tb })).status, 200);
+    assert.equal((await appPush(other.raw, "PUT", { token: tc })).status, 200);
+    assert.equal(tables.appBridgeDevice.find((d) => d.id === a.deviceId).pushToken, ta);
+
+    await sync({ v: 1, broker: brokerStatus(), pending: [withDigests(pendingItem())] });
+    await tick();
+    assert.equal(sent.length, 1, "one nudge per change");
+    assert.deepEqual([...sent[0]].sort(), [ta, tb].sort(), "every phone of the account, never another account's");
+    const id = tables.secretRequest[0].id;
+    await deny(id);
+    await tick();
+    assert.equal(sent.length, 2, "an answer nudges too, so the other phone drops its notification");
+    // Firebase says phone b's token is gone (the app was uninstalled): cleared, and never nudged again.
+    gone.add(tb);
+    await sync({ v: 1, broker: brokerStatus(), pending: [withDigests(pendingItem({ code: "Z9W8V7" }))] });
+    await tick();
+    assert.equal(tables.appBridgeDevice.find((d) => d.id === b.deviceId).pushToken, null);
+    await sync({ v: 1, broker: brokerStatus(), pending: [] });
+    await tick();
+    assert.deepEqual(sent.at(-1), [ta]);
+    // DELETE forgets it; revoking the device (unregister) forgets it too.
+    assert.deepEqual((await appPush(a.raw, "DELETE")).body, { push: false, enabled: false });
+    assert.equal(tables.appBridgeDevice.find((d) => d.id === a.deviceId).pushToken, null);
+    // (Revoke and unregister clear it in revokeInTx; appbridge.routetest.mts drives those transactions.)
+  } finally { push._setSender(null); }
+});
+
+test("the checklist: each PC's broker and whether it trusts a passkey of this account; Trust this phone enrols the passkey that answered, from the release app only; Try it raises a test job without a step-up", async () => {
+  const { androidOrigins } = await import("@/lib/android-app");
+  const key = passkeyOn();
+  const { raw } = phoneOn();
+  await sync({ v: 1, broker: brokerStatus({ approvers: [] }), pending: [] });
+  await sync({ v: 1, broker: brokerStatus() }, KEY.other);
+  let v = await appView(raw);
+  assert.deepEqual(v.body.machines.map((m: Row) => [m.name, m.installed, m.healthy, m.current, m.trustedPasskeys]), [["Desktop worker", true, true, true, []]], "only this account's PCs; nothing trusted yet");
+  assert.deepEqual(valueShapedKeys(v.body), []);
+  assert.ok(!JSON.stringify(v.body).includes(key.credentialId), "never a passkey's credential id");
+
+  // Trust this phone: a secret_broker_admin ceremony for that PC, answered by the phone's own passkey.
+  assert.equal((await appMachine(raw, AGENT.other, "enrol-options")).status, 404, "another account's PC");
+  assert.equal((await appMachine(raw, "nope", "enrol-options")).status, 404);
+  const opt = await appMachine(raw, AGENT.pc, "enrol-options");
+  assert.equal(opt.status, 200, JSON.stringify(opt.body));
+  assert.deepEqual(opt.body.options.allowCredentials.map((c: Row) => c.id), [key.credentialId]);
+  const web = await appMachine(raw, AGENT.pc, "enrol-verify", { ceremonyId: opt.body.ceremonyId, response: webauthn.authentication(key.credentialId, opt.body.options.challenge) });
+  assert.equal(web.status, 400, "the website's origin isn't the app"); assert.equal(web.body.error, "not_verified");
+  assert.equal(tables.secretJob.length, 0);
+  const opt2 = await appMachine(raw, AGENT.pc, "enrol-options");
+  const wrongPc = await appMachine(raw, AGENT.other, "enrol-verify", { ceremonyId: opt2.body.ceremonyId, response: webauthn.authentication(key.credentialId, opt2.body.options.challenge, { origin: androidOrigins()[0] }) });
+  assert.equal(wrongPc.status, 404, "a ceremony for one PC can't enrol on another");
+  const ok = await appMachine(raw, AGENT.pc, "enrol-verify", { ceremonyId: opt2.body.ceremonyId, response: webauthn.authentication(key.credentialId, opt2.body.options.challenge, { origin: androidOrigins()[0] }) });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual([ok.body.job.kind, ok.body.job.state], ["enrol", "requested"]);
+  assert.ok(!("grant" in ok.body), "the grant stays inside Back Channel");
+  const job = tables.secretJob.find((j: Row) => j.id === ok.body.job.id)!;
+  assert.deepEqual([job.agentId, job.payload.passkeyId, job.payload.credentialId], [AGENT.pc, key.id, key.credentialId], "the passkey that answered");
+  assert.ok(tables.passkeyChallenge.find((c: Row) => c.id === opt2.body.ceremonyId).usedAt, "the grant is spent");
+  // The worker runs it and the broker trusts the passkey: the checklist shows it.
+  await sync({ v: 1, broker: brokerStatus({ approvers: [{ fingerprint: await fingerprintOf(key.credentialId, COSE), label: "Skylar's phone" }] }), pending: [], jobs: [{ id: job.id, state: "done", steps: { trusted: true }, failure: null }] });
+  v = await appView(raw);
+  assert.deepEqual(v.body.machines[0].trustedPasskeys, [{ id: key.id, label: "Skylar's phone" }]);
+  assert.deepEqual([v.body.machines[0].job.kind, v.body.machines[0].job.state], ["enrol", "done"]);
+
+  // Try it: a test job for one named secret, no step-up (the request it raises is the gate).
+  assert.equal((await appMachine(raw, AGENT.pc, "test", { ref: "Not A Name" })).status, 400);
+  assert.equal((await appMachine(raw, AGENT.pc, "test", { ref: "home" })).status, 400, "a name has a prefix");
+  const t = await appMachine(raw, AGENT.pc, "test", { ref: "home/fixture/tier1" });
+  assert.equal(t.status, 200, JSON.stringify(t.body));
+  assert.deepEqual([t.body.job.kind, t.body.job.state], ["test", "requested"]);
+  assert.deepEqual(tables.secretJob.find((j: Row) => j.id === t.body.job.id).payload, { ref: "home/fixture/tier1" });
+  assert.equal((await appMachine(raw, AGENT.pc, "test", { ref: "home/fixture/tier1" })).status, 409, "one job at a time");
+  const s = await sync({ v: 1, broker: brokerStatus(), pending: [] });
+  assert.deepEqual(s.body.jobs.map((j: Row) => [j.kind, j.payload.ref]), [["test", "home/fixture/tier1"]], "the worker picks it up");
+  // Not installed: nothing to test against.
+  await sync({ v: 1, broker: brokerStatus({ installed: false, commit: null, tree: null }), pending: [], jobs: [{ id: t.body.job.id, state: "done", steps: { raised: true, approved: true }, failure: null }] });
+  assert.equal((await appMachine(raw, AGENT.pc, "test", { ref: "home/fixture/tier1" })).body.error, "not_installed");
+  assert.equal((await appMachine(raw, AGENT.pc, "nope")).status, 404);
+});

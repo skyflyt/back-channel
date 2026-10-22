@@ -4,9 +4,13 @@
 // (POST /api/agents/self/secret-broker/sync); the person's decisions come back and go to the broker, which checks the
 // passkey's assertion itself; and jobs the person asked for (install, update, enrol, lockdown) run here.
 //
-// What this module never does: ask the broker for a secret, collect what an approval serves, or launch anything
-// elevated except the broker's own bootstrap after checking the fetched tree against the pin. It talks to the broker
-// only through `secret-broker relay`, a stdio pipe that passes the remote-approval ops and `status`, nothing else.
+// What this module never does: read a secret, collect what an approval serves, or launch anything elevated except
+// the broker's own bootstrap after checking the fetched tree against the pin. It talks to the broker only through
+// `secret-broker relay`, a stdio pipe that passes the remote-approval ops and `status`, nothing else. The one
+// exception is the `test` job (§3.6, the phone's "Try it"): it runs `secret-broker run --ref <name>` around a
+// throwaway command that exits at once, so the broker raises an ordinary request for the person to answer from the
+// phone. The broker injects the value into THAT child's environment, never into the worker; the name is the person's
+// own choice (a fixture made for this is the right one), and the outcome reported is only approved, denied or failed.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -221,10 +225,37 @@ export function enrolPasskey({ python, payload, execFileImpl = execFile }) {
     });
 }
 
-export async function runJob({ job, relay, paths, report, log = () => { }, launch = launchElevated, fetch = fetchRelease, doctor = runDoctor, enrol = enrolPasskey, waitMs = 1500, backends = {} }) {
+/**
+ * `secret-broker run --ref <name> -- <python> -c pass`: raises the request, waits for the answer. Resolves
+ * 'approved' (exit 0: the child ran), 'denied' (exit 3: the broker's refusal code) or 'failed' (anything else: not in
+ * the policy, no backend, the request timed out). Nothing of the output is read.
+ */
+export function runTest({ python, ref, execFileImpl = execFile, timeoutMs = 10 * 60 * 1000 }) {
+    if (!/^[a-z0-9][a-z0-9._-]{0,60}(\/[a-z0-9][a-z0-9._-]{0,60}){1,4}$/.test(ref ?? '')) return Promise.resolve('failed');
+    return new Promise(resolve => {
+        try {
+            execFileImpl(python, ['-I', '-m', 'secret_broker', 'run', '--ref', ref, '--detail', 'Back Channel: a test from your phone', '--', python, '-I', '-c', 'pass'],
+                { shell: false, windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024, env: { ...process.env } }, (error) => {
+                    if (!error) return resolve('approved');
+                    resolve(error.code === 3 ? 'denied' : 'failed');
+                });
+        } catch { resolve('failed'); }
+    });
+}
+
+export async function runJob({ job, relay, paths, report, log = () => { }, launch = launchElevated, fetch = fetchRelease, doctor = runDoctor, enrol = enrolPasskey, test = runTest, waitMs = 1500, backends = {} }) {
     const steps = {};
     const tick = async (state, failure = null) => { try { await report(job.id, state, { ...steps }, failure); } catch { } };
     try {
+        if (job.kind === 'test') {
+            if (!paths) return tick('failed', 'not_supported');
+            await tick('running');
+            steps.raised = true;
+            const outcome = await test({ python: paths.python, ref: job.payload?.ref });
+            steps.approved = outcome === 'approved';
+            steps.denied = outcome === 'denied';
+            return tick(outcome === 'failed' ? 'failed' : 'done', outcome === 'failed' ? 'test_failed' : null);
+        }
         if (job.kind === 'lockdown') {
             const r = await relay.call({ op: 'lockdown' });
             steps.locked = r.status === 'ok';

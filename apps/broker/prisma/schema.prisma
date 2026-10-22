@@ -552,6 +552,10 @@ model AppBridgeDevice {
   connectorSpkiSha256 String // uppercase hex SHA-256 of the DER
   enabled             Boolean               @default(true)
   relayEnabled        Boolean               @default(false) // hosts: the owner's "allow internet access" switch
+  // Remotes: the FCM registration token the BC Remote app gave us, for the "a secret request wants you" nudge
+  // (src/lib/push.ts). The nudge carries no content. Cleared when the device is revoked or unregisters.
+  pushToken           String?
+  pushUpdatedAt       DateTime?
   createdAt           DateTime              @default(now())
   revokedAt           DateTime?
   account             Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)

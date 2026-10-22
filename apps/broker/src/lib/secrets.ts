@@ -26,6 +26,7 @@ import * as auth from "@/lib/auth";
 import * as limits from "@/lib/rate-limit";
 import * as SU from "@/lib/step-up";
 import { hasFullScope } from "@/lib/agent-scope";
+import { fireSecretsChanged } from "@/lib/inbox-bus";
 
 export const MAX_SYNC_BYTES = 256 * 1024;
 /** The broker status is "current" while the worker synced within this long (it syncs every few seconds). */
@@ -42,6 +43,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STEP = /^[a-z_]{1,32}$/;
 const FAILURE = /^[a-z0-9_]{1,40}$/;
 const KINDS = ["serve", "unlock", "policy", "import", "rotation-check"] as const;
+/** A broker secret name for the test job: `prefix/name`, as the broker's own `names` lists them. */
+const SECRET_NAME = /^[a-z0-9][a-z0-9._-]{0,60}(\/[a-z0-9][a-z0-9._-]{0,60}){1,4}$/;
+export const JOB_KINDS = ["install", "update", "enrol", "lockdown", "test"] as const;
 // Control and invisible/direction characters out of anything shown; display text keeps its newlines.
 const UNPRINTABLE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/g;
 
@@ -228,16 +232,19 @@ export async function syncForWorker(agent: { id: string; accountId: string }, bo
     }).catch((e: unknown) => { if (!(isObj(e) && e.code === "P2002")) throw e; });   // a racing sync made it first
     await audit(agent.accountId, "secret.requested", { agent_id: agent.id, code: p.code, name: p.name, mode: p.mode, tier: p.tier });
   }
+  const raised = pending.some((x) => !known.has(x.ref));
   // Open requests the broker no longer lists were answered at the machine, served or expired: closed here too.
   const listed = pending.map((p) => p.ref);
-  await prisma.secretRequest.updateMany({
+  const expired = await prisma.secretRequest.updateMany({
     where: { agentId: agent.id, status: "open", ...(listed.length ? { ref: { notIn: listed } } : {}), expiresAt: { lte: now } },
     data: { status: "expired" },
   });
-  await prisma.secretRequest.updateMany({
+  const closed = await prisma.secretRequest.updateMany({
     where: { agentId: agent.id, status: "open", ...(listed.length ? { ref: { notIn: listed } } : {}) },
     data: { status: "closed" },
   });
+  // The phones hear of a new request, and of one that went away, the moment the worker reports it (§3.6).
+  if (raised || expired.count || closed.count) fireSecretsChanged(agent.accountId);
 
   // The person's decisions, each handed over once; the assertion leaves Back Channel with it.
   const decided = await prisma.secretRequest.findMany({
@@ -318,6 +325,7 @@ export async function denyRequest(account: Pick<Account, "id">, id: string, now:
   });
   if (done.count !== 1) fail(410, "request_closed", "That request was already answered or has expired.");
   await audit(account.id, "secret.denied", { request_id: id, ...by });
+  fireSecretsChanged(account.id);
   return { denied: true };
 }
 
@@ -338,6 +346,7 @@ export async function recordApproval(accountId: string, requestId: string, chall
   });
   if (done.count !== 1) fail(410, "request_closed", "That request was already answered or has expired.");
   await audit(accountId, "secret.approved", { request_id: requestId, code: r.requestCode, name: r.name, option, passkey_id: passkeyId });
+  fireSecretsChanged(accountId);
   return { approved: true, option };
 }
 
@@ -362,10 +371,14 @@ export async function approvalChallenge(accountId: string, requestId: string, op
   return { digest, passkeys: passkeys.map((p) => ({ credentialId: p.credentialId, transports: p.transports ?? [] })) };
 }
 
-/** Ask a PC's worker to do something with its broker. Install, update and enrol need the step-up; lockdown never does. */
-export async function createJob(account: Account, agentId: string, kind: string, input: Record<string, unknown>, grant: string | null, now: Date) {
+/**
+ * Ask a PC's worker to do something with its broker. Install, update and enrol need the step-up; lockdown never does,
+ * and neither does `test` (the worker asks the broker for a named secret, which raises an ordinary request the person
+ * then answers from the phone: the test IS an approval, so it needs no gate of its own).
+ */
+export async function createJob(account: Pick<Account, "id">, agentId: string, kind: string, input: Record<string, unknown>, grant: string | null, now: Date) {
   if (!UUID.test(agentId)) fail(404, "not_found", "That PC's worker isn't on your account.");
-  if (!["install", "update", "enrol", "lockdown"].includes(kind)) fail(404, "not_found", "No such action.");
+  if (!(JOB_KINDS as readonly string[]).includes(kind)) fail(404, "not_found", "No such action.");
   const agent = await prisma.agentToken.findFirst({ where: { id: agentId, accountId: account.id, revokedAt: null, scope: "full" }, select: { id: true, secretBroker: true } });
   if (!agent) return fail(404, "not_found", "That PC's worker isn't on your account.");
   const broker = agent.secretBroker as unknown as BrokerStatus | null;
@@ -375,6 +388,10 @@ export async function createJob(account: Account, agentId: string, kind: string,
     if (kind === "update" && !broker?.installed) fail(409, "not_installed", "The broker isn't installed there yet: use Install.");
     if (kind === "install" && broker?.installed) fail(409, "already_installed", "The broker is already installed there: use Update.");
     payload = { commit: broker!.pin!.commit, tree: broker!.pin!.tree };
+  } else if (kind === "test") {
+    if (!broker?.installed) fail(409, "not_installed", "The broker isn't installed there yet.");
+    const ref = typeof input.ref === "string" && SECRET_NAME.test(input.ref) ? input.ref : fail(400, "invalid_name", "ref is a secret's name in that PC's policy, like home/example/test.");
+    payload = { ref };
   } else if (kind === "enrol") {
     const pid = typeof input.passkeyId === "string" && UUID.test(input.passkeyId) ? input.passkeyId : fail(400, "invalid_passkey", "passkeyId is one of your passkeys.");
     const p = await prisma.accountPasskey.findFirst({ where: { id: pid as string, accountId: account.id } });
@@ -382,7 +399,7 @@ export async function createJob(account: Account, agentId: string, kind: string,
     payload = { passkeyId: p.id, credentialId: p.credentialId, publicKeyCose: Buffer.from(p.publicKey).toString("base64url"), label: p.label,
       fingerprint: passkeyFingerprint(p.credentialId, new Uint8Array(p.publicKey)) };
   }
-  if (kind !== "lockdown") {
+  if (kind !== "lockdown" && kind !== "test") {
     const refusal = await SU.requireStepUp(prisma, { accountId: account.id, action: "secret_broker_admin", targetId: agentId, grant, now });
     if (refusal) fail(refusal.status, refusal.error, refusal.message);
   }
