@@ -167,6 +167,32 @@ Constraints:
 - **No secret crosses Back Channel.** The checklist is booleans and commit ids. The machine token, the Hello
   enrolment and the UAC consent all stay on the machine.
 
+### 3.6 One tap on the phone: the nudge, the long-poll and the checklist (Phase 1b, built 2026-10-22)
+
+Phase 1 answered requests in the BC Remote app, but the app only looked while its Secrets screen was open, or every
+10 s while an alerts service ran for a paired PC. A request raised with the phone in a pocket was missed. Phase 1b:
+
+- **The phones' channel.** Back Channel keeps, per account, a version that moves whenever a secret request is
+  raised, approved, denied, closed or expires (`fireSecretsChanged`, `src/lib/inbox-bus.mjs`; its own waiters, never
+  the inbox's). `GET /api/appbridge/v1/devices/self/secret-broker?wait=25&since=<version>` holds until the version
+  passes `since` or 25 s are up, then answers the list and the new version. The app's screen needs no timer.
+- **The push nudge.** The app hands over its Firebase Cloud Messaging token (`PUT /devices/self/push`); on every
+  change Back Channel sends each of the account's phones one high-priority data message, five minutes to live,
+  carrying `{ kind: "secrets" }` and nothing else (`src/lib/push.ts`, on with `FCM_PUSH=on`, signed with the
+  service's own default credentials). The phone then reads the list with its credential and shows one notification
+  per request, with Approve and Deny on it; a request answered elsewhere withdraws it. Google learns that a phone
+  was nudged at a time, never a code, a PC or a name. Where push is off or Play services is missing, the app falls
+  back to the long-poll from its own foreground service. The token is cleared when the device is revoked or unregisters.
+- **The checklist** (the app's first run): is this phone connected to Back Channel; does a PC have the broker
+  (`machines` on the device view: installed, healthy, and which of the account's passkeys it trusts); can this
+  phone approve for it (**Trust this phone**: the secret_broker_admin ceremony answered by the phone's own passkey,
+  `machines/{agentId}/enrol-options` and `enrol-verify`; the passkey that answered is the one the worker's enrol job
+  asks the broker to trust, and the broker's Hello card at the PC still decides); and **Try it**
+  (`machines/{agentId}/test { ref }`: a `test` job, no step-up, in which the worker runs the broker's own
+  `secret-broker run --ref <name>` around a throwaway command that exits at once, so the broker raises an ordinary
+  request the person answers from the phone; the worker reports only approved, denied or failed). Rule 1 holds: the
+  value goes into that child's environment on the PC and nowhere else, and the name should be a fixture made for this.
+
 ### 3.5 Later, maybe: `ask` answered from the phone (Phase 3, undecided)
 
 An MFA code typed on the phone instead of walking to the machine. It is tempting and it is the one place

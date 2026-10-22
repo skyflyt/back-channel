@@ -325,6 +325,75 @@ export function heldStreamCount() {
   return n;
 }
 
+// ── Secret broker requests: the phone's channel ──────────────────────────────
+//
+// The BC Remote app (src/lib/secrets-device.ts) wants to know the moment a secret broker request is raised, answered
+// or expires, not the inbox's pending count. Its own channel: a per-account version that moves on every change, a
+// set of parked waiters the phone's long-poll joins, and listeners for the push nudge (src/lib/push.ts). Nothing
+// here carries a request: the phone reads the list with its credential once woken. Not the inbox waiters above: a
+// phone must never take an agent's long-poll slot, and an agent must never be woken by a secret request.
+
+/** Parked long-polls per account: the account's phones (at most 3 are registered) with one spare each. */
+export const MAX_SECRETS_WAITERS_PER_ACCOUNT = 6;
+
+/** @type {Map<string, { version: number, waiters: Set<(v: number) => void> }>} */
+const secretsBuses = globalThis.__bcSecretsWaiters ?? (globalThis.__bcSecretsWaiters = new Map());
+/** @type {Set<(accountId: string) => void>} */
+const secretsListeners = globalThis.__bcSecretsListeners ?? (globalThis.__bcSecretsListeners = new Set());
+
+function secretsBus(accountId) {
+  let bus = secretsBuses.get(accountId);
+  if (!bus) { bus = { version: 1, waiters: new Set() }; secretsBuses.set(accountId, bus); }
+  return bus;
+}
+
+/** The account's current secrets version: the phone sends it back as `since` to wait for the next change. */
+export function secretsVersion(accountId) { return secretsBus(accountId).version; }
+
+/**
+ * Something about the account's secret requests changed: raised, approved, denied, closed or expired. Every parked
+ * long-poll wakes at once, and every listener (the push sender) is told. Listeners run after this call returns and
+ * never throw into it.
+ * @param {string} accountId
+ */
+export function fireSecretsChanged(accountId) {
+  const bus = secretsBus(accountId);
+  bus.version += 1;
+  const waiters = Array.from(bus.waiters);
+  bus.waiters.clear();
+  for (const resolve of waiters) { try { resolve(bus.version); } catch {} }
+  for (const listener of secretsListeners) {
+    queueMicrotask(() => { try { listener(accountId); } catch (e) { console.error("[secrets-bus] listener failed:", e instanceof Error ? e.name : typeof e); } });
+  }
+}
+
+/** Register a listener for fireSecretsChanged (the push nudge). Returns the unsubscribe. */
+export function onSecretsChanged(listener) {
+  secretsListeners.add(listener);
+  return () => { secretsListeners.delete(listener); };
+}
+
+/**
+ * Wait for the account's secrets version to pass `since`, up to `waitMs`. Resolves at once when it already has
+ * (or when `since` is 0: a first read). Resolves with the current version on timeout, so a phone that waited and
+ * saw nothing new still learns where it stands.
+ * @param {string} accountId
+ * @param {number} since
+ * @param {number} waitMs
+ * @returns {Promise<number>}
+ * @throws {TooManyWaitersError}
+ */
+export function waitForSecrets(accountId, since, waitMs) {
+  const bus = secretsBus(accountId);
+  if (bus.version > since || waitMs <= 0) return Promise.resolve(bus.version);
+  if (bus.waiters.size >= MAX_SECRETS_WAITERS_PER_ACCOUNT) throw new TooManyWaitersError(accountId);
+  return new Promise((resolve) => {
+    const waiter = (version) => { clearTimeout(timer); resolve(version); };
+    const timer = setTimeout(() => { bus.waiters.delete(waiter); resolve(bus.version); }, waitMs);
+    bus.waiters.add(waiter);
+  });
+}
+
 /** Test/diagnostic helper - wipe all bus state (mirrors rate-limit.mjs's _reset). */
 export function _reset() {
   for (const bus of buses.values()) {
@@ -332,4 +401,6 @@ export function _reset() {
   }
   buses.clear();
   pendingCounter = null;
+  secretsBuses.clear();
+  secretsListeners.clear();
 }

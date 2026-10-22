@@ -106,6 +106,27 @@ test('enrol and lockdown: the broker\'s own card decides an enrolment; lockdown 
     assert.deepEqual(reports.at(-1), ['done', { locked: true }, null]);
 });
 
+test('test: the phone\'s "Try it" runs the broker\'s own `run` around a command that exits at once; approved, denied and failed are told apart; nothing is read', async () => {
+    const reports = [];
+    const calls = [];
+    const fakeExec = code => (file, args, opts, cb) => { calls.push({ file, args, opts }); cb(code === 0 ? null : Object.assign(new Error('exit'), { code }), 'never read'); };
+    const { runTest } = await import('../src/broker-relay.mjs');
+    const test = ({ python, ref }) => runTest({ python, ref, execFileImpl: fakeExec(0) });
+    await runJob({ job: { id: 't1', kind: 'test', payload: { ref: 'home/fixture/tier1' } }, relay: fakeRelay(), paths, report: async (...a) => reports.push(a.slice(1)), test });
+    assert.deepEqual(reports.at(-1), ['done', { raised: true, approved: true, denied: false }, null]);
+    assert.equal(calls[0].file, paths.python);
+    assert.deepEqual(calls[0].args.slice(0, 6), ['-I', '-m', 'secret_broker', 'run', '--ref', 'home/fixture/tier1']);
+    assert.equal(calls[0].args.indexOf('--'), 8, 'the command after the broker\'s own arguments');
+    assert.equal(calls[0].opts.shell, false);
+    assert.equal(await runTest({ python: paths.python, ref: 'home/fixture/tier1', execFileImpl: fakeExec(3) }), 'denied');
+    assert.equal(await runTest({ python: paths.python, ref: 'home/fixture/tier1', execFileImpl: fakeExec(2) }), 'failed');
+    assert.equal(await runTest({ python: paths.python, ref: 'not a name', execFileImpl: fakeExec(0) }), 'failed', 'a bad name never reaches the broker');
+    await runJob({ job: { id: 't2', kind: 'test', payload: { ref: 'home/fixture/tier1' } }, relay: fakeRelay(), paths, report: async (...a) => reports.push(a.slice(1)), test: async () => 'denied' });
+    assert.deepEqual(reports.at(-1), ['done', { raised: true, approved: false, denied: true }, null]);
+    await runJob({ job: { id: 't3', kind: 'test', payload: { ref: 'home/fixture/tier1' } }, relay: fakeRelay(), paths, report: async (...a) => reports.push(a.slice(1)), test: async () => 'failed' });
+    assert.deepEqual(reports.at(-1), ['failed', { raised: true, approved: false, denied: false }, 'test_failed']);
+});
+
 test('elevated launch: Windows only, and the elevated script itself checks commit and tree before running the installer', async () => {
     await assert.rejects(launchElevated({ payload: { commit: C, tree: T }, kind: 'update', platform: 'linux' }), e => e.code === 'not_supported');
     let argv = null;

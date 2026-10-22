@@ -84,6 +84,10 @@ All routes are under `/api/appbridge/v1`.
 | `DELETE /devices/self` | `appbridge.device` | — | `204`. The device unregisters itself (host or remote): see below. |
 | `POST /devices/self/credential` | `appbridge.device` | — | `{ credential, expiresAt }`. The old credential keeps working until the new one is first used, or 24 h at most: see below. |
 | `PUT /devices/self/connector` | `appbridge.device` | `{ connectorSpki, proofOld, proofNew }` | `{ connectorSpkiSha256 }` |
+| `PUT /devices/self/push` / `DELETE /devices/self/push` | `appbridge.secrets` | `{ token }` / — | `{ push, enabled }`. A phone's push token for the secret request nudge (docs/secrets-epic.md §3.6). Remote devices only. Cleared on revoke and unregister. |
+| `GET /devices/self/secret-broker[?wait=N&since=V]` | `appbridge.secrets` | — | The secret broker device view (docs/secrets-epic.md §3.1, §3.6): open requests, the PCs' brokers, `version`. With `wait` (0–25 s) the read holds until the account's requests change past `since`. |
+| `POST /devices/self/secret-broker/requests/{id}/{deny\|approve-options\|approve-verify}` | `appbridge.secrets` | see secrets-epic | Deny, or approve with a passkey whose challenge is the broker's digest. |
+| `POST /devices/self/secret-broker/machines/{agentId}/{enrol-options\|enrol-verify\|test}` | `appbridge.secrets` | `{}` / `{ ceremonyId, response }` / `{ ref }` | Trust the passkey that answers (the worker's enrol job), or run the broker's own `run` for one named secret so a request is raised to answer from the phone. |
 | `PUT /hosts/self/relay` | `appbridge.host.relay` | `{ enabled }` | `{ enabled }`. Off never touches pairings. |
 | `PUT /hosts/self/pairings/{enrollmentId}` | `appbridge.host.relay` | `{ remoteDeviceId }` | `204`. Idempotent; a withdrawn enrollment is never revived (`409`). Host devices only (`403 scope` otherwise, whatever the credential's scopes). |
 | `DELETE /hosts/self/pairings/{enrollmentId}` | `appbridge.host.relay` | — | `204`. Host devices only. |
@@ -97,7 +101,7 @@ All routes are under `/api/appbridge/v1`.
 
 Scopes:
 - **host:** `appbridge.device`, `appbridge.host.relay`, `appbridge.relay.presence`.
-- **remote:** `appbridge.device`, `appbridge.relay.pass`.
+- **remote:** `appbridge.device`, `appbridge.relay.pass`, `appbridge.secrets`.
 
 Details:
 - A pass is 64 uppercase hex characters and lasts 60 seconds.
@@ -265,6 +269,7 @@ broker never sees or stores that IP.
 | Variable | Meaning |
 |---|---|
 | `APPBRIDGE_REMOTE_ACCESS` | `on` enables relay access. Anything else is the relay-wide kill switch (`rollout_off`). |
+| `FCM_PUSH` | `on` sends the BC Remote app a push nudge when a secret broker request changes (src/lib/push.ts, docs/secrets-epic.md §3.6), signed with the service's application default credentials: the Firebase project must be the one the Cloud Run service account belongs to. Anything else: no push; the app's long-poll still works. |
 | `APPBRIDGE_RELAY_PUBLIC_KEY` | The relay's Ed25519 public key, as base64 DER SubjectPublicKeyInfo. When it is unset or not Ed25519, the relay routes answer `503`, which the relay treats as an outage and a refusal. |
 | `APPBRIDGE_RELAY_URL` | Optional; the informational `relay` member; defaults to `wss://relay.back-channel.app/v1/connect`. |
 

@@ -15,6 +15,11 @@ export {
   MAX_WAIT_MS,
   MAX_LONGPOLL_WAITERS_PER_ACCOUNT,
   TooManyWaitersError,
+  secretsVersion,
+  fireSecretsChanged,
+  onSecretsChanged,
+  waitForSecrets,
+  MAX_SECRETS_WAITERS_PER_ACCOUNT,
 } from "./inbox-bus.mjs";
 export type InboxKind = "frame" | "payload" | "invite" | "task";
 export type InboxEvent = {

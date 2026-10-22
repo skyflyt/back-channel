@@ -289,7 +289,7 @@ async function opStepUpVerify(accountId: string, rp: { rpID: string }, input: Re
   const expiresAt = new Date(now.getTime() + SU.GRANT_TTL_MS);
   await prisma.passkeyChallenge.update({ where: { id: row.id }, data: { grantHash: grant.hash, expiresAt, passkeyId: passkey.id } });
   await audit(accountId, "step_up.confirmed", { action: row.action, ...(row.targetId ? { target: row.targetId } : {}), passkey_id: passkey.id });
-  return { grant: grant.raw, action: row.action, targetId: row.targetId, expiresAt: expiresAt.toISOString() };
+  return { grant: grant.raw, action: row.action, targetId: row.targetId, expiresAt: expiresAt.toISOString(), passkeyId: passkey.id };
 }
 
 // ── the BC Remote app (src/lib/secrets-device.ts) ─────────────────────────────
@@ -310,6 +310,22 @@ export async function appApprovalVerify(accountId: string, requestUrl: string, r
   if (row?.action !== "approve_secret" || row.targetId !== requestId) fail(404, "no_ceremony", "That passkey prompt isn't available. Start again.");
   const out = await opStepUpVerify(accountId, relyingParty(requestUrl), input, now, androidOrigins());
   return { approved: true as const, option: (out as { option: number }).option };
+}
+
+/**
+ * The app asking a PC's worker to trust a passkey for phone approvals (secrets-device.ts, "Trust this phone"): the
+ * dashboard's secret_broker_admin ceremony, raised by the app's own passkey prompt. The grant never leaves Back
+ * Channel: secrets-device spends it on the enrol job at once, and the passkey that answered is the one enrolled.
+ */
+export function appAdminOptions(accountId: string, requestUrl: string, agentId: string, now: Date) {
+  return opStepUpOptions(accountId, relyingParty(requestUrl), { action: "secret_broker_admin", targetId: agentId }, now);
+}
+
+export async function appAdminVerify(accountId: string, requestUrl: string, agentId: string, input: Record<string, unknown>, now: Date): Promise<{ grant: string; passkeyId: string }> {
+  const row = await prisma.passkeyChallenge.findFirst({ where: { id: ceremonyId(input), accountId, kind: "step_up" }, select: { action: true, targetId: true } });
+  if (row?.action !== "secret_broker_admin" || row.targetId !== agentId) fail(404, "no_ceremony", "That passkey prompt isn't available. Start again.");
+  const out = await opStepUpVerify(accountId, relyingParty(requestUrl), input, now, androidOrigins()) as { grant: string; passkeyId: string };
+  return { grant: out.grant, passkeyId: out.passkeyId };
 }
 
 // ── REST ────────────────────────────────────────────────────────────────────

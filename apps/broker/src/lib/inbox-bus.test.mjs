@@ -287,3 +287,45 @@ test("the immediate-resolve path (pending mail already waiting) is never capped,
   fireInboxEvent("acct1", "frame");
   await parked;
 });
+// ── The phone's secrets channel ──
+
+test("secrets: a parked wait wakes the moment the account's requests change, with the new version; a stale `since` returns at once", async () => {
+  _reset();
+  const { secretsVersion, fireSecretsChanged, waitForSecrets } = await import("./inbox-bus.mjs");
+  const v0 = secretsVersion("acct1");
+  const parked = waitForSecrets("acct1", v0, 5000);
+  let woke = false;
+  parked.then(() => { woke = true; });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(woke, false, "nothing changed yet");
+  fireSecretsChanged("acct1");
+  assert.equal(await parked, v0 + 1);
+  assert.equal(await waitForSecrets("acct1", v0, 5000), v0 + 1, "a phone behind the current version is answered at once");
+  assert.equal(await waitForSecrets("acct1", 0, 5000), v0 + 1, "since 0 is a first read");
+  assert.equal(await waitForSecrets("acct2", secretsVersion("acct2"), 30), secretsVersion("acct2"), "a timeout answers the unchanged version");
+});
+
+test("secrets: listeners hear every change, after the fire returns; waiters are capped per account and never take an inbox slot", async () => {
+  _reset();
+  const { fireSecretsChanged, onSecretsChanged, waitForSecrets, secretsVersion, MAX_SECRETS_WAITERS_PER_ACCOUNT } = await import("./inbox-bus.mjs");
+  const heard = [];
+  const off = onSecretsChanged((accountId) => heard.push(accountId));
+  fireSecretsChanged("acct1");
+  assert.deepEqual(heard, [], "told after the fire, not during it");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(heard, ["acct1"]);
+  off();
+  fireSecretsChanged("acct1");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(heard, ["acct1"], "an unsubscribed listener hears nothing more");
+
+  const v = secretsVersion("acct1");
+  const parked = [];
+  for (let i = 0; i < MAX_SECRETS_WAITERS_PER_ACCOUNT; i++) parked.push(waitForSecrets("acct1", v, 5000));
+  assert.throws(() => waitForSecrets("acct1", v, 5000), TooManyWaitersError);
+  stubCounter({ acct1: { count: 0, kinds: [] } });
+  const inbox = waitForInbox("acct1", 50);
+  assert.equal((await inbox).pending_count, 0, "the inbox long-poll is untouched by the phones");
+  fireSecretsChanged("acct1");
+  assert.deepEqual(await Promise.all(parked), parked.map(() => v + 1));
+});
