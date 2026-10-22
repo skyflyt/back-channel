@@ -233,6 +233,7 @@ export async function runJob({ job, relay, paths, report, log = () => { }, launc
         if (job.kind === 'enrol') {
             const p = job.payload ?? {};
             if (!paths) return tick('failed', 'not_supported');
+            if (!fs.existsSync(paths.python)) return tick('failed', 'not_installed');
             await tick('running');
             // The broker's own `remote-enrol` raises its admin card at the machine, showing the fingerprint; the person
             // compares it with the one on the Back Channel card and approves with Hello. Not through the relay: that
@@ -298,7 +299,9 @@ export function startSecretsSync({ client, paths = brokerPaths(), relay = paths 
                     if (active.has(j.id)) continue;
                     active.add(j.id);
                     const report = (id, state, steps, failure) => client.secretsSync({ v: 1, broker, pending: [], jobs: [{ id, state, steps, failure }] });
-                    job({ job: j, relay, paths: installed ? paths : null, report, log, backends }).finally(() => { active.delete(j.id); lastBroker = 0; });
+                    // Jobs get the broker's paths whether or not it is installed yet: an Install needs them most
+                    // (2026-10-22: passing null here made every Install from the card fail at once as not_supported).
+                    job({ job: j, relay, paths, report, log, backends }).finally(() => { active.delete(j.id); lastBroker = 0; });
                 }
             } catch (e) { log(`Secrets sync failed; the worker carries on: ${e.message}`); }
         })().finally(() => { running = null; });

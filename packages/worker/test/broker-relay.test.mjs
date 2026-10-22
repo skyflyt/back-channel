@@ -120,6 +120,20 @@ test('elevated launch: Windows only, and the elevated script itself checks commi
     assert.match(inner, /install\.ps1" -Work -UpdateOnly/);
 });
 
+test('sync: an Install job gets the broker paths on a PC with no broker yet; enrol before an install says so', async () => {
+    const nowhere = { python: 'C:/no/such/LobySecretBroker/venv/Scripts/python.exe', install: '.', staging: '.', bootstrap: '.' };
+    let given;
+    const client = { secretsSync: async () => ({ status: 200, body: { decisions: [], jobs: [{ id: 'j10', kind: 'install', payload: { commit: C, tree: T } }] } }) };
+    const s = startSecretsSync({ client, paths: nowhere, relay: fakeRelay(), everyMs: 60_000, collect: async () => ({ installed: false }),
+        job: async a => { given = a.paths; } });
+    await s.first;
+    s.stop();
+    assert.deepEqual(given, nowhere, 'not null: Install needs them most (it failed as not_supported before)');
+    const reports = [];
+    await runJob({ job: { id: 'j11', kind: 'enrol', payload: {} }, relay: fakeRelay(), paths: nowhere, report: async (...a) => reports.push(a.slice(1)) });
+    assert.deepEqual(reports.at(-1), ['failed', {}, 'not_installed']);
+});
+
 test('sync: one cycle sends status and pending, hands decisions to the broker, and runs a job once', async () => {
     const sent = [];
     const relay = fakeRelay({ 'remote-pending': { status: 'ok', pending: [] } });
