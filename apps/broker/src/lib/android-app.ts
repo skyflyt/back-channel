@@ -8,9 +8,9 @@
  * (secret-broker webauthn.ANDROID_APP_CERTS); listing an app here alone lets nothing approve.
  */
 export const ANDROID_APPS: readonly { packageName: string; certSha256: string }[] = [
-  { packageName: "dev.appbridge.android.pilot", certSha256: "8e8d2d500fa2234e4d71570a4fffc558d6362f4914201093b5b28c31bb721295" },
-  // The regular app, rotated in place from the debug key to the same release key (APK Signature Scheme v3 lineage,
-  // 2026-10-21; appbridge scripts/package-android-main-release.ps1): its existing installs keep their pairings.
+  // The regular app, signed with the release key alone. Not through a key-rotation lineage: on the owner's phone a
+  // rotated app's passkey origin named the lineage's first (debug) certificate, so its answers failed here
+  // (2026-10-22). The pilot app (dev.appbridge.android.pilot) is retired: the regular app does its job.
   { packageName: "dev.appbridge.android", certSha256: "8e8d2d500fa2234e4d71570a4fffc558d6362f4914201093b5b28c31bb721295" },
 ];
 
