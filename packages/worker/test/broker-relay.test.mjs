@@ -120,6 +120,20 @@ test('elevated launch: Windows only, and the elevated script itself checks commi
     assert.match(inner, /install\.ps1" -Work -UpdateOnly/);
 });
 
+test('elevated install: passes the home and work Bitwarden project ids, and only well-formed ones', async () => {
+    const H = '7b315e95-c6a8-4b8d-8f90-b4e6017b8bf0', W = '0d4e2c1a-5b6f-4a7e-9c8d-1e2f3a4b5c6d';
+    const innerOf = async backends => {
+        let argv = null;
+        const fake = (file, args) => { argv = [file, ...args]; const ee = { on: (ev, f) => { if (ev === 'exit') setImmediate(() => f(0)); return ee; } }; return ee; };
+        await launchElevated({ payload: { commit: C, tree: T }, kind: 'install', platform: 'win32', env: { ProgramFiles: 'C:\\Program Files' }, spawnImpl: fake, backends });
+        return Buffer.from(argv.at(-1).match(/'-EncodedCommand','([^']+)'/)[1], 'base64').toString('utf16le');
+    };
+    assert.ok((await innerOf({ bwsProjectId: H, workBwsProjectId: W })).includes(`install.ps1" -Work  -BwsProjectId '${H}' -WorkBwsProjectId '${W}'`));
+    const odd = await innerOf({ bwsProjectId: H, workBwsProjectId: `${W}'; calc; '` });
+    assert.ok(odd.includes(`-BwsProjectId '${H}'`) && !odd.includes('-WorkBwsProjectId') && !odd.includes('calc'));
+    assert.ok(!(await innerOf({})).includes('ProjectId'), 'none configured: the installer asks');
+});
+
 test('sync: an Install job gets the broker paths on a PC with no broker yet; enrol before an install says so', async () => {
     const nowhere = { python: 'C:/no/such/LobySecretBroker/venv/Scripts/python.exe', install: '.', staging: '.', bootstrap: '.' };
     let given;
