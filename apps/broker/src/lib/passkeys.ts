@@ -259,7 +259,14 @@ async function opStepUpVerify(accountId: string, rp: { rpID: string }, input: Re
       response, expectedChallenge: row.challenge, expectedOrigin: origins, expectedRPID: rp.rpID, requireUserVerification: true,
       credential: { id: passkey.credentialId, publicKey: new Uint8Array(passkey.publicKey), counter: Number(passkey.counter), transports: passkey.transports ?? [] },
     });
-  } catch {
+  } catch (e) {
+    // The app path (origins is a list): log which origin the answer carried, a public value, so a signing-key change
+    // that moves the app's origin shows up (seen 2026-10-21 after a v3 key rotation). Never the challenge or signature.
+    if (Array.isArray(origins)) {
+      let origin = "unreadable";
+      try { origin = String(JSON.parse(Buffer.from(response.response.clientDataJSON, "base64url").toString("utf8")).origin).slice(0, 120); } catch { }
+      console.warn(`passkeys: app answer refused; origin=${origin}; expected=${origins.join(",")}; ${(e instanceof Error ? e.message : "error").slice(0, 160)}`);
+    }
     return fail(400, "not_verified", "Your passkey couldn't be checked, so nothing was confirmed. Try again.");
   }
   if (!verified.verified) return fail(400, "not_verified", "Your passkey couldn't be checked, so nothing was confirmed. Try again.");
