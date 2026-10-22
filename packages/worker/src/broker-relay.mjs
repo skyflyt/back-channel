@@ -175,7 +175,10 @@ export function launchElevated({ payload, kind, platform = process.platform, env
     if (platform !== 'win32') return Promise.reject(Object.assign(Error('unsupported'), { code: 'not_supported' }));
     const pf = env.ProgramFiles ?? 'C:\\Program Files';
     const extra = kind === 'update' ? '-UpdateOnly' : '';
-    const bws = typeof backends.bwsProjectId === 'string' && UUID.test(backends.bwsProjectId) ? `-BwsProjectId '${backends.bwsProjectId}'` : '';
+    // Bitwarden project ids (not secret) for a first install's backends.toml: home/* and, for -Work, work/* (BHWK-Agents).
+    // A missing one is asked for in the elevated window; an update ignores both.
+    const id = (flag, v) => typeof v === 'string' && UUID.test(v) ? `${flag} '${v}'` : '';
+    const bws = [id('-BwsProjectId', backends.bwsProjectId), id('-WorkBwsProjectId', backends.workBwsProjectId)].filter(Boolean).join(' ');
     const body = [
         `$env:GIT_CONFIG_GLOBAL = "NUL"; $env:GIT_CONFIG_NOSYSTEM = "1"; $env:GIT_TERMINAL_PROMPT = "0"`,
         `$Git = "${pf}\\Git\\cmd\\git.exe"; $Gh = "${pf}\\GitHub CLI\\gh.exe"; $Stage = "${pf}\\LobySecretBroker\\staging"`,
