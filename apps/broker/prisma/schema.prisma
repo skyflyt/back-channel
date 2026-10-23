@@ -556,6 +556,16 @@ model AppBridgeDevice {
   // (src/lib/push.ts). The nudge carries no content. Cleared when the device is revoked or unregisters.
   pushToken           String?
   pushUpdatedAt       DateTime?
+  // Hosts, for account pairing (docs/appbridge-remote-access.md § Account pairing): what the pairing QR used to carry,
+  // published by the PC itself. identitySpkiSha256 is the PC's inner-TLS key hash (uppercase hex); routeDescriptor its
+  // signed `appbridge-route:v1:` descriptor (verified here against that hash and this device id); lanEndpoint its
+  // current LAN origin, for LAN-first at home. accountPairing is the owner's "phones on my account may connect
+  // without pairing here" switch, as the PC last reported it.
+  identitySpkiSha256  String?
+  routeDescriptor     String?
+  lanEndpoint         String?
+  routeUpdatedAt      DateTime?
+  accountPairing      Boolean               @default(false)
   createdAt           DateTime              @default(now())
   revokedAt           DateTime?
   account             Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
@@ -634,6 +644,8 @@ model AppBridgePass {
   hostDeviceId   String // "support", "support-client": the helper's ephemeral relay identity, not a device
   remoteDeviceId String? // "session": the remote; "support-client": the issuer connector's device
   enrollmentId   String?
+  // "session" passes only: an account-pairing leg (no enrollment yet; the PC enrols the phone over it).
+  enrol          Boolean   @default(false)
   // "agent", "support" and "support-client" passes only: the RemoteAppSession it is for (no FK, see RemoteAppSession).
   remoteAppSessionId String?
   createdAt      DateTime  @default(now())
@@ -651,6 +663,7 @@ model AppBridgeLease {
   hostDeviceId   String
   remoteDeviceId String?
   enrollmentId   String?
+  enrol          Boolean  @default(false)
   // "agent", "support" and "support-client" leases only: the RemoteAppSession it belongs to. Ending the session deletes these.
   remoteAppSessionId String?
   createdAt      DateTime @default(now())

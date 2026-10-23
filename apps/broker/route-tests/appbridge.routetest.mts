@@ -1559,3 +1559,146 @@ test("H1 and the support relay path: under a redeem flood, the keys pinned on a 
   assert.equal((await redeem(junkHex(), "support-client", issuer.key.fp)).status, 429, "once the session is over, it is shed like any key");
   assert.equal((await redeem(junkHex(), "support", s.helper.fp)).status, 429);
 });
+
+// ── Account pairing (docs/appbridge-remote-access.md § Account pairing) ──
+
+/** A PC's inner-TLS identity and the route descriptor it signs with it, as the Windows host builds them. */
+function identityKey() {
+  const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const der = publicKey.export({ type: "spki", format: "der" });
+  const pinHex = createHash("sha256").update(der).digest("hex").toUpperCase();
+  const serverId = crypto.randomUUID();
+  const descriptor = (targetId: string, over: Record<string, unknown> = {}, signer: KeyObject = privateKey, spki: Buffer = der) => {
+    const payload = Buffer.from(JSON.stringify({ version: 1, serverId, spkiSha256: Buffer.from(pinHex, "hex").toString("base64url"), tlsName: `${serverId}.host.appbridge.invalid`,
+      tlsPort: 443, relay: "wss://relay.back-channel.app/v1/connect", relaySpkiSha256: [], targetId, issuedUnixSeconds: Math.floor(Date.now() / 1000), ...over }));
+    const sig = sign("sha256", Buffer.concat([Buffer.from("AppBridge-Route-v1\u0000", "latin1"), payload]), { key: signer, dsaEncoding: "der" });
+    return `appbridge-route:v1:${payload.toString("base64url")}.${spki.toString("base64url")}.${sig.toString("base64url")}`;
+  };
+  return { pinHex, serverId, descriptor, privateKey, der };
+}
+const routeRoutes = {
+  publish: () => import("@/app/api/appbridge/v1/hosts/self/route/route"),
+  remotes: () => import("@/app/api/appbridge/v1/hosts/self/remotes/route"),
+  hosts: () => import("@/app/api/appbridge/v1/devices/self/hosts/route"),
+};
+async function publish(host: { credential: string }, body: unknown) { return (await routeRoutes.publish()).PUT(req("PUT", body, bearer(host.credential))); }
+async function hostsFor(remote: { credential: string }) { return (await routeRoutes.hosts()).GET(req("GET", undefined, bearer(remote.credential))); }
+async function enrolPass(remote: { credential: string }, hostDeviceId: string, extra: Record<string, unknown> = {}) {
+  return (await routes.passes()).POST(req("POST", { hostDeviceId, enrol: true, ...extra }, bearer(remote.credential)));
+}
+
+test("account pairing: a PC publishes its identity pin, its signed route and its switch; the route must be its own, signed with the pinned key", async () => {
+  const host = await register("host"); const remote = await register("remote");
+  const id = identityKey();
+  const good = { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), lanEndpoint: "https://192.168.1.20:47641", accountPairing: true };
+  assert.equal((await publish(remote, good)).status, 403, "hosts only");
+  assert.equal((await publish(host, { ...good, identitySpkiSha256: id.pinHex.toLowerCase() })).status, 400, "the pin is uppercase hex");
+  assert.equal((await publish(host, { ...good, extra: 1 })).status, 400);
+  assert.equal((await publish(host, { ...good, lanEndpoint: "http://192.168.1.20" })).status, 400, "https only");
+  assert.equal((await publish(host, { ...good, lanEndpoint: "https://192.168.1.20/path" })).status, 400);
+  const other = identityKey();
+  let r = await publish(host, { ...good, descriptor: other.descriptor(host.deviceId) });
+  assert.equal(r.status, 400); assert.equal((await r.json()).error, "route_key_mismatch", "a descriptor under another key than the published pin");
+  r = await publish(host, { ...good, descriptor: id.descriptor(host.deviceId, {}, other.privateKey) });
+  assert.equal((await r.json()).error, "route_signature", "the right key, the wrong signer");
+  r = await publish(host, { ...good, descriptor: id.descriptor(remote.deviceId) });
+  assert.equal((await r.json()).error, "route_target", "a route naming another device as the relay target");
+  const payloadTampered = good.descriptor.replace(/^appbridge-route:v1:[^.]+/, (m) => m.slice(0, -2) + "AA");
+  assert.equal((await publish(host, { ...good, descriptor: payloadTampered })).status, 400);
+  r = await publish(host, good);
+  assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+  assert.deepEqual(await r.json(), { published: true, accountPairing: true });
+  const row = tables.device.find((d: any) => d.id === host.deviceId);
+  assert.deepEqual([row.identitySpkiSha256, row.routeDescriptor, row.lanEndpoint, row.accountPairing], [id.pinHex, good.descriptor, "https://192.168.1.20:47641", true]);
+  assert.equal((await publish(host, { ...good, lanEndpoint: null, accountPairing: false })).status, 200);
+  assert.deepEqual([tables.device.find((d: any) => d.id === host.deviceId).lanEndpoint, tables.device.find((d: any) => d.id === host.deviceId).accountPairing], [null, false]);
+});
+
+test("account pairing: a phone sees the account's relay-on PCs with their pins and routes, and whether it is paired, may enrol, or was revoked there", async () => {
+  const host = await register("host", "a", "Office PC"); const remote = await register("remote");
+  const otherAccountHost = await register("host", "b");
+  await entitle();
+  const id = identityKey();
+  assert.equal((await hostsFor(host)).status, 403, "phones only");
+  assert.deepEqual((await (await hostsFor(remote)).json()).hosts, [], "relay off, nothing published: nothing to show");
+  await setRelay(host, true);
+  assert.deepEqual((await (await hostsFor(remote)).json()).hosts, [], "relay on but no route published yet");
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), lanEndpoint: "https://192.168.1.20:47641", accountPairing: true })).status, 200);
+  let list = (await (await hostsFor(remote)).json()).hosts;
+  assert.equal(list.length, 1, "never another account's PC");
+  assert.deepEqual([list[0].hostDeviceId, list[0].label, list[0].identitySpkiSha256, list[0].lanEndpoint, list[0].paired, list[0].canEnrol, list[0].revokedThere, list[0].enrollmentId],
+    [host.deviceId, "Office PC", id.pinHex, "https://192.168.1.20:47641", false, true, false, null]);
+  assert.ok(list[0].descriptor.startsWith("appbridge-route:v1:"));
+  assert.ok(!JSON.stringify(list).includes(otherAccountHost.deviceId));
+  // Paired (the PC attested the enrollment): paired, with the enrollment id the phone uses for session passes.
+  assert.equal((await attest(host, remote.deviceId, "enr-7")).status, 204);
+  list = (await (await hostsFor(remote)).json()).hosts;
+  assert.deepEqual([list[0].paired, list[0].enrollmentId, list[0].canEnrol, list[0].revokedThere], [true, "enr-7", false, false]);
+  // The owner revoked this phone at the PC: not paired, and not allowed to enrol itself back.
+  assert.equal((await (await routes.pairing()).DELETE(req("DELETE", undefined, bearer(host.credential)), params({ enrollmentId: "enr-7" }))).status, 204);
+  list = (await (await hostsFor(remote)).json()).hosts;
+  assert.deepEqual([list[0].paired, list[0].canEnrol, list[0].revokedThere], [false, false, true]);
+  // The switch off hides nothing (paired phones keep their route) but ends enrolling.
+  const remote2 = await register("remote");
+  assert.equal((await (await hostsFor(remote2)).json()).hosts[0].canEnrol, true);
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: false })).status, 200);
+  assert.equal((await (await hostsFor(remote2)).json()).hosts[0].canEnrol, false);
+});
+
+test("account pairing: the PC reads the account's phones and their connector keys (Back Channel's vouch), hosts only", async () => {
+  const host = await register("host"); const remote = await register("remote", "a", "Skylar's Fold"); await register("remote", "b");
+  assert.equal((await (await routeRoutes.remotes()).GET(req("GET", undefined, bearer(remote.credential)))).status, 403);
+  const r = await (await routeRoutes.remotes()).GET(req("GET", undefined, bearer(host.credential)));
+  assert.equal(r.status, 200);
+  const { remotes } = await r.json();
+  assert.deepEqual(remotes.map((x: any) => [x.deviceId, x.label, x.connectorSpki, x.connectorSpkiSha256]), [[remote.deviceId, "Skylar's Fold", remote.key.spki, remote.key.fp]], "this account's live phones only, with the key as registered");
+  // A revoked phone is not vouched for.
+  assert.equal((await (await routes.device()).DELETE(req("DELETE", undefined, cookie("a")), params({ id: remote.deviceId }))).status, 204);
+  assert.deepEqual((await (await (await routeRoutes.remotes()).GET(req("GET", undefined, bearer(host.credential)))).json()).remotes, []);
+});
+
+test("account pairing: an enrol pass needs the owner's switch and a published route, is refused to a phone the PC revoked, redeems to a lease with no enrollment, and renews under the same gate", async () => {
+  const host = await register("host"); const remote = await register("remote"); await entitle(); await setRelay(host, true);
+  const id = identityKey();
+  const code = async (res: Response) => (await res.json()).error;
+  assert.equal((await enrolPass(remote, host.deviceId, { enrollmentId: "enr-1" })).status, 400, "enrol and an enrollment id never go together");
+  assert.equal((await (await routes.passes()).POST(req("POST", { hostDeviceId: host.deviceId, enrol: false }, bearer(remote.credential)))).status, 400);
+  assert.equal((await (await routes.passes()).POST(req("POST", { hostDeviceId: host.deviceId }, bearer(remote.credential)))).status, 400, "one or the other");
+  assert.equal((await enrolPass(host, host.deviceId)).status, 403, "phones only (a PC has no pass scope)");
+  let r = await enrolPass(remote, host.deviceId);
+  assert.equal(r.status, 403); assert.equal(await code(r), "enrol_off", "nothing published yet");
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: false })).status, 200);
+  r = await enrolPass(remote, host.deviceId);
+  assert.equal(await code(r), "enrol_off", "published, switch off");
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: true })).status, 200);
+  // A plain session pass still needs a pairing: enrolling is the only way in without one.
+  r = await sessionPass(remote, host.deviceId); assert.equal(r.status, 403); assert.equal(await code(r), "not_paired");
+  r = await enrolPass(remote, host.deviceId);
+  assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+  const { pass } = await r.json();
+  assert.equal(tables.pass.find((p: any) => p.enrol).enrollmentId, null);
+  // The relay redeems it with the phone's key; the grant names no enrollment, like the PC's side of the join.
+  assert.equal((await redeem(pass, "session", host.key.fp)).status, 403, "the PC's key cannot present a phone's pass");
+  const r2 = await enrolPass(remote, host.deviceId);
+  const grant = await (await redeem((await r2.json()).pass, "session", remote.key.fp)).json();
+  assert.deepEqual([grant.hostDeviceId, grant.clientDeviceId, grant.enrollmentId, grant.clientConnectorSpkiSha256], [host.deviceId, remote.deviceId, null, remote.key.fp]);
+  assert.equal(tables.lease.find((l: any) => l.id === grant.leaseId).enrol, true);
+  assert.equal((await renew(grant.leaseId)).status, 200);
+  // Once the PC enrolled the phone and attested it, the ordinary path is open; the enrol lease keeps renewing too.
+  assert.equal((await attest(host, remote.deviceId, "enr-new")).status, 204);
+  assert.equal((await sessionPass(remote, host.deviceId, "enr-new")).status, 200);
+  // The owner turns the switch off: the enrol leg ends at its next renewal; paired sessions are untouched.
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: false })).status, 200);
+  assert.equal((await renew(grant.leaseId)).status, 403);
+  assert.equal((await sessionPass(remote, host.deviceId, "enr-new")).status, 200);
+  // Revoked at the PC: never enrols itself back, even with the switch on.
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: true })).status, 200);
+  assert.equal((await (await routes.pairing()).DELETE(req("DELETE", undefined, bearer(host.credential)), params({ enrollmentId: "enr-new" }))).status, 204);
+  r = await enrolPass(remote, host.deviceId); assert.equal(r.status, 403); assert.equal(await code(r), "enrol_revoked");
+  // Another phone of the account is not affected by that history.
+  const remote2 = await register("remote");
+  assert.equal((await enrolPass(remote2, host.deviceId)).status, 200);
+  // Bounded: ten enrol passes from one phone to one PC per hour.
+  for (let i = 1; i < 10; i++) assert.equal((await enrolPass(remote2, host.deviceId)).status, 200, `pass ${i + 1}`);
+  assert.equal((await enrolPass(remote2, host.deviceId)).status, 429);
+});

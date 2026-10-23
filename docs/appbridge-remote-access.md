@@ -90,9 +90,12 @@ All routes are under `/api/appbridge/v1`.
 | `POST /devices/self/secret-broker/machines/{agentId}/{enrol-options\|enrol-verify\|test}` | `appbridge.secrets` | `{}` / `{ ceremonyId, response }` / `{ ref }` | Trust the passkey that answers (the worker's enrol job), or run the broker's own `run` for one named secret so a request is raised to answer from the phone. |
 | `PUT /hosts/self/relay` | `appbridge.host.relay` | `{ enabled }` | `{ enabled }`. Off never touches pairings. |
 | `PUT /hosts/self/pairings/{enrollmentId}` | `appbridge.host.relay` | `{ remoteDeviceId }` | `204`. Idempotent; a withdrawn enrollment is never revived (`409`). Host devices only (`403 scope` otherwise, whatever the credential's scopes). |
+| `PUT /hosts/self/route` | `appbridge.host.relay` | `{ identitySpkiSha256, descriptor, lanEndpoint?, accountPairing }` | `{ published, accountPairing }`. Account pairing (below): the PC publishes its inner-TLS pin, its signed route descriptor (verified here: the embedded key hashes to the pin, the signature holds, `targetId` is this device; else `400 route_key_mismatch` / `route_signature` / `route_target`) and its owner's switch. Host devices only. |
+| `GET /hosts/self/remotes` | `appbridge.host.relay` | — | `{ remotes: [{ deviceId, label, connectorSpki, connectorSpkiSha256, registeredAt }] }`: the account's live phones and the connector key registered for each, for the PC to check an account-pairing challenge against. Host devices only. |
+| `GET /devices/self/hosts` | `appbridge.relay.pass` | — | `{ hosts: [{ hostDeviceId, label, identitySpkiSha256, descriptor, lanEndpoint, routeUpdatedAt, paired, enrollmentId, canEnrol, revokedThere }] }`: the account's relay-on PCs that published a route. Remote devices only. |
 | `DELETE /hosts/self/pairings/{enrollmentId}` | `appbridge.host.relay` | — | `204`. Host devices only. |
 | `POST /relay/presence-passes` | `appbridge.relay.presence` | `{}` | `{ pass, expiresAt, relay }` |
-| `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId, takeover? }` | `{ pass, expiresAt, relay }`, or `409 devices_busy` with the busy devices: see **Device limit and takeover** below. |
+| `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId, takeover? }` or `{ hostDeviceId, enrol: true, takeover? }` | `{ pass, expiresAt, relay }`, or `409 devices_busy` with the busy devices: see **Device limit and takeover** below. `enrol` (account pairing): a leg to a PC this phone has no pairing with, so the PC can enrol it over the relay; `403 enrol_off` while the PC's switch is off or it published no route, `403 enrol_revoked` for a phone that PC revoked; at most 10 an hour per phone and PC. |
 | `POST /relay/agent-passes` | `appbridge.relay.presence` | `{ sessionId }` | `{ pass, expiresAt, relay }` for an "agent" lease: a PC's standing to let an agent use an app on it, for one remote app session its owner approved. `403 session_inactive` unless that session is approved, running, not paused and in time; `404` if it is not this PC's. Host devices only. See docs/remote-app-sessions.md. |
 | `POST /relay/support-passes` | none: the temporary support client's own `abs_` credential (never a device's) | `{}` | `{ pass, expiresAt, relay }` for a "support" lease: the helper's standing at the relay for the one support session it redeemed, while the helped person has allowed it. `403 session_inactive` before Allow, after Stop or once time is up. See docs/remote-support.md. |
 | `POST /relay/support-client-passes` | `appbridge.relay.pass` | `{ sessionId }` | `{ pass, expiresAt, relay, host, executorSecretSha256 }` for a "support-client" lease: the **issuer connector**, one of the account's own devices, reaching the helper of one of its support sessions. The first device to take one is pinned on the session (`409 support_client_pinned` for any other); `host` is the helper's key (the relay target and the inner-TLS server pin) and `executorSecretSha256` the session's executor secret hash. `403 session_inactive` unless the helped person allowed it and it is running; `404` if it is not this account's support session. Remote-role devices only (`403 scope`). See docs/remote-support.md. |
@@ -118,8 +121,8 @@ Details:
   crashed before saving the reply retries with its old credential: that rotation revokes the unused
   successor and issues another, and never extends the 24 hours. Revoking or unregistering the device
   ends every credential, including one in its grace period.
-- A refused gate is `403` with one of `rollout_off`, `not_entitled`, `relay_off`, `device_revoked` or
-  `not_paired`. A PC outside the caller's account is `404`.
+- A refused gate is `403` with one of `rollout_off`, `not_entitled`, `relay_off`, `device_revoked`,
+  `not_paired`, `enrol_off` or `enrol_revoked`. A PC outside the caller's account is `404`.
 
 #### Device limit and takeover (Skylar, 2026-09-25)
 
@@ -244,6 +247,36 @@ dashboard cookie all get `401`.
 - **Renew** rechecks the gate. A refusal deletes the lease (`403`); an expired lease is `410`, an
   unknown one `404`.
 - The relay compares the keys that renew returns and ends the pair if either changed.
+
+### Account pairing (2026-10-22; ruled by the owner: switch on by default where the relay is on, full grant)
+
+Pairing a phone with a PC on that PC's network gives the phone three things: the PC's inner-TLS key hash (from the
+QR, a channel Back Channel is never on), the owner's approval bound by the short code, and a client certificate from
+the PC's own enrollment CA. The account path keeps the last two exactly and replaces the first with Back Channel's
+word plus a check the person can make:
+
+1. **The PC publishes** (`PUT /hosts/self/route`) what the QR used to carry: its identity pin, its signed route
+   descriptor and its LAN origin, with its owner's switch *phones on my Back Channel account can connect without
+   pairing here*. Back Channel verifies the descriptor against the pin and this device before serving it.
+2. **The phone lists the account's PCs** (`GET /devices/self/hosts`) and asks for an **enrol pass** to one it has no
+   pairing with (`POST /relay/passes { hostDeviceId, enrol: true }`). The gate admits it only while the switch is on,
+   the route is published, and this PC never revoked this phone. The relay joins the leg as any other; the grant names
+   no enrollment.
+3. **The PC enrols the phone over that leg**, inside its own TLS: an account challenge in which the phone proves,
+   with its relay connector key, that it is the device Back Channel registered (the PC reads the account's phones and
+   their keys from `GET /hosts/self/remotes`), then the ordinary proof with its enrollment key. The PC approves it
+   itself with the owner's default grant, issues the certificate, and attests the pairing here as it would after a
+   local one. From then on the phone is an ordinary paired device.
+4. **First contact is confirmed on the phone**: before the challenge, the phone shows the PC's name and identity
+   fingerprint as Back Channel published it, next to the one the PC itself presents on its Remote page, and asks to
+   connect. The pin is fixed from then on, exactly as after a QR.
+
+What changes in trust, plainly: Back Channel could today never impersonate a PC to a phone. On the account path it
+could, at first contact only, publish a false pin for a PC or register a phone the PC then enrols. After first
+contact every connection has the guarantees it always had. Bounding it: the dashboard session already governs which
+devices exist; the fingerprint on the phone's sheet can be compared with the PC's; the PC's owner sees each first
+contact and can revoke the phone under Pairing, after which it cannot enrol itself back (`enrol_revoked`); and the
+owner's switch turns the path off while leaving every pairing as it is.
 
 ### Rate limits
 
