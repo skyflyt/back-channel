@@ -1043,6 +1043,8 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
       clientDeviceId: binding.remoteDeviceId, enrollmentId: binding.enrollmentId,
       hostConnectorSpkiSha256: g.hostKey, clientConnectorSpkiSha256: g.remote?.connectorSpkiSha256 ?? null,
       ...(g.session ? { remoteAppSessionId: g.session.id } : {}),
+      // An account-pairing leg says so explicitly: the relay keeps requiring an enrollment on every other session grant.
+      ...(enrolLeg ? { enrol: true } : {}),
     };
   });
   if (!grant) return refused();

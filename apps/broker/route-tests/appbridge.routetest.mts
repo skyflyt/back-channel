@@ -1681,7 +1681,7 @@ test("account pairing: an enrol pass needs the owner's switch and a published ro
   assert.equal((await redeem(pass, "session", host.key.fp)).status, 403, "the PC's key cannot present a phone's pass");
   const r2 = await enrolPass(remote, host.deviceId);
   const grant = await (await redeem((await r2.json()).pass, "session", remote.key.fp)).json();
-  assert.deepEqual([grant.hostDeviceId, grant.clientDeviceId, grant.enrollmentId, grant.clientConnectorSpkiSha256], [host.deviceId, remote.deviceId, null, remote.key.fp]);
+  assert.deepEqual([grant.hostDeviceId, grant.clientDeviceId, grant.enrollmentId, grant.clientConnectorSpkiSha256, grant.enrol], [host.deviceId, remote.deviceId, null, remote.key.fp, true], "the grant says it is an enrol leg");
   assert.equal(tables.lease.find((l: any) => l.id === grant.leaseId).enrol, true);
   assert.equal((await renew(grant.leaseId)).status, 200);
   // Issued, then the switch goes off before the relay redeems: the gate is read again at redemption and refuses.
@@ -1691,7 +1691,8 @@ test("account pairing: an enrol pass needs the owner's switch and a published ro
   assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: true })).status, 200);
   // Once the PC enrolled the phone and attested it, the ordinary path is open; the enrol lease keeps renewing too.
   assert.equal((await attest(host, remote.deviceId, "enr-new")).status, 204);
-  assert.equal((await sessionPass(remote, host.deviceId, "enr-new")).status, 200);
+  const ordinary = await (await redeem((await (await sessionPass(remote, host.deviceId, "enr-new")).json()).pass, "session", remote.key.fp)).json();
+  assert.deepEqual([ordinary.enrollmentId, "enrol" in ordinary], ["enr-new", false], "an ordinary session grant is exactly as before");
   // A phone the PC trusts never re-enrols (its grant there is the owner's, not the default).
   r = await enrolPass(remote, host.deviceId); assert.equal(r.status, 409); assert.equal(await code(r), "already_paired");
   // The owner turns the switch off: the enrol leg ends at its next renewal; paired sessions are untouched.
