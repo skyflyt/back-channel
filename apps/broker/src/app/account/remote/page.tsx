@@ -3,8 +3,9 @@
 /**
  * Back Channel Remote — the owner's relay page (docs/appbridge-remote-access.md).
  *
- * Mint a one-use code to register a PC, or a phone or laptop, see and revoke your registered
- * devices, and read the 7-day log of connection attempts. Everything goes through the
+ * Mint a one-use code to register a PC you want to reach, or a phone or laptop you reach from (the
+ * role words live in remote-copy.ts), see and revoke your registered devices, and read the 7-day log of
+ * connection attempts. Everything goes through the
  * cookie-authenticated /api/appbridge/v1/account/* routes (mutations echo the
  * bc_csrf cookie). No device credential, pass or key is ever shown here: a code is
  * the only secret, it works once and expires in 10 minutes.
@@ -21,6 +22,7 @@ import AgentSessions, { consumeApprovalLink } from "./agent-sessions";
 import SupportSessions from "./support-sessions";
 import AgentsReadiness from "./agents-readiness";
 import SecretsCard from "./secrets-card";
+import { ADD_DEVICE_HINT, CODE_BUTTON, CODE_FOR, ROLE_NOUN, deviceRoleLine } from "./remote-copy";
 
 // Where the apps are published (a public repository; the source repository is private). The page
 // links to it rather than fetching it: connect-src is 'self', and a download list that is always
@@ -103,7 +105,7 @@ function PlanCard({ billing, busy, message, onOpen }: { billing: BillingStatus; 
   );
 }
 
-const deviceName = (d: RemoteDevice | undefined, fallback: string) => d?.label || (d ? `${d.role === "host" ? "PC" : "Device"} ${d.id.slice(0, 6)}` : fallback);
+const deviceName = (d: RemoteDevice | undefined, fallback: string) => d?.label || (d ? `${ROLE_NOUN[d.role]} ${d.id.slice(0, 6)}` : fallback);
 
 export default function RemotePage() {
   const [state, setState] = useState<"loading" | "unauth" | "ready" | "error">("loading");
@@ -253,19 +255,19 @@ export default function RemotePage() {
 
             <div className="ds-card">
               <div className="ds-cardh">Add a device</div>
-              <p className="ds-cardsub">Get a one-time code, then enter it on the device. On a PC: Back Channel Remote → Internet access → Register this PC. Codes work once and expire after 10 minutes.</p>
+              <p className="ds-cardsub">{ADD_DEVICE_HINT}</p>
               <label className="ds-label" htmlFor="remote-label">Name (optional)</label>
               <input id="remote-label" className="ds-input" value={label} maxLength={80} placeholder="e.g. Office PC" onChange={(e) => setLabel(e.target.value)} style={{ maxWidth: 280, display: "block", marginBottom: 12 }} />
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button className="ds-btn" disabled={busy === "mint"} onClick={() => mint("host")}>Get a code for a PC</button>
-                <button className="ds-btn ghost" disabled={busy === "mint"} onClick={() => mint("remote")}>Get a code for a phone or laptop</button>
+                <button className="ds-btn" disabled={busy === "mint"} onClick={() => mint("host")}>{CODE_BUTTON.host}</button>
+                <button className="ds-btn ghost" disabled={busy === "mint"} onClick={() => mint("remote")}>{CODE_BUTTON.remote}</button>
               </div>
               {minted && (
                 <div style={{ marginTop: 16 }} aria-live="polite">
                   <div className="ds-mono" style={{ fontSize: 28, letterSpacing: 2, userSelect: "all" }}>{minted.code}</div>
                   <p className="ds-fine" style={{ margin: "6px 0 0" }}>
                     {secondsLeft > 0
-                      ? `For a ${minted.role === "host" ? "PC" : "phone or laptop"}. Expires in ${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, "0")}.`
+                      ? `For a ${CODE_FOR[minted.role]}. Expires in ${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, "0")}.`
                       : "This code has expired. Get a new one."}
                   </p>
                 </div>
@@ -281,7 +283,7 @@ export default function RemotePage() {
                   <div style={{ flex: 1 }}>
                     <div className="ds-iname">{deviceName(d, "")}</div>
                     <div className="ds-imeta">
-                      {d.role === "host" ? (d.relayEnabled ? "PC · Internet access on" : "PC · Internet access off") : "Phone or laptop"} · registered {ago(d.createdAt)}
+                      {deviceRoleLine(d.role, d.relayEnabled)} · registered {ago(d.createdAt)}
                     </div>
                   </div>
                   <button className="ds-btn danger" disabled={busy === d.id} onClick={() => revoke(d)}>Revoke</button>

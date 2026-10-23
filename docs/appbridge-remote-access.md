@@ -14,6 +14,19 @@ The relay's half of this contract is `docs/REMOTE_ACCESS_BROKER_API.md` in the A
 (its `src/relay-cloudflare`). Code: `apps/broker/src/lib/appbridge.ts` and
 `src/app/api/appbridge/v1/**`. Tests: `route-tests/appbridge.routetest.mts`.
 
+## Two roles
+
+A registered device is a **host** (a PC you want to reach) or a **remote** (the phone or laptop you reach
+it from); the role is fixed when its code is minted and the exchange refuses a code of the other role
+(`wrong_role`). Only a host publishes a route and can be reached; a remote only reaches. The Remote page
+phrases everything by direction so the two are not mixed up: the buttons read "Get a code for a PC you
+want to reach" and "Get a code for a phone or laptop you reach from", and "Your devices" shows
+"PC · reachable" or "Remote · reaches your PCs" (`apps/broker/src/app/account/remote/remote-copy.ts`,
+tested in `route-tests/remote-page-copy.routetest.mts`). A Windows PC has both dialogs: the owner
+console's Internet access page registers it as a host; the Back Channel Remote client's own Internet
+access dialog registers it as a remote. On 2026-10-23 a laptop meant to be reached was registered through
+the client with the phone/laptop code, so it never published a route; that is what this wording prevents.
+
 ## Rules
 
 1. **Separate credentials.** Devices use their own `ab_` bearer credential (only the SHA-256 is
