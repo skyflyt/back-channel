@@ -96,6 +96,15 @@ const HEX64 = /^[0-9A-F]{64}$/;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE = /^ABD-[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{4}-[ABCDEFGHJKMNPQRSTUVWXYZ2-9]{4}$/;
 const CREDENTIAL = /^ab_[A-Za-z0-9_-]{43}$/;
+const ENROL_PASSES_PER_PAIR = 10;       // enrol passes one phone may ask for to one PC, per hour
+const ENROL_WINDOW_MS = 60 * 60_000;
+// Account pairing: what a PC publishes (docs/appbridge-remote-access.md § Account pairing).
+const ROUTE_PREFIX = "appbridge-route:v1:";
+const ROUTE_DOMAIN = Buffer.from("AppBridge-Route-v1\u0000", "latin1");
+const HEX64_UPPER = /^[0-9A-F]{64}$/;
+const B64URL = /^[A-Za-z0-9_-]+$/;
+const SERVER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const MAX_ROUTE_BODY = 8192;
 export const SCOPES = {
   host: ["appbridge.device", "appbridge.host.relay", "appbridge.relay.presence"],
   // appbridge.secrets: see and answer secret broker requests (src/lib/secrets-device.ts). Phones registered before it
@@ -105,7 +114,7 @@ export const SCOPES = {
 type Role = keyof typeof SCOPES;
 type Scope = "appbridge.device" | "appbridge.host.relay" | "appbridge.relay.presence" | "appbridge.relay.pass" | "appbridge.secrets";
 type Body = Record<string, unknown>;
-type Refusal = "rollout_off" | "not_entitled" | "relay_off" | "device_revoked" | "not_paired" | "not_found" | "session_inactive" | "support_client_pinned";
+type Refusal = "rollout_off" | "not_entitled" | "relay_off" | "device_revoked" | "not_paired" | "not_found" | "session_inactive" | "support_client_pinned" | "enrol_off" | "enrol_revoked" | "already_paired";
 type Purpose = "session" | "presence" | "agent" | "support" | "support-client";
 const PURPOSES: readonly string[] = ["session", "presence", "agent", "support", "support-client"];
 
@@ -151,15 +160,15 @@ export async function handle(fn: () => Promise<NextResponse>): Promise<NextRespo
 }
 
 /** The raw request body, at most 4 KiB. */
-async function readRaw(req: NextRequest): Promise<string> {
-  if (Number(req.headers.get("content-length")) > MAX_BODY) fail(413, "too_large");
+async function readRaw(req: NextRequest, maxBytes = MAX_BODY): Promise<string> {
+  if (Number(req.headers.get("content-length")) > maxBytes) fail(413, "too_large");
   const reader = req.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = []; let size = 0;
   while (true) {
     const { value, done } = await reader.read(); if (done) break;
     size += value.byteLength;
-    if (size > MAX_BODY) { await reader.cancel(); fail(413, "too_large"); }
+    if (size > maxBytes) { await reader.cancel(); fail(413, "too_large"); }
     chunks.push(value);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -333,7 +342,9 @@ export async function accountContext(req: NextRequest, mutate: boolean) {
 
 // remoteAppSessionId is set for an "agent", "support" or "support-client" pass or lease only: the session it is for.
 // remoteDeviceId is the remote for "session", the issuer connector's device for "support-client", else null.
-type Binding = { accountId: string; hostDeviceId: string; remoteDeviceId: string | null; enrollmentId: string | null; remoteAppSessionId: string | null };
+// enrol: a "session" leg a phone asks for to a PC it has no pairing with yet, so the PC can enrol it over the relay
+// (account pairing). enrollmentId is then null; everything else about the leg is a session's.
+type Binding = { accountId: string; hostDeviceId: string; remoteDeviceId: string | null; enrollmentId: string | null; remoteAppSessionId: string | null; enrol?: boolean };
 // hostKey: the fingerprint the host side of the pair presents. A device's connector key, or for "support" and
 // "support-client" the temporary client's key pinned at redemption (host is then null: the client is not a device).
 type Admitted = { host: AppBridgeDevice | null; hostKey: string; remote: AppBridgeDevice | null; session: RemoteAppSession | null };
@@ -392,12 +403,23 @@ async function gate(tx: Prisma.TransactionClient, b: Binding, purpose: Purpose):
   const remote = await tx.appBridgeDevice.findUnique({ where: { id: b.remoteDeviceId } });
   if (!remote || remote.accountId !== b.accountId || remote.role !== "remote") return { refused: "not_found" };
   if (remote.revokedAt || !remote.enabled) return { refused: "device_revoked" };
+  if (b.enrol) {
+    // Account pairing: the PC's owner lets phones on the account connect without pairing there, the PC has published
+    // its route, and this PC never revoked this phone (a withdrawn pairing between them with no live one since).
+    if (b.enrollmentId !== null) return { refused: "not_found" };
+    if (!host.accountPairing || !host.routeDescriptor) return { refused: "enrol_off" };
+    const between = await tx.appBridgePairing.findMany({ where: { hostDeviceId: host.id, remoteDeviceId: remote.id }, select: { withdrawnAt: true } });
+    // A phone the PC already trusts never re-enrols: the PC would issue its default grant over whatever the owner set there.
+    if (between.some(p => !p.withdrawnAt)) return { refused: "already_paired" };
+    if (between.length) return { refused: "enrol_revoked" };
+    return { host, hostKey: host.connectorSpkiSha256, remote, session: null };
+  }
   if (b.enrollmentId === null) return { refused: "not_paired" };
   const pairing = await tx.appBridgePairing.findUnique({ where: { hostDeviceId_enrollmentId: { hostDeviceId: host.id, enrollmentId: b.enrollmentId } } });
   if (!pairing || pairing.withdrawnAt || pairing.remoteDeviceId !== remote.id) return { refused: "not_paired" };
   return { host, hostKey: host.connectorSpkiSha256, remote, session: null };
 }
-function refuse(r: Refusal): never { return r === "not_found" ? fail(404, "not_found") : r === "support_client_pinned" ? fail(409, r) : fail(403, r); }
+function refuse(r: Refusal): never { return r === "not_found" ? fail(404, "not_found") : r === "support_client_pinned" || r === "already_paired" ? fail(409, r) : fail(403, r); }
 
 // ── Serializable transactions ───────────────────────────────────────────────
 
@@ -605,6 +627,112 @@ export const withdrawPairing = (req: NextRequest, enrollmentId: string) => handl
   return new NextResponse(null, { status: 204, headers: { "Cache-Control": "no-store" } });
 });
 
+// ── Account pairing (docs/appbridge-remote-access.md § Account pairing) ─────
+
+/**
+ * The PC's signed route descriptor, checked the way a paired phone checks it: three canonical base64url parts, the
+ * embedded key hashing to the PC's published identity pin, the signature over the domain label and the payload, and a
+ * payload that names THIS device as the relay target. Only then is it served to the account's phones.
+ */
+export function verifyRouteDescriptor(encoded: unknown, identitySpkiSha256: string, deviceId: string): { serverId: string } {
+  if (typeof encoded !== "string" || encoded.length > 4096 || !encoded.startsWith(ROUTE_PREFIX)) fail(400, "invalid_route");
+  const parts = encoded.slice(ROUTE_PREFIX.length).split(".");
+  if (parts.length !== 3) fail(400, "invalid_route");
+  const decode = (text: string, min: number, max: number): Buffer => {
+    if (!B64URL.test(text)) fail(400, "invalid_route");
+    const bytes = Buffer.from(text, "base64url");
+    if (bytes.length < min || bytes.length > max || bytes.toString("base64url") !== text) fail(400, "invalid_route");
+    return bytes;
+  };
+  const payload = decode(parts[0], 2, 3072), spki = decode(parts[1], 64, 512), signature = decode(parts[2], 8, 256);
+  if (!sameFingerprint(createHash("sha256").update(spki).digest("hex").toUpperCase(), identitySpkiSha256)) fail(400, "route_key_mismatch");
+  let key: KeyObject;
+  try { key = createPublicKey({ key: spki, format: "der", type: "spki" }); } catch { return fail(400, "invalid_route"); }
+  if (key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") fail(400, "invalid_route");
+  let signed = false;
+  try { signed = verifySignature("sha256", Buffer.concat([ROUTE_DOMAIN, payload]), { key, dsaEncoding: "der" }, signature); } catch { signed = false; }
+  if (!signed) fail(400, "route_signature");
+  let body: unknown;
+  try { body = JSON.parse(payload.toString("utf8")); } catch { return fail(400, "invalid_route"); }
+  if (!body || typeof body !== "object" || Array.isArray(body)) fail(400, "invalid_route");
+  const d = body as Record<string, unknown>;
+  if (d.version !== 1 || typeof d.serverId !== "string" || !SERVER_ID.test(d.serverId) || typeof d.relay !== "string" || !d.relay.startsWith("wss://")) fail(400, "invalid_route");
+  if (d.targetId !== deviceId) fail(400, "route_target");
+  if (typeof d.spkiSha256 !== "string" || Buffer.from(d.spkiSha256, "base64url").toString("hex").toUpperCase() !== identitySpkiSha256) fail(400, "route_key_mismatch");
+  return { serverId: d.serverId };
+}
+
+/** An HTTPS origin a PC may publish as its LAN address: scheme, host, optional port, nothing else. */
+function lanOrigin(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string" || value.length > 512) fail(400, "invalid_request");
+  let url: URL;
+  try { url = new URL(value); } catch { return fail(400, "invalid_request"); }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) fail(400, "invalid_request");
+  return url.origin;
+}
+
+/**
+ * PUT /hosts/self/route { identitySpkiSha256, descriptor, lanEndpoint?, accountPairing } — the PC publishes what its
+ * pairing QR used to carry, and its owner's switch. Replaced whole on every call; a PC that turns the switch off keeps
+ * its route published (paired phones still use it) but no phone may enrol.
+ */
+export const publishRoute = (req: NextRequest) => handle(async () => {
+  const { device } = await deviceContext(req, "appbridge.host.relay");
+  if (device.role !== "host") fail(403, "scope");
+  const body = parseBody(await readRaw(req, MAX_ROUTE_BODY));
+  exact(body, ["identitySpkiSha256", "descriptor", "accountPairing"], ["lanEndpoint"]);
+  if (typeof body.identitySpkiSha256 !== "string" || !HEX64_UPPER.test(body.identitySpkiSha256) || typeof body.accountPairing !== "boolean") fail(400, "invalid_request");
+  verifyRouteDescriptor(body.descriptor, body.identitySpkiSha256, device.id);
+  const lanEndpoint = lanOrigin(body.lanEndpoint);
+  await prisma.appBridgeDevice.update({ where: { id: device.id }, data: {
+    identitySpkiSha256: body.identitySpkiSha256, routeDescriptor: body.descriptor as string, lanEndpoint, accountPairing: body.accountPairing, routeUpdatedAt: new Date(),
+  } });
+  return json({ published: true, accountPairing: body.accountPairing });
+});
+
+/**
+ * GET /hosts/self/remotes — the account's live phones, with the connector key Back Channel registered for each: what a
+ * PC checks an account-pairing challenge's connector proof against. Back Channel's vouch, and nothing more: the PC
+ * still runs the whole pairing exchange over its own TLS and issues the certificate itself.
+ */
+export const listRemotesForHost = (req: NextRequest) => handle(async () => {
+  const { device } = await deviceContext(req, "appbridge.host.relay");
+  if (device.role !== "host") fail(403, "scope");
+  const remotes = await prisma.appBridgeDevice.findMany({
+    where: { accountId: device.accountId, role: "remote", revokedAt: null, enabled: true }, orderBy: { createdAt: "asc" }, take: 50,
+    select: { id: true, label: true, connectorSpki: true, connectorSpkiSha256: true, createdAt: true },
+  });
+  return json({ remotes: remotes.map(r => ({ deviceId: r.id, label: r.label, connectorSpki: r.connectorSpki, connectorSpkiSha256: r.connectorSpkiSha256, registeredAt: r.createdAt.toISOString() })) });
+});
+
+/**
+ * GET /devices/self/hosts — for a phone: the account's PCs that can be reached through the relay, with what the
+ * phone needs to verify the PC itself (its identity pin and signed route) and whether this phone is paired with it
+ * already, may enrol (the owner's switch), or was revoked there (then only pairing at the PC brings it back).
+ */
+export const listHostsForRemote = (req: NextRequest) => handle(async () => {
+  const { device } = await deviceContext(req, "appbridge.relay.pass");
+  if (device.role !== "remote") fail(403, "scope");
+  const [hosts, pairings] = await Promise.all([
+    prisma.appBridgeDevice.findMany({ where: { accountId: device.accountId, role: "host", revokedAt: null, enabled: true }, orderBy: { createdAt: "asc" }, take: 50 }),
+    prisma.appBridgePairing.findMany({ where: { remoteDeviceId: device.id }, select: { hostDeviceId: true, enrollmentId: true, withdrawnAt: true } }),
+  ]);
+  return json({
+    hosts: hosts.filter(h => h.relayEnabled && h.routeDescriptor && h.identitySpkiSha256).map(h => {
+      const mine = pairings.filter(p => p.hostDeviceId === h.id);
+      const live = mine.find(p => !p.withdrawnAt);
+      return {
+        hostDeviceId: h.id, label: h.label, identitySpkiSha256: h.identitySpkiSha256, descriptor: h.routeDescriptor, lanEndpoint: h.lanEndpoint,
+        routeUpdatedAt: h.routeUpdatedAt?.toISOString() ?? null,
+        paired: !!live, enrollmentId: live?.enrollmentId ?? null,
+        canEnrol: !live && h.accountPairing && !(mine.length > 0 && mine.every(p => p.withdrawnAt)),
+        revokedThere: !live && mine.length > 0,
+      };
+    }),
+  });
+});
+
 type BusyDevice = { deviceId: string; label: string | null; since: string };
 type Issued =
   | { refused: Refusal }
@@ -666,9 +794,19 @@ async function issuePass(req: NextRequest, purpose: Purpose): Promise<NextRespon
     if (device.role !== "host") fail(400, "invalid_request");
     binding = { accountId: device.accountId, hostDeviceId: device.id, remoteDeviceId: null, enrollmentId: null, remoteAppSessionId: id(body.sessionId) };
   } else {
-    exact(body, ["hostDeviceId", "enrollmentId"], ["takeover"]);
+    // A session pass names the enrollment, or asks to enrol (account pairing: no enrollment yet), never both.
+    exact(body, ["hostDeviceId"], ["enrollmentId", "enrol", "takeover"]);
     if (device.role !== "remote") fail(400, "invalid_request");
-    binding = { accountId: device.accountId, hostDeviceId: id(body.hostDeviceId), remoteDeviceId: device.id, enrollmentId: id(body.enrollmentId), remoteAppSessionId: null };
+    const enrol = "enrol" in body;
+    if (enrol && (body.enrol !== true || "enrollmentId" in body)) fail(400, "invalid_request");
+    if (!enrol && !("enrollmentId" in body)) fail(400, "invalid_request");
+    const hostDeviceId = id(body.hostDeviceId);
+    if (enrol) {
+      // Peeked here, spent only once a pass is issued: a few taps at a switched-off PC must not lock the phone out for an hour.
+      const budget = rateLimitPeek("appbridge:enrol", `${device.id}:${hostDeviceId}`, ENROL_PASSES_PER_PAIR);
+      if (!budget.ok) fail(429, "rate_limited", budget.retryAfterSec);
+    }
+    binding = { accountId: device.accountId, hostDeviceId, remoteDeviceId: device.id, enrollmentId: enrol ? null : id(body.enrollmentId), remoteAppSessionId: null, enrol };
     if ("takeover" in body) {
       if (typeof body.takeover !== "string" || !DEVICE_ID.test(body.takeover)) fail(400, "invalid");
       takeover = body.takeover;
@@ -685,12 +823,14 @@ async function issuePass(req: NextRequest, purpose: Purpose): Promise<NextRespon
       if (!("taken" in capacity)) return capacity;
       taken = capacity.taken;
     }
-    await tx.appBridgePass.create({ data: { passHash: sha256Hex(pass), purpose, ...binding, expiresAt } });
+    const { enrol, ...columns } = binding;
+    await tx.appBridgePass.create({ data: { passHash: sha256Hex(pass), purpose, ...columns, enrol: enrol === true, expiresAt } });
     return { ok: true, taken };
   });
   if ("refused" in result) refuse(result.refused);
   if ("busy" in result) return json({ error: "devices_busy", devices: result.busy }, 409);
   if ("takeoverLimited" in result) fail(429, "rate_limited", result.takeoverLimited);
+  if (binding.enrol) rateLimit("appbridge:enrol", `${device.id}:${binding.hostDeviceId}`, ENROL_PASSES_PER_PAIR, ENROL_WINDOW_MS);
   if (result.taken) {
     // Counted once, after the commit: only a takeover that happened spends the budget.
     rateLimit("appbridge:takeover", device.id, TAKEOVERS_PER_DEVICE, TAKEOVER_WINDOW_MS);
@@ -838,7 +978,7 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
     const pass = await tx.appBridgePass.findUnique({ where: { passHash } });
     if (!pass || pass.purpose !== purpose) return null;
     const binding: Binding = { accountId: pass.accountId, hostDeviceId: pass.hostDeviceId, remoteDeviceId: pass.remoteDeviceId, enrollmentId: pass.enrollmentId,
-      remoteAppSessionId: pass.remoteAppSessionId ?? null };
+      remoteAppSessionId: pass.remoteAppSessionId ?? null, enrol: pass.enrol === true };
     if ((purpose === "session" || purpose === "support-client") !== (binding.remoteDeviceId !== null)) return null;
     if ((purpose === "agent" || purpose === "support" || purpose === "support-client") !== (binding.remoteAppSessionId !== null)) return null;
     const g = await gate(tx, binding, purpose);
@@ -893,7 +1033,8 @@ export const redeemPass = (req: NextRequest) => handle(async () => {
     }
     // An agent, support or support-client lease never outlives its session.
     const leaseExpiry = g.session ? RemoteApp.agentLeaseExpiry(g.session, now, LEASE_TTL_MS) : new Date(now.getTime() + LEASE_TTL_MS);
-    const lease = await tx.appBridgeLease.create({ data: { id: newId(), purpose, ...binding, expiresAt: leaseExpiry } });
+    const { enrol: enrolLeg, ...leaseColumns } = binding;
+    const lease = await tx.appBridgeLease.create({ data: { id: newId(), purpose, ...leaseColumns, enrol: enrolLeg === true, expiresAt: leaseExpiry } });
     // The log records an admitted attempt: it is written here, so a pair the relay then fails to
     // join still appears (the page and docs call these "connection attempts").
     if (purpose === "session") await tx.appBridgeConnectionEvent.create({ data: { accountId: binding.accountId, hostDeviceId: binding.hostDeviceId, remoteDeviceId: binding.remoteDeviceId!, at: now } });
@@ -934,7 +1075,7 @@ export const renewLease = (req: NextRequest) => handle(async () => {
     if (!lease) return { status: 404 } as const;
     if (lease.expiresAt <= now) { await tx.appBridgeLease.deleteMany({ where: { id: leaseId } }); return { status: 410 } as const; }
     const g = await gate(tx, { accountId: lease.accountId, hostDeviceId: lease.hostDeviceId, remoteDeviceId: lease.remoteDeviceId, enrollmentId: lease.enrollmentId,
-      remoteAppSessionId: lease.remoteAppSessionId ?? null }, lease.purpose as Purpose);
+      remoteAppSessionId: lease.remoteAppSessionId ?? null, enrol: lease.enrol === true }, lease.purpose as Purpose);
     if ("refused" in g) { await tx.appBridgeLease.deleteMany({ where: { id: leaseId } }); return { status: 403 } as const; }
     // An agent, support or support-client lease is renewed only up to its session's end (and its session is re-read above:
     // stopped, paused or out of time is a refusal that deletes the lease).
