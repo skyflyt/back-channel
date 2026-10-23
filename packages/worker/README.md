@@ -76,6 +76,23 @@ touched. It ends that process tree, waits up to 15 seconds (`stop_timeout`), the
 interrupted work is never replayed. A stale lock (its process is gone) is cleared the same way. A recovery block
 (below) stays until you run `recover --confirm-stopped`.
 
+### macOS (LaunchAgent)
+
+There is no macOS bundle; a Mac runs the worker from a clone of this repository. `bash
+scripts/install-dispatch-worker-macos.sh` does what the Windows bootstrap does: it checks Node 22+ and
+that the state path crosses no link, asks for the dashboard connect code at a masked prompt on the first
+run (exchanges it, runs `init` with the credential in that process's environment only, then `enroll`),
+and writes and starts a LaunchAgent, `app.back-channel.worker`, that runs `run` as the signed-in user
+with `KeepAlive` and a 60-second throttle (a revoked credential makes `run` exit; the throttle keeps
+that from hammering the broker). State is `~/.config/back-channel-worker` (mode 0700), logs are under
+`~/Library/Logs/back-channel-worker`. Running the script again after `git pull` replaces the LaunchAgent;
+the credential and enrollment are kept. `--name` sets the agent's name (default: the computer name),
+`--no-start` writes the agent without loading it, `--check` only verifies prerequisites.
+
+The secret broker sync (`src/broker-relay.mjs`) works on a Mac with the broker installed: the install path
+is `/Library/Application Support/LobySecretBroker`, and approve, deny, lockdown, the enrol job and the test
+job all run. The card's Install and Update jobs are Windows-only (`launchElevated`) and report `not_supported`.
+
 Run the daemon with `run`; `run --once` performs one reconciliation pass.
 Use `send --target AGENT_ID --profile review --objective-file task.txt
 --continue-profile review` on the originating machine. `--profile` selects the
