@@ -247,7 +247,7 @@ const ON_PC = "On that PC, open AppBridge";
 /** Each step's title and the one line that says how to do it, in the order a person does them. */
 export const STEPS = Object.freeze(/** @type {const} */ ([
   { key: "appbridge", title: `AppBridge ${DESKTOP_APPBRIDGE_TEXT} or newer`, howTo: `${ON_PC} → Updates → Install update.` },
-  { key: "registered", title: "PC registered with Back Channel", howTo: `${ON_PC} → Internet access → Register this PC, with a code from "Add a device" on the Remote page.` },
+  { key: "registered", title: "PC registered with Back Channel", howTo: `${ON_PC} → Internet access → Register this PC, with a code from "Get a code for a PC you want to reach" on the Remote page.` },
   { key: "agent_control", title: "Allow agent control is on", howTo: `${ON_PC} → Agents and turn on Allow agent control.` },
   { key: "worker", title: "Back Channel worker set up and running", howTo: `${ON_PC} → Agents → Set up worker (Get a code gives it a connect code), then Start.` },
   { key: "senders", title: "Agents allowed to hand it sessions", howTo: `${ON_PC} → Agents → Choose agents…, and check each fingerprint matches the one Back Channel shows for that agent.` },

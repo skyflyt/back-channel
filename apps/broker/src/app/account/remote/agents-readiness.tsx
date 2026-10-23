@@ -96,7 +96,7 @@ function demo(): Reply {
         ready: false, missing: ["senders", "claude"] },
       { agentId: "demo-4", name: "Desk agent", fingerprint: "77B1-0C3E-D942-5AF0", readiness: report("DESKTOP-K81Q"), readinessAt: new Date(t - 6 * 60_000).toISOString(), reporting: true,
         pc: null, pcMatchedBy: null, reportsFrom: "DESKTOP-K81Q",
-        steps: steps(["done", "unknown", "done", "done", "done", "done"], [null, "It reports as \"DESKTOP-K81Q\", which matches no single PC registered here. If it's one of your registered PCs, say which on the Remote page (Agents on your PCs → Which PC is this?). If it isn't registered: On that PC, open AppBridge → Internet access → Register this PC, with a code from \"Add a device\" on the Remote page.", null, null, null, null]),
+        steps: steps(["done", "unknown", "done", "done", "done", "done"], [null, "It reports as \"DESKTOP-K81Q\", which matches no single PC registered here. If it's one of your registered PCs, say which on the Remote page (Agents on your PCs → Which PC is this?). If it isn't registered: On that PC, open AppBridge → Internet access → Register this PC, with a code from \"Get a code for a PC you want to reach\" on the Remote page.", null, null, null, null]),
         ready: false, missing: ["registered"] },
     ],
     registered: [{ hostDeviceId: "demo-pc-1", name: "Office PC", agentHostName: null }, { hostDeviceId: "demo-pc-2", name: "Shop-PC", agentHostName: "SHOP-7Q2M" },
