@@ -95,7 +95,7 @@ All routes are under `/api/appbridge/v1`.
 | `GET /devices/self/hosts` | `appbridge.relay.pass` | — | `{ hosts: [{ hostDeviceId, label, identitySpkiSha256, descriptor, lanEndpoint, routeUpdatedAt, paired, enrollmentId, canEnrol, revokedThere }] }`: the account's relay-on PCs that published a route. Remote devices only. |
 | `DELETE /hosts/self/pairings/{enrollmentId}` | `appbridge.host.relay` | — | `204`. Host devices only. |
 | `POST /relay/presence-passes` | `appbridge.relay.presence` | `{}` | `{ pass, expiresAt, relay }` |
-| `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId, takeover? }` or `{ hostDeviceId, enrol: true, takeover? }` | `{ pass, expiresAt, relay }`, or `409 devices_busy` with the busy devices: see **Device limit and takeover** below. `enrol` (account pairing): a leg to a PC this phone has no pairing with, so the PC can enrol it over the relay; `403 enrol_off` while the PC's switch is off or it published no route, `403 enrol_revoked` for a phone that PC revoked; at most 10 an hour per phone and PC. |
+| `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId, takeover? }` or `{ hostDeviceId, enrol: true, takeover? }` | `{ pass, expiresAt, relay }`, or `409 devices_busy` with the busy devices: see **Device limit and takeover** below. `enrol` (account pairing): a leg to a PC this phone has no pairing with, so the PC can enrol it over the relay; `403 enrol_off` while the PC's switch is off or it published no route, `403 enrol_revoked` for a phone that PC revoked, `409 already_paired` for a phone it still trusts; at most 10 issued an hour per phone and PC (refusals cost nothing). |
 | `POST /relay/agent-passes` | `appbridge.relay.presence` | `{ sessionId }` | `{ pass, expiresAt, relay }` for an "agent" lease: a PC's standing to let an agent use an app on it, for one remote app session its owner approved. `403 session_inactive` unless that session is approved, running, not paused and in time; `404` if it is not this PC's. Host devices only. See docs/remote-app-sessions.md. |
 | `POST /relay/support-passes` | none: the temporary support client's own `abs_` credential (never a device's) | `{}` | `{ pass, expiresAt, relay }` for a "support" lease: the helper's standing at the relay for the one support session it redeemed, while the helped person has allowed it. `403 session_inactive` before Allow, after Stop or once time is up. See docs/remote-support.md. |
 | `POST /relay/support-client-passes` | `appbridge.relay.pass` | `{ sessionId }` | `{ pass, expiresAt, relay, host, executorSecretSha256 }` for a "support-client" lease: the **issuer connector**, one of the account's own devices, reaching the helper of one of its support sessions. The first device to take one is pinned on the session (`409 support_client_pinned` for any other); `host` is the helper's key (the relay target and the inner-TLS server pin) and `executorSecretSha256` the session's executor secret hash. `403 session_inactive` unless the helped person allowed it and it is running; `404` if it is not this account's support session. Remote-role devices only (`403 scope`). See docs/remote-support.md. |
@@ -122,7 +122,7 @@ Details:
   successor and issues another, and never extends the 24 hours. Revoking or unregistering the device
   ends every credential, including one in its grace period.
 - A refused gate is `403` with one of `rollout_off`, `not_entitled`, `relay_off`, `device_revoked`,
-  `not_paired`, `enrol_off` or `enrol_revoked`. A PC outside the caller's account is `404`.
+  `not_paired`, `enrol_off` or `enrol_revoked`, or `409 already_paired`. A PC outside the caller's account is `404`.
 
 #### Device limit and takeover (Skylar, 2026-09-25)
 
@@ -260,8 +260,11 @@ word plus a check the person can make:
    pairing here*. Back Channel verifies the descriptor against the pin and this device before serving it.
 2. **The phone lists the account's PCs** (`GET /devices/self/hosts`) and asks for an **enrol pass** to one it has no
    pairing with (`POST /relay/passes { hostDeviceId, enrol: true }`). The gate admits it only while the switch is on,
-   the route is published, and this PC never revoked this phone. The relay joins the leg as any other; the grant names
-   no enrollment.
+   the route is published, this PC never revoked this phone, and this phone has no live pairing with it (a trusted phone
+   never re-enrols: the PC would issue its default grant over the owner's). The grant names no enrollment: **the relay
+   must admit a session grant whose `enrollmentId` is null** (appbridge: both the Cloudflare Worker and the C# reference
+   relay refuse it today), so the relay deploy precedes any phone using `enrol`; until then an enrol pass is consumed
+   and its lease lingers for its two minutes.
 3. **The PC enrols the phone over that leg**, inside its own TLS: an account challenge in which the phone proves,
    with its relay connector key, that it is the device Back Channel registered (the PC reads the account's phones and
    their keys from `GET /hosts/self/remotes`), then the ordinary proof with its enrollment key. The PC approves it

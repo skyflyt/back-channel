@@ -114,7 +114,7 @@ export const SCOPES = {
 type Role = keyof typeof SCOPES;
 type Scope = "appbridge.device" | "appbridge.host.relay" | "appbridge.relay.presence" | "appbridge.relay.pass" | "appbridge.secrets";
 type Body = Record<string, unknown>;
-type Refusal = "rollout_off" | "not_entitled" | "relay_off" | "device_revoked" | "not_paired" | "not_found" | "session_inactive" | "support_client_pinned" | "enrol_off" | "enrol_revoked";
+type Refusal = "rollout_off" | "not_entitled" | "relay_off" | "device_revoked" | "not_paired" | "not_found" | "session_inactive" | "support_client_pinned" | "enrol_off" | "enrol_revoked" | "already_paired";
 type Purpose = "session" | "presence" | "agent" | "support" | "support-client";
 const PURPOSES: readonly string[] = ["session", "presence", "agent", "support", "support-client"];
 
@@ -160,15 +160,15 @@ export async function handle(fn: () => Promise<NextResponse>): Promise<NextRespo
 }
 
 /** The raw request body, at most 4 KiB. */
-async function readRaw(req: NextRequest): Promise<string> {
-  if (Number(req.headers.get("content-length")) > MAX_BODY) fail(413, "too_large");
+async function readRaw(req: NextRequest, maxBytes = MAX_BODY): Promise<string> {
+  if (Number(req.headers.get("content-length")) > maxBytes) fail(413, "too_large");
   const reader = req.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = []; let size = 0;
   while (true) {
     const { value, done } = await reader.read(); if (done) break;
     size += value.byteLength;
-    if (size > MAX_BODY) { await reader.cancel(); fail(413, "too_large"); }
+    if (size > maxBytes) { await reader.cancel(); fail(413, "too_large"); }
     chunks.push(value);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -409,7 +409,9 @@ async function gate(tx: Prisma.TransactionClient, b: Binding, purpose: Purpose):
     if (b.enrollmentId !== null) return { refused: "not_found" };
     if (!host.accountPairing || !host.routeDescriptor) return { refused: "enrol_off" };
     const between = await tx.appBridgePairing.findMany({ where: { hostDeviceId: host.id, remoteDeviceId: remote.id }, select: { withdrawnAt: true } });
-    if (between.length && between.every(p => p.withdrawnAt)) return { refused: "enrol_revoked" };
+    // A phone the PC already trusts never re-enrols: the PC would issue its default grant over whatever the owner set there.
+    if (between.some(p => !p.withdrawnAt)) return { refused: "already_paired" };
+    if (between.length) return { refused: "enrol_revoked" };
     return { host, hostKey: host.connectorSpkiSha256, remote, session: null };
   }
   if (b.enrollmentId === null) return { refused: "not_paired" };
@@ -417,7 +419,7 @@ async function gate(tx: Prisma.TransactionClient, b: Binding, purpose: Purpose):
   if (!pairing || pairing.withdrawnAt || pairing.remoteDeviceId !== remote.id) return { refused: "not_paired" };
   return { host, hostKey: host.connectorSpkiSha256, remote, session: null };
 }
-function refuse(r: Refusal): never { return r === "not_found" ? fail(404, "not_found") : r === "support_client_pinned" ? fail(409, r) : fail(403, r); }
+function refuse(r: Refusal): never { return r === "not_found" ? fail(404, "not_found") : r === "support_client_pinned" || r === "already_paired" ? fail(409, r) : fail(403, r); }
 
 // ── Serializable transactions ───────────────────────────────────────────────
 
@@ -678,10 +680,7 @@ function lanOrigin(value: unknown): string | null {
 export const publishRoute = (req: NextRequest) => handle(async () => {
   const { device } = await deviceContext(req, "appbridge.host.relay");
   if (device.role !== "host") fail(403, "scope");
-  if (Number(req.headers.get("content-length")) > MAX_ROUTE_BODY) fail(413, "too_large");
-  const raw = await req.text();
-  if (raw.length > MAX_ROUTE_BODY) fail(413, "too_large");
-  const body = parseBody(raw);
+  const body = parseBody(await readRaw(req, MAX_ROUTE_BODY));
   exact(body, ["identitySpkiSha256", "descriptor", "accountPairing"], ["lanEndpoint"]);
   if (typeof body.identitySpkiSha256 !== "string" || !HEX64_UPPER.test(body.identitySpkiSha256) || typeof body.accountPairing !== "boolean") fail(400, "invalid_request");
   verifyRouteDescriptor(body.descriptor, body.identitySpkiSha256, device.id);
@@ -802,7 +801,11 @@ async function issuePass(req: NextRequest, purpose: Purpose): Promise<NextRespon
     if (enrol && (body.enrol !== true || "enrollmentId" in body)) fail(400, "invalid_request");
     if (!enrol && !("enrollmentId" in body)) fail(400, "invalid_request");
     const hostDeviceId = id(body.hostDeviceId);
-    if (enrol) limit("appbridge:enrol", `${device.id}:${hostDeviceId}`, ENROL_PASSES_PER_PAIR, ENROL_WINDOW_MS);
+    if (enrol) {
+      // Peeked here, spent only once a pass is issued: a few taps at a switched-off PC must not lock the phone out for an hour.
+      const budget = rateLimitPeek("appbridge:enrol", `${device.id}:${hostDeviceId}`, ENROL_PASSES_PER_PAIR);
+      if (!budget.ok) fail(429, "rate_limited", budget.retryAfterSec);
+    }
     binding = { accountId: device.accountId, hostDeviceId, remoteDeviceId: device.id, enrollmentId: enrol ? null : id(body.enrollmentId), remoteAppSessionId: null, enrol };
     if ("takeover" in body) {
       if (typeof body.takeover !== "string" || !DEVICE_ID.test(body.takeover)) fail(400, "invalid");
@@ -827,6 +830,7 @@ async function issuePass(req: NextRequest, purpose: Purpose): Promise<NextRespon
   if ("refused" in result) refuse(result.refused);
   if ("busy" in result) return json({ error: "devices_busy", devices: result.busy }, 409);
   if ("takeoverLimited" in result) fail(429, "rate_limited", result.takeoverLimited);
+  if (binding.enrol) rateLimit("appbridge:enrol", `${device.id}:${binding.hostDeviceId}`, ENROL_PASSES_PER_PAIR, ENROL_WINDOW_MS);
   if (result.taken) {
     // Counted once, after the commit: only a takeover that happened spends the budget.
     rateLimit("appbridge:takeover", device.id, TAKEOVERS_PER_DEVICE, TAKEOVER_WINDOW_MS);

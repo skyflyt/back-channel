@@ -1684,9 +1684,16 @@ test("account pairing: an enrol pass needs the owner's switch and a published ro
   assert.deepEqual([grant.hostDeviceId, grant.clientDeviceId, grant.enrollmentId, grant.clientConnectorSpkiSha256], [host.deviceId, remote.deviceId, null, remote.key.fp]);
   assert.equal(tables.lease.find((l: any) => l.id === grant.leaseId).enrol, true);
   assert.equal((await renew(grant.leaseId)).status, 200);
+  // Issued, then the switch goes off before the relay redeems: the gate is read again at redemption and refuses.
+  const stale = (await (await enrolPass(remote, host.deviceId)).json()).pass;
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: false })).status, 200);
+  assert.equal((await redeem(stale, "session", remote.key.fp)).status, 403, "redeem re-checks the switch");
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: true })).status, 200);
   // Once the PC enrolled the phone and attested it, the ordinary path is open; the enrol lease keeps renewing too.
   assert.equal((await attest(host, remote.deviceId, "enr-new")).status, 204);
   assert.equal((await sessionPass(remote, host.deviceId, "enr-new")).status, 200);
+  // A phone the PC trusts never re-enrols (its grant there is the owner's, not the default).
+  r = await enrolPass(remote, host.deviceId); assert.equal(r.status, 409); assert.equal(await code(r), "already_paired");
   // The owner turns the switch off: the enrol leg ends at its next renewal; paired sessions are untouched.
   assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: false })).status, 200);
   assert.equal((await renew(grant.leaseId)).status, 403);
@@ -1695,10 +1702,31 @@ test("account pairing: an enrol pass needs the owner's switch and a published ro
   assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: true })).status, 200);
   assert.equal((await (await routes.pairing()).DELETE(req("DELETE", undefined, bearer(host.credential)), params({ enrollmentId: "enr-new" }))).status, 204);
   r = await enrolPass(remote, host.deviceId); assert.equal(r.status, 403); assert.equal(await code(r), "enrol_revoked");
-  // Another phone of the account is not affected by that history.
+  // The owner revoking the phone at the PC (withdrawing its pairing) ends a live enrol lease at its next renewal, switch or no switch.
+  const remote3 = await register("remote");
+  const leg = await (await redeem((await (await enrolPass(remote3, host.deviceId)).json()).pass, "session", remote3.key.fp)).json();
+  assert.equal((await renew(leg.leaseId)).status, 200);
+  assert.equal((await attest(host, remote3.deviceId, "enr-3")).status, 204);
+  assert.equal((await (await routes.pairing()).DELETE(req("DELETE", undefined, bearer(host.credential)), params({ enrollmentId: "enr-3" }))).status, 204);
+  assert.equal((await renew(leg.leaseId)).status, 403, "revoked at the PC: the enrol leg ends");
+  // A PC of another account is 404, never a refusal that says anything about it.
+  const foreign = await register("host", "b");
+  assert.equal((await enrolPass(remote3, foreign.deviceId)).status, 404);
+  // Another phone of the account is not affected by that history; refusals cost it nothing, issued passes are bounded at ten an hour.
   const remote2 = await register("remote");
-  assert.equal((await enrolPass(remote2, host.deviceId)).status, 200);
-  // Bounded: ten enrol passes from one phone to one PC per hour.
-  for (let i = 1; i < 10; i++) assert.equal((await enrolPass(remote2, host.deviceId)).status, 200, `pass ${i + 1}`);
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: false })).status, 200);
+  for (let i = 0; i < 12; i++) assert.equal((await enrolPass(remote2, host.deviceId)).status, 403, "refused while off");
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: true })).status, 200);
+  for (let i = 0; i < 10; i++) assert.equal((await enrolPass(remote2, host.deviceId)).status, 200, `pass ${i + 1}`);
   assert.equal((await enrolPass(remote2, host.deviceId)).status, 429);
+});
+
+test("account pairing: the route publish body is read under the streaming cap, so a chunked body cannot outgrow it", async () => {
+  const host = await register("host");
+  const id = identityKey();
+  const big = JSON.stringify({ identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: true, lanEndpoint: "https://" + "a".repeat(9000) + ".example" });
+  const chunked = new NextRequest("https://back-channel.app/api/appbridge/v1/x", { method: "PUT", headers: { "content-type": "application/json", ...bearer(host.credential) },
+    body: new ReadableStream({ start(c) { for (let i = 0; i < big.length; i += 1024) c.enqueue(new TextEncoder().encode(big.slice(i, i + 1024))); c.close(); } }), duplex: "half" } as RequestInit);
+  assert.equal((await (await routeRoutes.publish()).PUT(chunked)).status, 413);
+  assert.equal(tables.device.find((d: any) => d.id === host.deviceId).routeDescriptor, undefined, "nothing stored");
 });
