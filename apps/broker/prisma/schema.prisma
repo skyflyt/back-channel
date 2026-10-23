@@ -1139,7 +1139,7 @@ model SecretJob {
   id         String     @id @default(uuid())
   accountId  String
   agentId    String
-  kind       String     // install | update | enrol | lockdown
+  kind       String     // install | update | enrol | lockdown | test
   payload    Json       // install, update: { commit, tree }; enrol: { passkeyId, credentialId, publicKeyCose, label, fingerprint }
   state      String     @default("requested") // requested | sent | running | done | failed
   progress   Json?      // { steps: { name: boolean }, fingerprint? }
