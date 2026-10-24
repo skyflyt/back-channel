@@ -616,6 +616,11 @@ model AppBridgePairing {
   remoteDeviceId String
   attestedAt     DateTime        @default(now())
   withdrawnAt    DateTime?
+  // Evidence of account pairing (docs/appbridge-remote-access.md § Account pairing): true only when the PC said, in its
+  // attest, that it enrolled this remote through the account AND an enrol leg between exactly this PC and this remote was
+  // live then. False means those two did not both hold at the first attest: no evidence of an account enrolment, which is
+  // not proof of a pairing on the PC's network. Null for pairings attested before this was recorded (2026-10-24).
+  attestedOnEnrolLeg Boolean?
   host           AppBridgeDevice @relation("AppBridgePairingHost", fields: [hostDeviceId], references: [id], onDelete: Cascade)
   remote         AppBridgeDevice @relation("AppBridgePairingRemote", fields: [remoteDeviceId], references: [id], onDelete: Cascade)
 

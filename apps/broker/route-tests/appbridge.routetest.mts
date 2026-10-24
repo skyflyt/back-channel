@@ -113,6 +113,7 @@ const routes = {
   connector: () => import("@/app/api/appbridge/v1/devices/self/connector/route"),
   relaySwitch: () => import("@/app/api/appbridge/v1/hosts/self/relay/route"),
   pairing: () => import("@/app/api/appbridge/v1/hosts/self/pairings/[enrollmentId]/route"),
+  pairings: () => import("@/app/api/appbridge/v1/hosts/self/pairings/route"),
   presence: () => import("@/app/api/appbridge/v1/relay/presence-passes/route"),
   passes: () => import("@/app/api/appbridge/v1/relay/passes/route"),
   agentPasses: () => import("@/app/api/appbridge/v1/relay/agent-passes/route"),
@@ -175,8 +176,8 @@ async function entitle(handle = "skylar", active = true) {
 async function setRelay(host: { credential: string }, enabled: boolean) {
   const r = await (await routes.relaySwitch()).PUT(req("PUT", { enabled }, bearer(host.credential))); assert.equal(r.status, 200);
 }
-async function attest(host: { credential: string }, remoteDeviceId: string, enrollmentId = "enr-1") {
-  return (await routes.pairing()).PUT(req("PUT", { remoteDeviceId }, bearer(host.credential)), params({ enrollmentId }));
+async function attest(host: { credential: string }, remoteDeviceId: string, enrollmentId = "enr-1", extra: Record<string, unknown> = {}) {
+  return (await routes.pairing()).PUT(req("PUT", { remoteDeviceId, ...extra }, bearer(host.credential)), params({ enrollmentId }));
 }
 async function ready() {
   const host = await register("host"); const remote = await register("remote");
@@ -1655,6 +1656,58 @@ test("account pairing: the PC reads the account's phones and their connector key
   // A revoked phone is not vouched for.
   assert.equal((await (await routes.device()).DELETE(req("DELETE", undefined, cookie("a")), params({ id: remote.deviceId }))).status, 204);
   assert.deepEqual((await (await (await routeRoutes.remotes()).GET(req("GET", undefined, bearer(host.credential)))).json()).remotes, []);
+});
+
+test("account pairing: a pairing is recorded as attested on an enrol leg only when the PC says so while that leg is live; the PC lists its live pairings with the flag", async () => {
+  const host = await register("host"); const remote = await register("remote"); await entitle(); await setRelay(host, true);
+  const id = identityKey();
+  assert.equal((await publish(host, { identitySpkiSha256: id.pinHex, descriptor: id.descriptor(host.deviceId), accountPairing: true })).status, 200);
+  const list = async (who: { credential: string }) => (await routes.pairings()).GET(req("GET", undefined, bearer(who.credential)));
+  const flagOf = (enrollmentId: string) => tables.pairing.find((p: any) => p.enrollmentId === enrollmentId)?.attestedOnEnrolLeg;
+  // Through the account: the PC attests, saying so, while the phone's enrol leg is live.
+  const leg = await (await redeem((await (await enrolPass(remote, host.deviceId)).json()).pass, "session", remote.key.fp)).json();
+  assert.equal(leg.enrol, true);
+  // The phone holds an enrol leg while its owner pairs it on the PC's network: the PC's plain attest is never taken for one.
+  assert.equal((await attest(host, remote.deviceId, "enr-qr")).status, 204);
+  assert.equal(flagOf("enr-qr"), false, "a LAN attest while the phone holds an enrol leg stays false");
+  assert.equal((await attest(host, remote.deviceId, "enr-acct", { enrol: true })).status, 204);
+  assert.equal(flagOf("enr-acct"), true, "the PC's claim and a live enrol leg");
+  assert.equal((await attest(host, remote.deviceId, "enr-acct", { enrol: true })).status, 204, "idempotent");
+  assert.equal((await attest(host, remote.deviceId, "enr-bad", { enrol: false })).status, 400, "enrol is only ever true");
+  assert.equal((await attest(host, remote.deviceId, "enr-bad", { enrol: true, more: 1 })).status, 400, "nothing else in the body");
+  assert.equal(tables.pairing.filter((p: any) => p.enrollmentId === "enr-acct").length, 1);
+  // On the PC's network: no enrol leg at all.
+  const lan = await register("remote");
+  assert.equal((await attest(host, lan.deviceId, "enr-lan", { enrol: true })).status, 204);
+  assert.equal(flagOf("enr-lan"), false, "the PC's claim without a live enrol leg is not enough");
+  // Only an enrol leg counts, only a live one, and only between this PC and this remote.
+  const other = await register("remote"); const otherHost = await register("host");
+  const lease = (o: Record<string, unknown>) => tables.lease.push({ id: randomBytes(8).toString("hex"), purpose: "session", accountId: "acct-a", hostDeviceId: host.deviceId,
+    remoteDeviceId: other.deviceId, enrollmentId: null, enrol: true, createdAt: new Date(), expiresAt: new Date(Date.now() + 120_000), ...o });
+  lease({ expiresAt: new Date(Date.now() - 1_000) });
+  lease({ enrol: false, enrollmentId: "enr-x" });
+  lease({ hostDeviceId: otherHost.deviceId });
+  lease({ remoteDeviceId: lan.deviceId });
+  lease({ purpose: "presence", remoteDeviceId: null });
+  assert.equal((await attest(host, other.deviceId, "enr-other", { enrol: true })).status, 204);
+  assert.equal(flagOf("enr-other"), false, "an expired, ordinary, other-PC or other-phone leg never marks a pairing");
+  // A pairing from before this was recorded reads null: unknown here.
+  tables.pairing.push({ hostDeviceId: host.deviceId, enrollmentId: "enr-old", remoteDeviceId: other.deviceId, attestedAt: new Date(Date.now() - 86_400_000), withdrawnAt: null });
+  // The list: this PC's live pairings only, with the flag; withdrawn ones and other PCs' are not in it.
+  assert.equal((await attest(otherHost, other.deviceId, "enr-elsewhere")).status, 204);
+  assert.equal((await (await routes.pairing()).DELETE(req("DELETE", undefined, bearer(host.credential)), params({ enrollmentId: "enr-lan" }))).status, 204);
+  const r = await list(host);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("cache-control"), "no-store");
+  const { pairings } = await r.json();
+  const byId = Object.fromEntries(pairings.map((p: any) => [p.enrollmentId, p]));
+  assert.deepEqual(Object.keys(byId).sort(), ["enr-acct", "enr-old", "enr-other", "enr-qr"]);
+  assert.deepEqual([byId["enr-acct"].attestedOnEnrolLeg, byId["enr-other"].attestedOnEnrolLeg, byId["enr-old"].attestedOnEnrolLeg, byId["enr-qr"].attestedOnEnrolLeg], [true, false, null, false]);
+  assert.deepEqual(Object.keys(byId["enr-acct"]).sort(), ["attestedAt", "attestedOnEnrolLeg", "enrollmentId", "remoteDeviceId"]);
+  assert.equal(byId["enr-acct"].remoteDeviceId, remote.deviceId);
+  // Hosts only.
+  assert.equal((await list(remote)).status, 403);
+  assert.equal((await (await routes.pairings()).GET(req("GET"))).status, 401);
 });
 
 test("account pairing: an enrol pass needs the owner's switch and a published route, is refused to a phone the PC revoked, redeems to a lease with no enrollment, and renews under the same gate", async () => {
