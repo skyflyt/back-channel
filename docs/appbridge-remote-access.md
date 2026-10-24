@@ -107,6 +107,7 @@ All routes are under `/api/appbridge/v1`.
 | `GET /hosts/self/remotes` | `appbridge.host.relay` | — | `{ remotes: [{ deviceId, label, connectorSpki, connectorSpkiSha256, registeredAt }] }`: the account's live phones and the connector key registered for each, for the PC to check an account-pairing challenge against. Host devices only. |
 | `GET /devices/self/hosts` | `appbridge.relay.pass` | — | `{ hosts: [{ hostDeviceId, label, identitySpkiSha256, descriptor, lanEndpoint, routeUpdatedAt, paired, enrollmentId, canEnrol, revokedThere }] }`: the account's relay-on PCs that published a route. Remote devices only. |
 | `DELETE /hosts/self/pairings/{enrollmentId}` | `appbridge.host.relay` | — | `204`. Host devices only. |
+| `GET /hosts/self/pairings` | `appbridge.host.relay` | — | `{ pairings: [{ enrollmentId, remoteDeviceId, viaAccount, attestedAt }] }`: this PC's live pairings. `viaAccount` is `true` when the PC attested the pairing while an enrol leg between the two was live (account pairing), `false` when none was, `null` for a pairing attested before 2026-10-24, when this began to be recorded. Host devices only. |
 | `POST /relay/presence-passes` | `appbridge.relay.presence` | `{}` | `{ pass, expiresAt, relay }` |
 | `POST /relay/passes` | `appbridge.relay.pass` | `{ hostDeviceId, enrollmentId, takeover? }` or `{ hostDeviceId, enrol: true, takeover? }` | `{ pass, expiresAt, relay }`, or `409 devices_busy` with the busy devices: see **Device limit and takeover** below. `enrol` (account pairing): a leg to a PC this phone has no pairing with, so the PC can enrol it over the relay; `403 enrol_off` while the PC's switch is off or it published no route, `403 enrol_revoked` for a phone that PC revoked, `409 already_paired` for a phone it still trusts; at most 10 issued an hour per phone and PC (refusals cost nothing). |
 | `POST /relay/agent-passes` | `appbridge.relay.presence` | `{ sessionId }` | `{ pass, expiresAt, relay }` for an "agent" lease: a PC's standing to let an agent use an app on it, for one remote app session its owner approved. `403 session_inactive` unless that session is approved, running, not paused and in time; `404` if it is not this PC's. Host devices only. See docs/remote-app-sessions.md. |
@@ -282,7 +283,9 @@ word plus a check the person can make:
    with its relay connector key, that it is the device Back Channel registered (the PC reads the account's phones and
    their keys from `GET /hosts/self/remotes`), then the ordinary proof with its enrollment key. The PC approves it
    itself with the owner's default grant, issues the certificate, and attests the pairing here as it would after a
-   local one. From then on the phone is an ordinary paired device.
+   local one. From then on the phone is an ordinary paired device. Because the attest arrives while the enrol leg is
+   live, Back Channel records the pairing as made through the account (`viaAccount`, read back with
+   `GET /hosts/self/pairings`); the PC uses that to know which of its devices the owner's account-device choice covers.
 4. **First contact is confirmed on the phone**: before the challenge, the phone shows the PC's name and identity
    fingerprint as Back Channel published it, next to the one the PC itself presents on its Remote page, and asks to
    connect. The pin is fixed from then on, exactly as after a QR.

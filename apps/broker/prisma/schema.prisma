@@ -616,6 +616,10 @@ model AppBridgePairing {
   remoteDeviceId String
   attestedAt     DateTime        @default(now())
   withdrawnAt    DateTime?
+  // How the PC came to trust this remote (docs/appbridge-remote-access.md § Account pairing): true when the PC attested
+  // it while an enrol leg between the two was live (account pairing), false when no such leg was (pairing on the PC's
+  // network). Null for pairings attested before this was recorded (2026-10-24): unknown here, the PC decides.
+  viaAccount     Boolean?
   host           AppBridgeDevice @relation("AppBridgePairingHost", fields: [hostDeviceId], references: [id], onDelete: Cascade)
   remote         AppBridgeDevice @relation("AppBridgePairingRemote", fields: [remoteDeviceId], references: [id], onDelete: Cascade)
 

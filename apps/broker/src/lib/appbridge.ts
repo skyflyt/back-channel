@@ -611,9 +611,31 @@ export const attestPairing = (req: NextRequest, enrollmentId: string) => handle(
       if (existing.remoteDeviceId !== remoteDeviceId || existing.withdrawnAt) fail(409, "enrollment_conflict");
       return;
     }
-    await tx.appBridgePairing.create({ data: { hostDeviceId: device.id, enrollmentId, remoteDeviceId } });
+    // Account pairing: the PC enrols a phone over an enrol leg and attests it before that leg ends, so a live enrol lease
+    // between exactly this PC and this remote is what marks the pairing as made through the account. A pairing made on
+    // the PC's network has no such leg (a phone with a live pairing is never given one: already_paired).
+    const enrolLeg = await tx.appBridgeLease.findFirst({
+      where: { accountId: device.accountId, purpose: "session", enrol: true, hostDeviceId: device.id, remoteDeviceId, expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    await tx.appBridgePairing.create({ data: { hostDeviceId: device.id, enrollmentId, remoteDeviceId, viaAccount: enrolLeg !== null } });
   });
   return new NextResponse(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+});
+
+/**
+ * GET /hosts/self/pairings — this PC's live pairings as Back Channel recorded them: the enrollment, the remote, and
+ * whether it was made through the account (`viaAccount`: true, false, or null for a pairing attested before that was
+ * recorded). What a PC reads to know its account devices; it changes nothing on the PC by itself.
+ */
+export const listPairingsForHost = (req: NextRequest) => handle(async () => {
+  const { device } = await deviceContext(req, "appbridge.host.relay");
+  if (device.role !== "host") fail(403, "scope");
+  const rows = await prisma.appBridgePairing.findMany({
+    where: { hostDeviceId: device.id, withdrawnAt: null }, orderBy: { attestedAt: "asc" }, take: 512,
+    select: { enrollmentId: true, remoteDeviceId: true, viaAccount: true, attestedAt: true },
+  });
+  return json({ pairings: rows.map(p => ({ enrollmentId: p.enrollmentId, remoteDeviceId: p.remoteDeviceId, viaAccount: p.viaAccount ?? null, attestedAt: p.attestedAt.toISOString() })) });
 });
 
 /** DELETE /hosts/self/pairings/{enrollmentId} — the owner revoked that device on the PC. Idempotent. */
