@@ -3,7 +3,8 @@
  * FriendPage — per-friend agent page (Phase 4, composer-sends-friend-page,
  * scope items 5-6). Sibling extraction from page.tsx, mounted at
  * /account?friend=<handle> (URL-synced client-tab state, same pattern as the
- * existing ?tab= sync in page.tsx). Reuses the EXISTING discover/shared-with-me
+ * existing ?tab= sync in page.tsx). Since 2026-10-31 it shows in the Inbox,
+ * beside the People column, when a person is selected there. Reuses the EXISTING discover/shared-with-me
  * skill data + card rendering conventions and the existing threads list —
  * no new endpoints, no rebuilt skill-card UI.
  */
@@ -31,7 +32,7 @@ interface Props {
   onBack: () => void;
   onOpenThread: (sessionId: string) => void;
   /** "Invite to something new" — reuses the existing invite-a-friend plumbing
-   *  that already lives in page.tsx's Friends tab (no new endpoint here). */
+   *  that already lives in page.tsx's People column (no new endpoint here). */
   onInviteToSomethingNew: (handle: string) => void;
 }
 
@@ -62,7 +63,7 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
 
   return (
     <div>
-      <button style={s.backLink} onClick={onBack}>← Back to Friends</button>
+      <button style={s.backLink} onClick={onBack}>← Back to threads</button>
 
       {/* Friend header */}
       <section className="ds-card" style={{ marginBottom: 14 }}>
