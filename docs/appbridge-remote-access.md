@@ -17,15 +17,20 @@ The relay's half of this contract is `docs/REMOTE_ACCESS_BROKER_API.md` in the A
 ## Two roles
 
 A registered device is a **host** (a PC you want to reach) or a **remote** (the phone or laptop you reach
-it from); the role is fixed when its code is minted and the exchange refuses a code of the other role
-(`wrong_role`). Only a host publishes a route and can be reached; a remote only reaches. The Remote page
-phrases everything by direction so the two are not mixed up: the buttons read "Get a code for a PC you
-want to reach" and "Get a code for a phone or laptop you reach from", and "Your devices" shows
-"PC · reachable" or "Remote · reaches your PCs" (`apps/broker/src/app/account/remote/remote-copy.ts`,
-tested in `route-tests/remote-page-copy.routetest.mts`). A Windows PC has both dialogs: the owner
-console's Internet access page registers it as a host; the Back Channel Remote client's own Internet
-access dialog registers it as a remote. On 2026-10-23 a laptop meant to be reached was registered through
-the client with the phone/laptop code, so it never published a route; that is what this wording prevents.
+it from). Only a host publishes a route and can be reached; a remote only reaches. The role is fixed at the
+exchange, and it is the app the person types the code into that claims it: the owner console on a PC
+registers as a host, the Back Channel Remote client and the phone register as remotes.
+
+**One code (2026-10-31).** A code minted without a role (`POST /account/device-codes` with no `role`, stored as
+`any`) registers whichever role the app claims, so the person adds "a device" and never has to know which of
+the two it is. A code minted with a role (`host` or `remote`) still refuses the other with `wrong_role`,
+without burning the code; the dashboard's Add flow uses role-less codes, and the pinned ones remain for
+agents and scripts that know what they are registering. "Your devices" still shows the role plainly,
+"PC · reachable" or "Phone or laptop · reaches your PCs" (`apps/broker/src/app/account/remote/remote-copy.ts`,
+tested in `route-tests/remote-page-copy.routetest.mts`), because the role matters after registration even
+if it should not matter before. (On 2026-10-23 a laptop meant to be reached was registered through the
+client with the phone/laptop code, so it never published a route; the direction wording came from that,
+and the role-less code removes the trap entirely.)
 
 ## Rules
 
@@ -81,7 +86,7 @@ All routes are under `/api/appbridge/v1`.
 
 | Route | Request | Response |
 |---|---|---|
-| `POST /account/device-codes` | `{ role: "host"\|"remote", label? }` | `{ code: "ABD-XXXX-XXXX", expiresAt }`, one-use, 10 minutes. Needs a verified email. |
+| `POST /account/device-codes` | `{ role?: "host"\|"remote"\|"any", label? }` | `{ code: "ABD-XXXX-XXXX", expiresAt }`, one-use, 10 minutes. Needs a verified email. No `role` (or `"any"`) mints a code any device can redeem; a pinned role refuses the other at the exchange. |
 | `GET /account/devices` | — | `{ rollout, entitled, devices: [{ id, role, label, relayEnabled, enabled, connectorSpkiSha256, createdAt, revokedAt }] }` |
 | `DELETE /account/devices/{id}` | — | `204`. In one transaction: revokes the device and its credentials, withdraws its pairings and deletes its live leases (as host or remote), so the relay's next renewal is `404` and a live session ends within about a minute. |
 | `GET /account/connections` | — | `{ connections: [{ hostDeviceId, remoteDeviceId, at }] }`, connection attempts in the last 7 days |
@@ -348,3 +353,6 @@ Apply it before deploying the code that uses it.
 `20261011090000_support_relay_path` adds the issuer connector's pin and the executor secret's hash to
 `RemoteAppSession`, and widens the pass and lease purpose check and session binding to admit `'support-client'`
 (docs/remote-support.md). Apply it before deploying the code that uses it.
+
+`20261031160000_appbridge_device_code_any_role` widens the `AppBridgeDeviceCode.role` check to admit `'any'`
+(§ Two roles, "One code"). No row is touched. Apply it before deploying the code that mints role-less codes.
