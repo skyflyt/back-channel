@@ -1,5 +1,5 @@
 /**
- * The Remote page's role words (src/app/account/remote/remote-copy.ts): a PC you want to reach versus a
+ * The Devices page's role words (src/app/account/remote/remote-copy.ts): a PC you want to reach versus a
  * phone or laptop you reach from. On 2026-10-23 "Get a code for a PC" / "Get a code for a phone or laptop"
  * led a laptop that was meant to be reached to be registered as a remote, so the copy now states the
  * direction, and these tests keep it that way. Pure strings, no DB or auth mocking; run via test:routes
@@ -7,8 +7,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ADD_DEVICE_HINT, CODE_BUTTON, CODE_FOR, ROLE_NOUN, WHERE_TO_ENTER, deviceRoleLine } from "@/app/account/remote/remote-copy";
+import { ADD_CHOICE, ADD_DEVICE_HINT, CODE_BUTTON, CODE_FOR, ROLE_NOUN, WHERE_TO_ENTER, deviceRoleLine } from "@/app/account/remote/remote-copy";
 import { HOW_TO } from "@/lib/remote-app/readiness.mjs";
+
+test("the Add flow asks what is being added: an agent, a PC, a phone or laptop", () => {
+  assert.deepEqual(Object.keys(ADD_CHOICE), ["agent", "host", "remote"]);
+  assert.deepEqual(ADD_CHOICE, { agent: "An agent", host: "A PC", remote: "A phone or laptop" });
+});
 
 test("the two code buttons say which direction each role is", () => {
   assert.equal(CODE_BUTTON.host, "Get a code for a PC you want to reach");
@@ -42,6 +47,6 @@ test("Your devices shows the role plainly: PC · reachable, Phone or laptop · r
   assert.deepEqual(ROLE_NOUN, { host: "PC", remote: "Phone or laptop" });
 });
 
-test("the agent-readiness how-to for an unregistered PC names the PC button, not the card", () => {
-  assert.equal(HOW_TO.registered, `On that PC, open Back Channel Remote → Internet access → Register this PC, with a code from "${CODE_BUTTON.host}" on the Remote page.`);
+test("the agent-readiness how-to for an unregistered PC points at Devices → Add → A PC on the website", () => {
+  assert.equal(HOW_TO.registered, `On that PC, open Back Channel Remote → Internet access → Register this PC, with a code from the website: Back Channel → Devices → Add → ${ADD_CHOICE.host}.`);
 });
