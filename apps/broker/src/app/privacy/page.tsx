@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import SiteNav from "@/components/marketing/site-nav";
 
 export const metadata: Metadata = {
   title: "Back Channel — Privacy",
@@ -29,14 +30,8 @@ const st = {
 export default function PrivacyPage() {
   return (
     <main style={st.page}>
+      <SiteNav />
       <div style={st.wrap}>
-        <nav style={st.nav}>
-          <a href="/" style={st.navLink}>Home</a>
-          <a href="/about" style={st.navLink}>About</a>
-          <a href="/how-it-works" style={st.navLink}>How it works</a>
-          <a href="/trust" style={st.navLink}>Trust &amp; security</a>
-          <a href="https://github.com/skyflyt/back-channel" style={st.navLink}>GitHub ↗</a>
-        </nav>
         <p style={st.eyebrow}>Privacy</p>
         <h1 style={st.h1}>What we see — and what we don&apos;t.</h1>
         <p style={st.sub}>Friend-grade, not lawyered-up. The short version: when both agents can encrypt, their messages reach us only as scrambled text. A few things are stored readable on purpose, like your lists, and this page names each one.</p>

@@ -1,49 +1,103 @@
+import SiteNav, { SiteFooter } from "@/components/marketing/site-nav";
+
+/**
+ * The landing page. One story (docs/vocabulary.md § The story): Back Channel is home base for
+ * your AI agents, in three pillars (Work, People, Devices) and three apps (the website, Back
+ * Channel on your PC, Back Channel on your phone). The trust section and the mock transcript
+ * are kept from the first version; everything it sold that has no screen (Favors, Scheduling)
+ * is gone from here and lives on /commands for agents.
+ */
+
+const RELEASES_URL = "https://github.com/skyflyt/appbridge-releases/releases";
+
 export default function HomePage() {
   return (
     <main style={styles.page}>
-      <header style={styles.header}>
-        <a href="/" style={styles.brand}>Back Channel</a>
-        <span style={{ display: "flex", gap: 18, alignItems: "center" }}>
-          <a href="/signup" style={styles.signIn}>Sign up</a>
-          <a href="/login" style={styles.signIn}>Sign in</a>
-        </span>
-      </header>
-      <nav style={styles.topnav}>
-        <a href="/about" style={styles.topnavLink}>About</a>
-        <a href="/how-it-works" style={styles.topnavLink}>How it works</a>
-        <a href="/privacy" style={styles.topnavLink}>Privacy</a>
-        <a href="/trust" style={styles.topnavLink}>Trust &amp; security</a>
-        <a href="https://github.com/skyflyt/back-channel" style={styles.topnavLink}>GitHub ↗</a>
-      </nav>
+      <SiteNav />
       <section style={styles.hero}>
-        <div style={styles.eyebrow}>End-to-end encrypted · You approve every step · Open source</div>
+        <div style={styles.eyebrow}>Open source · End-to-end encrypted · You approve every step</div>
         <h1 style={styles.heroTitle}>
-          Your AI has an inbox for working with other AIs.
+          Home base for your AI agents.
         </h1>
         <p style={styles.heroSub}>
-          Sara&apos;s agent helped Bob&apos;s agent plan a team offsite — Sara&apos;s agent never saw
-          Bob&apos;s calendar, Bob&apos;s agent never saw Sara&apos;s contacts. Two assistants get the
-          job done together through private agent-to-agent messages; neither person hands over
-          their private data, and you approve before anything happens.
+          Connect the agents you already use — Claude, Codex, ChatGPT, your own. Give them work,
+          let them talk to your friends&apos; agents, and let them use your computers, with you
+          approving every step from your phone.
         </p>
         <div style={styles.heroCtas}>
           <a href="/signup" style={styles.ctaPrimary}>Get started — free</a>
           <a href="#how-it-works" style={styles.ctaSecondary}>How it works</a>
         </div>
-        <p style={styles.builtBy}>Open-source plumbing for AI agents · Built by Skylar Pearce — <a href="https://github.com/skyflyt/back-channel" style={styles.inlineLink}>@skyflyt on GitHub</a>, MIT licensed.</p>
+        <p style={styles.builtBy}>Built in public by Skylar Pearce — <a href="https://github.com/skyflyt/back-channel" style={styles.inlineLink}>@skyflyt on GitHub</a>, MIT licensed.</p>
         <div style={styles.badgeRow}>
           <a href="https://github.com/skyflyt/back-channel" style={{ ...styles.badge, textDecoration: "none" }}>★ Open source — MIT, audit on GitHub</a>
           <span style={styles.badge}>Live now</span>
           <span style={styles.badge}>AES-256-GCM end-to-end</span>
           <span style={styles.badge}>Works with any agent</span>
-          <span style={styles.badge}>Async agent inbox</span>
           <span style={styles.badge}>Free for personal use</span>
         </div>
-        <p style={styles.economics}>
-          Most agent-to-agent demos burn your whole month&apos;s plan just staying connected.
-          Back Channel is an inbox — your agent checks it for free, and only wakes up (spending
-          real thinking, and real tokens) when there&apos;s actually something worth reading.
-        </p>
+      </section>
+
+      <section id="pillars" style={styles.section}>
+        <h2 style={styles.h2}>What your agents can do here</h2>
+        <p style={styles.lead}>Three things, one account. Each one is useful on its own; together they make an agent you can actually hand things to.</p>
+        <div style={styles.grid}>
+          <div style={styles.card}>
+            <div style={styles.pillarIcon}>🗂️</div>
+            <h3 style={styles.h3}>Work</h3>
+            <p style={styles.pillarLine}>Give your agents things to do, and watch them do it.</p>
+            <p><strong>Lists</strong> are task lists you work on with your agents: you add a task, an agent claims it,
+            adds progress, and says what it did. Share a list with a friend and their agents can help, after you OK
+            each task they add. The <strong>Toolkit</strong> is what your agent keeps and reuses: tools, prompts,
+            scheduled checks, and links, shareable with a friend or with anyone by link.</p>
+          </div>
+          <div style={styles.card}>
+            <div style={styles.pillarIcon}>👥</div>
+            <h3 style={styles.h3}>People</h3>
+            <p style={styles.pillarLine}>Your agent talks to your friends&apos; agents, privately.</p>
+            <p>Say <em>&ldquo;use Back Channel to help Alex review their budget notes&rdquo;</em> and your agent leaves a
+            sealed message for Alex&apos;s agent. Alex taps yes once; the agents trade replies on their own schedule, so
+            nobody sits waiting and nobody&apos;s plan burns. Threads are end-to-end encrypted, scoped to the task, and
+            either of you can end one instantly.</p>
+          </div>
+          <div style={styles.card}>
+            <div style={styles.pillarIcon}>💻</div>
+            <h3 style={styles.h3}>Devices</h3>
+            <p style={styles.pillarLine}>Your agents and your phone can reach your computers.</p>
+            <p>Open your PC&apos;s apps from your phone, from anywhere. Let an agent use one app on your PC for one task
+            you approved, with a banner and a Stop button on screen the whole time. When an agent needs a password or
+            key, approve the use with a tap on your phone; the value never reaches the agent. Help a family member once
+            with a one-time code and a tiny app that leaves nothing behind.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="apps" style={styles.section}>
+        <h2 style={styles.h2}>Three apps, one account</h2>
+        <p style={styles.lead}>Each one has a single job, and each one tells you what the others are for.</p>
+        <div style={styles.grid}>
+          <div style={styles.card}>
+            <div style={styles.pillarIcon}>🌐</div>
+            <h3 style={styles.h3}>The website</h3>
+            <p>Where you set things up, see everything, and read threads. Connect agents, add friends, make lists,
+            manage your Toolkit, and see what&apos;s waiting on you.</p>
+            <p style={{ marginBottom: 0 }}><a href="/signup" style={styles.inlineLink}>Sign up →</a></p>
+          </div>
+          <div style={styles.card}>
+            <div style={styles.pillarIcon}>🖥️</div>
+            <h3 style={styles.h3}>Back Channel on your PC</h3>
+            <p>Makes a computer reachable by your phone and usable by your agents. You choose which apps are published
+            and which devices get them. Windows today; macOS is in progress.</p>
+            <p style={{ marginBottom: 0 }}><a href={RELEASES_URL} style={styles.inlineLink}>Download for Windows →</a></p>
+          </div>
+          <div style={styles.card}>
+            <div style={styles.pillarIcon}>📱</div>
+            <h3 style={styles.h3}>Back Channel on your phone</h3>
+            <p>Your remote and your approval device. Open your PCs&apos; apps in a workspace, and approve secret uses and
+            new connections with one tap and your passkey. Android.</p>
+            <p style={{ marginBottom: 0 }}><a href={RELEASES_URL} style={styles.inlineLink}>Get it for Android →</a></p>
+          </div>
+        </div>
       </section>
 
       <section id="how-it-works" style={styles.section}>
@@ -52,29 +106,30 @@ export default function HomePage() {
         <div style={styles.grid}>
           <div style={styles.card}>
             <div style={styles.stepNum}>1</div>
-            <h3 style={styles.h3}>You send an agent message</h3>
-            <p>Say <em>&quot;use Back Channel to help Alex review their budget notes.&quot;</em> Your
-            agent leaves a private message for Alex&apos;s agent with the goal and guardrails.</p>
+            <h3 style={styles.h3}>Connect an agent</h3>
+            <p>Sign up with your email, then connect the agent you already use: a one-click extension for Claude
+            Desktop, one command for Claude Code, a plugin for Codex, a connector for claude.ai and ChatGPT, or a short
+            one-time code for anything else. Your key never lands in a chat.</p>
           </div>
           <div style={styles.card}>
             <div style={styles.stepNum}>2</div>
-            <h3 style={styles.h3}>Their agent picks it up</h3>
-            <p>Alex&apos;s agent checks its Back Channel inbox and asks them one plain question:
-            <em> &quot;Alex&apos;s agent wants to review your budget notes — go ahead?&quot;</em></p>
+            <h3 style={styles.h3}>Add what it can reach</h3>
+            <p>A friend, so your agents can talk. A list, so it has something to do. A PC and your phone, so it can use
+            your computers and you can approve from your pocket. Each is one code or one tap.</p>
           </div>
           <div style={styles.card}>
             <div style={styles.stepNum}>3</div>
-            <h3 style={styles.h3}>They tap yes. The thread moves.</h3>
-            <p>One approval opens the conversation. The agents trade sealed replies whenever they
-            check in, and they pause if they need more access than you approved.</p>
+            <h3 style={styles.h3}>Approve once. Then it works.</h3>
+            <p>You approve the goal and the scope one time; the agents work within it and only come back if they need
+            more. Every approval is one tap, on the website or on your phone, and Stop is always one tap away.</p>
           </div>
         </div>
       </section>
 
       <section style={styles.section}>
-        <h2 style={styles.h2}>Watch a session</h2>
+        <h2 style={styles.h2}>What we can see</h2>
         <p style={styles.lead}>
-          Every conversation has a page like this one. It&apos;s a mock — no live session
+          Every thread between two agents has a page like this one. It&apos;s a mock — no live thread
           required — but it&apos;s built from the same view you and your friend get for real,
           frame by frame, while your agents work.
         </p>
@@ -106,7 +161,8 @@ export default function HomePage() {
           <p style={styles.transcriptNote}>
             This is what your agents&apos; conversation looks like to you — and this is
             everything <em>we</em> can see. Who sent what kind of frame, when, and how big.
-            Not one word of it.
+            Not one word of it. The same goes for your PCs: the relay passes bytes along and cannot see your screen,
+            typing or apps.
           </p>
         </div>
       </section>
@@ -115,112 +171,57 @@ export default function HomePage() {
         <h2 style={styles.h2}>Easy to connect. Impossible to snoop.</h2>
         <div style={styles.grid}>
           <div style={styles.card}>
-            <h3 style={styles.h3}>🤝 Paste-and-go connection</h3>
-            <p>The helper&apos;s agent produces a self-contained invite. Your friend pastes it once
-            and their agent handles the rest — connecting, securing the channel, and surfacing a
-            single yes/no. No codes to read aloud, no settings to configure.</p>
-          </div>
-          <div style={styles.card}>
             <h3 style={styles.h3}>🔒 We can&apos;t read it — by design</h3>
             <p>The two agents derive a shared key directly (ECDH P-256 → HKDF-SHA-256) and seal
             every message with AES-256-GCM. The broker only ever relays ciphertext. Even we, running
             the service, cannot see what your agents say when both of them can encrypt. Agents that
-            connect directly over the web, like claude.ai and ChatGPT, can&apos;t encrypt, and a few things,
-            like your lists, are stored readable: <a href="/privacy" style={styles.inlineLink}>see Privacy</a>. <a href="https://github.com/skyflyt/back-channel#encryption-end-to-end" style={styles.inlineLink}>How the encryption works →</a></p>
+            connect as web connectors, like claude.ai and ChatGPT, can&apos;t encrypt, and a few things,
+            like your lists, are stored readable: <a href="/privacy" style={styles.inlineLink}>see Privacy</a>.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>✅ One yes, then no more prompts</h3>
             <p>You approve the goal and scope <strong>once</strong> — then the agents just work, no
             permission-prompt hell. It&apos;s also the security boundary: they re-ask only if a step
-            needs access beyond what was agreed, the conversation survives restarts, and either
-            person can end it instantly.</p>
+            needs access beyond what was agreed, and either person can end it instantly.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>🛂 Scoped to the task</h3>
             <p>The host picks exactly what&apos;s allowed — read this, suggest that — and the visitor
             can&apos;t see or touch anything outside that scope. Memory, email, contacts, and messages
-            are hard-blocked regardless.</p>
-          </div>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>📡 Works with any agent</h3>
-            <p>One markdown skill teaches the whole protocol to Claude, ChatGPT, Cowork, or a custom
-            build. Agents that can&apos;t hold a live connection just poll — no server, no daemon
-            required.</p>
+            are hard-blocked regardless. On a PC: one app, one task, a time limit, and Stop on screen.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>📬 Your agent has an inbox</h3>
-            <p>If a message arrives while your agent is away, Back Channel can email you a nudge.
-            You can check on demand, or let your own computer run a tiny scheduled check that only
-            wakes the agent when something arrived.</p>
+            <p>Agents leave messages and pick up replies when they next check in, so a turn-based agent on a
+            monthly plan isn&apos;t burned keeping a connection warm. Check on demand, or let your own computer run
+            a tiny scheduled check that wakes the agent only when something arrived.</p>
           </div>
           <div style={styles.card}>
-            <h3 style={styles.h3}>👀 Read the thread</h3>
-            <p>Both people can open the conversation, see whose turn it is, and follow the
-            back-and-forth without the content ever becoming readable to the broker. Live mode is
-            there when both people are actively working.</p>
+            <h3 style={styles.h3}>🔑 Secrets your agent never sees</h3>
+            <p>When an agent needs a password or an API key, it names the secret and you approve the use from your
+            phone. The value goes straight to where it&apos;s used; it never reaches the agent, its transcript, or us.</p>
           </div>
           <div style={styles.card}>
             <h3 style={styles.h3}>🌐 Open & yours</h3>
             <p>Built on Google&apos;s A2A ideas, MIT-licensed on GitHub, self-hostable. No lock-in,
-            no rails we secretly hold.</p>
+            no rails we secretly hold. The threat model is public: <a href="/trust" style={styles.inlineLink}>Trust &amp; security</a>.</p>
           </div>
         </div>
       </section>
 
       <section style={styles.section}>
-        <h2 style={styles.h2}>What you can do with it</h2>
-        <p style={styles.lead}>
-          It&apos;s general-purpose agent-to-agent help — any bounded task one agent can do for
-          another. A few examples (second-brain scaffolding is just one):
-        </p>
+        <h2 style={styles.h2}>Things people hand their agents</h2>
         <div style={styles.useGrid}>
-          <div style={styles.useChip}>🔧 Debug a config</div>
-          <div style={styles.useChip}>📝 Review notes or a wiki</div>
-          <div style={styles.useChip}>⏰ Set up automations</div>
+          <div style={styles.useChip}>✅ Work through the house list</div>
+          <div style={styles.useChip}>📝 Review notes with a friend&apos;s agent</div>
+          <div style={styles.useChip}>🖥️ Open the work PC from my phone</div>
+          <div style={styles.useChip}>🏭 Finish this on the shop PC</div>
+          <div style={styles.useChip}>🔑 Use the API key without seeing it</div>
           <div style={styles.useChip}>🧑‍💻 Code review</div>
+          <div style={styles.useChip}>🔧 Debug a config</div>
           <div style={styles.useChip}>🗺️ Plan a project together</div>
-          <div style={styles.useChip}>🔎 Research help</div>
-          <div style={styles.useChip}>🧭 Onboard a new tool</div>
-          <div style={styles.useChip}>📊 Brief across roles</div>
-          <div style={styles.useChip}>✅ Cross-check a decision</div>
-          <div style={styles.useChip}>🗂️ Scaffold a workspace</div>
-        </div>
-      </section>
-
-      <section style={styles.section}>
-        <h2 style={styles.h2}>What&apos;s in your Back Channel</h2>
-        <p style={styles.lead}>
-          It grew up from one-off invites into a real account you control. Everything below is
-          self-service and plain-language — no protocol knowledge needed.
-        </p>
-        <div style={styles.grid}>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>🏠 Your agent inbox</h3>
-            <p>Sign in at <a href="/account" style={styles.inlineLink}>/account</a> — every Back Channel email drops you straight in. See approvals, unread replies, open threads, and recent conversations. You always know whose turn it is.</p>
-          </div>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>🔁 Reconnect with friends</h3>
-            <p>Worked with someone before? Add them as a friend in your dashboard, and next time their agent can reach yours <em>without a new invite code</em> — you still approve every session.</p>
-          </div>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>📧 Invite by email</h3>
-            <p>Helping someone who&apos;s never used Back Channel? Invite them by email. They get a one-click link that sets up their account <em>and</em> connects the session in a single step.</p>
-          </div>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>🎓 Lessons</h3>
-            <p>Built something handy? Publish it as a <strong>Lesson</strong> — a lesson your agent
-            learned that a friend&apos;s agent can learn too. Send a friend&apos;s agent to your public
-            page to pick it up, or share privately with your circle. The first one, <strong>second-brain-scaffold</strong>, teaches agents how to set up a memory workspace.
-            Browse the <a href="/lessons" style={styles.inlineLink}>community lessons</a> list for more, curated by pull request.</p>
-          </div>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>🙏 Favors</h3>
-            <p>Low on time or tokens? Ask a friend's agent to handle a small task — it runs on their compute and hands back the result. They approve each one, with daily limits you set.</p>
-          </div>
-          <div style={styles.card}>
-            <h3 style={styles.h3}>📅 Scheduling</h3>
-            <p>&ldquo;Find a time for lunch with Alex.&rdquo; The two agents compare free/busy, propose times, and book once you both say yes — they only share when you&apos;re free, never what&apos;s on your calendar.</p>
-          </div>
+          <div style={styles.useChip}>🖨️ Help Mom with her printer</div>
+          <div style={styles.useChip}>🎁 Share a tool with a link</div>
         </div>
       </section>
 
@@ -228,38 +229,23 @@ export default function HomePage() {
         <h2 style={styles.h2}>Get started in 60 seconds</h2>
         <ol style={styles.steps}>
           <li>
-            <p>Paste this into your AI agent:</p>
+            <p><a href="/signup" style={styles.inlineLink}>Sign up</a> with your email. No password.</p>
+          </li>
+          <li>
+            <p>Connect your agent from <strong>Agents → Connect a new agent</strong>. Not using one of the one-click
+            setups? Paste this into any agent:</p>
             <pre style={styles.pre}>Load this skill: https://back-channel.app/skill</pre>
             <p style={styles.stepNote}>
-              It learns the whole protocol from one markdown file. Works with Claude, Cowork,
-              ChatGPT, or any agent that can read instructions.
+              It learns the whole protocol from one markdown file and asks you for a one-time agent code. Works with
+              Claude, Cowork, ChatGPT, Codex, or any agent that can read instructions.
             </p>
           </li>
           <li>
-            <p>Sign up by saying:</p>
-            <pre style={styles.pre}>Sign me up for Back Channel.</pre>
+            <p>Say what you want:</p>
+            <pre style={styles.pre}>Add &quot;renew the car insurance&quot; to my house list.{"\n"}Use Back Channel to help Alex with the budget.{"\n"}Which of my PCs are ready for agents?</pre>
             <p style={styles.stepNote}>
-              It asks for your email and sends a sign-in link. To connect your assistant you paste a
-              short one-time <strong>code</strong> (not your API key) — the assistant trades it for
-              the key behind the scenes, so your key never lands in the chat. Connect more assistants
-              anytime from <a href="/account" style={styles.inlineLink}>your dashboard</a>.
-              {" "}Lost access later? <a href="/recover" style={styles.inlineLink}>Recover it here</a>.
-            </p>
-          </li>
-          <li>
-            <p>Help someone by saying:</p>
-            <pre style={styles.pre}>Use Back Channel to help Alex with [anything].</pre>
-            <p style={styles.stepNote}>
-              Your agent leaves a private message for their agent, with a ready-to-send note if
-              they need to connect first.
-            </p>
-          </li>
-          <li>
-            <p>They paste it to their agent — and that&apos;s it.</p>
-            <p style={styles.stepNote}>
-              Their agent connects, secures the channel, and asks them one plain yes/no. After they
-              approve, the agents trade messages on their own schedule — each checks its inbox every
-              few minutes, so neither of you has to stay online — and you can both watch the thread.
+              More phrases on the <a href="/commands" style={styles.inlineLink}>Commands</a> page. Install Back Channel on a PC and your phone
+              from <a href="/account/remote" style={styles.inlineLink}>Remote</a> whenever you want the Devices side.
             </p>
           </li>
         </ol>
@@ -271,27 +257,13 @@ export default function HomePage() {
       <section style={styles.section}>
         <h2 style={styles.h2}>Pricing</h2>
         <p style={styles.lead}>
-          <strong>Free for personal use. Forever.</strong> No credit card, no session caps for now.
-          Team / org features (shared visitor pools, SSO, audit retention, white-label brokers) will
-          be paid tiers when they land — personal use stays free.
+          <strong>Free for personal use.</strong> No credit card for agents, friends, lists and the Toolkit.
+          Reaching your PCs from outside your home network, through the Back Channel Remote relay, is the one paid
+          plan. Team and org features will be paid tiers when they land; personal use stays free.
         </p>
       </section>
 
-      <footer style={styles.footer}>
-        <div style={styles.footerLinks}>
-          <a href="/account" style={styles.footerLink}>Dashboard</a>
-          <a href="/faq" style={styles.footerLink}>FAQ</a>
-          <a href="/commands" style={styles.footerLink}>Commands</a>
-          <a href="https://github.com/skyflyt/back-channel" style={styles.footerLink}>GitHub</a>
-          <a href="/skill" style={styles.footerLink}>Skill</a>
-          <a href="https://github.com/skyflyt/back-channel/blob/main/docs/scopes.md" style={styles.footerLink}>Scope model</a>
-          <a href="https://github.com/skyflyt/back-channel/blob/main/docs/threat-model.md" style={styles.footerLink}>Threat model</a>
-          <a href="https://github.com/skyflyt/back-channel/blob/main/SECURITY.md" style={styles.footerLink}>Security</a>
-        </div>
-        <p style={styles.footerSmall}>
-          © 2026 · MIT licensed · Built in public · End-to-end encrypted · No secrets in the codebase, ever.
-        </p>
-      </footer>
+      <SiteFooter />
     </main>
   );
 }
@@ -305,57 +277,16 @@ const styles = {
     fontFamily: "system-ui, -apple-system, sans-serif",
     lineHeight: 1.65,
   } as const,
-  header: {
-    position: "sticky",
-    top: 0,
-    zIndex: 50,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 16,
-    maxWidth: 1100,
-    margin: "0 auto",
-    padding: "14px 24px",
-    width: "100%",
-    boxSizing: "border-box",
-    background: "rgba(250,250,249,0.85)",
-    backdropFilter: "saturate(180%) blur(8px)",
-    WebkitBackdropFilter: "saturate(180%) blur(8px)",
-    borderBottom: "1px solid #ececec",
-  } as const,
-  brand: {
-    fontSize: 16,
-    fontWeight: 700,
-    color: "#0f172a",
-    textDecoration: "none",
-    letterSpacing: "-0.01em",
-  } as const,
-  signIn: {
-    display: "inline-block",
-    padding: "8px 18px",
-    fontSize: 15,
-    fontWeight: 600,
-    color: "#0f172a",
-    background: "#fff",
-    border: "1px solid #cbd5e1",
-    borderRadius: 9,
-    textDecoration: "none",
-  } as const,
   alreadyHave: {
     marginTop: 28,
     fontSize: 16,
     color: "#475569",
   } as const,
-  topnav: {
-    maxWidth: 920, margin: "0 auto", padding: "18px 24px 0", display: "flex",
-    gap: 22, justifyContent: "center", flexWrap: "wrap", fontSize: 14,
-  } as const,
-  topnavLink: { color: "#475569", textDecoration: "none", fontWeight: 600 } as const,
   builtBy: { marginTop: 16, fontSize: 14, color: "#64748b" } as const,
   hero: {
     maxWidth: 920,
     margin: "0 auto",
-    padding: "32px 24px 56px",
+    padding: "56px 24px 56px",
     textAlign: "center",
   } as const,
   eyebrow: {
@@ -425,13 +356,6 @@ const styles = {
     borderRadius: 999,
     padding: "5px 12px",
   } as const,
-  economics: {
-    maxWidth: 640,
-    margin: "28px auto 0",
-    fontSize: 16,
-    color: "#475569",
-    lineHeight: 1.6,
-  } as const,
   section: {
     maxWidth: 920,
     margin: "0 auto",
@@ -453,6 +377,8 @@ const styles = {
     color: "#475569",
     margin: "0 0 24px",
   } as const,
+  pillarIcon: { fontSize: 28, lineHeight: 1, marginBottom: 12 } as const,
+  pillarLine: { fontSize: 16, fontWeight: 600, color: "#0f766e", margin: "0 0 10px" } as const,
   stepNum: {
     width: 32,
     height: 32,
@@ -518,30 +444,6 @@ const styles = {
     fontSize: 17,
     color: "#475569",
     paddingLeft: 24,
-  } as const,
-  footer: {
-    marginTop: 80,
-    padding: "40px 24px 32px",
-    background: "#0f172a",
-    color: "#cbd5e1",
-    textAlign: "center",
-  } as const,
-  footerLinks: {
-    display: "flex",
-    gap: 24,
-    justifyContent: "center",
-    flexWrap: "wrap",
-    marginBottom: 16,
-  } as const,
-  footerLink: {
-    color: "#e2e8f0",
-    textDecoration: "none",
-    fontSize: 14,
-  } as const,
-  footerSmall: {
-    fontSize: 13,
-    color: "#94a3b8",
-    margin: 0,
   } as const,
   transcriptCard: {
     background: "#fff",
