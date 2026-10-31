@@ -255,6 +255,37 @@ test("exchange: the code is one-use, role-bound, 10 minutes, and needs a P-256 p
   assert.equal((await exchange(req("POST", { code: again, role: "remote", connectorSpki: key.spki, proof: key.sign(`appbridge-device-exchange-v1:${again}`) }))).status, 409, "a live device's key cannot be registered twice");
 });
 
+test("one device code: minted without a role it registers a host or a remote; a role-pinned code still refuses the other", async () => {
+  const codes = (await routes.codes()).POST;
+  const exchange = (await routes.exchange()).POST;
+  const bodyFor = (code: string, role: string, key = newKey()) => ({ code, role, connectorSpki: key.spki, proof: key.sign(`appbridge-device-exchange-v1:${code}`) });
+  // Omitting role mints an "any" code; "any" is also accepted spelled out.
+  const r1 = await codes(req("POST", {}, cookie("a"))); assert.equal(r1.status, 200);
+  const anyCode = (await r1.json()).code as string;
+  assert.equal(tables.code.find(c => c.codeHash === createHash("sha256").update(anyCode).digest("hex"))!.role, "any");
+  assert.equal((await codes(req("POST", { role: "any", label: "Laptop" }, cookie("a")))).status, 200);
+  // The app that redeems it decides the role: here the owner console, so it becomes a host.
+  const asHost = await exchange(req("POST", bodyFor(anyCode, "host")));
+  assert.equal(asHost.status, 200);
+  const host = await asHost.json();
+  assert.equal(tables.device.find(d => d.id === host.deviceId)!.role, "host");
+  assert.deepEqual(host.scopes, ["appbridge.device", "appbridge.host.relay", "appbridge.relay.presence"], "a host's scopes, not a remote's");
+  // The second "any" code, redeemed by the client, becomes a remote.
+  const anyCode2 = tables.code.filter(c => c.role === "any" && !c.usedAt).map(c => c.codeHash);
+  assert.equal(anyCode2.length, 1);
+  const r3 = await codes(req("POST", {}, cookie("a"))); const anyCode3 = (await r3.json()).code as string;
+  const asRemote = await exchange(req("POST", bodyFor(anyCode3, "remote")));
+  assert.equal(asRemote.status, 200);
+  const remote = await asRemote.json();
+  assert.equal(tables.device.find(d => d.id === remote.deviceId)!.role, "remote");
+  // A pinned code keeps its contract: a host code refuses a remote claim and the code is not burned.
+  const pinned = await mint("host");
+  assert.equal((await exchange(req("POST", bodyFor(pinned, "remote")))).status, 409);
+  assert.equal(tables.code.find(c => c.codeHash === createHash("sha256").update(pinned).digest("hex"))!.usedAt, null);
+  // The exchange itself still needs a real role: "any" is a minting word, not a claim.
+  assert.equal((await exchange(req("POST", bodyFor(anyCode, "any")))).status, 400);
+});
+
 test("account routes: dashboard cookie only, CSRF on mutations, verified email to mint codes", async () => {
   const codes = (await routes.codes()).POST;
   assert.equal((await codes(req("POST", { role: "host" }))).status, 401);

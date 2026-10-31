@@ -479,7 +479,9 @@ async function exchange(req: NextRequest): Promise<NextResponse> {
     const now = new Date();
     const row = await tx.appBridgeDeviceCode.findUnique({ where: { codeHash } });
     if (!row || row.usedAt || row.expiresAt <= now) return { error: 410, code: "code_invalid" };
-    if (row.role !== role) return { error: 409, code: "wrong_role" };
+    // A code minted for one role refuses the other; a code minted without a role ("any") takes the role the
+    // app claims, since the app the person typed it into is what decides whether this device is reached or reaches.
+    if (row.role !== "any" && row.role !== role) return { error: 409, code: "wrong_role" };
     if (await tx.appBridgeDevice.findFirst({ where: { connectorSpkiSha256: key.sha256, revokedAt: null } })) return { error: 409, code: "key_in_use" };
     const claimed = await tx.appBridgeDeviceCode.updateMany({ where: { codeHash, usedAt: null, expiresAt: { gt: now } }, data: { usedAt: now } });
     if (claimed.count !== 1) return { error: 410, code: "code_invalid" };
@@ -1120,14 +1122,20 @@ export const renewLease = (req: NextRequest) => handle(async () => {
 
 // ── Account (dashboard) routes ──────────────────────────────────────────────
 
-/** POST /account/device-codes — mint a one-use, 10-minute code for registering a PC (host) or a phone (remote). */
+/**
+ * POST /account/device-codes — mint a one-use, 10-minute code for registering a device. `role` is optional:
+ * "host" or "remote" pins the role (the exchange refuses the other with wrong_role); omitted or "any" lets the
+ * app that redeems it claim the role, so one code serves a PC, a phone and a laptop alike
+ * (docs/appbridge-remote-access.md § Two roles).
+ */
 export const mintDeviceCode = (req: NextRequest) => handle(async () => {
   const account = await accountContext(req, true);
   if (!account.emailVerifiedAt) fail(409, "email_unverified");
   limit("appbridge:code", account.id, 15, 60 * 60_000);
   const body = await readBody(req);
-  exact(body, ["role"], ["label"]);
-  if (body.role !== "host" && body.role !== "remote") fail(400, "invalid_request");
+  exact(body, [], ["role", "label"]);
+  if (body.role === undefined) body.role = "any";
+  if (body.role !== "host" && body.role !== "remote" && body.role !== "any") fail(400, "invalid_request");
   let label: string | null = null;
   if (body.label !== undefined) {
     if (typeof body.label !== "string" || /[\u0000-\u001f\u007f]/.test(body.label)) fail(400, "invalid_request");

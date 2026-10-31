@@ -598,7 +598,7 @@ model AppBridgeCredential {
 model AppBridgeDeviceCode {
   codeHash  String    @id // sha256(raw); raw is never stored
   accountId String
-  role      String // the role the device must register as
+  role      String // "host" | "remote" pins the role; "any" lets the redeeming app claim it
   label     String?
   createdAt DateTime  @default(now())
   expiresAt DateTime
