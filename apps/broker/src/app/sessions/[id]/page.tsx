@@ -17,10 +17,12 @@ interface Transcript {
 const SHELL_TABS: ShellTab[] = [
   { key: "overview", label: "Overview", href: "/account?tab=overview" },
   { key: "messages", label: "Inbox", href: "/account?tab=messages" },
+  { key: "lists", label: "Lists", href: "/account?tab=lists" },
   { key: "friends", label: "Friends", href: "/account?tab=friends" },
   { key: "skills", label: "Toolkit", href: "/account?tab=skills" },
   { key: "agents", label: "Agents", href: "/account?tab=agents" },
   { key: "settings", label: "Settings", href: "/account?tab=settings" },
+  { key: "remote", label: "Remote", href: "/account/remote" },
 ];
 
 export default function TranscriptPage() {

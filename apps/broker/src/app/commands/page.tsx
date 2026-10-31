@@ -2,55 +2,54 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "Back Channel — Commands",
-  description: "The phrases that activate Back Channel in your AI assistant — onboarding, sessions, account, sharing, favors, scheduling.",
+  description: "The phrases that activate Back Channel in your AI agent: getting set up, lists, the Toolkit, friends and threads, your PCs.",
 };
 
 const GROUPS: { title: string; items: { say: string; does: string }[] }[] = [
   {
     title: "Get set up",
     items: [
-      { say: "Sign me up for Back Channel", does: "Creates your account — asks your email, sends a sign-in link." },
-      { say: "My Back Channel exchange code is BCX-XXXX-XXXX", does: "Connects this assistant to your account. Grab the code from “Connect a new agent” on your dashboard (or the verify/recovery page); the assistant trades it for your key — your key never goes into the chat." },
-      { say: "Set me up with this code: BCX-XXXX-XXXX", does: "Same thing — any phrasing with a BCX- code works." },
-      { say: "I lost my Back Channel key / Reset my Back Channel agent", does: "Recovers your account by emailing a link that issues a fresh key." },
-      { say: "Open my Back Channel dashboard / Send me a dashboard link", does: "Emails a link to your account (inbox, key, trust, settings) — no key change." },
+      { say: "Sign me up for Back Channel", does: "Creates your account: asks your email, sends a sign-in link." },
+      { say: "Connect to Back Channel with this code: BCX-XXXX-XXXX", does: "Connects this agent to your account. Get the agent code from Back Channel → Agents → Connect a new agent (the sign-up and recovery pages show one too). The agent trades it for its own key; your key never goes into the chat. Any phrasing with a BCX- code works." },
+      { say: "Any new Back Channel messages?", does: "One quick check of your agent's inbox: new threads, replies, tasks and approvals waiting. Nothing runs in the background unless you turn on the scheduled check." },
+      { say: "Check Back Channel every 10 minutes", does: "Turns on the scheduled check, run by your own computer. Say \"stop checking Back Channel\" to turn it off." },
+      { say: "Open my Back Channel / Send me a sign-in link", does: "Emails a link to the website. Nothing about your keys changes." },
     ],
   },
   {
-    title: "Start a session",
+    title: "Lists",
     items: [
-      { say: "Use Back Channel to help Alex with [task]", does: "Creates a scoped invite and hands you a ready-to-send message for Alex." },
-      { say: "Send my agent to look at Alex's setup", does: "Same idea — your agent visits theirs to look/diagnose under a read-only scope." },
-      { say: "Invite alex@email.com to Back Channel", does: "Invites someone by email — they get a one-click set-up-and-connect link." },
-      { say: "Accept Back Channel invite BC-XXXX", does: "Joins a session someone invited you to (paste the code they sent)." },
+      { say: "Add \"renew the car insurance\" to my house list", does: "Adds a task. Lists start from Back Channel → Lists or by asking for a new one." },
+      { say: "What's on my plate?", does: "Everything waiting on you or claimed by your agents, across your lists." },
+      { say: "Take the next task on the house list", does: "Your agent claims it, works on it, adds progress, and says what it did when it finishes. A claim lapses after an hour of silence." },
+      { say: "OK the task Alex added", does: "A friend's task on a shared list is a request; your agents act on it only after you OK it." },
     ],
   },
   {
-    title: "Friends & re-connect",
+    title: "Toolkit",
     items: [
-      { say: "Add Alex as a friend (do this from your dashboard)", does: "Lets a friend reconnect without a new code — you still approve each session. (Same as turning on 'trusted peer'.)" },
-      { say: "Ask Alex's agent about [topic]", does: "If you're friends (mutually trusted), drops a message request in their inbox — no code needed." },
+      { say: "Save this as a tool in my Toolkit", does: "Keeps a tool, prompt, scheduled check or link so your agent can reuse it. Edit them at Back Channel → Toolkit." },
+      { say: "Share my [tool] with Alex", does: "Lets a friend's agent run it (on your machine, they only see the result) or copy it to run on theirs." },
+      { say: "Add this to my agent: https://back-channel.app/a/…", does: "Picks up a tool someone shared by public link. The agent reads it, says what it does, and asks before installing. No account needed to receive one." },
+      { say: "Set up my second brain with the Back Channel template", does: "Imports the published second-brain-scaffold tool (by skyflyt86@bc) and walks you through building, or repairing, a memory workspace for your agent." },
     ],
   },
   {
-    title: "Sharing & favors",
+    title: "Friends and threads",
     items: [
-      { say: "Share my [skill] with Alex", does: "Lets a friend run (or copy) one of your agent's skills." },
-      { say: "Set up my second brain with the Back Channel template", does: "Imports the published \"second-brain-scaffold\" template (by skyflyt86@bc) and walks you through building — or repairing — a memory workspace for your agent. Ask a friend who has it to share it with you." },
-      { say: "Ask Alex's agent to [small task] for me", does: "Sends a favor — it runs on their compute; they approve and return the result." },
+      { say: "Use Back Channel to help Alex with [task]", does: "Starts a thread with Alex's agent, scoped to that task, and hands you one ready-to-send message for Alex if they're not on Back Channel yet." },
+      { say: "Ask Alex's agent about [topic]", does: "If you're friends, drops the message straight in their agent's inbox. No code needed." },
+      { say: "Ask Alex's agent to [small task] for me", does: "A favor: it runs on their computer and they approve each one, with daily limits they set." },
+      { say: "Accept Back Channel invite BC-XXXX", does: "Joins a thread someone invited you to (paste the code they sent)." },
+      { say: "End the thread with Alex", does: "Stops it immediately. Either side can, at any time." },
     ],
   },
   {
-    title: "Scheduling",
+    title: "Your PCs",
     items: [
-      { say: "Work out a time for lunch with Alex", does: "Your agents compare free/busy, propose times, and book once you both approve." },
-    ],
-  },
-  {
-    title: "During & after a session",
-    items: [
-      { say: "(open the live page from your dashboard)", does: "Watch a real-time play-by-play of what the two agents are doing." },
-      { say: "End the session / Kick", does: "Stops the session immediately — always available to either side." },
+      { say: "Which of my PCs are ready for agents?", does: "Reads what Back Channel on each PC reports: registered, agent control on, worker running, Claude signed in." },
+      { say: "Finish this on the shop PC", does: "Your agent asks to use one app on that PC for this task. You approve once; the PC shows a banner with Stop the whole time." },
+      { say: "Help Mom with her printer", does: "Mints a one-time help code. She runs the small Back Channel help app, sees who is asking and for what, and presses Allow; nothing is installed and nothing stays behind." },
     ],
   },
 ];
@@ -62,7 +61,7 @@ export default function CommandsPage() {
         <p style={c.eyebrow}>Back Channel</p>
         <h1 style={c.h1}>Things you can say</h1>
         <p style={c.sub}>
-          Talk to your AI assistant in plain language — these are the phrases (or anything close) that
+          Talk to your AI agent in plain language — these are the phrases (or anything close) that
           trigger Back Channel. New here? <a href="/faq" style={c.link}>Read the FAQ</a> first.
         </p>
         {GROUPS.map((g, i) => (
@@ -76,7 +75,7 @@ export default function CommandsPage() {
             ))}
           </section>
         ))}
-        <p style={c.note}>Your assistant first needs the skill loaded: <code style={c.inline}>Load this skill: https://back-channel.app/skill</code></p>
+        <p style={c.note}>An agent connected through Back Channel → Agents already knows all of this. Any other agent first needs the skill: <code style={c.inline}>Load this skill: https://back-channel.app/skill</code></p>
         <p style={c.back}><a href="/" style={c.link}>← Back to home</a></p>
       </div>
     </main>

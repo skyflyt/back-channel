@@ -243,20 +243,21 @@ export function parseAgentHostName(v) {
 /** @typedef {"appbridge" | "registered" | "agent_control" | "worker" | "senders" | "claude"} StepKey */
 /** @typedef {{ step: number, key: StepKey, title: string, state: "done" | "needed" | "unknown", howTo: string | null }} Step */
 
-const ON_PC = "On that PC, open AppBridge";
+// The PC app is "Back Channel Remote" to the person (docs/vocabulary.md); AppBridge stays the identifier.
+const ON_PC = "On that PC, open Back Channel Remote";
 /** Each step's title and the one line that says how to do it, in the order a person does them. */
 export const STEPS = Object.freeze(/** @type {const} */ ([
-  { key: "appbridge", title: `AppBridge ${DESKTOP_APPBRIDGE_TEXT} or newer`, howTo: `${ON_PC} → Updates → Install update.` },
+  { key: "appbridge", title: `Back Channel Remote ${DESKTOP_APPBRIDGE_TEXT} or newer`, howTo: `${ON_PC} → Updates → Install update.` },
   { key: "registered", title: "PC registered with Back Channel", howTo: `${ON_PC} → Internet access → Register this PC, with a code from "Get a code for a PC you want to reach" on the Remote page.` },
   { key: "agent_control", title: "Allow agent control is on", howTo: `${ON_PC} → Agents and turn on Allow agent control.` },
-  { key: "worker", title: "Back Channel worker set up and running", howTo: `${ON_PC} → Agents → Set up worker (Get a code gives it a connect code), then Start.` },
+  { key: "worker", title: "Back Channel worker set up and running", howTo: `${ON_PC} → Agents → Set up worker (Get a code gives it an agent code), then Start.` },
   { key: "senders", title: "Agents allowed to hand it sessions", howTo: `${ON_PC} → Agents → Choose agents…, and check each fingerprint matches the one Back Channel shows for that agent.` },
   { key: "claude", title: "Claude signed in", howTo: `${ON_PC} → Agents → Sign in to Claude.` },
 ]));
 /** The how-to line for each step, for agents (bc_remote_machines): what to tell the person. */
 export const HOW_TO = Object.freeze(Object.fromEntries(STEPS.map((s) => [s.key, s.howTo])));
 
-const CANT_TELL = "Back Channel can't tell from here. Check on that PC in AppBridge → Agents.";
+const CANT_TELL = "Back Channel can't tell from here. Check on that PC in Back Channel Remote → Agents.";
 const WHILE_SILENT = "Unknown while the worker isn't reporting.";
 const AFTER_WORKER = "Back Channel learns this once the worker on that PC reports.";
 
@@ -290,7 +291,7 @@ export function checklist({ report, readinessAt, now, pc }) {
     s.worker = r.enrolled ? ["done", null] : ["needed", `The worker runs but isn't paired for Dispatch. ${STEPS[3].howTo}`];
     const pinned = r.profiles.remoteApp.present && r.profiles.remoteApp.senders.some((x) => x.pinned);
     s.senders = pinned ? ["done", null] : ["needed", STEPS[4].howTo];
-    s.claude = !r.runtime.installed ? ["needed", "Claude Code isn't installed there. Install it, then open AppBridge → Agents → Sign in to Claude."]
+    s.claude = !r.runtime.installed ? ["needed", "Claude Code isn't installed there. Install it, then open Back Channel Remote → Agents → Sign in to Claude."]
       : r.runtime.signedIn === true ? ["done", null]
       : r.runtime.signedIn === false ? ["needed", STEPS[5].howTo]
       : ["unknown", `Couldn't tell whether Claude is signed in. ${STEPS[5].howTo}`];
@@ -310,7 +311,7 @@ function appBridgeStep(a) {
   const update = STEPS[0].howTo;
   if (typeof a.version === "string") {
     return appBridgeAtLeast(a.version) ? ["done", null]
-      : ["needed", `It has AppBridge ${a.version}; agents need ${DESKTOP_APPBRIDGE_TEXT} or newer to use the whole PC. ${update}`];
+      : ["needed", `It has Back Channel Remote ${a.version}; agents need ${DESKTOP_APPBRIDGE_TEXT} or newer to use the whole PC. ${update}`];
   }
   if (a.version === null && a.pipe === "listening") {
     return ["needed", `Its AppBridge is older than ${DESKTOP_APPBRIDGE_TEXT}, so agents can't use the whole PC there yet. ${update}`];

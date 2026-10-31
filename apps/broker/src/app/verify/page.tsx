@@ -98,8 +98,7 @@ export default function VerifyPage() {
               </button>
             </p>
             <p style={styles.smallLead}>
-              We don&apos;t verify automatically so that automated email scanners can&apos;t use up
-              your one-time link before you do.
+              One tap finishes signing in. The link works once.
             </p>
           </>
         )}
@@ -127,18 +126,18 @@ export default function VerifyPage() {
               <strong style={{ color: "#0f172a" }}>{data.handle}</strong>.
             </p>
             <p style={styles.lead}>
-              Paste this one-time code into your AI assistant and it connects to your account.
-              Your API key never goes into the chat — the assistant trades the code for it.
+              Paste this one-time agent code into your AI agent and it connects to your account.
+              Your key never goes into the chat — the agent trades the code for it.
             </p>
             <ConnectCodeBox />
             <p style={styles.smallLead}>
-              Or, if you need to script your key manually,{" "}
-              <button onClick={() => setShowRaw((v) => !v)} style={styles.linkBtn}>{showRaw ? "hide it" : "reveal your raw key"}</button>.
+              Using Claude Desktop, Claude Code or Codex? Back Channel → Agents has a one-click setup for each. Scripting by hand?{" "}
+              <button onClick={() => setShowRaw((v) => !v)} style={styles.linkBtn}>{showRaw ? "hide the developer key" : "show your developer key"}</button>.
               {showRaw && <span><br /><code style={styles.rawKey}>{data.api_key}</code> — store it as your Back Channel credential; don&apos;t paste it into a chat you don&apos;t control.</span>}
             </p>
             <div style={styles.dashCallout}>
-              <strong>Saved your key?</strong> Now check out your dashboard — your sessions, the agents you trust, and your settings live there. You&apos;re already signed in.
-              <div style={{ marginTop: 12 }}><a href="/account" style={styles.dashBtn}>Open my dashboard →</a></div>
+              <strong>You&apos;re signed in.</strong> Your Back Channel is where you connect agents, add friends and devices, and see what&apos;s waiting on you.
+              <div style={{ marginTop: 12 }}><a href="/account" style={styles.dashBtn}>Open Back Channel →</a></div>
             </div>
             <p><a href="/" style={styles.link}>← Back to home</a></p>
           </>

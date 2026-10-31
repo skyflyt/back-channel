@@ -108,7 +108,7 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
     if (type === "link") {
       const urlErr = validateUrlClientSide(linkUrl);
       if (urlErr) return setErr(urlErr);
-      if (!linkAckWarning) return setErr("Please confirm you've read the warning above before saving a link lesson.");
+      if (!linkAckWarning) return setErr("Please confirm you've read the warning above before saving a link.");
     } else {
       if (!name.trim()) return setErr("Give it a name.");
       if (!body.trim()) return setErr(type === "scheduled_task" ? "Describe what the task should do." : type === "skill" ? "Paste the SKILL.md content." : "Write the prompt.");
@@ -144,7 +144,7 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { setBusy(false); return setErr(j.message || `Couldn't save (${j.error || r.status}).`); }
       setBusy(false);
-      onSaved(mode === "create" ? `Added “${effectiveName.trim()}” to your library.` : `Saved “${effectiveName.trim()}”.${j.public_revoked ? " Its public link was cleared — re-share once your agent re-signs it." : ""}`);
+      onSaved(mode === "create" ? `Added “${effectiveName.trim()}” to your Toolkit.` : `Saved “${effectiveName.trim()}”.${j.public_revoked ? " Its public link was cleared — re-share once your agent re-signs it." : ""}`);
     } catch {
       setBusy(false); setErr("Network error — try again.");
     }
@@ -157,7 +157,7 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
     <div style={overlay} onClick={onClose}>
       <div style={panel} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2 style={{ margin: 0, fontSize: 20 }}>{mode === "edit" ? "Edit artifact" : "New artifact"}</h2>
+          <h2 style={{ margin: 0, fontSize: 20 }}>{mode === "edit" ? "Edit tool" : "New tool"}</h2>
           <button onClick={onClose} aria-label="Close" style={{ ...sBtnGhost, padding: "4px 10px" }}>✕</button>
         </div>
 
@@ -177,7 +177,7 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
           <div>
             <div style={{ fontSize: 13, color: "#687385", margin: "10px 0 2px" }}>↗ Link{mode === "create" && <button onClick={() => setType(null)} style={{ ...sBtnGhost, padding: "2px 8px", marginLeft: 8, fontSize: 12 }}>change</button>}</div>
 
-            <label style={sLabel}>Save a link lesson</label>
+            <label style={sLabel}>Save a link</label>
             <input style={sInput} value={linkUrl} onChange={(e) => { setLinkUrl(e.target.value); if (!linkTitleTouched) setLinkTitle(""); }} placeholder="https://example.com/some-useful-thing" />
             <div style={sHint}>{cleanDomain(linkUrl) ? `Domain: ${cleanDomain(linkUrl)}` : "Paste any http:// or https:// url."}</div>
 
@@ -200,7 +200,7 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
 
             <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "flex-end" }}>
               <button style={sBtnGhost} onClick={onClose} disabled={busy}>Cancel</button>
-              <button style={{ ...sBtn, opacity: busy ? 0.6 : 1 }} onClick={save} disabled={busy}>{busy ? "Saving…" : mode === "edit" ? "Save changes" : "Add to library"}</button>
+              <button style={{ ...sBtn, opacity: busy ? 0.6 : 1 }} onClick={save} disabled={busy}>{busy ? "Saving…" : mode === "edit" ? "Save changes" : "Add to Toolkit"}</button>
             </div>
             <p style={{ ...sHint, marginTop: 12 }}>Back Channel never fetches or previews this url — it stores exactly what you pasted.</p>
           </div>
@@ -248,9 +248,9 @@ export function ArtifactEditor({ mode, initial, onClose, onSaved }: { mode: "cre
 
             <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "flex-end" }}>
               <button style={sBtnGhost} onClick={onClose} disabled={busy}>Cancel</button>
-              <button style={{ ...sBtn, opacity: busy ? 0.6 : 1 }} onClick={save} disabled={busy}>{busy ? "Saving…" : mode === "edit" ? "Save changes" : "Add to library"}</button>
+              <button style={{ ...sBtn, opacity: busy ? 0.6 : 1 }} onClick={save} disabled={busy}>{busy ? "Saving…" : mode === "edit" ? "Save changes" : "Add to Toolkit"}</button>
             </div>
-            <p style={{ ...sHint, marginTop: 12 }}>Saved to your library. To share it with a <em>public</em> link, your agent signs it first — you&apos;ll see that option once it has.</p>
+            <p style={{ ...sHint, marginTop: 12 }}>Saved to your Toolkit. To share it with a <em>public</em> link, your agent signs it first — you&apos;ll see that option once it has.</p>
           </div>
         )}
       </div>

@@ -427,7 +427,7 @@ async function opMachines({ tx, caller, now }: Ctx): Promise<Outcome> {
         "(no passwords; UAC, sign-in and the lock screen stay your person's; administrator windows are refused; every step is recorded); apps is optional, the ones you expect to use. " +
         "A PC needs internet access on to take an agent session. Each machine's agents are the Back Channel workers that report from it (matched by the computer name your person confirmed for it, else by the PC's name). " +
         "To have an agent on the PC drive the app, name a ready one as executor in bc_remote_session_start. If none is ready, don't start a session: " +
-        "tell your person what's missing, using howToFix for each missing step. They fix it on that PC in AppBridge → Agents, and the Remote page of the dashboard shows the same checklist.",
+        "tell your person what's missing, using howToFix for each missing step. They fix it on that PC in Back Channel Remote → Agents, and the Remote page of the dashboard shows the same checklist.",
     },
   };
 }

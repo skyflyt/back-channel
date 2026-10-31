@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import SiteNav from "@/components/marketing/site-nav";
 import lessonsData from "../../generated/lessons.json";
 import CopyPromptButton from "./copy-prompt-button";
 import { reviewPromptFor, type Lesson, type LessonSource } from "./lessons-review-prompt";
@@ -28,7 +29,7 @@ import { reviewPromptFor, type Lesson, type LessonSource } from "./lessons-revie
  */
 
 export const metadata: Metadata = {
-  title: "Community lessons — Back Channel",
+  title: "Community tools — Back Channel",
   description:
     "Skills, MCP servers, and agent recipes the community has pointed out — curated by pull request. Back Channel doesn't scan or review any of it: buyer beware.",
 };
@@ -139,19 +140,13 @@ export default function CommunityLessonsPage() {
         @media (prefers-color-scheme: dark) { .lp-back a { color: #c084fc; } }
       `}</style>
 
+      <SiteNav active="/lessons" />
       <div className="lp-wrap">
-        <nav className="lp-nav">
-          <a href="/">Home</a>
-          <a href="/account">Dashboard</a>
-          <a href="/how-it-works">How it works</a>
-          <a href="https://github.com/skyflyt/back-channel">GitHub ↗</a>
-        </nav>
-
         <p className="lp-eyebrow">Community</p>
-        <h1 className="lp-h1">Community lessons</h1>
+        <h1 className="lp-h1">Community tools</h1>
         <p className="lp-sub">
           Skills, MCP servers, and agent recipes the community has pointed out — curated by pull
-          request, not by us.
+          request, not by us. Any of them can be saved to your own Toolkit as a link.
         </p>
 
         <div className="lp-banner">

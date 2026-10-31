@@ -7,3 +7,10 @@ code. Each file name ends with the capture date. They are taken from a local dev
 | File | What it shows |
 |---|---|
 | `account-remote-add-device-and-your-devices-2026-10-23.png` | The Remote page's Add a device and Your devices cards after the role wording change (a PC you want to reach / a phone or laptop you reach from). |
+| `landing-2026-10-31.png` | The landing page rewritten around the one story (home base for your agents), the three pillars and the three apps, with the shared site header and footer. |
+| `landing-phone-2026-10-31.png` | The same at phone width: the header's link row drops under the brand and buttons. |
+| `how-it-works-2026-10-31.png` | How it works with the fourth flow (your PCs and your phone), the connect step by agent app, and the honest matrix with web chat tabs as connectors. |
+| `faq-2026-10-31.png` | The FAQ covering the whole product: the three apps, agents, Lists, Toolkit, friends, Remote, approvals, the developer key, cost. |
+| `commands-2026-10-31.png` | Commands regrouped by pillar: Get set up, Lists, Toolkit, Friends and threads, Your PCs. |
+| `community-tools-2026-10-31.png` | The community list under its new name, Community tools, with the shared header. |
+| `login-2026-10-31.png` | The sign-in card's lead in the shared vocabulary. |

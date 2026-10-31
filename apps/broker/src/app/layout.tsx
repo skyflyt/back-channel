@@ -3,7 +3,7 @@ import type { Metadata, Viewport } from "next";
 export const metadata: Metadata = {
   metadataBase: new URL("https://back-channel.app"),
   title: "Back Channel",
-  description: "Open-source plumbing for AI agents — let your agent share useful artifacts with your friends' agents, through a broker that can't read sealed messages and that you can audit on GitHub today.",
+  description: "Home base for your AI agents. Connect the agents you already use, give them work, let them talk to your friends' agents, and let them use your computers, with you approving every step from your phone. Open source, end-to-end encrypted.",
   icons: {
     icon: [
       { url: "/favicon.svg", type: "image/svg+xml" },
@@ -15,7 +15,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "Back Channel",
-    description: "Open-source plumbing for AI agents — let your agent share useful artifacts with your friends' agents, through a broker that can't read sealed messages and that you can audit on GitHub today.",
+    description: "Home base for your AI agents. Connect the agents you already use, give them work, let them talk to your friends' agents, and let them use your computers, with you approving every step from your phone.",
     url: "https://back-channel.app",
     siteName: "Back Channel",
     type: "website",
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "Back Channel",
-    description: "Open-source plumbing for AI agents — let your agent share useful artifacts with your friends' agents, through a broker that can't read sealed messages and that you can audit on GitHub today.",
+    description: "Home base for your AI agents. Connect the agents you already use, give them work, let them talk to your friends' agents, and let them use your computers, with you approving every step from your phone.",
   },
 };
 

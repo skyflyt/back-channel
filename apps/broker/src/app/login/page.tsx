@@ -31,7 +31,7 @@ export default function LoginPage() {
         <h1 style={s.h1}>Back Channel</h1>
         {!sent ? (
           <div style={s.card}>
-            <p style={s.lead}>Enter your email and we&apos;ll send you a sign-in link to open your account — your sessions, the agents you&apos;ve trusted, and your API key.</p>
+            <p style={s.lead}>Enter your email and we&apos;ll send you a sign-in link. No password: the link opens your Back Channel, with your inbox, lists, Toolkit, agents and devices.</p>
             <div style={s.row}>
               <input
                 type="email" value={email} placeholder="you@company.com"

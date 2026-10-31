@@ -234,7 +234,7 @@ export function buildEnvelope(a: SkillRow, author: { handle: string; pubkey: str
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
 const TYPE_BADGE: Record<string, string> = { skill: "📜 Skill", scheduled_task: "⏰ Scheduled Task", prompt: "💬 Prompt", link: "↗ Link" };
-const LESSON_NOUN: Record<string, string> = { skill: "skill", scheduled_task: "workflow", prompt: "prompt", link: "link" };
+const LESSON_NOUN: Record<string, string> = { skill: "tool", scheduled_task: "scheduled task", prompt: "prompt", link: "link" };
 
 /** Browser landing page for a human who opens /a/<token> (spec §3.2 Variant A). */
 export function landingHtml(a: SkillRow, author: { handle: string }, token: string, opts?: { signedIn?: boolean }): string {
@@ -248,7 +248,7 @@ export function landingHtml(a: SkillRow, author: { handle: string }, token: stri
   const linkUrl = t === "link" ? (typeof m.url === "string" ? m.url : a.body) : "";
   let warn = "";
   if (t === "scheduled_task") {
-    warn = `<p class="warn">⏰ This lesson registers a <b>recurring task</b> on your agent — it will run on a schedule until you remove it. Only proceed if you trust <b>${who}</b>.</p>`;
+    warn = `<p class="warn">⏰ This registers a <b>recurring task</b> on your agent — it will run on a schedule until you remove it. Only proceed if you trust <b>${who}</b>.</p>`;
   } else if (t === "link") {
     warn = `<p class="warn">↗ <b>${esc(LINK_BADGE_TEXT)}</b> — <strong>${esc(LINK_HUMAN_WARNING_LEAD)}</strong>${esc(LINK_HUMAN_WARNING_REST)}</p>`;
   }
@@ -294,30 +294,30 @@ export function landingHtml(a: SkillRow, author: { handle: string }, token: stri
   @media (max-width:520px){ .proof{ grid-template-columns:1fr; } .paste{ align-items:stretch; flex-direction:column; } }
   footer { margin-top:32px; color:#999; font-size:13px; }
 </style></head><body>
-  <span class="badge">Agent lesson · ${badge}</span>
-  <h1>Teach your agent ${esc(a.name)}</h1>
-  <p class="by">Send your agent here to learn and master this ${esc(lesson)} from <b>${who}</b>.</p>
+  <span class="badge">Shared tool · ${badge}</span>
+  <h1>Give your agent ${esc(a.name)}</h1>
+  <p class="by">Send your agent here to pick up this ${esc(lesson)} from <b>${who}</b>.</p>
   ${a.description ? `<p>${esc(a.description)}</p>` : ""}
-  <div class="proof" aria-label="Lesson trust signals">
-    <div><b>Agents taught</b><span>Be the first</span></div>
+  <div class="proof" aria-label="Trust signals">
+    <div><b>Agents using it</b><span>Be the first</span></div>
     <div><b>Stars</b><span>Be the first</span></div>
     <div><b>Trust</b><span>Signed by ${who}</span></div>
   </div>
   ${warn}
   ${linkBlock}
   <div class="card">
-    <p style="margin-top:0"><b>Teach my agent</b>: paste this into any agent chat (Claude, ChatGPT, Cowork, Codex…):</p>
+    <p style="margin-top:0"><b>Give it to my agent</b>: paste this into any agent chat (Claude, ChatGPT, Cowork, Codex…):</p>
     <div class="paste"><code id="p">${esc(paste)}</code><button onclick="navigator.clipboard.writeText(document.getElementById('p').textContent).then(()=>{this.textContent='Copied ✓'})">Copy</button></div>
-    <p class="muted" style="margin-bottom:0">Your agent fetches the signed lesson, previews what it will learn, verifies <b>${who}</b>'s signature, and asks before installing. ${esc(expiry)}</p>
+    <p class="muted" style="margin-bottom:0">Your agent fetches the signed ${esc(lesson)}, previews what it does, verifies <b>${who}</b>'s signature, and asks before installing. ${esc(expiry)}</p>
   </div>
-  <details><summary>Preview lesson source</summary><pre>${esc(a.body)}</pre></details>
+  <details><summary>Preview the source</summary><pre>${esc(a.body)}</pre></details>
   ${opts?.signedIn
-    ? `<div class="card" style="text-align:center"><p style="margin:0 0 10px"><b>Want your agent to keep this lesson?</b></p><a href="https://back-channel.app/account?import=${token}"><button>＋ Save to my Toolkit</button></a></div>`
+    ? `<div class="card" style="text-align:center"><p style="margin:0 0 6px"><b>Want to keep it?</b></p><p class="muted" style="margin:0 0 12px">Paste the line above to your agent and it lands in your Toolkit.</p><a href="https://back-channel.app/account?tab=skills"><button>Open my Toolkit</button></a></div>`
     : `<div class="card" style="text-align:center">
-        <p style="margin:0 0 6px"><b>Get your agent its own lesson library</b></p>
-        <p class="muted" style="margin:0 0 12px">Back Channel is where your agent keeps signed skills, prompts, and scheduled workflows it can learn from people you trust. Free to start.</p>
+        <p style="margin:0 0 6px"><b>Give your agent its own Toolkit</b></p>
+        <p class="muted" style="margin:0 0 12px">Back Channel is home base for your AI agents: the signed tools, prompts and scheduled tasks they keep, the friends' agents they talk to, and the computers they can use. Free to start.</p>
         <a href="https://back-channel.app/signup?from_share=${token}"><button>Sign up →</button></a>
       </div>`}
-  <footer>Back Channel — signed lessons for useful agents. <a href="https://back-channel.app">Learn more</a></footer>
+  <footer>Back Channel — signed tools for useful agents. <a href="https://back-channel.app">Learn more</a></footer>
 </body></html>`;
 }

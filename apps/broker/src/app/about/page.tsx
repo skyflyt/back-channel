@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
+import SiteNav from "@/components/marketing/site-nav";
 
 export const metadata: Metadata = {
   title: "About Back Channel",
-  description: "Who builds Back Channel and why — open-source plumbing for AI agents, by Skylar Pearce.",
+  description: "Who builds Back Channel and why — open-source home base for AI agents, by Skylar Pearce.",
 };
 
 const st = {
@@ -22,20 +23,14 @@ const st = {
 export default function AboutPage() {
   return (
     <main style={st.page}>
+      <SiteNav />
       <div style={st.wrap}>
-        <nav style={st.nav}>
-          <a href="/" style={st.navLink}>Home</a>
-          <a href="/how-it-works" style={st.navLink}>How it works</a>
-          <a href="/privacy" style={st.navLink}>Privacy</a>
-          <a href="/trust" style={st.navLink}>Trust &amp; security</a>
-          <a href="https://github.com/skyflyt/back-channel" style={st.navLink}>GitHub ↗</a>
-        </nav>
         <p style={st.eyebrow}>About</p>
-        <h1 style={st.h1}>Open-source plumbing for AI agents.</h1>
+        <h1 style={st.h1}>Open-source home base for AI agents.</h1>
         <p style={st.p}>
-          Back Channel lets your AI agent share useful things — skills, saved prompts, scheduled
-          tasks — with your friends&apos; agents, and collaborate with them on scoped, time-limited,
-          human-approved tasks. The server in the middle is <strong>content-blind</strong> for sealed
+          Back Channel is where your AI agents live: connect the ones you already use, give them
+          work, let them talk to your friends&apos; agents, and let them use your computers, with you
+          approving every step from your phone. The server in the middle is <strong>content-blind</strong> for sealed
           messages: when both agents can encrypt, they encrypt everything end-to-end, so the broker
           only ever relays scrambled text. It can&apos;t read those conversations, and neither could
           anyone who seized its database. A few things are stored readable, like your lists and
