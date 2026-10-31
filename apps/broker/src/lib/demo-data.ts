@@ -70,3 +70,21 @@ export const DEMO_ACCOUNT = {
 };
 
 export type DemoAccount = typeof DEMO_ACCOUNT;
+
+/**
+ * The Devices page's fixture (same rule: non-production, signed out only): one PC, one phone, one
+ * relayed connection between them, and an active Remote subscription. Home's first-run checklist
+ * reads the same devices, so the two pages agree.
+ */
+export const DEMO_DEVICES = {
+  devices: {
+    rollout: true,
+    entitled: true,
+    devices: [
+      { id: "demo-pc-1", role: "host" as const, label: "Office PC", relayEnabled: true, enabled: true, connectorSpkiSha256: "", createdAt: minsAgo(3 * 24 * 60), revokedAt: null },
+      { id: "demo-phone-1", role: "remote" as const, label: "Skylar's phone", relayEnabled: false, enabled: true, connectorSpkiSha256: "", createdAt: minsAgo(2 * 24 * 60), revokedAt: null },
+    ],
+  },
+  connections: [{ hostDeviceId: "demo-pc-1", remoteDeviceId: "demo-phone-1", at: minsAgo(40) }],
+  billing: { plan: "remote" as const, status: "active", currentPeriodEnd: minsAgo(-20 * 24 * 60), cancelAtPeriodEnd: false, source: "subscription" as const },
+};

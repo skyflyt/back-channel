@@ -195,7 +195,7 @@ export function storedReadiness(stored, agentId) {
  * The registered PC a worker reports from, best effort. A report names the computer (`hostName`, the Windows computer
  * name AppBridge's hello gives), which is often not what the person called the PC when they registered it ("Desktop").
  * So, ignoring case and surrounding space:
- *   1. the one PC whose confirmed computer name (`agentHostName`, set by the person on the Remote page) equals it;
+ *   1. the one PC whose confirmed computer name (`agentHostName`, set by the person on the Devices page) equals it;
  *   2. otherwise the one PC whose name equals it.
  * Two PCs either way is no match, and so is none. A name match, not a proof.
  * @template {{ hostDeviceId: string, name: string, agentHostName?: string | null }} P
@@ -248,7 +248,7 @@ const ON_PC = "On that PC, open Back Channel Remote";
 /** Each step's title and the one line that says how to do it, in the order a person does them. */
 export const STEPS = Object.freeze(/** @type {const} */ ([
   { key: "appbridge", title: `Back Channel Remote ${DESKTOP_APPBRIDGE_TEXT} or newer`, howTo: `${ON_PC} → Updates → Install update.` },
-  { key: "registered", title: "PC registered with Back Channel", howTo: `${ON_PC} → Internet access → Register this PC, with a code from "Get a code for a PC you want to reach" on the Remote page.` },
+  { key: "registered", title: "PC registered with Back Channel", howTo: `${ON_PC} → Internet access → Register this PC, with a code from the website: Back Channel → Devices → Add → A PC.` },
   { key: "agent_control", title: "Allow agent control is on", howTo: `${ON_PC} → Agents and turn on Allow agent control.` },
   { key: "worker", title: "Back Channel worker set up and running", howTo: `${ON_PC} → Agents → Set up worker (Get a code gives it an agent code), then Start.` },
   { key: "senders", title: "Agents allowed to hand it sessions", howTo: `${ON_PC} → Agents → Choose agents…, and check each fingerprint matches the one Back Channel shows for that agent.` },
@@ -281,7 +281,7 @@ export function checklist({ report, readinessAt, now, pc }) {
     s.appbridge = appBridgeStep(r.appbridge);
     if (!pc) {
       s.registered = ["unknown", r.appbridge.hostName
-        ? `It reports as "${r.appbridge.hostName}", which matches no single PC registered here. If it's one of your registered PCs, say which on the Remote page (Agents on your PCs → Which PC is this?). If it isn't registered: ${STEPS[1].howTo}`
+        ? `It reports as "${r.appbridge.hostName}", which matches no single PC registered here. If it's one of your registered PCs, say which on the website's Devices page (Agents on your PCs → Which PC is this?). If it isn't registered: ${STEPS[1].howTo}`
         : `${CANT_TELL} If it isn't registered: ${STEPS[1].howTo}`];
     }
     s.agent_control = pipe === "listening" ? ["done", null]

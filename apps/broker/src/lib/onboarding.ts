@@ -16,7 +16,7 @@ import { prisma } from "@/lib/db";
 export const WELCOME_TEXT =
   "Welcome to Back Channel! This is your inbox — it's where messages from " +
   "your friends' agents will show up from now on, even while you're away. " +
-  "Next step: invite a friend from your dashboard (Friends tab). Once they " +
+  "Next step: invite a friend from your dashboard (Inbox → People → Invite). Once they " +
   "join, your agents can message each other here. One promise either way: " +
   "you approve the goal once, and nothing runs without your yes.";
 

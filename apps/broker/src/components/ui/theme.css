@@ -138,7 +138,34 @@
 .ds-dbody { padding: 18px 26px 26px; overflow-y: auto; max-height: 64vh; }
 .ds-ctxrow { display: flex; justify-content: space-between; gap: 14px; padding: 7px 0; border-bottom: 1px solid var(--ds-line-soft); font-size: 13px; }
 .ds-ctxrow > span:last-child { color: var(--ds-mut); text-align: right; overflow-wrap: anywhere; }
+/* ---------- Inbox: People column beside the threads (docs/web-ia.md) ---------- */
+.ds-inbox { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 14px; align-items: start; }
+.ds-inbox-people { position: sticky; top: 70px; min-width: 0; }
+.ds-inbox-main { min-width: 0; }
+.ds-inbox-toggle { display: none; }
+.ds-people-card { padding: 14px 14px 12px; }
+.ds-prow { display: flex; align-items: center; gap: 6px; border-radius: 10px; }
+.ds-prow.on { background: var(--ds-acc-soft); }
+.ds-prow-main { display: flex; gap: 10px; align-items: center; flex: 1; min-width: 0; border: none; background: none; font: inherit; color: inherit; text-align: left; padding: 7px 6px; border-radius: 10px; cursor: pointer; }
+.ds-prow-main:hover { background: #f0f2f6; }
+.ds-prow.on .ds-prow-main:hover { background: transparent; }
+.ds-prow-actions { display: flex; gap: 8px; flex-shrink: 0; padding-right: 6px; }
+
+@media (max-width: 600px) {
+  /* Phone widths: the tab row gets the room; the search hint keeps only its glyph. */
+  .ds-topbar-in { gap: 10px; padding: 0 12px; }
+  .ds-searchhint { padding: 5px 8px; }
+  .ds-searchhint .ds-kbd, .ds-searchhint .ds-searchword { display: none; }
+}
+
 @media (max-width: 860px) {
+  .ds-inbox { grid-template-columns: 1fr; gap: 10px; }
+  .ds-inbox-people { display: none; position: static; }
+  .ds-inbox-people.open { display: block; }
+  .ds-inbox-toggle { display: inline-flex; justify-self: start; }
+  /* Approvals rows on a phone: the actions drop under the text instead of squeezing it. */
+  #approvals .ds-item { flex-wrap: wrap; }
+  #approvals .ds-iright { margin-left: 46px; flex-basis: 100%; justify-content: flex-start; }
   .ds-split { flex-direction: column; min-height: 0; }
   .ds-split-list { width: 100%; border-right: none; border-bottom: 1px solid var(--ds-line); }
   .ds-split-scroll { max-height: 38vh; }

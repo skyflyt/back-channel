@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { AppShell, type ShellTab } from "@/components/ui/shell";
+import { AppShell } from "@/components/ui/shell";
+import { accountShellTabs } from "@/components/ui/account-nav";
+import { useIsOwner } from "@/components/ui/use-is-owner";
 import { Chip, EmptyState, HealthDot, PersonAvatar, shortHandle } from "@/components/ui/primitives";
 
 interface Frame { from: "visitor" | "host"; seq: number; ts: number; type: string | null; bytes: number; preview: string | null; }
@@ -14,16 +16,6 @@ interface Transcript {
   peers: { visitor: Peer; host: Peer }; frames: Frame[];
 }
 
-const SHELL_TABS: ShellTab[] = [
-  { key: "overview", label: "Overview", href: "/account?tab=overview" },
-  { key: "messages", label: "Inbox", href: "/account?tab=messages" },
-  { key: "lists", label: "Lists", href: "/account?tab=lists" },
-  { key: "friends", label: "Friends", href: "/account?tab=friends" },
-  { key: "skills", label: "Toolkit", href: "/account?tab=skills" },
-  { key: "agents", label: "Agents", href: "/account?tab=agents" },
-  { key: "settings", label: "Settings", href: "/account?tab=settings" },
-  { key: "remote", label: "Remote", href: "/account/remote" },
-];
 
 export default function TranscriptPage() {
   const params = useParams();
@@ -34,6 +26,8 @@ export default function TranscriptPage() {
   const [data, setData] = useState<Transcript | null>(null);
   const [err, setErr] = useState("");
   const feedRef = useRef<HTMLDivElement>(null);
+  // The shared account tabs (components/ui/account-nav.ts), with Admin for the owner.
+  const shellTabs = accountShellTabs(useIsOwner());
 
   // Arriving from the dashboard ("Watch") or an idle-email link sets a
   // bc_session cookie — try it first so the human never pastes a key here.
@@ -86,7 +80,7 @@ export default function TranscriptPage() {
 
   return (
     <AppShell
-      tabs={SHELL_TABS}
+      tabs={shellTabs}
       activeTab="messages"
       userLabel="→"
       userTitle="Back to your account"

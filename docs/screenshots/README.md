@@ -14,3 +14,7 @@ code. Each file name ends with the capture date. They are taken from a local dev
 | `commands-2026-10-31.png` | Commands regrouped by pillar: Get set up, Lists, Toolkit, Friends and threads, Your PCs. |
 | `community-tools-2026-10-31.png` | The community list under its new name, Community tools, with the shared header. |
 | `login-2026-10-31.png` | The sign-in card's lead in the shared vocabulary. |
+| `account-home-2026-10-31.png` | Home after the Phase 1 IA change: the six tabs, the one-line story under the greeting, the Approvals card with one row per source (secret use, agent session, help code, thread, reply, list OK), What's happening with a live agent session, then the existing cards. |
+| `account-inbox-people-2026-10-31.png` | The Inbox with the People column on the left (friends, chips, Invite) beside the thread list and reading pane. |
+| `account-devices-add-2026-10-31.png` | The Devices page (formerly Remote) with the Add flow open on "A PC", then Agents, PCs, Phones and laptops, and the existing cards in their new order. |
+| `account-home-phone-2026-10-31.png` | Home at 390 px wide, with `?firstrun=1` keeping the five-step checklist on screen: the approval actions wrap under their text, and the tab row scrolls. |

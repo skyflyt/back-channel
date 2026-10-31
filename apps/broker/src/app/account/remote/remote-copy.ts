@@ -1,5 +1,5 @@
 /**
- * The words the Remote page uses for a device's role (docs/appbridge-remote-access.md § Two roles).
+ * The words the Devices page uses for a device's role (docs/appbridge-remote-access.md § Two roles).
  *
  * A registered device is one of two things, and the two are easy to mix up: a `host` is a PC you want to
  * reach, and a `remote` is the phone or laptop you reach it from. On 2026-10-23 a laptop that was meant
@@ -11,7 +11,17 @@
 
 export type RemoteRole = "host" | "remote";
 
-/** The two code buttons, in the order the page shows them: the PC first, since that is the one people set up first. */
+/**
+ * The three answers to "What are you adding?" on the Devices page (docs/web-ia.md), in the order shown: the agent
+ * first, then the PC, since that is the device people set up first.
+ */
+export const ADD_CHOICE: Readonly<Record<"agent" | RemoteRole, string>> = Object.freeze({
+  agent: "An agent",
+  host: "A PC",
+  remote: "A phone or laptop",
+});
+
+/** The code button on each device path, stating the direction so the code and the button agree. */
 export const CODE_BUTTON: Readonly<Record<RemoteRole, string>> = Object.freeze({
   host: "Get a code for a PC you want to reach",
   remote: "Get a code for a phone or laptop you reach from",
@@ -33,7 +43,7 @@ export const WHERE_TO_ENTER: Readonly<Record<RemoteRole, string>> = Object.freez
   remote: "On a phone: Back Channel Remote → PCs → Internet access → Register this phone. On a laptop you reach from: Back Channel Remote client → Internet access… → Register as a remote.",
 });
 
-/** The one line under "Add a device", built from the two role lines so they cannot drift apart. */
+/** The one line under "What are you adding?", built from the two role lines so they cannot drift apart. */
 export const ADD_DEVICE_HINT = `Get a one-time code, then enter it on the device. ${WHERE_TO_ENTER.host} ${WHERE_TO_ENTER.remote} Codes work once and expire after 10 minutes.`;
 
 /**

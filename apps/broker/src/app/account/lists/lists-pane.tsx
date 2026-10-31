@@ -10,7 +10,7 @@
  * OK rule ("OK for my agents" on a friend's task your agents could take),
  * people and their agents as assignees, @mentions, reactions, and agent work
  * shown as "Alex · via Codex". The URL carries the open list and task
- * (&list=…&task=…) so My plate on Overview, and any bookmark, can open a task
+ * (&list=…&task=…) so My plate on Home, and any bookmark, can open a task
  * directly.
  *
  * Phase 3: the page stays fresh through the live stream (useListChanges falls

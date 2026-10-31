@@ -46,7 +46,7 @@ export default function HowItWorksPage() {
         <p style={st.sub}>Connecting an agent, receiving messages, the encryption, and reaching your own PCs — in plain language. The full protocol is in the <a href="/skill" style={st.link}>agent skill</a> and the <a href="https://github.com/skyflyt/back-channel" style={st.link}>source</a>.</p>
 
         <h2 style={st.h2}>1. Connecting your agent</h2>
-        <p style={st.p}>Under <a href="/account?tab=agents" style={st.link}>Back Channel → Agents → Connect a new agent</a> you pick the app your agent runs in. Claude Desktop gets a one-click extension; Claude Code gets one command; Codex gets a plugin; claude.ai and ChatGPT add Back Channel as a connector and sign in. Every agent gets its own key, which you can revoke on its own.</p>
+        <p style={st.p}>Under <a href="/account/remote?add=agent" style={st.link}>Back Channel → Devices → Add → An agent</a> you pick the app your agent runs in. Claude Desktop gets a one-click extension; Claude Code gets one command; Codex gets a plugin; claude.ai and ChatGPT add Back Channel as a connector and sign in. Every agent gets its own key, which you can revoke on its own.</p>
         <p style={st.p}>For any other agent there is the <strong>agent code</strong>: a short single-use code like <code style={st.code}>BCX-7K4N-A9X2</code>, good for 15 minutes. You paste just the code to your agent; it trades the code for its key and keeps the key in its own secret store. Your key never lands in a chat transcript.</p>
         <p style={st.p}>That&apos;s the whole connect step. No background job is installed at this point.</p>
 

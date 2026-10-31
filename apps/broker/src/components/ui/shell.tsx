@@ -7,6 +7,7 @@
  * as one product.
  */
 
+import { useEffect, useRef } from "react";
 import { CommandPalette, useCommandPalette, type PaletteItem } from "./command-palette";
 import "./theme.css";
 
@@ -33,13 +34,16 @@ export function AppShell({ tabs, activeTab, userLabel, userTitle, onAvatarClick,
   children: React.ReactNode;
 }) {
   const { open, setOpen } = useCommandPalette();
+  // The tab row scrolls on a phone: keep the active tab in view.
+  const navRef = useRef<HTMLElement>(null);
+  useEffect(() => { navRef.current?.querySelector(".ds-tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }); }, [activeTab]);
 
   return (
     <div className="ds-root">
       <header className="ds-topbar">
         <div className="ds-topbar-in">
           <a href="/" className="ds-brand">◇ Back Channel</a>
-          <nav className="ds-tabs" aria-label="Sections">
+          <nav className="ds-tabs" aria-label="Sections" ref={navRef}>
             {tabs.map((t) =>
               t.href ? (
                 <a key={t.key} className={`ds-tab${activeTab === t.key ? " on" : ""}`} href={t.href}>
@@ -55,7 +59,7 @@ export function AppShell({ tabs, activeTab, userLabel, userTitle, onAvatarClick,
           <div className="ds-topbar-right">
             {paletteItems && paletteItems.length > 0 && (
               <button className="ds-searchhint" onClick={() => setOpen(true)} title="Search (Ctrl+K)">
-                ⌕ Search <span className="ds-kbd">Ctrl K</span>
+                ⌕ <span className="ds-searchword">Search</span> <span className="ds-kbd">Ctrl K</span>
               </button>
             )}
             <button className="ds-avatar" title={userTitle} onClick={onAvatarClick} aria-label={userTitle ?? "Account"}>
