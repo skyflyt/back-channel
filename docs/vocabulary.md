@@ -55,8 +55,8 @@ the name of an app.
 When one app tells the person to do something in another, name the destination the same way
 everywhere: *app → page → control*, using the labels the destination shows today.
 
-- *On the website: Back Channel → Devices → Add.* (Until the Devices tab exists: *Back Channel →
-  Remote → Add a device.*)
+- *On the website: Back Channel → Devices → Add.* (Since 2026-10-31; the choices there are *An agent*,
+  *A PC*, *A phone or laptop*. Friends: *Back Channel → Inbox → People → Invite.*)
 - *On the PC: Back Channel on your PC → Internet access → Register this PC.*
 - *On the phone: Back Channel on your phone → Internet access → Register this phone.*
 
@@ -65,6 +65,10 @@ uses.
 
 ## Not yet renamed
 
-Page and tab labels inside the apps change in later phases (the website's tab merge, the PC
-console's five-page rail, the phone's bottom navigation). Until then, cross-app directions use the
-labels that exist, and the words inside each page follow the canon.
+The website's tabs are merged (Home · Inbox · Lists · Toolkit · Devices · Settings; docs/web-ia.md).
+Page and tab labels inside the other apps change in later phases (the PC console's five-page rail,
+the phone's bottom navigation), so the website still says *Back Channel Remote → Internet access →
+Register this PC* when it points at the PC app, because that is what the PC app shows today. Until
+those phases land, cross-app directions use the labels that exist, and the words inside each page
+follow the canon. The device codes are still minted per role (a PC code, a phone code); the one
+role-less code is Phase 4.

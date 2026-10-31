@@ -2,6 +2,13 @@
 
 **Date:** 2026-07-18/19 · **Branch:** `feat/logged-in-redesign` · **Status:** implemented, preview-only (not merged, not deployed)
 
+> **2026-10-31 — IA change (product-coherence Phase 1).** The tabs are now **Home · Inbox · Lists · Toolkit ·
+> Devices · Settings** (· Admin), defined once in `components/ui/account-nav.ts` and shared by `/account`,
+> `/account/remote`, `/admin` and `/sessions/[id]`. Overview became Home with an Approvals card on top; Friends
+> moved into the Inbox as a People column; Agents moved onto the Devices page (`/account/remote`, formerly
+> Remote) behind one Add button. Old `?tab=` names are aliases. See `docs/web-ia.md`. The rest of this document
+> describes the 2026-07 shell and design system, which are unchanged.
+
 ## The question
 
 What should the logged-in app (account, admin, sessions) look like as a modern SaaS product — structure, nav model, and information hierarchy, not just colors?
