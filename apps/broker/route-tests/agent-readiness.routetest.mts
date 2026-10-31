@@ -280,7 +280,7 @@ test("owner view: stale, missing and matching", async () => {
   assert.deepEqual(shop.pc, { hostDeviceId: PC1, name: "Shop-PC" }, "still where it last reported from");
   assert.deepEqual(office.missing, ["appbridge", "registered", "agent_control", "senders", "claude"]);
   assert.deepEqual(stateOf(office), { appbridge: "unknown", registered: "unknown", agent_control: "needed", worker: "done", senders: "needed", claude: "needed" });
-  assert.equal(office.steps.find((s: Row) => s.key === "claude").howTo, "On that PC, open AppBridge → Agents → Sign in to Claude.");
+  assert.equal(office.steps.find((s: Row) => s.key === "claude").howTo, "On that PC, open Back Channel Remote → Agents → Sign in to Claude.");
   // Two PCs are called "Twin" (any case): no match, so both stay listed with no agent.
   assert.equal(laptop.pc, null);
   assert.equal(stateOf(laptop).registered, "unknown");
@@ -372,7 +372,7 @@ test("machines: each PC lists the agents reporting from it; executors says who i
     { agentId: A.laptop, name: "Laptop Claude", ready: false, missing: ["appbridge", "registered", "agent_control", "worker", "senders", "claude"], hostDeviceId: null, pc: null, reporting: false },
     { agentId: A.office, name: "Office agent", ready: false, missing: ["claude"], hostDeviceId: PC2, pc: "Office PC", reporting: true },
   ]);
-  assert.equal(r.body.howToFix.claude, "On that PC, open AppBridge → Agents → Sign in to Claude.");
+  assert.equal(r.body.howToFix.claude, "On that PC, open Back Channel Remote → Agents → Sign in to Claude.");
   assert.match(r.body.note, /name a ready one as executor/);
   assert.ok(!JSON.stringify(r.body).includes("BEGIN PUBLIC KEY"), "no keys, only names and states");
   assert.equal((await get("machines", { as: KEY.conn })).status, 403, "still full-scope keys only");

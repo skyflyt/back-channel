@@ -80,7 +80,7 @@ const stepsLeft = (n: number) => `${n} step${n === 1 ? "" : "s"} left`;
 function demo(): Reply {
   const t = Date.now();
   const steps = (states: State[], howTo: (string | null)[]): Step[] => [
-    "AppBridge 1.1.33 or newer", "PC registered with Back Channel", "Allow agent control is on", "Back Channel worker set up and running",
+    "Back Channel Remote 1.1.33 or newer", "PC registered with Back Channel", "Allow agent control is on", "Back Channel worker set up and running",
     "Agents allowed to hand it sessions", "Claude signed in",
   ].map((title, i) => ({ step: i + 1, key: ["appbridge", "registered", "agent_control", "worker", "senders", "claude"][i], title, state: states[i], howTo: states[i] === "done" ? null : howTo[i] }));
   const done: State[] = ["done", "done", "done", "done", "done", "done"];
@@ -92,17 +92,17 @@ function demo(): Reply {
         pc: { hostDeviceId: "demo-pc-1", name: "Office PC" }, pcMatchedBy: "name", reportsFrom: "Office PC", steps: steps(done, []), ready: true, missing: [] },
       { agentId: "demo-2", name: "Shop agent", fingerprint: "A0C4-5521-9E7B-08DD", readiness: report("Shop-PC"), readinessAt: new Date(t - 2 * 60_000).toISOString(), reporting: true,
         pc: { hostDeviceId: "demo-pc-2", name: "Shop-PC" }, pcMatchedBy: "confirmed", reportsFrom: "SHOP-7Q2M",
-        steps: steps(["done", "done", "done", "done", "needed", "needed"], [null, null, null, null, "On that PC, open AppBridge → Agents → Choose agents…, and check each fingerprint matches the one Back Channel shows for that agent.", "On that PC, open AppBridge → Agents → Sign in to Claude."]),
+        steps: steps(["done", "done", "done", "done", "needed", "needed"], [null, null, null, null, "On that PC, open Back Channel Remote → Agents → Choose agents…, and check each fingerprint matches the one Back Channel shows for that agent.", "On that PC, open Back Channel Remote → Agents → Sign in to Claude."]),
         ready: false, missing: ["senders", "claude"] },
       { agentId: "demo-4", name: "Desk agent", fingerprint: "77B1-0C3E-D942-5AF0", readiness: report("DESKTOP-K81Q"), readinessAt: new Date(t - 6 * 60_000).toISOString(), reporting: true,
         pc: null, pcMatchedBy: null, reportsFrom: "DESKTOP-K81Q",
-        steps: steps(["done", "unknown", "done", "done", "done", "done"], [null, "It reports as \"DESKTOP-K81Q\", which matches no single PC registered here. If it's one of your registered PCs, say which on the Remote page (Agents on your PCs → Which PC is this?). If it isn't registered: On that PC, open AppBridge → Internet access → Register this PC, with a code from \"Get a code for a PC you want to reach\" on the Remote page.", null, null, null, null]),
+        steps: steps(["done", "unknown", "done", "done", "done", "done"], [null, "It reports as \"DESKTOP-K81Q\", which matches no single PC registered here. If it's one of your registered PCs, say which on the Remote page (Agents on your PCs → Which PC is this?). If it isn't registered: On that PC, open Back Channel Remote → Internet access → Register this PC, with a code from \"Get a code for a PC you want to reach\" on the Remote page.", null, null, null, null]),
         ready: false, missing: ["registered"] },
     ],
     registered: [{ hostDeviceId: "demo-pc-1", name: "Office PC", agentHostName: null }, { hostDeviceId: "demo-pc-2", name: "Shop-PC", agentHostName: "SHOP-7Q2M" },
       { hostDeviceId: "demo-pc-3", name: "Warehouse PC", agentHostName: null }],
     pcs: [{ hostDeviceId: "demo-pc-3", name: "Warehouse PC", note: "No agent set up on this PC yet.", ready: false, missing: ["appbridge", "agent_control", "worker", "senders", "claude"],
-      steps: steps(["unknown", "done", "unknown", "needed", "unknown", "unknown"], Array(6).fill("Back Channel learns this once the worker on that PC reports.").map((x, i) => (i === 3 ? "On that PC, open AppBridge → Agents → Set up worker (Get a code gives it a connect code), then Start." : x))) }],
+      steps: steps(["unknown", "done", "unknown", "needed", "unknown", "unknown"], Array(6).fill("Back Channel learns this once the worker on that PC reports.").map((x, i) => (i === 3 ? "On that PC, open Back Channel Remote → Agents → Set up worker (Get a code gives it an agent code), then Start." : x))) }],
   };
 }
 
@@ -185,11 +185,11 @@ export default function AgentsReadiness() {
     <div className="ds-card" id="agents-on-pcs">
       <div className="ds-cardh">Agents on your PCs</div>
       <p className="ds-cardsub">
-        For one of your agents to use a PC, that PC needs the six steps below. Each is done on the PC itself, in AppBridge → Agents.
+        For one of your agents to use a PC, that PC needs the six steps below. Each is done on the PC itself, in Back Channel Remote → Agents.
         This shows what the Back Channel worker on each PC reports (every 10 minutes). Anything it can&apos;t tell from here says Unknown.
       </p>
 
-      {nothing && <p className="ds-fine" style={{ margin: 0 }}>No PCs or agents set up yet. Register a PC under Add a device below, then set up its worker in AppBridge → Agents on that PC.</p>}
+      {nothing && <p className="ds-fine" style={{ margin: 0 }}>No PCs or agents set up yet. Register a PC under Add a device below, then set up its worker in Back Channel Remote → Agents on that PC.</p>}
 
       {workers.map((a) => {
         const senders = a.readiness?.profiles.remoteApp.senders.filter((s) => s.pinned) ?? [];
@@ -233,7 +233,7 @@ export default function AgentsReadiness() {
           {others.map((a) => (
             <div key={a.agentId} className="ds-item" style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
               <div className="ds-iname" style={{ flex: 1, minWidth: 160 }}>{a.name}</div>
-              <span className="ds-mono ds-fine">{a.fingerprint ?? "not enrolled for Dispatch"}</span>
+              <span className="ds-mono ds-fine">{a.fingerprint ?? "no PC worker yet"}</span>
             </div>
           ))}
         </>

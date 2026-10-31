@@ -41,7 +41,7 @@ const SESSION_TOOLS = [
       "and the agents on it (agents: the Back Channel workers that report from that PC, each ready or with the setup steps it is missing). executors lists every agent of your person's " +
       "that could drive an app on a PC, with where it reports from, ready and missing; howToFix says how your person fixes each missing step. " +
       "To have an agent on the PC drive the app, name a ready executor as executor in bc_remote_session_start. If none is ready, don't start a session that can't run: " +
-      "tell your person exactly what's missing, using howToFix (each step is done on that PC, in AppBridge → Agents). " +
+      "tell your person exactly what's missing, using howToFix (each step is done on that PC, in Back Channel Remote → Agents). " +
       "Back Channel doesn't know which apps a PC has. Call this before bc_remote_session_start.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },

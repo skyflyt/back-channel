@@ -23,10 +23,14 @@ export const CODE_FOR: Readonly<Record<RemoteRole, string>> = Object.freeze({
   remote: "phone or laptop you reach from",
 });
 
-/** Where to type the code, per role: the PC's owner console, or the phone's and the Windows client's own Internet access dialog. */
+/**
+ * Where to type the code, per role: the PC's owner console, or the phone's and the Windows client's own
+ * Internet access dialog. Each direction is app → page → control, with the labels those apps show today
+ * (docs/vocabulary.md § Cross-app directions).
+ */
 export const WHERE_TO_ENTER: Readonly<Record<RemoteRole, string>> = Object.freeze({
   host: "On the PC: Back Channel Remote → Internet access → Register this PC.",
-  remote: "On a phone: Servers → Internet access. On a laptop you reach from: Back Channel Remote client → Internet access… → Register as a remote.",
+  remote: "On a phone: Back Channel Remote → PCs → Internet access → Register this phone. On a laptop you reach from: Back Channel Remote client → Internet access… → Register as a remote.",
 });
 
 /** The one line under "Add a device", built from the two role lines so they cannot drift apart. */
@@ -38,8 +42,8 @@ export const ADD_DEVICE_HINT = `Get a one-time code, then enter it on the device
  */
 export function deviceRoleLine(role: RemoteRole, relayEnabled: boolean): string {
   if (role === "host") return relayEnabled ? "PC · reachable" : "PC · reachable once Internet access is on at the PC";
-  return "Remote · reaches your PCs";
+  return "Phone or laptop · reaches your PCs";
 }
 
 /** The fallback name of an unlabelled device, by role. */
-export const ROLE_NOUN: Readonly<Record<RemoteRole, string>> = Object.freeze({ host: "PC", remote: "Remote" });
+export const ROLE_NOUN: Readonly<Record<RemoteRole, string>> = Object.freeze({ host: "PC", remote: "Phone or laptop" });

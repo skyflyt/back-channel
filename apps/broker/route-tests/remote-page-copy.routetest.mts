@@ -28,18 +28,20 @@ test("the add-device hint says where each role's code is typed, PC first, and ne
   assert.ok(ADD_DEVICE_HINT.startsWith("Get a one-time code, then enter it on the device. "));
   assert.ok(ADD_DEVICE_HINT.indexOf(WHERE_TO_ENTER.host) < ADD_DEVICE_HINT.indexOf(WHERE_TO_ENTER.remote));
   assert.match(WHERE_TO_ENTER.host, /^On the PC: Back Channel Remote → Internet access → Register this PC\.$/);
-  assert.match(WHERE_TO_ENTER.remote, /On a laptop you reach from: Back Channel Remote client → Internet access… → Register as a remote\./);
+  // Every direction is app → page → control, with the label each app shows (docs/vocabulary.md).
+  assert.match(WHERE_TO_ENTER.remote, /^On a phone: Back Channel Remote → PCs → Internet access → Register this phone\. /);
+  assert.match(WHERE_TO_ENTER.remote, /On a laptop you reach from: Back Channel Remote client → Internet access… → Register as a remote\.$/);
   assert.match(ADD_DEVICE_HINT, /Codes work once and expire after 10 minutes\.$/);
 });
 
-test("Your devices shows the role plainly: PC · reachable, Remote · reaches your PCs", () => {
+test("Your devices shows the role plainly: PC · reachable, Phone or laptop · reaches your PCs", () => {
   assert.equal(deviceRoleLine("host", true), "PC · reachable");
   assert.equal(deviceRoleLine("host", false), "PC · reachable once Internet access is on at the PC");
-  assert.equal(deviceRoleLine("remote", true), "Remote · reaches your PCs");
-  assert.equal(deviceRoleLine("remote", false), "Remote · reaches your PCs");
-  assert.deepEqual(ROLE_NOUN, { host: "PC", remote: "Remote" });
+  assert.equal(deviceRoleLine("remote", true), "Phone or laptop · reaches your PCs");
+  assert.equal(deviceRoleLine("remote", false), "Phone or laptop · reaches your PCs");
+  assert.deepEqual(ROLE_NOUN, { host: "PC", remote: "Phone or laptop" });
 });
 
 test("the agent-readiness how-to for an unregistered PC names the PC button, not the card", () => {
-  assert.equal(HOW_TO.registered, `On that PC, open AppBridge → Internet access → Register this PC, with a code from "${CODE_BUTTON.host}" on the Remote page.`);
+  assert.equal(HOW_TO.registered, `On that PC, open Back Channel Remote → Internet access → Register this PC, with a code from "${CODE_BUTTON.host}" on the Remote page.`);
 });

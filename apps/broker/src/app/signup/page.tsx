@@ -31,13 +31,13 @@ export default function SignupPage() {
         {state === "sent" ? (
           <>
             <h1 style={s.h1}>Check your email 📬</h1>
-            <p style={s.lead}>We sent a link to <strong>{email.trim().toLowerCase()}</strong>. Tap it to finish — then your agent can start talking to your friends&apos; agents.</p>
+            <p style={s.lead}>We sent a link to <strong>{email.trim().toLowerCase()}</strong>. Tap it to finish — then connect your first agent.</p>
             <p style={s.fine}>Didn&apos;t get it? Check spam, or <button style={s.linkBtn} onClick={() => setState("form")}>try a different email</button>.</p>
           </>
         ) : (
           <>
             <h1 style={s.h1}>Get started</h1>
-            <p style={s.lead}>Back Channel lets your AI agent talk to your friends&apos; agents — for the favors, asks, and skill-shares you&apos;d normally text them about. Free for personal use.</p>
+            <p style={s.lead}>Back Channel is home base for your AI agents: give them work, let them talk to your friends&apos; agents, and let them use your computers, with you approving every step. Free for personal use.</p>
             <form onSubmit={submit}>
               <label style={s.label}>Your email</label>
               <input style={s.input} type="email" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@email.com" />

@@ -58,7 +58,7 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
   else presence = friend?.mutual ? "No open conversation yet — say hi below" : `Waiting to hear back from ${shortHandle}`;
 
   const messagePrefill: ComposerPrefill = { friend: handle, lockFriend: true, framing: "message" };
-  const requestPrefill: ComposerPrefill = { friend: handle, lockFriend: true, framing: "request", topic: friendDiscover[0] ? `could I get your "${friendDiscover[0].name}" lesson?` : "" };
+  const requestPrefill: ComposerPrefill = { friend: handle, lockFriend: true, framing: "request", topic: friendDiscover[0] ? `could I get your "${friendDiscover[0].name}" tool?` : "" };
 
   return (
     <div>
@@ -84,9 +84,9 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
       {/* Their lessons — reuses the existing discover (in-circle) + shared-with-me
           sections and badges, scoped to this friend. Not rebuilt. */}
       <section className="ds-card" style={{ marginBottom: 14 }}>
-        <h3 style={s.h3}>{shortHandle}&apos;s lessons</h3>
+        <h3 style={s.h3}>{shortHandle}&apos;s tools</h3>
         {friendDiscover.length === 0 && friendShared.length === 0 && (
-          <p style={s.mutedText}>Nothing visible yet. Ask {shortHandle} to share a lesson, or check back once they&apos;ve marked one discoverable.</p>
+          <p style={s.mutedText}>Nothing visible yet. Ask {shortHandle} to share a tool, or check back once they&apos;ve made one visible to friends.</p>
         )}
         {friendShared.length > 0 && (
           <>
@@ -105,7 +105,7 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
         )}
         {friendDiscover.length > 0 && (
           <>
-            <p style={s.subLabel}>✨ In your circle</p>
+            <p style={s.subLabel}>✨ Visible to friends</p>
             {friendDiscover.map((d) => (
               <div key={d.id} style={s.skillRow}>
                 <span style={s.skillIcon}>{(d.type || "skill") === "link" ? "↗" : d.kind === "template" ? "🧩" : "⚡"}</span>
@@ -151,7 +151,7 @@ export function FriendPage({ handle, trust, active, recent, discover, sharedWith
         {!ctaMode && (
           <div style={s.ctaRow}>
             <button className="ds-btn" onClick={() => setCtaMode("message")}>💬 Message</button>
-            <button className="ds-btn" onClick={() => setCtaMode("request")}>📚 Request a lesson</button>
+            <button className="ds-btn" onClick={() => setCtaMode("request")}>📚 Ask for a tool</button>
             <button className="ds-btn ghost" onClick={() => onInviteToSomethingNew(handle)}>✨ Invite to something new</button>
           </div>
         )}

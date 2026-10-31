@@ -125,7 +125,7 @@ test("checklist: a fresh, complete report is ready; each step says what's missin
 
   const signedOut = RD.checklist({ report: parse(report({ runtime: { adapter: "claude", path: null, installed: true, signedIn: false } })), readinessAt: T0, now: T0, pc });
   assert.deepEqual([signedOut.ready, signedOut.missing], [false, ["claude"]]);
-  assert.equal(howTo(signedOut, "claude"), "On that PC, open AppBridge → Agents → Sign in to Claude.");
+  assert.equal(howTo(signedOut, "claude"), "On that PC, open Back Channel Remote → Agents → Sign in to Claude.");
   const noClaude = RD.checklist({ report: parse(report({ runtime: { adapter: "claude", path: null, installed: false, signedIn: null } })), readinessAt: T0, now: T0, pc });
   assert.equal(states(noClaude).claude, "needed");
   assert.match(howTo(noClaude, "claude"), /isn't installed/);
@@ -158,13 +158,13 @@ test("step 1 is AppBridge 1.1.33 or newer, told by the version the worker's hell
     const c = RD.checklist({ report: parse(report({ appbridge: { hostName: "Shop-PC", reason: null, ...appbridge } })), readinessAt: T0, now: T0, pc });
     return [states(c).appbridge, howTo(c, "appbridge")];
   };
-  assert.equal(RD.STEPS[0].title, "AppBridge 1.1.33 or newer");
+  assert.equal(RD.STEPS[0].title, "Back Channel Remote 1.1.33 or newer");
   assert.deepEqual(step1({ pipe: "listening", version: "1.1.33.0" }), ["done", null]);
   assert.deepEqual(step1({ pipe: "listening", version: "1.2.0.0" })[0], "done");
   assert.deepEqual(step1({ pipe: "refused", version: "2.0.0.0" })[0], "done", "agent control off still said its version");
   const old = step1({ pipe: "listening", version: "1.1.32.9" });
   assert.equal(old[0], "needed");
-  assert.match(old[1], /It has AppBridge 1\.1\.32\.9; agents need 1\.1\.33 or newer to use the whole PC\. On that PC, open AppBridge → Updates → Install update\./);
+  assert.match(old[1], /It has Back Channel Remote 1\.1\.32\.9; agents need 1\.1\.33 or newer to use the whole PC\. On that PC, open Back Channel Remote → Updates → Install update\./);
   const silent = step1({ pipe: "listening", version: null });
   assert.equal(silent[0], "needed", "an AppBridge that answers without a version is older than 1.1.33");
   assert.match(silent[1], /older than 1\.1\.33/);
@@ -206,6 +206,6 @@ test("a registered PC with no worker reporting from it: registered, the worker n
   assert.equal(p.note, "No agent set up on this PC yet.");
   assert.deepEqual([p.ready, p.missing], [false, ["appbridge", "agent_control", "worker", "senders", "claude"]]);
   assert.match(p.steps.find((s) => s.key === "worker").howTo, /Agents → Set up worker/);
-  assert.equal(RD.HOW_TO.claude, "On that PC, open AppBridge → Agents → Sign in to Claude.");
+  assert.equal(RD.HOW_TO.claude, "On that PC, open Back Channel Remote → Agents → Sign in to Claude.");
   assert.deepEqual(Object.keys(RD.HOW_TO), ["appbridge", "registered", "agent_control", "worker", "senders", "claude"]);
 });

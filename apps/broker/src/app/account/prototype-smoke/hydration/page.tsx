@@ -1,19 +1,12 @@
-"use client";
+import { notFound } from "next/navigation";
+import HydrationCanary from "./canary";
 
-/** PROTOTYPE — minimal hydration canary (branch proto/logged-in-redesign). Delete with the prototype. */
-
-import { useEffect, useState } from "react";
-
-// Intentionally NOT prod-gated: this page exists to test hydration under the real
-// production server (server.mjs). It renders no data and is deleted with the branch work.
-export default function HydrationCanary() {
-  const [n, setN] = useState(0);
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => { setMounted(true); document.title = "HYDRATED"; }, []);
-  return (
-    <main style={{ fontFamily: "monospace", padding: 40 }}>
-      <h1 id="canary" data-mounted={mounted ? "yes" : "no"}>canary: {mounted ? "HYDRATED" : "ssr-only"}</h1>
-      <button onClick={() => setN(n + 1)}>clicked {n} times</button>
-    </main>
-  );
+/**
+ * Hydration canary (docs/logged-in-redesign.md § The server.mjs hydration question). It exists
+ * to prove React commits under the custom server, so it stays; but it is a dev page, not a
+ * public one, so production answers 404.
+ */
+export default function HydrationCanaryPage() {
+  if (process.env.NODE_ENV === "production") notFound();
+  return <HydrationCanary />;
 }

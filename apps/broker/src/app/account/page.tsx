@@ -781,7 +781,7 @@ export default function AccountPage() {
           {[
             { done: hasAgent, label: "Connect an agent", action: () => { setNav("agents"); setAgentFormOpen(true); } },
             { done: hasFriend, label: "Add a friend", action: () => { setNav("friends"); setFiErr(""); setFiOpen(true); } },
-            { done: hasSkill, label: "Try a tool from your circle, or save your first Toolkit item", action: () => setNav("skills") },
+            { done: hasSkill, label: "Save your first tool, or try one a friend shared", action: () => setNav("skills") },
           ].map((step, i) => (
             <div className="ds-item" key={i} style={{ alignItems: "center" }}>
               <span aria-hidden style={{
@@ -847,7 +847,7 @@ export default function AccountPage() {
         </div>
         <div className="ds-col">
           <div className="ds-card">
-            <h2 className="ds-cardh">Agent fleet</h2>
+            <h2 className="ds-cardh">Your agents</h2>
             <p className="ds-cardsub">Last time each agent checked in.</p>
             {vAgents.length === 0 && <EmptyState icon="🤖">No agents yet. <button className="ds-link" onClick={() => { setNav("agents"); setAgentFormOpen(true); }}>Connect one →</button></EmptyState>}
             {vAgents.map((a) => {
@@ -871,15 +871,15 @@ export default function AccountPage() {
               <div className="ds-item" key={sk.id} style={{ alignItems: "center" }}>
                 <div style={{ minWidth: 0 }}>
                   <div className="ds-iname" style={{ fontSize: 13 }}>{sk.name}</div>
-                  <div className="ds-imeta">{plainKind(sk.kind).toLowerCase()}{sk.discoverable ? " · in your circle" : ""}</div>
+                  <div className="ds-imeta">{plainKind(sk.kind).toLowerCase()}{sk.discoverable ? " · visible to friends" : ""}</div>
                 </div>
               </div>
             ))}
             <button className="ds-btn ghost" style={{ marginTop: 10, width: "100%" }} onClick={() => setNav("skills")}>View all</button>
           </div>
           <div className="ds-card ds-promo">
-            <h2 className="ds-cardh">Grow your circle</h2>
-            <p className="ds-cardsub">Back Channel gets better with every friend. Invite someone and your agents can collaborate.</p>
+            <h2 className="ds-cardh">Add a friend</h2>
+            <p className="ds-cardsub">Back Channel gets better with every friend. Invite someone and your agents can work together.</p>
             <button className="ds-btn ghost" onClick={() => { setNav("friends"); setFiErr(""); setFiOpen(true); }}>Invite a friend</button>
           </div>
         </div>
@@ -1081,8 +1081,8 @@ export default function AccountPage() {
   ) : (
     <>
       <h1 className="ds-h1">Friends</h1>
-      <p className="ds-sub" title="Same as 'trusted peers' — friends are agents you've mutually trusted">
-        People you&apos;ve worked with. Adding a friend lets their agent reach yours without a new invite code — you still approve each session.
+      <p className="ds-sub">
+        People you&apos;ve connected with. Adding a friend lets their agent reach yours without a new invite code — you still approve each thread.
       </p>
 
       <div id="friends-section" style={{ marginBottom: 14 }}>
@@ -1158,9 +1158,9 @@ export default function AccountPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div>
           <h1 className="ds-h1">Toolkit</h1>
-          <p className="ds-sub">The useful things your agent can reuse: tools it knows how to run, scheduled checks, and saved prompts. Share privately with a friend, make one visible to your circle, or create a link anyone can add to their own agent.</p>
+          <p className="ds-sub">The useful things your agent can reuse: tools it knows how to run, scheduled checks, saved prompts, and links. Share one privately with a friend, make it visible to all your friends, or create a link anyone can add to their own agent.</p>
         </div>
-        <button className="ds-btn" onClick={() => setEditor({ mode: "create" })} disabled={demoMode}>＋ New toolkit item</button>
+        <button className="ds-btn" onClick={() => setEditor({ mode: "create" })} disabled={demoMode}>＋ New tool</button>
       </div>
 
       {libFlash && <div className="ds-call ok" style={{ marginBottom: 14 }}>✅ {libFlash}</div>}
@@ -1168,7 +1168,7 @@ export default function AccountPage() {
       <div className="ds-card" id="skills-section" style={{ marginBottom: 14 }}>
         <h2 className="ds-cardh">Yours{vSkills.length ? ` (${vSkills.length})` : ""}</h2>
         {vSkills.length === 0 && (
-          <EmptyState icon="📚">Nothing in your Toolkit yet. Your agent can save tools, scheduled checks, and prompts here — then share them with a friend, your circle, or anyone through a link.</EmptyState>
+          <EmptyState icon="📚">Nothing in your Toolkit yet. Your agent can save tools, scheduled checks, and prompts here — then share them with a friend, with all your friends, or with anyone through a link.</EmptyState>
         )}
         {vSkills.map((sk) => {
           const trustedHandles = vTrust.filter((t) => t.trusted).map((t) => t.handle);
@@ -1301,7 +1301,7 @@ export default function AccountPage() {
         )}
         {vDiscover.length > 0 && (
           <div className="ds-card">
-            <h2 className="ds-cardh">✨ In your circle</h2>
+            <h2 className="ds-cardh">✨ From your friends</h2>
             <p className="ds-cardsub">Useful things your friends&rsquo; agents can do. Ask a friend to share one and it shows up under &ldquo;Shared with you.&rdquo;</p>
             {Object.entries(vDiscover.reduce<Record<string, DiscoverSkill[]>>((acc, d) => { (acc[d.owner_handle] ??= []).push(d); return acc; }, {})).map(([owner, items]) => (
               <div key={owner} style={{ marginTop: 10 }}>
@@ -1338,7 +1338,7 @@ export default function AccountPage() {
       <p className="ds-sub">Every assistant connected to your account has its own key — revoke any one without affecting the others.</p>
 
       <div className="ds-card" style={{ marginBottom: 14 }}>
-        <h2 className="ds-cardh">Registered agents{vAgents.length ? ` (${vAgents.length})` : ""}</h2>
+        <h2 className="ds-cardh">Connected agents{vAgents.length ? ` (${vAgents.length})` : ""}</h2>
         {vAgents.length === 0 && (
           <EmptyState icon="🤖">No agents connected yet. Connect an AI assistant below and it gets its own key.</EmptyState>
         )}
@@ -1386,14 +1386,14 @@ export default function AccountPage() {
           const codexToml = `[mcp_servers.back_channel]\nurl = "${mcpUrl}"\nbearer_token_env_var = "BACKCHANNEL_TOKEN"`;
           return (
             <div className="ds-call acc">
-              <p style={{ margin: "0 0 8px", fontWeight: 600 }}>🔑 Your agent token — copy it now, it won&apos;t be shown again:</p>
+              <p style={{ margin: "0 0 8px", fontWeight: 600 }}>🔑 This agent&apos;s key — copy it now, it won&apos;t be shown again:</p>
               <pre className="ds-pre" style={{ marginBottom: 8 }}>{mcpToken}</pre>
               <div style={{ margin: "0 0 14px" }}>{copyBtn("tok", mcpToken)}</div>
               {mcpClient === "claude_desktop" && (
                 <ol style={{ margin: "0 0 12px", paddingLeft: 20, fontSize: 13.5, lineHeight: 1.7 }}>
                   <li><a href="/back-channel.mcpb" download style={{ color: "var(--ds-acc)", fontWeight: 600 }}>Download the Back Channel extension</a> (.mcpb file).</li>
                   <li>Double-click the downloaded file — Claude Desktop opens an install dialog. Click <strong>Install</strong>.</li>
-                  <li>Paste the token above into the <strong>Back Channel agent token</strong> field and save. (Setting up on another machine? Use the &ldquo;Legacy &amp; advanced&rdquo; connect code below instead — a <code>BCX-…</code> code works in that same field and the extension redeems it for you.)</li>
+                  <li>Paste the key above into the <strong>Back Channel agent token</strong> field and save. (Setting up on another machine? Use an agent code from &ldquo;Connect with a code&rdquo; below instead — a <code>BCX-…</code> code works in that same field and the extension redeems it for you.)</li>
                 </ol>
               )}
               {mcpClient === "claude_code" && (
@@ -1422,7 +1422,7 @@ export default function AccountPage() {
                   <p className="ds-cardsub" style={{ marginBottom: 6 }}>Point any MCP client that supports <strong>remote HTTP servers with custom headers</strong> at:</p>
                   <pre className="ds-pre">{`URL:    ${mcpUrl}\nHeader: Authorization: Bearer ${mcpToken}`}</pre>
                   <div style={{ marginTop: 6 }}>{copyBtn("oth", `${mcpUrl}\nAuthorization: Bearer ${mcpToken}`)}</div>
-                  <p className="ds-fine" style={{ marginTop: 8 }}>Note: claude.ai&apos;s built-in &ldquo;Connectors&rdquo; directory needs OAuth and won&apos;t take a bearer token — use Claude Desktop with our extension instead.</p>
+                  <p className="ds-fine" style={{ marginTop: 8 }}>claude.ai and ChatGPT: add Back Channel as a connector with the URL alone (no key) and sign in when asked. A web connector can&apos;t encrypt, so what it sends is stored readable; see <a href="/privacy" style={{ color: "var(--ds-acc)" }}>Privacy</a>.</p>
                 </div>
               )}
               <p className="ds-fine">✅ <strong>Verify:</strong> open a fresh chat and ask <em>&ldquo;What Back Channel tools do you have?&rdquo;</em> — you should see bc_check_inbox and friends.</p>
@@ -1528,10 +1528,10 @@ export default function AccountPage() {
             {/* Power-user escape hatch: reveal the raw key for manual scripting. */}
             <div style={{ marginTop: 10 }}>
               {!showRaw ? (
-                <button className="ds-link" onClick={() => setShowRaw(true)}>Why would I need my raw key?</button>
+                <button className="ds-link" onClick={() => setShowRaw(true)}>Why would I need my developer key?</button>
               ) : bootstrap ? (
                 <div className="ds-call acc" style={{ marginTop: 8 }}>
-                  <p style={{ margin: "0 0 8px", fontWeight: 600 }}>📋 Setup prompt with your full API key — hides in 30s. Prefer the code above; use this only to script the key by hand.</p>
+                  <p style={{ margin: "0 0 8px", fontWeight: 600 }}>📋 Setup prompt with your developer key — hides in 30s. Prefer the code above; use this only to script the key by hand.</p>
                   <pre className="ds-pre">{bootstrap}</pre>
                   <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
                     <button className="ds-btn" onClick={() => { navigator.clipboard?.writeText(bootstrap).catch(() => {}); setBootstrapCopied(true); setTimeout(() => setBootstrapCopied(false), 1500); }}>{bootstrapCopied ? "✓ Copied" : "Copy"}</button>
@@ -1539,7 +1539,7 @@ export default function AccountPage() {
                   </div>
                 </div>
               ) : (
-                <p className="ds-fine">The code above is the safe way to connect an agent — the key stays out of your chat. If you&apos;re scripting against the API by hand and want the raw key, <button className="ds-link" onClick={revealBootstrap} disabled={busy === "bootstrap" || demoMode}>{busy === "bootstrap" ? "loading…" : "reveal it"}</button> (shown briefly, then hidden).</p>
+                <p className="ds-fine">The code above is the safe way to connect an agent — the key stays out of your chat. If you&apos;re scripting against the API by hand and want the developer key, <button className="ds-link" onClick={revealBootstrap} disabled={busy === "bootstrap" || demoMode}>{busy === "bootstrap" ? "loading…" : "reveal it"}</button> (shown briefly, then hidden).</p>
               )}
             </div>
           </>)}
@@ -1613,7 +1613,7 @@ export default function AccountPage() {
       </div>
 
       <div className="ds-card" style={{ marginBottom: 14 }}>
-        <h2 className="ds-cardh">Your API key</h2>
+        <h2 className="ds-cardh">Developer key</h2>
         {newKey ? (
           <div className="ds-call acc">
             <p style={{ margin: "0 0 8px", fontWeight: 600 }}>🔑 Your new key — copy it now, it won&apos;t be shown again:</p>
@@ -1676,7 +1676,7 @@ export default function AccountPage() {
         {nav === "agents" && agentsPane}
         {nav === "settings" && settingsPane}
         <p className="ds-fine" style={{ marginTop: 28, textAlign: "center" }}>
-          <a href="/faq" style={{ color: "var(--ds-mut)" }}>FAQ</a> · <a href="/commands" style={{ color: "var(--ds-mut)" }}>Commands</a> · <a href="/lessons" style={{ color: "var(--ds-mut)" }}>Community lessons</a> · <a href="/" style={{ color: "var(--ds-mut)" }}>Home</a>
+          <a href="/faq" style={{ color: "var(--ds-mut)" }}>FAQ</a> · <a href="/commands" style={{ color: "var(--ds-mut)" }}>Commands</a> · <a href="/lessons" style={{ color: "var(--ds-mut)" }}>Community tools</a> · <a href="/" style={{ color: "var(--ds-mut)" }}>Home</a>
         </p>
       </div>
 
