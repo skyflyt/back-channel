@@ -70,5 +70,5 @@ Page and tab labels inside the other apps change in later phases (the PC console
 the phone's bottom navigation), so the website still says *Back Channel Remote → Internet access →
 Register this PC* when it points at the PC app, because that is what the PC app shows today. Until
 those phases land, cross-app directions use the labels that exist, and the words inside each page
-follow the canon. The device codes are still minted per role (a PC code, a phone code); the one
-role-less code is Phase 4.
+follow the canon. The phone's labels are Android 1.1.10.0's (Settings → Back Channel account). One
+device code serves any device since 2026-10-31; the app it is typed into decides the role.

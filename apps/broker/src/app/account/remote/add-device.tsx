@@ -4,13 +4,14 @@
  * "Add": the Devices page's one entry point for connecting anything (docs/web-ia.md, plan §4.2).
  *
  * One button asks "What are you adding?" with three choices. An agent opens the Agents section's connect form
- * (its client picker). A PC mints a host device code; a phone or laptop mints a remote one. Each of the two
- * device paths ends in one code and the one line saying where to type it (remote-copy.ts). The codes are the
- * existing role-specific ones from POST /api/appbridge/v1/account/device-codes; a role-less code is Phase 4.
+ * (its client picker). A PC and a phone or laptop both mint the same kind of code, one without a role
+ * (POST /api/appbridge/v1/account/device-codes with no `role`, docs/appbridge-remote-access.md § Two roles):
+ * the app the person types it into decides whether the device is reached or reaches, so a laptop added as
+ * "A PC" but typed into the client still works. The choice only picks which where-to-type line to show.
  */
 
 import { useEffect, useState } from "react";
-import { ADD_CHOICE, ADD_DEVICE_HINT, CODE_BUTTON, CODE_FOR, WHERE_TO_ENTER, type RemoteRole } from "./remote-copy";
+import { ADD_CHOICE, ADD_DEVICE_HINT, ANY_CODE_NOTE, CODE_BUTTON, CODE_FOR, WHERE_TO_ENTER, type RemoteRole } from "./remote-copy";
 
 export type AddChoice = "agent" | "host" | "remote";
 interface MintedCode { code: string; expiresAt: string; role: RemoteRole }
@@ -34,11 +35,12 @@ export default function AddDevice({ demo, open, choice, onOpen, onChoice }: {
 
   useEffect(() => { if (!minted) return; const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, [minted]);
 
+  // `role` is the path the person chose (it picks the where-to-type line); the code itself is minted without one.
   async function mint(role: RemoteRole) {
     setBusy(true); setMessage(""); setMinted(null);
     const r = await fetch("/api/appbridge/v1/account/device-codes", {
       method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() },
-      body: JSON.stringify({ role, ...(label.trim() ? { label: label.trim() } : {}) }),
+      body: JSON.stringify(label.trim() ? { label: label.trim() } : {}),
     });
     setBusy(false);
     if (r.ok) { const j = await r.json(); setMinted({ code: j.code, expiresAt: j.expiresAt, role }); setLabel(""); return; }
@@ -95,10 +97,10 @@ export default function AddDevice({ demo, open, choice, onOpen, onChoice }: {
                       ? `For a ${CODE_FOR[minted.role]}. Expires in ${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, "0")}.`
                       : "This code has expired. Get a new one."}
                   </p>
-                  <p className="ds-fine" style={{ margin: "6px 0 0" }}>{WHERE_TO_ENTER[minted.role]} It works once and expires after 10 minutes.</p>
+                  <p className="ds-fine" style={{ margin: "6px 0 0" }}>{WHERE_TO_ENTER[minted.role]} It works once and expires after 10 minutes. {ANY_CODE_NOTE}</p>
                 </div>
               )}
-              {!minted && <p className="ds-fine" style={{ margin: "10px 0 0" }}>{WHERE_TO_ENTER[deviceRole]} The code works once and expires after 10 minutes.</p>}
+              {!minted && <p className="ds-fine" style={{ margin: "10px 0 0" }}>{WHERE_TO_ENTER[deviceRole]} The code works once and expires after 10 minutes. {ANY_CODE_NOTE}</p>}
               {message && <p className="ds-fine" style={{ marginTop: 12 }} aria-live="polite">{message}</p>}
             </div>
           )}
