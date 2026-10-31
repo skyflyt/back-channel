@@ -68,6 +68,7 @@ hides once all five are done.
 ## Devices → Add
 
 `apps/broker/src/app/account/remote/add-device.tsx`. *An agent* opens the Agents section's connect form (its
-client picker). *A PC* mints a host device code, *A phone or laptop* a remote one, with the existing
-`POST /api/appbridge/v1/account/device-codes`; each path ends in one code and the one line saying where to type
-it (`remote-copy.ts`). A role-less code, with the role claimed at redemption, is Phase 4.
+client picker). *A PC* and *A phone or laptop* both mint the same kind of code, one without a role
+(`POST /api/appbridge/v1/account/device-codes` with no `role`; docs/appbridge-remote-access.md § Two roles): the
+app the code is typed into decides whether the device is reached or reaches, so a laptop added as a PC but typed
+into the client still works. The choice only picks which where-to-type line is shown (`remote-copy.ts`).
