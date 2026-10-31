@@ -177,7 +177,7 @@ function AddFriend({ listId, members, autoFocus, onAdded }: { listId: string; me
       {loadErr && <p className="ds-fine" style={{ margin: "4px 0" }}>{loadErr} <button className="ds-link" onClick={() => void load()}>Try again</button></p>}
       {friends && friends.length === 0 && (
         <p className="ds-fine" style={{ margin: "4px 0" }}>
-          You can share a list with friends on Back Channel. You don&apos;t have any yet. <a className="ds-link" href="/account?tab=friends">Add one on the Friends tab</a>.
+          You can share a list with friends on Back Channel. You don&apos;t have any yet. <a className="ds-link" href="/account?tab=friends">Add one from the Inbox&apos;s People column</a>.
         </p>
       )}
       {friends && friends.length > 0 && candidates.length === 0 && <p className="ds-fine" style={{ margin: "4px 0" }}>All your friends are on this list.</p>}

@@ -308,7 +308,7 @@ export function ListSettings({ detail, focusMembers, onChanged, onLeft, onDuplic
 
       <div className="ds-label" style={{ marginTop: 18 }}>Which of your agents can use this list</div>
       <p className="ds-fine" style={{ margin: "0 0 4px" }}>Work: add, pick up and finish tasks. View: read and comment. None: can&apos;t see it. Changes apply on the agent&apos;s next request.</p>
-      {(detail.your_agents ?? []).length === 0 && <p className="ds-fine">No agents connected yet. Connect one from the Agents tab.</p>}
+      {(detail.your_agents ?? []).length === 0 && <p className="ds-fine">No agents connected yet. Connect one from Devices → Add.</p>}
       {(detail.your_agents ?? []).map((a: YourAgent) => {
         const activity = agentActivity(a.last_used_at);
         const runtime = a.runtime_type ? RUNTIME_LABEL[a.runtime_type] ?? a.runtime_type : "";

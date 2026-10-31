@@ -1,6 +1,6 @@
 "use client";
 /**
- * "My plate" on Overview: what's waiting on you (finished work to check,
+ * "My plate" on Home: what's waiting on you (finished work to check,
  * friends' tasks your agents need your OK for, and mentions of you), what you
  * and your agents are doing, what's next for you, and what your agents
  * finished in the last day, across every list. A task opens in the Lists

@@ -538,7 +538,7 @@ export function blockedReason(e: EntryView): string | null {
   return i >= 0 ? e.text.slice(i + 2) : null;
 }
 
-/** Runtime names, matching the Agents tab. */
+/** Runtime names, matching the Devices page's Agents section. */
 export const RUNTIME_LABEL: Record<string, string> = {
   cowork: "Cowork", codex: "Codex", claude_code: "Claude Code", chatgpt: "ChatGPT", other: "Other",
 };

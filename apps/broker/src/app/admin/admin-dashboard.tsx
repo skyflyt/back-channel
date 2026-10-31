@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell, type ShellTab } from "@/components/ui/shell";
+import { accountShellTabs } from "@/components/ui/account-nav";
 import { Chip, MetricCard, SkeletonRows } from "@/components/ui/primitives";
 
 type Win = { "24h": number; "7d": number; "30d": number };
@@ -55,17 +56,8 @@ type UserRow = {
 };
 type UsersReply = { total: number; page: number; limit: number; users: UserRow[] };
 
-const TABS: ShellTab[] = [
-  { key: "overview", label: "Overview", href: "/account?tab=overview" },
-  { key: "messages", label: "Inbox", href: "/account?tab=messages" },
-  { key: "lists", label: "Lists", href: "/account?tab=lists" },
-  { key: "friends", label: "Friends", href: "/account?tab=friends" },
-  { key: "skills", label: "Toolkit", href: "/account?tab=skills" },
-  { key: "agents", label: "Agents", href: "/account?tab=agents" },
-  { key: "settings", label: "Settings", href: "/account?tab=settings" },
-  { key: "remote", label: "Remote", href: "/account/remote" },
-  { key: "admin", label: "Admin", href: "/admin" },
-];
+// The shared account tabs (components/ui/account-nav.ts); the owner is the only one who sees this page.
+const TABS: ShellTab[] = accountShellTabs(true);
 
 const STATUS_LABEL: Record<Status, string> = {
   active_7d: "Active · 7d", active_30d: "Active · 30d", dormant: "Dormant", never: "Never active", reserved: "Reserved",
