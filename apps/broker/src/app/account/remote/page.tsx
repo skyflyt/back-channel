@@ -24,10 +24,10 @@
  * opens the Add flow on that path, `?add=1` opens the chooser.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/ui/shell";
-import { accountShellTabs } from "@/components/ui/account-nav";
-import { useIsOwner } from "@/components/ui/use-is-owner";
+import { accountShellTabs, DEVICES_SECTIONS } from "@/components/ui/account-nav";
+import { useAccountChrome } from "@/components/ui/use-account-chrome";
 import { DEMO_DEVICES } from "@/lib/demo-data";
 import AgentSessions, { consumeApprovalLink } from "./agent-sessions";
 import SupportSessions from "./support-sessions";
@@ -81,7 +81,7 @@ function PlanCard({ billing, busy, message, onOpen }: { billing: BillingStatus; 
   } else if (troubled) line = "Your last payment didn't go through, so remote access is paused. Update your payment method to turn it back on.";
   else line = "Subscribe to Back Channel Remote to reach your PCs through the relay when you're away from home. Cancel any time.";
   return (
-    <div className="ds-card">
+    <div className="ds-card" id="plan">
       <div className="ds-cardh">Plan</div>
       <p className="ds-cardsub" style={{ margin: 0 }}>{line}</p>
       {billing.source === "subscription" && troubled && (
@@ -136,7 +136,25 @@ export default function DevicesPage() {
   // The Add flow, and the Agents section's connect form it hands off to.
   const [addOpen, setAddOpen] = useState(false);
   const [addChoice, setAddChoice] = useState<AddChoice | null>(null);
-  const tabs = accountShellTabs(useIsOwner());
+  // The shared chrome: who's signed in, the Admin tab for the owner, and the "waiting on you" count.
+  const chrome = useAccountChrome({ demo });
+  const tabs = accountShellTabs(chrome.owner);
+  // The jump list shows only the cards that actually rendered: several hide themselves (no billing, support
+  // unavailable, signed out), and a link to a card that isn't there is worse than no link.
+  const cardsRef = useRef<HTMLDivElement>(null);
+  const [present, setPresent] = useState<string[]>([]);
+  useEffect(() => {
+    const root = cardsRef.current;
+    if (!root) return;
+    const scan = () => setPresent((prev) => {
+      const next = DEVICES_SECTIONS.filter((s) => root.querySelector(`#${s.id}`)).map((s) => s.id);
+      return next.join() === prev.join() ? prev : next;
+    });
+    scan();
+    const mo = new MutationObserver(scan);
+    mo.observe(root, { childList: true, subtree: true });
+    return () => mo.disconnect();
+  }, [state]);
 
   // Billing is optional: when it isn't configured the status route answers 503 and the plan card hides.
   const loadBilling = useCallback(async (): Promise<BillingStatus | null> => {
@@ -237,7 +255,8 @@ export default function DevicesPage() {
     : "Remote access is enabled for your account.";
 
   return (
-    <AppShell tabs={tabs} activeTab="devices" demoBanner={demo ? (
+    <AppShell tabs={tabs} activeTab="devices" userLabel={chrome.userLabel} owner={chrome.owner} waiting={chrome.waiting} signedOut={state === "unauth"}
+      userTitle={chrome.handle ? `${chrome.displayName || chrome.handle} (${chrome.handle})` : undefined} demoBanner={demo ? (
       <div className="ds-demo-banner">Previewing with <strong>demo data</strong> — sign in (needs a local DB) for your real account. Actions are disabled.</div>
     ) : undefined}>
       <div className="ds-wrap">
@@ -253,8 +272,16 @@ export default function DevicesPage() {
         )}
         {state === "error" && <div className="ds-card"><p className="ds-fine">Couldn&apos;t load your devices. Refresh to try again.</p></div>}
 
+        {state === "ready" && data && present.length > 2 && (
+          <nav className="ds-jump" aria-label="On this page">
+            {DEVICES_SECTIONS.filter((s) => present.includes(s.id)).map((s) => (
+              <a key={s.id} href={`#${s.id}`}>{s.label}</a>
+            ))}
+          </nav>
+        )}
+
         {state === "ready" && data && (
-          <div style={{ display: "grid", gap: 16 }}>
+          <div style={{ display: "grid", gap: 16 }} ref={cardsRef}>
             <AddDevice demo={demo} open={addOpen} choice={addChoice} onOpen={setAddOpen} onChoice={(c) => { setAddChoice(c); if (c === "agent") setTimeout(() => document.getElementById("connect-agent")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }} />
 
             <AgentsSection demo={demo} connectOpen={addChoice === "agent"} onConnectOpenChange={(open) => { if (open) { setAddOpen(true); setAddChoice("agent"); } else setAddChoice((c) => (c === "agent" ? null : c)); }} />
@@ -279,14 +306,14 @@ export default function DevicesPage() {
 
             {billing && <PlanCard billing={billing} busy={busy} message={billingMessage} onOpen={openStripe} />}
 
-            <div className="ds-card">
+            <div className="ds-card" id="get-apps">
               <div className="ds-cardh">Get the apps</div>
               <p className="ds-cardsub">Install Back Channel on the PC you want to reach, and on the phone or laptop you&apos;ll reach it from. Each release lists what it runs on and how to install it. These are early pilot builds.</p>
               <a className="ds-btn ghost" style={{ textDecoration: "none", display: "inline-block" }} href={RELEASES_URL} target="_blank" rel="noopener noreferrer">Downloads and release notes</a>
               <p className="ds-fine" style={{ margin: "10px 0 0" }}>Opens the releases page on GitHub in a new tab.</p>
             </div>
 
-            <div className="ds-card">
+            <div className="ds-card" id="connections">
               <div className="ds-cardh">Connection attempts in the last 7 days</div>
               <p className="ds-cardsub">Which device was let through the relay to which PC, and when. Each entry is an attempt: it is recorded when the connection is allowed, so one that then failed to connect still appears. Nothing else is recorded, and entries are deleted after 7 days.</p>
               {connections.length === 0 && <p className="ds-fine" style={{ margin: 0 }}>No relayed connection attempts in the last 7 days.</p>}

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/ui/shell";
 import { accountShellTabs } from "@/components/ui/account-nav";
-import { useIsOwner } from "@/components/ui/use-is-owner";
+import { useAccountChrome } from "@/components/ui/use-account-chrome";
 import { Chip, EmptyState, HealthDot, PersonAvatar, shortHandle } from "@/components/ui/primitives";
 
 interface Frame { from: "visitor" | "host"; seq: number; ts: number; type: string | null; bytes: number; preview: string | null; }
@@ -27,7 +27,8 @@ export default function TranscriptPage() {
   const [err, setErr] = useState("");
   const feedRef = useRef<HTMLDivElement>(null);
   // The shared account tabs (components/ui/account-nav.ts), with Admin for the owner.
-  const shellTabs = accountShellTabs(useIsOwner());
+  const chrome = useAccountChrome();
+  const shellTabs = accountShellTabs(chrome.owner);
 
   // Arriving from the dashboard ("Watch") or an idle-email link sets a
   // bc_session cookie — try it first so the human never pastes a key here.
@@ -82,9 +83,11 @@ export default function TranscriptPage() {
     <AppShell
       tabs={shellTabs}
       activeTab="messages"
-      userLabel="→"
-      userTitle="Back to your account"
-      onAvatarClick={() => { window.location.href = "/account"; }}
+      userLabel={chrome.userLabel}
+      userTitle={chrome.handle ? `${chrome.displayName || chrome.handle} (${chrome.handle})` : undefined}
+      owner={chrome.owner}
+      waiting={chrome.waiting}
+      signedOut={chrome.ready && !chrome.signedIn}
     >
       <main className="ds-wrap">
         <h1 className="ds-h1">Watch this session</h1>

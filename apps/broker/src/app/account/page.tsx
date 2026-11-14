@@ -33,7 +33,8 @@ import { PeopleColumn } from "./people-column";
 import { HomeApprovals, LiveAgentSessions, useHomeActivity } from "./home-approvals";
 import { FirstRunChecklist } from "./first-run-checklist";
 import { AppShell, type ShellTab } from "@/components/ui/shell";
-import { ACCOUNT_TABS, ADMIN_TAB, resolveTab, type AccountPaneKey } from "@/components/ui/account-nav";
+import { ACCOUNT_TABS, ADMIN_TAB, resolveTab, resolveSettingsTarget, SETTINGS_SECTIONS, SETTINGS_TARGETS, type AccountPaneKey, type SettingsSectionKey } from "@/components/ui/account-nav";
+import { waitingTotal } from "@/components/ui/use-account-chrome";
 import { type PaletteItem } from "@/components/ui/command-palette";
 import { Chip, EmptyState, HealthDot, MetricCard, PersonAvatar, SkeletonRows, agoShort, shortHandle, initialsOf } from "@/components/ui/primitives";
 import { DEMO_ACCOUNT } from "@/lib/demo-data";
@@ -82,14 +83,27 @@ type NavKey = AccountPaneKey;
  * aliases (account-nav.ts): overview → home; friends → the Inbox with People showing; agents → the Devices page's
  * Agents section, which is another route, so that one redirects. ?friend= alone opens the Inbox on that person.
  */
-function initialNav(): { nav: NavKey; people: boolean; friend: string | null } {
+function initialNav(): { nav: NavKey; people: boolean; friend: string | null; section: string | null } {
   const params = new URLSearchParams(window.location.search);
   const friend = params.get("friend");
+  const section = params.get("section");
   const r = resolveTab(params.get("tab"));
-  if (r?.tab === "devices" && r.href) { window.location.replace(r.href); return { nav: "home", people: false, friend }; }
-  if (r && r.tab !== "devices" && r.tab !== "admin") return { nav: r.tab, people: r.people, friend };
-  return { nav: friend ? "messages" : "home", people: false, friend };
+  if (r?.tab === "devices" && r.href) { window.location.replace(r.href); return { nav: "home", people: false, friend, section: null }; }
+  if (r && r.tab !== "devices" && r.tab !== "admin") return { nav: r.tab, people: r.people, friend, section };
+  return { nav: friend ? "messages" : "home", people: false, friend, section: null };
 }
+
+/**
+ * Inbox check intervals offered (minutes). Capped at an hour on purpose: the skill schedules the check as
+ * `*\/N` cron or `schtasks /sc minute /mo N`, and neither recipe covers N over 59 correctly yet, so a longer
+ * value would be saved but not honored. The server accepts up to 1440 for when the skill learns to.
+ */
+const CADENCE_PRESETS = [5, 10, 15, 30, 60];
+const CADENCE_MAX = 60;
+const LIVE_PRESETS = [5, 15, 30, 60];
+const minutesLabel = (n: number) => n % 1440 === 0 ? (n === 1440 ? "Once a day" : `Every ${n / 1440} days`) : n % 60 === 0 ? (n === 60 ? "Every hour" : `Every ${n / 60} hours`) : `Every ${n} min`;
+/** Which Settings sections have their Advanced disclosure open, remembered in this browser. */
+const ADV_STORAGE = "bc.settings.advanced";
 
 interface TrustPeer { handle: string; last_session_at: string | null; trusted: boolean; mutual: boolean; established_at: string | null; }
 interface InboxReq { id: string; requester_handle: string; scopes: string[]; message: string | null; created_at: string; expires_at: string; }
@@ -124,7 +138,7 @@ export default function AccountPage() {
   const [inbox, setInbox] = useState<InboxReq[]>([]);
   const [audit, setAudit] = useState<AuditEvent[]>([]);
   const [showAudit, setShowAudit] = useState(false);
-  const [showDevKey, setShowDevKey] = useState(false); // collapse the raw API key
+  const [copiedKey, setCopiedKey] = useState<string | null>(null); // "Copied ✓" on a Settings copy button
   const [skills, setSkills] = useState<Skill[]>([]);
   const [discover, setDiscover] = useState<DiscoverSkill[]>([]);
   const [sharedWithMe, setSharedWithMe] = useState<SharedSkill[]>([]);
@@ -170,6 +184,16 @@ export default function AccountPage() {
   const passkeys = usePasskeys(state === "ok");
   const [passkeyFor, setPasskeyFor] = useState<{ retry: () => void } | null>(null);
   const [keyErr, setKeyErr] = useState(""); // a refused key rotation, in words
+  // Settings: the section showing, which sections have Advanced open, and where to scroll once rendered.
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("account");
+  const [advOpen, setAdvOpen] = useState<Partial<Record<SettingsSectionKey, boolean>>>({});
+  const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
+  // Per-setting save feedback: "Saved" or the refusal, keyed by the setting.
+  const [saveNote, setSaveNote] = useState<{ key: string; ok: boolean; text: string } | null>(null);
+  const [favorPeer, setFavorPeer] = useState("");
+  const [favorTokens, setFavorTokens] = useState("");
+  const [cadenceCustom, setCadenceCustom] = useState("");
+  const [liveCustom, setLiveCustom] = useState("");
 
   const loadSessions = useCallback(async () => {
     try {
@@ -255,8 +279,64 @@ export default function AccountPage() {
   // Where the URL says to start: the pane (aliases included), the People column, a friend's page.
   useEffect(() => {
     const r = initialNav();
-    setNav(r.nav); setPeopleOpen(r.people); setFriendView(r.friend); setNavReady(true);
+    setNav(r.nav); setPeopleOpen(r.people); setFriendView(r.friend);
+    if (r.nav === "settings") {
+      const t = resolveSettingsTarget(r.section);
+      setSettingsSection(t.section);
+      if (t.advanced) setAdvOpen((o) => ({ ...o, [t.section]: true }));
+      if (t.anchor) setPendingAnchor(t.anchor);
+    }
+    // Which Advanced disclosures this browser left open last time (read here, not during render, for hydration).
+    try { const saved = JSON.parse(localStorage.getItem(ADV_STORAGE) ?? "{}"); if (saved && typeof saved === "object") setAdvOpen((o) => ({ ...saved, ...o })); } catch { /* ignore */ }
+    setNavReady(true);
   }, []);
+
+  // Keep ?section= in step with Settings, and drop it on other panes.
+  useEffect(() => {
+    if (!navReady) return;
+    const url = new URL(window.location.href);
+    const want = nav === "settings" ? settingsSection : null;
+    if (url.searchParams.get("section") === want) return;
+    if (want) url.searchParams.set("section", want); else url.searchParams.delete("section");
+    window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+  }, [nav, settingsSection, navReady]);
+
+  // A deep link or palette pick into Settings: scroll to the control and flash it once it has rendered.
+  useEffect(() => {
+    if (!pendingAnchor || nav !== "settings" || state === "loading") return;
+    const t = setTimeout(() => {
+      const el = document.getElementById(pendingAnchor);
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        el.classList.add("ds-flash-target");
+        setTimeout(() => el.classList.remove("ds-flash-target"), 1700);
+      }
+      setPendingAnchor(null);
+    }, 60);
+    return () => clearTimeout(t);
+  }, [pendingAnchor, nav, settingsSection, state]);
+
+  // Settings → Activity loads the log on arrival instead of behind another button.
+  useEffect(() => {
+    if (nav === "settings" && settingsSection === "activity" && state === "ok" && !showAudit) { setShowAudit(true); void loadAudit(); }
+  }, [nav, settingsSection, state, showAudit, loadAudit]);
+
+  const toggleAdv = (section: SettingsSectionKey, open: boolean) => {
+    setAdvOpen((o) => {
+      const next = { ...o, [section]: open };
+      try { localStorage.setItem(ADV_STORAGE, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
+  /** Open Settings at a section or a target inside one (SETTINGS_TARGETS), in place. */
+  const openSettings = (target: string) => {
+    const t = resolveSettingsTarget(target);
+    setNav("settings"); setFriendView(null); setSettingsSection(t.section);
+    if (t.advanced) setAdvOpen((o) => ({ ...o, [t.section]: true }));
+    setPendingAnchor(t.anchor ?? null);
+    if (!t.anchor) window.scrollTo({ top: 0 });
+  };
 
   // Keep ?tab= in sync with the active nav so the current view is always a shareable/
   // bookmarkable deep link. replaceState avoids polluting back-button history.
@@ -325,16 +405,51 @@ export default function AccountPage() {
   // A mint that went through the passkey step-up: the server's answer, or the prompt's own (cancelled, no network).
   const mintError = (r: Guarded) => (r.status ? exchangeErrorMessage(r.status, r.body) : r.message ?? "Couldn't reach Back Channel. Check your connection and try again.");
 
-  const toggleNotify = async () => {
-    const next = !notify; setNotify(next); setBusy("notify");
-    await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ notify_idle_frames: next }) }).catch(() => setNotify(!next));
+  /**
+   * PATCH /api/account/settings and say what happened next to the control: "Saved", or that it didn't save and
+   * the old value is back. The server clamps numbers to the ranges it honors, so the reply's value is the truth.
+   */
+  const patchSettings = async (key: string, body: Record<string, unknown>, revert: () => void): Promise<Record<string, unknown> | null> => {
+    setBusy(key); setSaveNote(null);
+    let reply: Record<string, unknown> | null = null;
+    try {
+      const r = await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify(body) });
+      if (r.ok) reply = await r.json().catch(() => ({}));
+    } catch { /* reported below */ }
+    if (reply) {
+      setMe((prev) => (prev ? { ...prev, ...reply } as Me : prev));
+      setSaveNote({ key, ok: true, text: "Saved" });
+      setTimeout(() => setSaveNote((n) => (n?.key === key && n.ok ? null : n)), 2500);
+    } else {
+      revert();
+      setSaveNote({ key, ok: false, text: "Couldn't save. Your previous setting is still in place; try again." });
+    }
     setBusy("");
+    return reply;
+  };
+  const savedNote = (key: string) => saveNote?.key === key
+    ? (saveNote.ok ? <span className="ds-saved" aria-live="polite">✓ {saveNote.text}</span> : <p className="ds-call danger" style={{ margin: "8px 0 0", padding: "8px 12px" }} aria-live="polite">{saveNote.text}</p>)
+    : null;
+
+  const toggleNotify = async () => {
+    const next = !notify; setNotify(next);
+    await patchSettings("notify", { notify_idle_frames: next }, () => setNotify(!next));
   };
 
   const saveLiveDefault = async (minutes: number) => {
-    setLiveDefault(minutes); setBusy("live");
-    await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ live_mode_default_minutes: minutes }) }).catch(() => {});
-    setBusy("");
+    const prev = liveDefault; setLiveDefault(minutes);
+    const r = await patchSettings("live", { live_mode_default_minutes: minutes }, () => setLiveDefault(prev));
+    if (r && typeof r.live_mode_default_minutes === "number") setLiveDefault(r.live_mode_default_minutes);
+  };
+
+  const saveFavorLimits = async () => {
+    const body: Record<string, number> = {};
+    const peer = Number(favorPeer), tokens = Number(favorTokens);
+    if (favorPeer.trim() !== "" && Number.isFinite(peer)) body.favor_per_peer_daily = peer;
+    if (favorTokens.trim() !== "" && Number.isFinite(tokens)) body.favor_global_tokens_daily = tokens;
+    if (!Object.keys(body).length) { setSaveNote({ key: "limits", ok: false, text: "Enter a number in at least one box." }); return; }
+    const r = await patchSettings("limits", body, () => {});
+    if (r) { setFavorPeer(""); setFavorTokens(""); }
   };
 
   const inviteFriend = async () => {
@@ -350,15 +465,14 @@ export default function AccountPage() {
   };
 
   const toggleInboxCheck = async () => {
-    const next = !inboxEnabled; setInboxEnabled(next); setBusy("inboxchk");
-    await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ inbox_check_enabled: next }) }).catch(() => setInboxEnabled(!next));
-    setBusy("");
+    const next = !inboxEnabled; setInboxEnabled(next);
+    await patchSettings("inboxchk", { inbox_check_enabled: next }, () => setInboxEnabled(!next));
   };
 
   const saveInboxMinutes = async (minutes: number) => {
-    setInboxMinutes(minutes); setBusy("inboxmin");
-    await fetch("/api/account/settings", { method: "PATCH", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf() }, body: JSON.stringify({ inbox_check_minutes: minutes }) }).catch(() => {});
-    setBusy("");
+    const prev = inboxMinutes; setInboxMinutes(minutes);
+    const r = await patchSettings("inboxmin", { inbox_check_minutes: minutes }, () => setInboxMinutes(prev));
+    if (r && typeof r.inbox_check_minutes === "number") setInboxMinutes(r.inbox_check_minutes);
   };
 
   const sendToMyAgent = async (sk: SharedSkill) => {
@@ -466,6 +580,11 @@ export default function AccountPage() {
   // Default reading-pane selection: first item that needs the user, else first thread.
   // The Devices cards' reads and the plate, for Approvals and what's happening (once, here, before any early return).
   const activity = useHomeActivity(demoMode, state === "ok");
+  // The one "waiting on you" number: the Approvals card's total, also on the Home tab, the metric and the title.
+  const waiting = waitingTotal({
+    threadRequests: vInbox.length, replies: yoursThreads.length, listOks: activity.okRequests.length, reviews: activity.reviews.length,
+    secrets: activity.secretOpen.length, helpCodes: activity.supportPending.length, pcSessions: activity.agentPending.length,
+  });
 
   const effectiveSel: InboxSel = inboxSel ?? (vInbox[0] ? { kind: "req", id: vInbox[0].id } : vActive[0] ? { kind: "thread", id: vActive[0].session_id } : null);
 
@@ -478,19 +597,23 @@ export default function AccountPage() {
 
   const paletteItems: PaletteItem[] = useMemo(() => {
     const items: PaletteItem[] = [];
-    for (const t of ACCOUNT_TABS) items.push({ id: `nav-${t.key}`, group: "Navigate", label: t.label, icon: "→", onSelect: () => { if (t.key === "devices") window.location.assign(t.href); else goTab(t.key as NavKey); } });
-    if (me?.admin) items.push({ id: "nav-admin", group: "Navigate", label: ADMIN_TAB.label, icon: "→", onSelect: () => window.location.assign(ADMIN_TAB.href) });
+    for (const t of ACCOUNT_TABS) items.push({ id: `nav-${t.key}`, group: "Go to", label: t.label, icon: "→", onSelect: () => { if (t.key === "devices") window.location.assign(t.href); else goTab(t.key as NavKey); } });
+    if (me?.admin) items.push({ id: "nav-admin", group: "Go to", label: ADMIN_TAB.label, icon: "→", onSelect: () => window.location.assign(ADMIN_TAB.href) });
     items.push({ id: "act-compose", group: "Actions", label: "New message…", icon: "✎", onSelect: () => { setNav("messages"); setFriendView(null); setInboxSel({ kind: "compose" }); } });
     items.push({ id: "act-invite", group: "Actions", label: "Invite a friend…", icon: "＋", onSelect: openInvite });
-    items.push({ id: "act-connect", group: "Actions", label: "Connect an agent…", icon: "⚡", onSelect: () => window.location.assign("/account/remote?add=agent") });
     items.push({ id: "act-newlist", group: "Actions", label: "New list…", icon: "☑", onSelect: () => { openListsAt({ newList: true }); goTab("lists"); } });
+    items.push({ id: "act-newtool", group: "Actions", label: "New tool…", icon: "⚒", onSelect: () => { goTab("skills"); if (!demoMode) setEditor({ mode: "create" }); } });
+    items.push({ id: "act-approvals", group: "Actions", label: "See what's waiting on me", meta: waiting ? `${waiting} waiting` : "Approvals", icon: "✓", onSelect: () => { goTab("home"); setTimeout(() => document.getElementById("approvals")?.scrollIntoView({ block: "start" }), 50); } });
+    // Settings opens in place here (the shell's base items would reload the page).
+    for (const s of SETTINGS_SECTIONS) items.push({ id: `set-${s.key}`, group: "Settings", label: `Settings: ${s.label}`, keywords: s.blurb, icon: "⚙", onSelect: () => openSettings(s.key) });
+    for (const [key, t] of Object.entries(SETTINGS_TARGETS)) items.push({ id: `set-t-${key}`, group: "Settings", label: t.label, meta: `${SETTINGS_SECTIONS.find((s) => s.key === t.section)?.label ?? ""}${t.advanced ? " · Advanced" : ""}`, keywords: t.keywords, icon: "⚙", onSelect: () => openSettings(key) });
     for (const t of vActive) items.push({ id: `t-${t.session_id}`, group: "Threads", label: shortHandle(t.peer_handle), meta: t.goal ?? undefined, icon: "💬", onSelect: () => { setNav("messages"); setFriendView(null); setInboxSel({ kind: "thread", id: t.session_id }); } });
     for (const f of vTrust) items.push({ id: `f-${f.handle}`, group: "Friends", label: shortHandle(f.handle), meta: f.mutual ? "mutual friend" : "invite pending", icon: "☺", onSelect: () => openFriend(f.handle) });
     for (const sk of vSkills) items.push({ id: `s-${sk.id}`, group: "Toolkit", label: sk.name, meta: sk.description ?? undefined, icon: "⚒", onSelect: () => goTab("skills") });
     for (const sk of vShared) items.push({ id: `sw-${sk.id}`, group: "Toolkit", label: sk.name, meta: `shared by ${shortHandle(sk.owner_handle)}`, icon: "🎁", onSelect: () => goTab("skills") });
     return items;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vActive, vTrust, vSkills, vShared, me?.admin]);
+  }, [vActive, vTrust, vSkills, vShared, me?.admin, waiting, demoMode]);
 
   /* ---------------------------- shell states ---------------------------- */
 
@@ -498,8 +621,11 @@ export default function AccountPage() {
     tabs: shellTabs,
     activeTab: nav,
     userLabel: vMe ? initialsOf(vMe.display_name || vMe.handle) : "?",
-    userTitle: vMe ? `${vMe.display_name || vMe.handle} — settings` : undefined,
-    onAvatarClick: () => setNav("settings"),
+    userTitle: vMe ? `${vMe.display_name || vMe.handle} (${vMe.handle})` : undefined,
+    onAvatarClick: () => openSettings("account"),
+    onSignOut: signOut,
+    owner: !!me?.admin,
+    waiting: state === "ok" || demoMode ? waiting : null,
     paletteItems,
     demoBanner: demoMode ? (
       <div className="ds-demo-banner">
@@ -528,7 +654,7 @@ export default function AccountPage() {
 
   if (!demoMode && (state === "unauth" || state === "error" || !me)) {
     return (
-      <AppShell tabs={[]} userLabel="?" >
+      <AppShell tabs={[]} userLabel="?" signedOut={state === "unauth"}>
         <div className="ds-wrap" style={{ maxWidth: 520 }}>
           <h1 className="ds-h1">Your account</h1>
           <div className="ds-card" style={{ marginTop: 14 }}>
@@ -585,8 +711,8 @@ export default function AccountPage() {
         onOpenLists={() => goTab("lists")} />
 
       <div className="ds-metrics">
-        <MetricCard label="Needs you" value={needsYou} accent={needsYou > 0}
-          note={`${vInbox.length} approval${vInbox.length === 1 ? "" : "s"} · ${yoursThreads.length} repl${yoursThreads.length === 1 ? "y" : "ies"}`} />
+        <MetricCard label="Waiting on you" value={waiting} accent={waiting > 0}
+          note={waiting ? `${needsYou} in the Inbox · ${waiting - needsYou} elsewhere` : "You're all caught up"} />
         <MetricCard label="Open threads" value={vActive.length} note={`${vRecent.length} finished recently`} />
         <MetricCard label="Agents healthy" value={<>{healthyAgents}<span style={{ color: "var(--ds-mut)", fontSize: 16 }}> / {vAgents.length}</span></>}>
           <div className="ds-hbar"><div style={{ width: `${vAgents.length ? (healthyAgents / vAgents.length) * 100 : 0}%` }} /></div>
@@ -1049,116 +1175,241 @@ export default function AccountPage() {
   );
 
   /* ------------------------------ settings ------------------------------ */
+  // One section at a time (account-nav.ts SETTINGS_SECTIONS); each keeps its deeper controls behind one
+  // "Advanced" disclosure that this browser remembers. Deep links: ?tab=settings&section=<section or target>.
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "https://back-channel.app";
+  const copyText = (key: string, text: string) => { navigator.clipboard?.writeText(text).catch(() => {}); setCopiedKey(key); setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1500); };
+  const sectionInfo = SETTINGS_SECTIONS.find((s) => s.key === settingsSection) ?? SETTINGS_SECTIONS[0];
+
+  const advanced = (section: SettingsSectionKey, summary: string, body: React.ReactNode) => (
+    <details className="ds-adv" open={!!advOpen[section]}
+      onToggle={(e) => { const o = (e.currentTarget as HTMLDetailsElement).open; if (o !== !!advOpen[section]) toggleAdv(section, o); }}>
+      <summary>Advanced: {summary}</summary>
+      <div style={{ marginTop: 6 }}>{body}</div>
+    </details>
+  );
+
+  /** A setting: what it is and why it matters on the left, the control on the right. */
+  const settingRow = (title: React.ReactNode, desc: React.ReactNode, control: React.ReactNode, id?: string) => (
+    <div className="ds-item" id={id}>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div className="ds-iname">{title}</div>
+        {desc && <div className="ds-igoal">{desc}</div>}
+      </div>
+      <div className="ds-iright">{control}</div>
+    </div>
+  );
+
+  // The stored value is always listed, even one set some other way, so the select never shows a wrong choice.
+  const cadenceOptions = Array.from(new Set([...CADENCE_PRESETS, inboxMinutes])).sort((a, b) => a - b);
+  const liveOptions = Array.from(new Set([...LIVE_PRESETS, liveDefault])).sort((a, b) => a - b);
+
+  const settingsSections: Record<SettingsSectionKey, React.ReactNode> = {
+    account: (
+      <>
+        <div className="ds-card" style={{ marginBottom: 14 }}>
+          <h3 className="ds-cardh">Your account</h3>
+          <div style={{ marginTop: 8 }}>
+            <div className="ds-ctxrow"><span>Name</span><span>{m.display_name || "not set"}</span></div>
+            <div className="ds-ctxrow"><span>Handle</span><span className="ds-mono">{m.handle}</span></div>
+            <div className="ds-ctxrow"><span>Email</span><span>{m.email} {m.email_verified ? <Chip tone="ok">verified</Chip> : <Chip tone="warn">not verified</Chip>}</span></div>
+            <div className="ds-ctxrow"><span>Member since</span><span>{new Date(m.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</span></div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
+            <a className="ds-btn ghost" style={{ textDecoration: "none" }} href="/account/remote#plan">Plan and billing</a>
+            <button id="set-signout" className="ds-btn ghost" onClick={signOut} disabled={demoMode}>Sign out</button>
+          </div>
+        </div>
+        <div className="ds-card ds-desk-only">
+          <h3 className="ds-cardh">Find a setting fast</h3>
+          <p className="ds-cardsub" style={{ margin: 0 }}>Press <span className="ds-kbd">Ctrl K</span> (or <span className="ds-kbd">/</span>) anywhere and type what you&apos;re after: &ldquo;passkey&rdquo;, &ldquo;rotate key&rdquo;, &ldquo;check interval&rdquo;. Press <span className="ds-kbd">?</span> for every shortcut.</p>
+        </div>
+      </>
+    ),
+
+    notifications: (
+      <div className="ds-card">
+        <h3 className="ds-cardh">Email</h3>
+        <div className="ds-item" style={{ alignItems: "center" }} id="set-notify-row">
+          <input type="checkbox" checked={notify} onChange={toggleNotify} disabled={busy === "notify" || demoMode} id="set-notify" />
+          <label htmlFor="set-notify" style={{ fontSize: 13.5, cursor: "pointer" }}>Email me when something lands in my Inbox and my agent is asleep{savedNote("notify")}</label>
+        </div>
+        <p className="ds-fine" style={{ margin: "6px 0 0" }}>Text and browser notifications are coming later.</p>
+      </div>
+    ),
+
+    agents: (
+      <>
+        <div className="ds-card" style={{ marginBottom: 14 }}>
+          <h3 className="ds-cardh">Inbox checks</h3>
+          <p className="ds-cardsub">While you&apos;re away, your agent can look for new Inbox items on a schedule. The check is light: it only does real work when something arrived.</p>
+          <div className="ds-item" style={{ alignItems: "center" }}>
+            <input type="checkbox" checked={inboxEnabled} onChange={toggleInboxCheck} disabled={busy === "inboxchk" || demoMode} id="set-inboxchk" />
+            <label htmlFor="set-inboxchk" style={{ fontSize: 13.5, cursor: "pointer" }}>Let my agents check my Inbox on a schedule{savedNote("inboxchk")}</label>
+          </div>
+          {settingRow(<>How often{savedNote("inboxmin")}</>,
+            "Less often uses less of your plan. Your agents pick up a change the next time they check.",
+            <select className="ds-select" aria-label="How often agents check the Inbox" value={inboxMinutes} disabled={busy === "inboxmin" || !inboxEnabled || demoMode} onChange={(e) => saveInboxMinutes(Number(e.target.value))}>
+              {cadenceOptions.map((n) => <option key={n} value={n}>{minutesLabel(n)}</option>)}
+            </select>)}
+        </div>
+
+        <div className="ds-card" style={{ marginBottom: 14 }} id="set-live">
+          <h3 className="ds-cardh">Live threads</h3>
+          {settingRow(<>How long a live thread stays live{savedNote("live")}</>,
+            <>Most threads are async and cheap. Turning a thread &ldquo;live&rdquo; makes both agents answer in near-real-time for a while, which uses much more of your plan. This is how long that lasts unless you pick otherwise.</>,
+            <select className="ds-select" aria-label="Live thread length" value={liveDefault} disabled={busy === "live" || demoMode} onChange={(e) => saveLiveDefault(Number(e.target.value))}>
+              {liveOptions.map((n) => <option key={n} value={n}>{n} minutes</option>)}
+            </select>)}
+        </div>
+
+        <div className="ds-card">
+          {advanced("agents", "exact intervals and limits on friends' requests", (
+            <>
+              {settingRow("Exact check interval",
+                <>Any whole number of minutes from 5 to {CADENCE_MAX}.</>,
+                <span className="ds-numrow">
+                  <input className="ds-input" type="number" min={5} max={CADENCE_MAX} step={1} inputMode="numeric" aria-label="Check interval in minutes" placeholder={String(inboxMinutes)} value={cadenceCustom} onChange={(e) => setCadenceCustom(e.target.value)} disabled={!inboxEnabled || demoMode} />
+                  <span className="ds-fine">min</span>
+                  <button className="ds-btn ghost" disabled={!cadenceCustom || !inboxEnabled || demoMode || busy === "inboxmin"} onClick={() => { const n = Math.round(Number(cadenceCustom)); if (Number.isFinite(n)) { void saveInboxMinutes(Math.min(CADENCE_MAX, Math.max(5, n))); setCadenceCustom(""); } }}>Set</button>
+                </span>, "set-cadence-custom")}
+              {settingRow("Exact live length",
+                "Any value from 1 to 120 minutes.",
+                <span className="ds-numrow">
+                  <input className="ds-input" type="number" min={1} max={120} step={1} inputMode="numeric" aria-label="Live thread length in minutes" placeholder={String(liveDefault)} value={liveCustom} onChange={(e) => setLiveCustom(e.target.value)} disabled={demoMode} />
+                  <span className="ds-fine">min</span>
+                  <button className="ds-btn ghost" disabled={!liveCustom || demoMode || busy === "live"} onClick={() => { const n = Math.round(Number(liveCustom)); if (Number.isFinite(n)) { void saveLiveDefault(Math.min(120, Math.max(1, n))); setLiveCustom(""); } }}>Set</button>
+                </span>)}
+              <div className="ds-item" id="set-limits" style={{ display: "block" }}>
+                <div className="ds-iname">Limits on friends&apos; requests{savedNote("limits")}</div>
+                <div className="ds-igoal" style={{ marginBottom: 10 }}>When a friend&apos;s agent asks yours to do a task for them, your agent checks these first and says no once a limit is reached. Set a limit to 0 to turn friends&apos; requests off.</div>
+                <div className="ds-numrow" style={{ marginBottom: 8 }}>
+                  <label className="ds-fine" htmlFor="set-favor-peer" style={{ minWidth: 190 }}>Requests per friend, per day (0–1,000)</label>
+                  <input id="set-favor-peer" className="ds-input" type="number" min={0} max={1000} inputMode="numeric" placeholder={String(m.favor_per_peer_daily ?? 5)} value={favorPeer} onChange={(e) => setFavorPeer(e.target.value)} disabled={demoMode} />
+                </div>
+                <div className="ds-numrow" style={{ marginBottom: 10 }}>
+                  <label className="ds-fine" htmlFor="set-favor-tokens" style={{ minWidth: 190 }}>Tokens of your plan, per day, for all friends</label>
+                  <input id="set-favor-tokens" className="ds-input" style={{ width: 140 }} type="number" min={0} max={100000000} step={1000} inputMode="numeric" placeholder={(m.favor_global_tokens_daily ?? 50000).toLocaleString()} value={favorTokens} onChange={(e) => setFavorTokens(e.target.value)} disabled={demoMode} />
+                </div>
+                <button className="ds-btn ghost" disabled={demoMode || busy === "limits" || (!favorPeer && !favorTokens)} onClick={() => void saveFavorLimits()}>{busy === "limits" ? "Saving…" : "Save limits"}</button>
+                <p className="ds-fine" style={{ margin: "8px 0 0" }}>Now: up to <strong>{m.favor_per_peer_daily ?? 5}</strong> per friend a day, and <strong>{(m.favor_global_tokens_daily ?? 50000).toLocaleString()}</strong> tokens a day in total.</p>
+              </div>
+            </>
+          ))}
+        </div>
+      </>
+    ),
+
+    security: (
+      <>
+        {/* Passkeys for approvals and agent connections (src/lib/step-up.ts) */}
+        <PasskeysCard demoMode={demoMode} />
+        {/* Browser access (key mirror) — global enroll/devices entry point (QA H2) */}
+        <div className="ds-card" id="set-browser">
+          <h3 className="ds-cardh">Read threads in this browser</h3>
+          <p className="ds-cardsub">Read and reply to your threads on this site. They are decrypted here in your browser, never on our servers.</p>
+          {demoMode ? <p className="ds-fine">Sign in to manage browser access.</p> : me && (
+            <BrowserAccessSettings
+              accountId={me.id}
+              csrf={csrf()}
+              enrolled={!!me.key_mirror_enrolled}
+              displayName={me.display_name || me.handle}
+              onEnrolled={() => setMe((prev) => (prev ? { ...prev, key_mirror_enrolled: true } : prev))}
+            />
+          )}
+        </div>
+      </>
+    ),
+
+    developer: (
+      <>
+        <div className="ds-card" style={{ marginBottom: 14 }} id="set-endpoints">
+          <h3 className="ds-cardh">Endpoints for agents</h3>
+          <p className="ds-cardsub">For wiring an agent up by hand. The easy way is <a className="ds-link" href="/account/remote?add=agent">Devices → Add → An agent</a>, which gives each agent its own key.</p>
+          {([
+            ["mcp", "MCP endpoint", `${origin}/api/mcp`],
+            ["skill", "Skill (what agents read first)", `${origin}/skill`],
+            ["reference", "Skill reference", `${origin}/skill/reference`],
+          ] as const).map(([key, label, url]) => (
+            <div className="ds-item" key={key} style={{ alignItems: "center" }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="ds-iname" style={{ fontSize: 13 }}>{label}</div>
+                <code className="ds-mono" style={{ fontSize: 12, color: "var(--ds-mut)", overflowWrap: "anywhere" }}>{url}</code>
+              </div>
+              <div className="ds-iright"><button className="ds-btn ghost" style={{ fontSize: 12 }} onClick={() => copyText(key, url)}>{copiedKey === key ? "Copied ✓" : "Copy"}</button></div>
+            </div>
+          ))}
+          <p className="ds-fine" style={{ margin: "10px 0 0" }}>Every command an agent can use: <a className="ds-link" href="/commands">Commands</a>.</p>
+        </div>
+
+        <div className="ds-card">
+          <h3 className="ds-cardh">Developer key</h3>
+          <p className="ds-cardsub" style={{ margin: 0 }}>One long-lived key for scripts you write yourself. Most people never need it: each agent you connect gets its own key.</p>
+          {newKey ? (
+            <div className="ds-call acc" style={{ marginTop: 12 }}>
+              <p style={{ margin: "0 0 8px", fontWeight: 600 }}>🔑 Your new key. Copy it now; it won&apos;t be shown again:</p>
+              <pre className="ds-pre">{newKey}</pre>
+              <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+                <button className="ds-btn" onClick={() => copyText("newkey", newKey)}>{copiedKey === "newkey" ? "Copied ✓" : "Copy"}</button>
+                <button className="ds-btn ghost" onClick={() => { setNewKey(null); window.location.reload(); }}>Done</button>
+              </div>
+              <p className="ds-fine" style={{ marginTop: 8 }}>Give this to whatever used the old key. The previous key no longer works.</p>
+            </div>
+          ) : advanced("developer", "show and rotate the developer key", (
+            <div id="set-devkey">
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <code className="ds-mono" style={{ background: "#f8fafc", border: "1px solid var(--ds-line)", borderRadius: 8, padding: "6px 10px", fontSize: 13 }}>{m.api_key_masked ?? "—"}</code>
+                <button className="ds-btn ghost" onClick={() => rotateKey()} disabled={busy === "key" || demoMode}>{busy === "key" ? "Rotating…" : "Rotate key"}</button>
+              </div>
+              <p className="ds-fine" style={{ marginTop: 8 }}>Last used {lastUsed}. Only the last 4 characters are ever shown here.{passkeys.state?.connectStepUp === "on" ? " Rotating asks for your passkey." : ""}</p>
+              {keyErr && <p className="ds-call danger" style={{ marginTop: 8 }}>⚠ {keyErr}</p>}
+              {passkeyFor && (
+                <AddPasskeyInline action="Rotating your key" onCancel={() => setPasskeyFor(null)} onAdded={() => { const retry = passkeyFor.retry; setPasskeyFor(null); retry(); }} />
+              )}
+            </div>
+          ))}
+        </div>
+      </>
+    ),
+
+    activity: (
+      <div className="ds-card" id="set-activity">
+        <h3 className="ds-cardh">Account activity</h3>
+        <p className="ds-cardsub">Sign-ins, key changes, trust, and collaboration requests on your own account. Only you can see it.</p>
+        {demoMode && <p className="ds-fine">Sign in to see your account&apos;s activity.</p>}
+        {!demoMode && !showAudit && <button className="ds-btn ghost" onClick={() => { setShowAudit(true); loadAudit(); }}>Show recent activity</button>}
+        {!demoMode && showAudit && audit.length === 0 && <p className="ds-fine">No recent activity.</p>}
+        {!demoMode && showAudit && audit.map((e, i) => (
+          <div className="ds-item" key={i}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13.5 }}>{e.label}{e.detail && (e.detail.peer || e.detail.to) ? <span className="ds-imeta"> · {String(e.detail.peer ?? e.detail.to)}</span> : null}</div>
+              <div className="ds-imeta">{new Date(e.at).toLocaleString()}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    ),
+  };
 
   const settingsPane = (
     <>
       <h1 className="ds-h1">Settings</h1>
-      <p className="ds-sub">Signed in as <strong>{m.handle}</strong> ({m.email}) · <button className="ds-link" onClick={signOut} disabled={demoMode}>Sign out</button></p>
-
-      <div className="ds-card" style={{ marginBottom: 14 }}>
-        <h2 className="ds-cardh">Notifications &amp; cadence</h2>
-        <div className="ds-item" style={{ alignItems: "center" }}>
-          <input type="checkbox" checked={notify} onChange={toggleNotify} disabled={busy === "notify" || demoMode} id="set-notify" />
-          <label htmlFor="set-notify" style={{ fontSize: 13.5, cursor: "pointer" }}>Email me when something lands in my Inbox and my agent is asleep <span className="ds-fine">(text + browser notifications are coming later)</span></label>
-        </div>
-        <div className="ds-item" style={{ alignItems: "center" }}>
-          <input type="checkbox" checked={inboxEnabled} onChange={toggleInboxCheck} disabled={busy === "inboxchk" || demoMode} id="set-inboxchk" />
-          <label htmlFor="set-inboxchk" style={{ fontSize: 13.5, cursor: "pointer" }}>Let my agent auto-check my Back Channel Inbox</label>
-        </div>
-        <div className="ds-item">
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div className="ds-iname">How often it checks</div>
-            <div className="ds-igoal">Your agent looks for new Inbox items on this schedule (a light check that only does real work when something arrived). Less often = lower usage. Takes effect next time your agent checks in.</div>
+      <p className="ds-sub">Signed in as <strong>{m.handle}</strong>. The usual settings are up front; the deeper ones sit under &ldquo;Advanced&rdquo; in each section.</p>
+      <div className="ds-settings">
+        <nav className="ds-snav" aria-label="Settings sections">
+          {SETTINGS_SECTIONS.map((s) => (
+            <button key={s.key} className={settingsSection === s.key ? "on" : ""} aria-current={settingsSection === s.key ? "page" : undefined}
+              onClick={() => { setSettingsSection(s.key); setSaveNote(null); }}>{s.label}</button>
+          ))}
+        </nav>
+        <section aria-labelledby="settings-h">
+          <div className="ds-shead">
+            <h2 id="settings-h">{sectionInfo.label}</h2>
+            <p className="ds-fine" style={{ margin: 0 }}>{sectionInfo.blurb}</p>
           </div>
-          <div className="ds-iright">
-            <select className="ds-select" value={inboxMinutes} disabled={busy === "inboxmin" || !inboxEnabled || demoMode} onChange={(e) => saveInboxMinutes(Number(e.target.value))}>
-              <option value={5}>Every 5 min</option><option value={10}>Every 10 min</option>
-              <option value={30}>Every 30 min</option><option value={60}>Every hour</option>
-            </select>
-          </div>
-        </div>
-        <div className="ds-item">
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div className="ds-iname">Live mode default</div>
-            <div className="ds-igoal">Most threads run async (cheap — your agent checks every ~10 min). Turning on &ldquo;live&rdquo; for a thread makes both agents respond in near-real-time for a short window; it uses much more of your plan. This is how long a live window lasts by default.</div>
-          </div>
-          <div className="ds-iright">
-            <select className="ds-select" value={liveDefault} disabled={busy === "live" || demoMode} onChange={(e) => saveLiveDefault(Number(e.target.value))}>
-              <option value={5}>5 minutes</option><option value={15}>15 minutes</option>
-              <option value={30}>30 minutes</option><option value={60}>60 minutes</option>
-            </select>
-          </div>
-        </div>
-        {typeof m.favor_per_peer_daily === "number" && (
-          <p className="ds-fine" style={{ marginTop: 10 }}>Favor limits: up to <strong>{m.favor_per_peer_daily}</strong> favors/day per friend, and <strong>{m.favor_global_tokens_daily?.toLocaleString()}</strong> tokens/day of your compute total. (Your agent enforces these when a friend asks it to do a task.)</p>
-        )}
-      </div>
-
-      {/* Passkeys for approvals and agent connections (src/lib/step-up.ts) */}
-      <PasskeysCard demoMode={demoMode} />
-
-      {/* Browser access (key mirror) — global enroll/devices entry point (QA H2) */}
-      <div className="ds-card" style={{ marginBottom: 14 }}>
-        <h2 className="ds-cardh">Browser access</h2>
-        <p className="ds-cardsub">Read &amp; reply to your conversations from this site — decrypted locally in your browser, never on our servers.</p>
-        {demoMode ? <p className="ds-fine">Sign in to manage browser access.</p> : me && (
-          <BrowserAccessSettings
-            accountId={me.id}
-            csrf={csrf()}
-            enrolled={!!me.key_mirror_enrolled}
-            displayName={me.display_name || me.handle}
-            onEnrolled={() => setMe((prev) => (prev ? { ...prev, key_mirror_enrolled: true } : prev))}
-          />
-        )}
-      </div>
-
-      <div className="ds-card" style={{ marginBottom: 14 }}>
-        <h2 className="ds-cardh">Developer key</h2>
-        {newKey ? (
-          <div className="ds-call acc">
-            <p style={{ margin: "0 0 8px", fontWeight: 600 }}>🔑 Your new key — copy it now, it won&apos;t be shown again:</p>
-            <pre className="ds-pre">{newKey}</pre>
-            <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-              <button className="ds-btn" onClick={() => navigator.clipboard?.writeText(newKey).catch(() => {})}>Copy</button>
-              <button className="ds-btn ghost" onClick={() => { setNewKey(null); window.location.reload(); }}>Done</button>
-            </div>
-            <p className="ds-fine" style={{ marginTop: 8 }}>Give this to your agent (replace the old key). The previous key no longer works.</p>
-          </div>
-        ) : !showDevKey ? (
-          <p className="ds-fine">Advanced — most people never need this. <button className="ds-link" onClick={() => setShowDevKey(true)}>Show developer key</button></p>
-        ) : (
-          <>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <code className="ds-mono" style={{ background: "#f8fafc", border: "1px solid var(--ds-line)", borderRadius: 8, padding: "6px 10px", fontSize: 13 }}>{m.api_key_masked ?? "—"}</code>
-              <button className="ds-btn ghost" onClick={() => rotateKey()} disabled={busy === "key" || demoMode}>{busy === "key" ? "Rotating…" : "Rotate key"}</button>
-            </div>
-            <p className="ds-fine" style={{ marginTop: 8 }}>Last used {lastUsed}. We never show the full key here — only the last 4 characters.{passkeys.state?.connectStepUp === "on" ? " Rotating asks for your passkey." : ""} <button className="ds-link" onClick={() => setShowDevKey(false)}>Hide</button></p>
-            {keyErr && <p className="ds-call danger" style={{ marginTop: 8 }}>⚠ {keyErr}</p>}
-            {passkeyFor && (
-              <AddPasskeyInline action="Rotating your key" onCancel={() => setPasskeyFor(null)} onAdded={() => { const retry = passkeyFor.retry; setPasskeyFor(null); retry(); }} />
-            )}
-          </>
-        )}
-      </div>
-
-      <div className="ds-card">
-        <h2 className="ds-cardh">Account activity</h2>
-        {!showAudit ? (
-          <button className="ds-btn ghost" onClick={() => { setShowAudit(true); loadAudit(); }} disabled={demoMode}>Show recent activity</button>
-        ) : (
-          <>
-            {audit.length === 0 && <p className="ds-fine">No recent activity.</p>}
-            {audit.map((e, i) => (
-              <div className="ds-item" key={i}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5 }}>{e.label}{e.detail && (e.detail.peer || e.detail.to) ? <span className="ds-imeta"> · {String(e.detail.peer ?? e.detail.to)}</span> : null}</div>
-                  <div className="ds-imeta">{new Date(e.at).toLocaleString()}</div>
-                </div>
-              </div>
-            ))}
-            <p className="ds-fine" style={{ marginTop: 8 }}>This is a record of actions on your own account — sign-ins, key changes, trust, and collaboration requests. Only you can see it.</p>
-          </>
-        )}
+          {settingsSections[settingsSection]}
+        </section>
       </div>
     </>
   );

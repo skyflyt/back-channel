@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell, type ShellTab } from "@/components/ui/shell";
 import { accountShellTabs } from "@/components/ui/account-nav";
+import { useAccountChrome } from "@/components/ui/use-account-chrome";
 import { Chip, MetricCard, SkeletonRows } from "@/components/ui/primitives";
 
 type Win = { "24h": number; "7d": number; "30d": number };
@@ -80,8 +81,10 @@ const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { year:
 const csrf = () => (typeof document !== "undefined" ? (document.cookie.match(/(?:^|; )bc_csrf=([^;]+)/)?.[1] ?? "") : "");
 
 export function Frame({ children }: { children: React.ReactNode }) {
+  const chrome = useAccountChrome();
   return (
-    <AppShell tabs={TABS} activeTab="admin" userLabel="OP" userTitle="Owner">
+    <AppShell tabs={TABS} activeTab="admin" owner waiting={chrome.waiting} userLabel={chrome.ready && chrome.signedIn ? chrome.userLabel : "OP"}
+      userTitle={chrome.handle ? `${chrome.displayName || chrome.handle} (${chrome.handle})` : "Owner"}>
       <div className="ds-wrap">
         <h1 className="ds-h1">Admin</h1>
         <p className="ds-sub">Who uses Back Channel and whether they are active. Owner only. Metadata only, never content.</p>
