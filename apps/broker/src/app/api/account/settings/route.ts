@@ -18,12 +18,15 @@ export async function PATCH(req: NextRequest) {
   try { body = await req.json(); } catch { return NextResponse.json({ error: "invalid_json" }, { status: 400 }); }
 
   const data: { notifyIdleFrames?: boolean; favorPerPeerDaily?: number; favorGlobalTokensDaily?: number; liveModeDefaultMinutes?: number; inboxCheckEnabled?: boolean; inboxCheckMinutes?: number } = {};
+  // A finite number, floored and clamped to what the rest of the system honors; anything else is ignored.
+  // (Settings → Agents & Inbox offers exactly these ranges; route-tests/account-settings pins them.)
+  const clamp = (v: unknown, lo: number, hi: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(Math.max(Math.floor(v), lo), hi) : undefined);
   if (typeof body.notify_idle_frames === "boolean") data.notifyIdleFrames = body.notify_idle_frames;
-  if (typeof body.favor_per_peer_daily === "number") data.favorPerPeerDaily = Math.min(Math.max(Math.floor(body.favor_per_peer_daily), 0), 1000);
-  if (typeof body.favor_global_tokens_daily === "number") data.favorGlobalTokensDaily = Math.min(Math.max(Math.floor(body.favor_global_tokens_daily), 0), 100_000_000);
-  if (typeof body.live_mode_default_minutes === "number") data.liveModeDefaultMinutes = Math.min(Math.max(Math.floor(body.live_mode_default_minutes), 1), 120);
+  const perPeer = clamp(body.favor_per_peer_daily, 0, 1000); if (perPeer !== undefined) data.favorPerPeerDaily = perPeer;
+  const tokens = clamp(body.favor_global_tokens_daily, 0, 100_000_000); if (tokens !== undefined) data.favorGlobalTokensDaily = tokens;
+  const live = clamp(body.live_mode_default_minutes, 1, 120); if (live !== undefined) data.liveModeDefaultMinutes = live;
   if (typeof body.inbox_check_enabled === "boolean") data.inboxCheckEnabled = body.inbox_check_enabled;
-  if (typeof body.inbox_check_minutes === "number") data.inboxCheckMinutes = Math.min(Math.max(Math.floor(body.inbox_check_minutes), 5), 1440);
+  const every = clamp(body.inbox_check_minutes, 5, 1440); if (every !== undefined) data.inboxCheckMinutes = every;
   if (Object.keys(data).length === 0) return NextResponse.json({ error: "no_valid_fields" }, { status: 400 });
 
   const updated = await prisma.account.update({ where: { id: account.id }, data });

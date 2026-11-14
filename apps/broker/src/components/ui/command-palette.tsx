@@ -15,6 +15,8 @@ export interface PaletteItem {
   label: string;
   /** Extra searchable/displayed context (goal, handle, description…). */
   meta?: string;
+  /** Searchable but not shown: synonyms, so "api key" finds "Developer key". */
+  keywords?: string;
   icon?: string;
   onSelect: () => void;
 }
@@ -52,9 +54,13 @@ export function CommandPalette({ open, onClose, items }: {
   }, [open]);
 
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return items;
-    return items.filter((it) => (it.label + " " + (it.meta ?? "") + " " + it.group).toLowerCase().includes(needle));
+    // Every word must match somewhere, in any order: "rotate key" finds "Developer key" (keywords: rotate).
+    const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return items;
+    return items.filter((it) => {
+      const hay = `${it.label} ${it.meta ?? ""} ${it.keywords ?? ""} ${it.group}`.toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
   }, [items, q]);
 
   // Stable flat order == render order; group headers are display-only.
@@ -89,7 +95,8 @@ export function CommandPalette({ open, onClose, items }: {
         <input
           ref={inputRef}
           className="ds-pal-input"
-          placeholder="Search threads, friends, tools — or jump to a page…"
+          placeholder="Search threads, friends, tools, settings — or jump to a page…"
+          aria-label="Search"
           value={q}
           onChange={(e) => { setQ(e.target.value); setSel(0); }}
         />
@@ -115,7 +122,7 @@ export function CommandPalette({ open, onClose, items }: {
           })}
         </div>
         <div className="ds-pal-foot">
-          <span>↑↓ navigate</span><span>↵ open</span><span>esc close</span>
+          <span>↑↓ navigate</span><span>↵ open</span><span>esc close</span><span style={{ marginLeft: "auto" }}>? all shortcuts</span>
         </div>
       </div>
     </div>

@@ -152,10 +152,19 @@
 .ds-prow-actions { display: flex; gap: 8px; flex-shrink: 0; padding-right: 6px; }
 
 @media (max-width: 600px) {
-  /* Phone widths: the tab row gets the room; the search hint keeps only its glyph. */
-  .ds-topbar-in { gap: 10px; padding: 0 12px; }
+  /* Phone widths: the search hint keeps only its glyph, and the tabs get a row of their own under the
+     brand, so all six are on screen at 375px instead of three-and-a-half behind a hidden scroll. */
+  .ds-topbar-in { gap: 10px; padding: 0 12px; flex-wrap: wrap; height: auto; }
+  .ds-brand, .ds-topbar-right { height: 48px; display: inline-flex; align-items: center; }
+  .ds-tabs { order: 3; flex-basis: 100%; height: 42px; margin: 0 -12px; padding: 0 4px; border-top: 1px solid var(--ds-line-soft); }
+  .ds-tab { padding: 0 6px; font-size: 12.5px; gap: 4px; flex: 0 0 auto; }
+  .ds-tabs { justify-content: space-between; }
+  .ds-tab .ds-count { min-width: 15px; height: 15px; font-size: 10px; padding: 0 4px; }
+  /* Keyboard tips mean nothing on a phone. */
+  .ds-desk-only { display: none; }
   .ds-searchhint { padding: 5px 8px; }
   .ds-searchhint .ds-kbd, .ds-searchhint .ds-searchword { display: none; }
+  .ds-demo-banner { top: 91px; }
 }
 
 @media (max-width: 860px) {
@@ -185,6 +194,54 @@
 .ds-pal-item.sel { background: var(--ds-acc-soft); }
 .ds-pal-empty { color: var(--ds-mut); font-size: 13px; padding: 18px; text-align: center; }
 .ds-pal-foot { border-top: 1px solid var(--ds-line-soft); padding: 8px 14px; display: flex; gap: 14px; color: var(--ds-faint); font-size: 11.5px; }
+
+/* ---------- avatar menu + shortcuts sheet (docs/web-ia.md § The shell) ---------- */
+.ds-menu-wrap { position: relative; }
+.ds-menu { position: absolute; right: 0; top: 40px; min-width: 240px; background: var(--ds-card); border: 1px solid var(--ds-line); border-radius: 12px; box-shadow: var(--ds-shadow-pop); padding: 6px; z-index: 60; }
+.ds-menu-head { font-size: 12px; color: var(--ds-faint); padding: 8px 10px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; text-align: left; border: none; background: none; font: inherit; font-size: 13.5px; color: var(--ds-ink); padding: 8px 10px; border-radius: 8px; cursor: pointer; text-decoration: none; }
+.ds-menu-item:hover, .ds-menu-item:focus-visible { background: var(--ds-bg); outline: none; }
+.ds-menu-sep { height: 1px; background: var(--ds-line-soft); margin: 5px 4px; }
+.ds-keys-row { display: flex; align-items: center; gap: 14px; padding: 7px 18px; font-size: 13.5px; }
+.ds-keys-row .ds-kbd { min-width: 96px; text-align: center; font-size: 11.5px; padding: 2px 6px; }
+
+/* ---------- focus: every button and link shows where the keyboard is (fields keep their own focus style) ---------- */
+.ds-root :is(button, a, summary):focus-visible { outline: 2px solid var(--ds-acc); outline-offset: 2px; }
+.ds-tab:focus-visible { outline-offset: -2px; }
+
+/* ---------- Settings: one section at a time, deep controls behind "Advanced" ---------- */
+.ds-settings { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 20px; align-items: start; }
+.ds-snav { position: sticky; top: 76px; display: flex; flex-direction: column; gap: 2px; }
+.ds-snav button { text-align: left; border: none; background: none; font: inherit; font-size: 13.5px; color: var(--ds-mut); padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+.ds-snav button:hover { background: #eef1f5; color: var(--ds-ink); }
+.ds-snav button.on { background: var(--ds-acc-soft); color: var(--ds-acc); font-weight: 600; }
+.ds-shead { margin: 0 0 14px; }
+.ds-shead h2 { font-size: 18px; font-weight: 650; margin: 0 0 2px; letter-spacing: -0.01em; }
+.ds-adv { margin-top: 12px; border-top: 1px dashed var(--ds-line); padding-top: 10px; }
+.ds-adv > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--ds-mut); list-style: none; display: inline-flex; align-items: center; gap: 6px; padding: 4px 0; }
+.ds-adv > summary::-webkit-details-marker { display: none; }
+.ds-adv > summary::before { content: "▸"; font-size: 10px; transition: transform 0.15s; }
+.ds-adv[open] > summary::before { transform: rotate(90deg); }
+.ds-adv > summary:hover { color: var(--ds-ink); }
+.ds-saved { font-size: 12px; color: var(--ds-ok); margin-left: 8px; }
+.ds-numrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ds-numrow .ds-input { width: 110px; }
+.ds-flash-target { animation: ds-flash 1.6s ease-out 1; border-radius: 8px; }
+@keyframes ds-flash { 0% { box-shadow: 0 0 0 3px var(--ds-acc-line); } 100% { box-shadow: 0 0 0 3px transparent; } }
+
+/* ---------- Devices: jump list of the cards on the page ---------- */
+.ds-jump { display: flex; gap: 6px; flex-wrap: wrap; margin: -10px 0 18px; }
+.ds-jump a { font-size: 12.5px; color: var(--ds-mut); text-decoration: none; border: 1px solid var(--ds-line); background: var(--ds-card); border-radius: 999px; padding: 4px 11px; }
+.ds-jump a:hover { color: var(--ds-acc); border-color: var(--ds-acc-line); }
+.ds-jump a .ds-count { background: var(--ds-acc); color: #fff; border-radius: 9px; font-size: 10.5px; padding: 0 5px; margin-left: 5px; font-weight: 700; }
+.ds-root [id] { scroll-margin-top: 84px; }
+
+@media (max-width: 860px) {
+  .ds-settings { grid-template-columns: 1fr; gap: 12px; }
+  .ds-snav { position: static; flex-direction: row; overflow-x: auto; scrollbar-width: none; gap: 6px; }
+  .ds-snav::-webkit-scrollbar { display: none; }
+  .ds-snav button { white-space: nowrap; border: 1px solid var(--ds-line); background: var(--ds-card); border-radius: 999px; padding: 5px 12px; font-size: 13px; }
+}
 
 /* ---------- misc ---------- */
 .ds-hbar { height: 6px; border-radius: 3px; background: var(--ds-line-soft); overflow: hidden; margin-top: 10px; }
