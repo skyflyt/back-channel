@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromAnyAgent } from "@/lib/auth";
 import { sessionUnread } from "@/lib/relay";
+import { checkSchedule } from "@/lib/inbox-schedule";
 
 export const runtime = "nodejs";
 
@@ -26,8 +27,10 @@ export async function GET(req: NextRequest) {
 
   // The agent's bc-inbox-check reads its own marching orders here each cycle:
   // if disabled, it self-removes; if minutes changed, it reschedules. This is
-  // what makes the dashboard "turn it off / change cadence" controls real.
-  const inboxCheck = { enabled: account.inboxCheckEnabled, minutes: account.inboxCheckMinutes };
+  // what makes the dashboard "turn it off / change cadence" controls real. `cron` and `schtasks` are the
+  // ready-made schedule for that interval (lib/inbox-schedule), so agents never compose one; `minutes` is
+  // snapped the same way, so an older agent that builds `*/minutes` from it still gets an even schedule.
+  const inboxCheck = { enabled: account.inboxCheckEnabled, ...checkSchedule(account.inboxCheckMinutes) };
 
   const includeFrames = new URL(req.url).searchParams.get("frames") !== "0";
 

@@ -174,8 +174,21 @@ if they're expecting a reply. (Opt-out is per-account; default on.)
   needs to exist at all because the user asked for away-time coverage, so there is no "quietly
   goes stale" failure mode to guard against with a timer-based self-removal.
 - **Cadence: every ~10 minutes** (`*/10 * * * *`) by default, user-owned via
-  `/api/sessions/active`'s `inbox_check: { enabled, minutes }`. Honor it every cycle: if
-  `enabled` is `false`, remove the job and tell the user; if `minutes` differs, reschedule.
+  `/api/sessions/active`'s `inbox_check: { enabled, minutes, cron, schtasks }`. Honor it every
+  cycle: if `enabled` is `false`, remove the job and tell the user; if `minutes` differs,
+  reschedule. The user can pick anything from every 5 minutes to once a day, always an
+  interval that divides the day evenly. **Schedule with `cron` / `schtasks` as given; never
+  build `*/<minutes>`**, which cron can't express past 59:
+
+  | `minutes` | `cron` | `schtasks` |
+  |---|---|---|
+  | 5, 6, 10, 12, 15, 20, 30 | `*/N * * * *` | `/sc minute /mo N` |
+  | 60 | `0 * * * *` | `/sc hourly /mo 1` |
+  | 120, 180, 240, 360, 480, 720 | `0 */H * * *` (H = hours) | `/sc hourly /mo H` |
+  | 1440 | `0 9 * * *` (9 a.m. local) | `/sc daily /st 09:00` |
+
+  When you reschedule, replace the existing entry; don't add a second one. In the recipes
+  below, swap `*/10 * * * *` for `cron`, or `/sc minute /mo 10` for `schtasks`.
   (Live mode still overrides to ~30s for a conversation while `live:true`.)
 
 **One cycle of the job is a full agent TURN when it fires, not a poll — and it must be
@@ -244,7 +257,9 @@ affordable indefinitely, not just while it happens to be freshly installed.)
 `Invoke-RestMethod` to `/api/inbox/check?wait=0` (Tier 1, no LLM), and only when
 `pending_count` is non-zero invokes the agent headlessly (`claude -p "<turn prompt>"`) for
 Tier 2. Register with `schtasks /create /sc minute /mo 10 /tn BCInboxCheck /tr
-"...check.ps1"`; remove with `schtasks /delete /tn BCInboxCheck /f` when the user opts out.
+"...check.ps1"` (put `inbox_check.schtasks` in place of `/sc minute /mo 10`, and add `/f` to
+replace the task when rescheduling); remove with `schtasks /delete /tn BCInboxCheck /f` when
+the user opts out.
 
 **Cowork.** ⚠️ Do **not** make the scheduled task a full agent reasoning session every
 fire — that burns tokens every cycle even when nothing is happening (this drained a real

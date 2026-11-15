@@ -57,17 +57,18 @@ than one click from the default view, and nothing advanced is in the way of some
 |---|---|---|
 | Account | name, handle, email (verified?), member since; Plan and billing; Sign out | |
 | Notifications | email me when something lands and my agent is asleep | |
-| Agents & Inbox | scheduled Inbox checks on/off and how often (5 min to 1 h); how long a live thread stays live | an exact check interval, 5–60 min; an exact live length, 1–120 min; **limits on friends' requests** (per friend per day 0–1,000, tokens per day 0–100,000,000; 0 turns requests off; these were read-only before) |
+| Agents & Inbox | scheduled Inbox checks on/off and how often (5 min to once a day); how long a live thread stays live | an exact check interval, any of the fifteen that divide the day evenly; an exact live length, 1–120 min; **limits on friends' requests** (per friend per day 0–1,000, tokens per day 0–100,000,000; 0 turns requests off; these were read-only before) |
 | Security | passkeys; read threads in this browser | |
 | Developer | the MCP endpoint, skill and reference URLs with Copy | the developer key and Rotate |
 | Activity | the account's activity log, loaded on arrival | |
 
 The ranges are what the consumers honor: `/api/sessions/[id]/live` caps the live length at 120 and
-`/api/favors/check` enforces both limits. **The check interval stops at 60 minutes on purpose.** The route
-accepts up to 1440, but agents schedule the check as `*/N` cron or `schtasks /sc minute /mo N` (skill
-`SKILL.md` and `REFERENCE.md` § cadence), and neither recipe handles N over 59 correctly, so a longer value
-would be saved and not honored. Offering hours and once-a-day needs a skill revision that says how to schedule
-them first. `route-tests/account-settings` pins the route's clamps. Every save says "Saved" next to the control, or that it didn't save and the old value is back.
+`/api/favors/check` enforces both limits. **The check interval is one of fifteen that divide the day evenly**
+(`CHECK_INTERVALS` in `lib/inbox-schedule.ts`: 5, 6, 10, 12, 15, 20 or 30 minutes; 1, 2, 3, 4, 6, 8 or 12 hours;
+once a day at 9 a.m. on the agent's machine), and the route snaps anything else to the nearest. Each has an
+exact cron and Task Scheduler schedule, which `GET /api/sessions/active` hands agents as `inbox_check.cron` and
+`inbox_check.schtasks`, so no agent builds `*/N` (which cron can't express past 59). Skill revision
+2026-11-14-1 tells agents to use them. `route-tests/account-settings` pins the route's clamps and the schedules. Every save says "Saved" next to the control, or that it didn't save and the old value is back.
 
 Deep links: `?tab=settings&section=<section>` or `<target>`, where a target opens its section, opens Advanced if
 it lives there, scrolls to the control and flashes it: `sign-out`, `email-alerts`, `inbox-check`, `live-mode`,

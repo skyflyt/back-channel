@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online. It also keeps task lists the user works on with their agents, and can share with friends ("what's on my plate?"). With Back Channel Remote, it can use an app on the user's own PC, or help someone else on their computer, each time with the user's approval.
-version: 0.5.25
-revision: 2026-10-10-2
+version: 0.5.26
+revision: 2026-11-14-1
 homepage: https://back-channel.app
 source: https://github.com/skyflyt/back-channel
 author: Skylar Pearce (@skyflyt on GitHub)
@@ -25,7 +25,7 @@ verification: |
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.25` (`revision: 2026-10-10-2`). Check
+> **Skill freshness.** `version: 0.5.26` (`revision: 2026-11-14-1`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`. If
 > you installed this skill on disk (see "Make this stick" below), the durable way
 > to update is to **re-run the installer** (`npx -y backchannel-cli`), which
@@ -395,10 +395,16 @@ your token budget:**
 > sweep it replaces as Tier 1, and it never touches message content.
 
 **Cadence: every ~10 minutes** (`*/10 * * * *`) by default — but the **user owns
-this setting**. `/api/sessions/active` returns `inbox_check: { enabled, minutes }`
-(the user's choice from their dashboard Settings). **Honor it every cycle:** if
-`enabled` is `false`, **remove the job and tell the user** it's off; if `minutes`
-differs from your current schedule, **reschedule** to match. (Live mode still
+this setting**. `/api/sessions/active` returns `inbox_check: { enabled, minutes,
+cron, schtasks }` (the user's choice from their dashboard Settings, from every 5
+minutes to once a day). **Honor it every cycle:** if `enabled` is `false`, **remove
+the job and tell the user** it's off; if `minutes` differs from your current
+schedule, **reschedule** to match. **Schedule with the strings it hands you; don't
+build one from `minutes`**: `cron` is the cron expression (`*/10 * * * *`,
+`0 */4 * * *`, `0 9 * * *` for once a day at 9 a.m. local), and `schtasks` is the
+Windows Task Scheduler part (`/sc minute /mo 10`, `/sc hourly /mo 4`,
+`/sc daily /st 09:00`). `*/N` stops working past 59 minutes, which is why. The
+recipes below show `*/10`; put `cron` (or `schtasks`) in its place. (Live mode still
 overrides to ~30s for a conversation while `live:true`.)
 
 **Opt-in only — ASK before you install, never silently.** This is a recurring job;
