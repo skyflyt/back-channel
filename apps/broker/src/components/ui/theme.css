@@ -236,6 +236,23 @@
 .ds-jump a .ds-count { background: var(--ds-acc); color: #fff; border-radius: 9px; font-size: 10.5px; padding: 0 5px; margin-left: 5px; font-weight: 700; }
 .ds-root [id] { scroll-margin-top: 84px; }
 
+/* ---------- Toolkit: find and filter, compact rows, sharing behind a disclosure ---------- */
+.ds-tkbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 14px; }
+.ds-tkbar .ds-input { flex: 1 1 220px; max-width: 340px; }
+.ds-tkbar .ds-tkchips { display: flex; gap: 6px; flex-wrap: wrap; }
+.ds-tkchips button { font: inherit; font-size: 12.5px; color: var(--ds-mut); border: 1px solid var(--ds-line); background: var(--ds-card); border-radius: 999px; padding: 4px 11px; cursor: pointer; }
+.ds-tkchips button:hover { color: var(--ds-acc); border-color: var(--ds-acc-line); }
+.ds-tkchips button[aria-pressed="true"] { background: var(--ds-acc-soft); color: var(--ds-acc); border-color: var(--ds-acc-line); font-weight: 600; }
+.ds-tkchips .ds-n { opacity: 0.7; margin-left: 4px; font-weight: 400; }
+.ds-clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ds-share { margin-top: 4px; padding-top: 0; border-top: none; }
+.ds-linkbtn { font: inherit; color: var(--ds-acc); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
+#skills-section .ds-iright .ds-btn { font-size: 12px; padding: 5px 10px; }
+@media (max-width: 600px) {
+  #skills-section .ds-item { flex-wrap: wrap; }
+  #skills-section .ds-iright { margin-left: 0; flex-basis: 100%; justify-content: flex-start; }
+}
+
 @media (max-width: 860px) {
   .ds-settings { grid-template-columns: 1fr; gap: 12px; }
   .ds-snav { position: static; flex-direction: row; overflow-x: auto; scrollbar-width: none; gap: 6px; }
