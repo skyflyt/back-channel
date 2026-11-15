@@ -12,7 +12,7 @@
 import { test, mock, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-const ACCOUNT = { id: "acct-1", handle: "tester@bc" };
+const ACCOUNT = { id: "acct-1", handle: "tester@bc", inboxCheckEnabled: true, inboxCheckMinutes: 240 };
 
 before(() => {
   mock.module("@/lib/auth", {
@@ -77,6 +77,8 @@ test("immediate return with the current snapshot when something is already pendi
   assert.deepEqual(body.kinds, ["frame"]);
   assert.equal(body.waited_seconds, 0);
   assert.ok(body.since && body.timestamp);
+  // The user's schedule rides along, so a scheduled job's Tier-1 check sees a Settings change at its next run.
+  assert.deepEqual(body.inbox_check, { enabled: true, minutes: 240, cron: "0 */4 * * *", schtasks: "/sc hourly /mo 4" });
   assert.ok(elapsed < 200, `returned immediately (took ${elapsed}ms), not after a real 300s wait`);
 });
 
@@ -91,6 +93,7 @@ test("empty-doorbell timeout shape when nothing arrives within `wait`", async ()
   const body = await res.json();
   assert.equal(body.pending_count, 0);
   assert.equal(body.kinds, undefined, "kinds omitted, not an empty array, when nothing pending");
+  assert.equal(body.inbox_check.cron, "0 */4 * * *", "carried on an empty doorbell too, which is most runs");
   assert.ok(body.waited_seconds >= 0);
 });
 

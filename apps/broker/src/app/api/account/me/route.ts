@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME } from "@/lib/auth";
 import { isOwnerAccount } from "@/lib/admin";
+import { snapCheckMinutes } from "@/lib/inbox-schedule";
 
 export const runtime = "nodejs";
 
@@ -40,7 +41,7 @@ export async function GET(req: NextRequest) {
     favor_global_tokens_daily: account.favorGlobalTokensDaily,
     live_mode_default_minutes: account.liveModeDefaultMinutes,
     inbox_check_enabled: account.inboxCheckEnabled,
-    inbox_check_minutes: account.inboxCheckMinutes,
+    inbox_check_minutes: snapCheckMinutes(account.inboxCheckMinutes), // what agents are handed (lib/inbox-schedule)
     summary: { active_sessions: liveSessions },
     // Present only for the owner (src/lib/admin.ts), so the dashboard can show its Admin tab.
     // Omitted, not false, for everyone else: /admin answers them 404 so as not to confirm that an
