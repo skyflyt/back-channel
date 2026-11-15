@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER, csrfValid } from "@/lib/auth";
+import { snapCheckMinutes } from "@/lib/inbox-schedule";
 
 export const runtime = "nodejs";
 
@@ -26,7 +27,8 @@ export async function PATCH(req: NextRequest) {
   const tokens = clamp(body.favor_global_tokens_daily, 0, 100_000_000); if (tokens !== undefined) data.favorGlobalTokensDaily = tokens;
   const live = clamp(body.live_mode_default_minutes, 1, 120); if (live !== undefined) data.liveModeDefaultMinutes = live;
   if (typeof body.inbox_check_enabled === "boolean") data.inboxCheckEnabled = body.inbox_check_enabled;
-  const every = clamp(body.inbox_check_minutes, 5, 1440); if (every !== undefined) data.inboxCheckMinutes = every;
+  // Snapped to an interval that divides the day evenly, which is what agents can schedule (lib/inbox-schedule).
+  const every = clamp(body.inbox_check_minutes, 5, 1440); if (every !== undefined) data.inboxCheckMinutes = snapCheckMinutes(every);
   if (Object.keys(data).length === 0) return NextResponse.json({ error: "no_valid_fields" }, { status: 400 });
 
   const updated = await prisma.account.update({ where: { id: account.id }, data });

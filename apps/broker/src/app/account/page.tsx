@@ -38,6 +38,7 @@ import { waitingTotal } from "@/components/ui/use-account-chrome";
 import { type PaletteItem } from "@/components/ui/command-palette";
 import { Chip, EmptyState, HealthDot, MetricCard, PersonAvatar, SkeletonRows, agoShort, shortHandle, initialsOf } from "@/components/ui/primitives";
 import { DEMO_ACCOUNT } from "@/lib/demo-data";
+import { CHECK_INTERVALS, checkLabel as minutesLabel } from "@/lib/inbox-schedule";
 // Rotating the developer key asks for the person's passkey: src/lib/step-up.ts.
 import { AddPasskeyInline, PasskeysCard, usePasskeys } from "./passkeys";
 import { sendWithStepUp, type Guarded } from "./passkey-client";
@@ -94,14 +95,11 @@ function initialNav(): { nav: NavKey; people: boolean; friend: string | null; se
 }
 
 /**
- * Inbox check intervals offered (minutes). Capped at an hour on purpose: the skill schedules the check as
- * `*\/N` cron or `schtasks /sc minute /mo N`, and neither recipe covers N over 59 correctly yet, so a longer
- * value would be saved but not honored. The server accepts up to 1440 for when the skill learns to.
+ * Inbox check intervals offered up front (minutes); Advanced lists every one in `CHECK_INTERVALS`. Each divides
+ * the day evenly, so agents can schedule it exactly (lib/inbox-schedule hands them the cron and schtasks line).
  */
-const CADENCE_PRESETS = [5, 10, 15, 30, 60];
-const CADENCE_MAX = 60;
+const CADENCE_PRESETS = [5, 10, 15, 30, 60, 240, 1440];
 const LIVE_PRESETS = [5, 15, 30, 60];
-const minutesLabel = (n: number) => n % 1440 === 0 ? (n === 1440 ? "Once a day" : `Every ${n / 1440} days`) : n % 60 === 0 ? (n === 60 ? "Every hour" : `Every ${n / 60} hours`) : `Every ${n} min`;
 /** Which Settings sections have their Advanced disclosure open, remembered in this browser. */
 const ADV_STORAGE = "bc.settings.advanced";
 
@@ -210,7 +208,6 @@ export default function AccountPage() {
   const [saveNote, setSaveNote] = useState<{ key: string; ok: boolean; text: string } | null>(null);
   const [favorPeer, setFavorPeer] = useState("");
   const [favorTokens, setFavorTokens] = useState("");
-  const [cadenceCustom, setCadenceCustom] = useState("");
   const [liveCustom, setLiveCustom] = useState("");
 
   const loadSessions = useCallback(async () => {
@@ -1327,12 +1324,10 @@ export default function AccountPage() {
           {advanced("agents", "exact intervals and limits on friends' requests", (
             <>
               {settingRow("Exact check interval",
-                <>Any whole number of minutes from 5 to {CADENCE_MAX}.</>,
-                <span className="ds-numrow">
-                  <input className="ds-input" type="number" min={5} max={CADENCE_MAX} step={1} inputMode="numeric" aria-label="Check interval in minutes" placeholder={String(inboxMinutes)} value={cadenceCustom} onChange={(e) => setCadenceCustom(e.target.value)} disabled={!inboxEnabled || demoMode} />
-                  <span className="ds-fine">min</span>
-                  <button className="ds-btn ghost" disabled={!cadenceCustom || !inboxEnabled || demoMode || busy === "inboxmin"} onClick={() => { const n = Math.round(Number(cadenceCustom)); if (Number.isFinite(n)) { void saveInboxMinutes(Math.min(CADENCE_MAX, Math.max(5, n))); setCadenceCustom(""); } }}>Set</button>
-                </span>, "set-cadence-custom")}
+                <>Every interval that divides the day evenly, from every 5 minutes to once a day, so the checks are always the same distance apart. Once a day is at 9 a.m. on your agent&apos;s computer.</>,
+                <select className="ds-select" aria-label="Exact check interval" value={inboxMinutes} disabled={busy === "inboxmin" || !inboxEnabled || demoMode} onChange={(e) => saveInboxMinutes(Number(e.target.value))}>
+                  {Array.from(new Set<number>([...CHECK_INTERVALS, inboxMinutes])).sort((a, b) => a - b).map((n) => <option key={n} value={n}>{minutesLabel(n)}</option>)}
+                </select>, "set-cadence-custom")}
               {settingRow("Exact live length",
                 "Any value from 1 to 120 minutes.",
                 <span className="ds-numrow">

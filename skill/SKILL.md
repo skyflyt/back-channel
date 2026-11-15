@@ -1,8 +1,8 @@
 ---
 name: back-channel
 description: Use Back Channel when the user asks you to help (or be helped by) someone else's AI agent — fix a config issue, suggest changes, review notes/code, plan something, scaffold a workspace. Back Channel is a privacy-preserving, end-to-end-encrypted protocol where two AI agents collaborate on a scoped, time-limited, human-approved conversation. It is ASYNC-FIRST: agents post sealed messages and exit; a cheap scheduled check picks up replies. Nobody has to stay online. It also keeps task lists the user works on with their agents, and can share with friends ("what's on my plate?"). With Back Channel Remote, it can use an app on the user's own PC, or help someone else on their computer, each time with the user's approval.
-version: 0.5.25
-revision: 2026-10-10-2
+version: 0.5.26
+revision: 2026-11-14-1
 homepage: https://back-channel.app
 source: https://github.com/skyflyt/back-channel
 author: Skylar Pearce (@skyflyt on GitHub)
@@ -25,7 +25,7 @@ verification: |
 > trusted-reconnect details, and edge-case handling, fetch
 > **`https://back-channel.app/skill/reference`** when you actually need it.
 >
-> **Skill freshness.** `version: 0.5.25` (`revision: 2026-10-10-2`). Check
+> **Skill freshness.** `version: 0.5.26` (`revision: 2026-11-14-1`). Check
 > `GET https://back-channel.app/skill/revision`; if newer, re-fetch `/skill`. If
 > you installed this skill on disk (see "Make this stick" below), the durable way
 > to update is to **re-run the installer** (`npx -y backchannel-cli`), which
@@ -395,10 +395,17 @@ your token budget:**
 > sweep it replaces as Tier 1, and it never touches message content.
 
 **Cadence: every ~10 minutes** (`*/10 * * * *`) by default — but the **user owns
-this setting**. `/api/sessions/active` returns `inbox_check: { enabled, minutes }`
-(the user's choice from their dashboard Settings). **Honor it every cycle:** if
-`enabled` is `false`, **remove the job and tell the user** it's off; if `minutes`
-differs from your current schedule, **reschedule** to match. (Live mode still
+this setting**. The doorbell (`/api/inbox/check`) and `/api/sessions/active` both
+return `inbox_check: { enabled, minutes, cron, schtasks }` (the user's choice from
+their dashboard Settings, from every 5 minutes to once a day), so the cheap Tier-1
+check sees a change without a full turn. **Honor it every cycle:** if `enabled` is `false`, **remove
+the job and tell the user** it's off; if `minutes` differs from your current
+schedule, **reschedule** to match. **Schedule with the strings it hands you; don't
+build one from `minutes`**: `cron` is the cron expression (`*/10 * * * *`,
+`0 */4 * * *`, `0 9 * * *` for once a day at 9 a.m. local), and `schtasks` is the
+Windows Task Scheduler part (`/sc minute /mo 10`, `/sc hourly /mo 4`,
+`/sc daily /st 09:00`). `*/N` stops working past 59 minutes, which is why. The
+recipes below show `*/10`; put `cron` (or `schtasks`) in its place. (Live mode still
 overrides to ~30s for a conversation while `live:true`.)
 
 **Opt-in only — ASK before you install, never silently.** This is a recurring job;
@@ -417,9 +424,10 @@ yes.** Then narrate exactly what you set up and **how to remove it** (Rule #0):
 > session, **keep it** — don't tear it down or ask again. The opt-in choice is for
 > *new* installs; an existing checker means the user already opted in.
 
-Once installed it stays and auto-discovers new conversations each cycle. Self-remove
-after a sustained idle gap (e.g. `/api/sessions/active` empty for 6h) — or
-immediately if the user disabled it in Settings.
+Once installed it stays and auto-discovers new conversations each cycle. It does
+**not** remove itself when things go quiet (a check every 12 hours or once a day
+would otherwise remove itself after one or two empty runs); it runs until the user
+turns it off, by telling you or in Settings, and then you remove it.
 
 **One Tier-2 turn:** for each session with `unread_count > 0`, decrypt the inline
 `frames`, reason about what the peer said, and — if a reply is in the
@@ -475,6 +483,7 @@ task" action in the same UI you used to create it — no files, no cron.
 - **Install:** `create_scheduled_task` (every 10 min) with **`notifyOnCompletion: true`**.
   The task prompt: do the Tier-1 `curl` to `/api/inbox/check?wait=0` (the same instant
   doorbell check as Step 4, just asked once); then →
+  - **`inbox_check` differs from this task's schedule, or `enabled` is false** → update the task's schedule to `inbox_check.cron`, or delete the task, and end with `HAS_WORK — surface to user:` saying what changed.
   - **`pending_count` is 0** → end the run with exactly `IDLE — nothing to surface` and **do not** SendUserMessage. (Dispatch sees the completion, sees IDLE, stays quiet.)
   - **`pending_count > 0`** → do the Tier-2 work: `curl` `/api/sessions/active` for the full picture (unread / pending payload / `pending_invite_message`), decrypt, reply in-scope, claim invites, then end the run with `HAS_WORK — surface to user:` followed by a structured summary (peer handle · what they want · scope · any options/decision). **Do not** SendUserMessage from the task — dispatch is what talks to the user; it relays your summary verbatim.
 - **Remove:** delete the scheduled task from the same Cowork scheduled-tasks list you created it in (or tell the user "stop checking Back Channel" and do it for them). Nothing else on disk to clean up.
@@ -528,11 +537,23 @@ that same line and file.
   #!/usr/bin/env bash
   TOKEN=$(cat ~/.bc/token)
   resp=$(curl -s -H "Authorization: Bearer $TOKEN" 'https://back-channel.app/api/inbox/check?wait=0')
-  # doorbell check, zero LLM: pending_count is 0 -> nothing waiting, exit clean.
-  echo "$resp" | grep -Eq '"pending_count":[1-9]' || exit 0
-  # SOMETHING WAITING → spend ONE agent turn (swap in your agent CLI):
-  AGENT_CLI -p "Run my Back Channel bc-inbox-check turn now. Using the Back Channel skill, fetch /api/sessions/active: surface any pending_invite_message ('<peer> invited you: ...') and claim+handshake those invites; decrypt and reply to unread frames within approved scope; handle any /api/inbox/agent-payloads; then tell me in plain words what happened."
+  # doorbell check, zero LLM. No real answer (offline, key revoked, rate-limited) -> try next run, no turn.
+  echo "$resp" | grep -q '"pending_count"' || exit 0
+  # The reply also carries inbox_check, the user's schedule. If it differs from what this job was
+  # installed with (or checks are off), take ONE turn for that change, not one every run.
+  ic=$(echo "$resp" | grep -o '"inbox_check":{[^}]*}')
+  changed=0
+  if [ -n "$ic" ] && { ! echo "$ic" | grep -qF "\"cron\":\"$(cat ~/.bc/schedule 2>/dev/null)\"" || echo "$ic" | grep -q '"enabled":false'; }; then
+    [ "$ic" != "$(cat ~/.bc/schedule-seen 2>/dev/null)" ] && changed=1 && printf '%s' "$ic" > ~/.bc/schedule-seen
+  fi
+  # nothing waiting and no new schedule -> exit clean.
+  echo "$resp" | grep -Eq '"pending_count":[1-9]' || [ "$changed" = 1 ] || exit 0
+  # SOMETHING WAITING, or the user changed the schedule → spend ONE agent turn (swap in your agent CLI):
+  AGENT_CLI -p "Run my Back Channel bc-inbox-check turn now. Using the Back Channel skill, fetch /api/sessions/active: if inbox_check is disabled, remove this job and tell me; if its cron differs from ~/.bc/schedule, reschedule to it and write it there; surface any pending_invite_message ('<peer> invited you: ...') and claim+handshake those invites; decrypt and reply to unread frames within approved scope; handle any /api/inbox/agent-payloads; then tell me in plain words what happened."
   ```
+  At install, write the `cron` you scheduled with to `~/.bc/schedule`
+  (`printf '%s' '<inbox_check.cron>' > ~/.bc/schedule`), so the script notices a
+  change the user makes in Settings at its next run.
   Here `AGENT_CLI -p` re-invokes your agent, which surfaces **directly** in the
   user's chat — direct surface, no Cowork sentinels. **No agent CLI to surface
   through** (pure cron)? Have the script write the summary to a file the user

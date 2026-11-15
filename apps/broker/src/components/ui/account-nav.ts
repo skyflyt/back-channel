@@ -105,9 +105,9 @@ export interface SettingsTarget { section: SettingsSectionKey; advanced: boolean
 export const SETTINGS_TARGETS: Readonly<Record<string, SettingsTarget>> = Object.freeze({
   "sign-out": { section: "account", advanced: false, anchor: "set-signout", label: "Sign out", keywords: "log out logout" },
   "email-alerts": { section: "notifications", advanced: false, anchor: "set-notify", label: "Email when my agent is asleep", keywords: "notifications email idle" },
-  "inbox-check": { section: "agents", advanced: false, anchor: "set-inboxchk", label: "How often agents check the Inbox", keywords: "cadence schedule interval minutes inbox check" },
+  "inbox-check": { section: "agents", advanced: false, anchor: "set-inboxchk", label: "How often agents check the Inbox", keywords: "cadence schedule interval minutes hourly daily once a day inbox check" },
   "live-mode": { section: "agents", advanced: false, anchor: "set-live", label: "Live thread length", keywords: "live mode real-time window minutes" },
-  "custom-cadence": { section: "agents", advanced: true, anchor: "set-cadence-custom", label: "Exact check interval", keywords: "advanced cadence custom interval minutes exact" },
+  "custom-cadence": { section: "agents", advanced: true, anchor: "set-cadence-custom", label: "Exact check interval", keywords: "advanced cadence custom interval minutes hours exact" },
   "friend-limits": { section: "agents", advanced: true, anchor: "set-limits", label: "Limits on friends' requests", keywords: "advanced favors limits tokens per day compute budget" },
   passkeys: { section: "security", advanced: false, anchor: "passkeys", label: "Passkeys", keywords: "passkey webauthn security approve" },
   "browser-access": { section: "security", advanced: false, anchor: "set-browser", label: "Read threads in this browser", keywords: "browser access decrypt key mirror" },

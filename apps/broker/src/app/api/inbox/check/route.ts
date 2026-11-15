@@ -4,6 +4,7 @@ import { waitForInbox, MAX_WAIT_MS, TooManyWaitersError } from "@/lib/inbox-bus"
 // Side effect: registers the shared pendingCounter with inbox-bus (one
 // definition of "pending", shared with /api/inbox/events - see that module).
 import "@/lib/inbox-pending";
+import { checkSchedule } from "@/lib/inbox-schedule";
 
 export const runtime = "nodejs";
 // Long-poll `wait` is capped at 300s (MAX_WAIT_MS); give the route headroom
@@ -21,7 +22,7 @@ export const maxDuration = 330;
  * not a delta feed - see inbox-bus.mjs's `since` doc) - reserved for a future
  * cursor-based long-poll without a response-shape change.
  *
- * Response: { pending_count, since, timestamp, kinds?, waited_seconds }
+ * Response: { pending_count, since, timestamp, kinds?, waited_seconds, inbox_check: { enabled, minutes, cron, schtasks } }
  */
 export async function GET(req: NextRequest) {
   const account = await getAccountFromAuth(req.headers.get("authorization"));
@@ -47,7 +48,10 @@ export async function GET(req: NextRequest) {
   // path (already-pending mail resolves before the cap check runs).
   try {
     const result = await waitForInbox(account.id, waitMs);
-    return NextResponse.json(result);
+    // The user's inbox-check schedule rides along (it's on the account row we already read), so a scheduled
+    // job's cheap Tier-1 check sees a Settings change at its next run, not only when something arrives.
+    const inbox_check = { enabled: account.inboxCheckEnabled, ...checkSchedule(account.inboxCheckMinutes) };
+    return NextResponse.json({ ...result, inbox_check });
   } catch (e) {
     if (e instanceof TooManyWaitersError) {
       return NextResponse.json(
