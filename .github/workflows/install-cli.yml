@@ -56,7 +56,9 @@ jobs:
 
       - name: backchannel-cli unit/integration tests (npm path)
         working-directory: packages/install
-        run: node --test "test/*.test.mjs"
+        # Files named explicitly: Node 20's test runner doesn't expand a quoted glob, which failed this step
+        # (and so skipped the skill.sha256 freshness check after it) on every run since at least 2026-10-10.
+        run: node --test test/cli.test.mjs
 
       - name: published install.sh.sha256 matches the served script (out-of-band prompt anchor)
         run: |
