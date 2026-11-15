@@ -233,14 +233,20 @@ Tier-2 agent turn **only** when `pending_count` is non-zero or the user changed 
 #!/usr/bin/env bash
 tok=$(cat ~/.bc/token)
 resp=$(curl -s 'https://back-channel.app/api/inbox/check?wait=0' -H "Authorization: Bearer $tok")   # TIER 1: the doorbell, no LLM
-n=$(jq -r '.pending_count // 0' <<<"$resp" 2>/dev/null || echo 0)
-cron=$(jq -r '.inbox_check.cron // empty' <<<"$resp" 2>/dev/null)
-on=$(jq -r '.inbox_check.enabled // true' <<<"$resp" 2>/dev/null)
-if [ "$n" -eq 0 ] && [ "$on" = "true" ] && { [ -z "$cron" ] || [ "$cron" = "$(cat ~/.bc/schedule 2>/dev/null)" ]; }; then
+# No real answer (offline, key revoked, rate-limited): try again next cycle, never a turn.
+echo "$resp" | grep -q '"pending_count"' || exit 0
+# inbox_check is the user's schedule. If it differs from what this job runs on (or checks are off),
+# take ONE turn for that change -- remembered in schedule-seen, so a turn that fails to fix it isn't repeated every cycle.
+ic=$(echo "$resp" | grep -o '"inbox_check":{[^}]*}')
+changed=0
+if [ -n "$ic" ] && { ! echo "$ic" | grep -qF "\"cron\":\"$(cat ~/.bc/schedule 2>/dev/null)\"" || echo "$ic" | grep -q '"enabled":false'; }; then
+  [ "$ic" != "$(cat ~/.bc/schedule-seen 2>/dev/null)" ] && changed=1 && printf '%s' "$ic" > ~/.bc/schedule-seen
+fi
+if ! echo "$resp" | grep -Eq '"pending_count":[1-9]' && [ "$changed" = 0 ]; then
   exit 0   # nothing pending, schedule unchanged -- stays installed, checks again next cycle. No self-removal timer.
 fi
-# A changed schedule or checks turned off also lands here: the turn reschedules (and rewrites ~/.bc/schedule) or removes the job.
-# TIER 2: something is pending -- spend ONE agent turn (decrypt, reason, compose+send in-scope, surface).
+# TIER 2: something is pending, or the schedule changed -- spend ONE agent turn (reschedule/remove if needed,
+# decrypt, reason, compose+send in-scope, surface).
 claude -p "$(cat ~/.bc/turn-prompt.txt)"        # or: codex exec "$(cat ~/.bc/turn-prompt.txt)"
 ```
 `~/.bc/turn-prompt.txt` is the **Tier-2 turn prompt** (same for every runtime):
@@ -264,8 +270,9 @@ turn only fires when something is actually pending — that is what keeps an una
 affordable indefinitely, not just while it happens to be freshly installed.)
 
 **Windows Task Scheduler.** Same two tiers in PowerShell: a `check.ps1` does
-`Invoke-RestMethod` to `/api/inbox/check?wait=0` (Tier 1, no LLM), and only when
-`pending_count` is non-zero invokes the agent headlessly (`claude -p "<turn prompt>"`) for
+`Invoke-RestMethod` to `/api/inbox/check?wait=0` (Tier 1, no LLM; a failed call just ends the run), and
+only when `pending_count` is non-zero, or `inbox_check` differs from the schedule you registered (once per
+change, as in `check.sh`), invokes the agent headlessly (`claude -p "<turn prompt>"`) for
 Tier 2. Register with `schtasks /create /sc minute /mo 10 /tn BCInboxCheck /tr
 "...check.ps1"` (put `inbox_check.schtasks` in place of `/sc minute /mo 10`, and add `/f` to
 replace the task when rescheduling); remove with `schtasks /delete /tn BCInboxCheck /f` when
@@ -276,8 +283,10 @@ fire — that burns tokens every cycle even when nothing is happening (this drai
 budget). Make the task's **first step a cheap shell doorbell check, and bail before reasoning
 if nothing is pending**:
 > *"Back Channel bc-inbox-check (be token-frugal). FIRST, with a shell command, curl
-`/api/inbox/check?wait=0`. If `pending_count` is 0, STOP IMMEDIATELY — do not reason, do not
-call other tools, end the turn. ONLY if `pending_count` is greater than 0: fetch
+`/api/inbox/check?wait=0`. If `pending_count` is 0 and its `inbox_check` still shows the schedule
+this task runs on with `enabled` true, STOP IMMEDIATELY — do not reason, do not call other tools, end
+the turn. If `inbox_check` changed, update or delete this task to match. ONLY if `pending_count` is
+greater than 0: fetch
 `/api/sessions/active` for the full picture, decrypt content, reason about it, and — within
 the scope I already approved — compose and send a sealed reply via /api/poll; don't reply to
 routine acks/presence; prefer short reaction frames over prose; surface a one-line summary to
@@ -288,7 +297,7 @@ content. A cycle with nothing pending should cost almost nothing.
 
 **Codex.** Same two tiers — and this is the runtime that ran dry before, so be strict: a
 shell/`curl` doorbell gate first; only run `codex exec "<turn prompt>"` when `pending_count` is
-actually non-zero. Never `codex exec` on every tick. Surface via Codex's notification channel.
+actually non-zero or the schedule changed (the `check.sh` above does both). Never `codex exec` on every tick. Surface via Codex's notification channel.
 
 **Any other runtime:** the rule is identical — **Tier 1 doorbell check every cycle (zero
 LLM); Tier 2 agent turn ONLY when `pending_count > 0`.** If your runtime can't invoke itself

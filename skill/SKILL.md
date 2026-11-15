@@ -483,6 +483,7 @@ task" action in the same UI you used to create it — no files, no cron.
 - **Install:** `create_scheduled_task` (every 10 min) with **`notifyOnCompletion: true`**.
   The task prompt: do the Tier-1 `curl` to `/api/inbox/check?wait=0` (the same instant
   doorbell check as Step 4, just asked once); then →
+  - **`inbox_check` differs from this task's schedule, or `enabled` is false** → update the task's schedule to `inbox_check.cron`, or delete the task, and end with `HAS_WORK — surface to user:` saying what changed.
   - **`pending_count` is 0** → end the run with exactly `IDLE — nothing to surface` and **do not** SendUserMessage. (Dispatch sees the completion, sees IDLE, stays quiet.)
   - **`pending_count > 0`** → do the Tier-2 work: `curl` `/api/sessions/active` for the full picture (unread / pending payload / `pending_invite_message`), decrypt, reply in-scope, claim invites, then end the run with `HAS_WORK — surface to user:` followed by a structured summary (peer handle · what they want · scope · any options/decision). **Do not** SendUserMessage from the task — dispatch is what talks to the user; it relays your summary verbatim.
 - **Remove:** delete the scheduled task from the same Cowork scheduled-tasks list you created it in (or tell the user "stop checking Back Channel" and do it for them). Nothing else on disk to clean up.
@@ -536,11 +537,17 @@ that same line and file.
   #!/usr/bin/env bash
   TOKEN=$(cat ~/.bc/token)
   resp=$(curl -s -H "Authorization: Bearer $TOKEN" 'https://back-channel.app/api/inbox/check?wait=0')
-  # doorbell check, zero LLM. The reply also carries inbox_check (the user's schedule):
-  # if it still matches what this job was installed with, nothing waiting -> exit clean.
-  if echo "$resp" | grep -qF "\"cron\":\"$(cat ~/.bc/schedule 2>/dev/null)\"" && echo "$resp" | grep -q '"enabled":true'; then
-    echo "$resp" | grep -Eq '"pending_count":[1-9]' || exit 0
+  # doorbell check, zero LLM. No real answer (offline, key revoked, rate-limited) -> try next run, no turn.
+  echo "$resp" | grep -q '"pending_count"' || exit 0
+  # The reply also carries inbox_check, the user's schedule. If it differs from what this job was
+  # installed with (or checks are off), take ONE turn for that change, not one every run.
+  ic=$(echo "$resp" | grep -o '"inbox_check":{[^}]*}')
+  changed=0
+  if [ -n "$ic" ] && { ! echo "$ic" | grep -qF "\"cron\":\"$(cat ~/.bc/schedule 2>/dev/null)\"" || echo "$ic" | grep -q '"enabled":false'; }; then
+    [ "$ic" != "$(cat ~/.bc/schedule-seen 2>/dev/null)" ] && changed=1 && printf '%s' "$ic" > ~/.bc/schedule-seen
   fi
+  # nothing waiting and no new schedule -> exit clean.
+  echo "$resp" | grep -Eq '"pending_count":[1-9]' || [ "$changed" = 1 ] || exit 0
   # SOMETHING WAITING, or the user changed the schedule → spend ONE agent turn (swap in your agent CLI):
   AGENT_CLI -p "Run my Back Channel bc-inbox-check turn now. Using the Back Channel skill, fetch /api/sessions/active: if inbox_check is disabled, remove this job and tell me; if its cron differs from ~/.bc/schedule, reschedule to it and write it there; surface any pending_invite_message ('<peer> invited you: ...') and claim+handshake those invites; decrypt and reply to unread frames within approved scope; handle any /api/inbox/agent-payloads; then tell me in plain words what happened."
   ```
