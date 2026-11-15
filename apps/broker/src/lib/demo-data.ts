@@ -57,6 +57,7 @@ export const DEMO_ACCOUNT = {
     { id: "demo-s3", name: "Release-notes drafter", description: "Turns merged PR titles into friendly release notes.", kind: "template", shared_with: [], discoverable: true, public_token: "demo-pub", public_expires_at: minsAgo(-60 * 24 * 7) },
     { id: "demo-s4", type: "prompt", name: "Inbox triage rules", description: "How my agent sorts incoming Back Channel requests.", kind: "template", shared_with: [], discoverable: false },
     { id: "demo-s5", type: "scheduled_task", name: "Monday dependency check", description: "Every Monday at 8, looks for outdated or vulnerable dependencies and drafts the upgrades.", kind: "template", shared_with: [], discoverable: false, manifest: { cron: "0 8 * * 1", public_share_allowed: false } },
+    { id: "demo-s6", type: "link", name: "Prompt-writing guide", description: "A friend's guide to writing prompts for coding agents, kept on GitHub.", kind: "template", shared_with: [], discoverable: false, manifest: { url: "https://github.com/example/prompt-guide", source: "github" }, public_token: "demo-pub-link", public_expires_at: null },
   ],
   sharedWithMe: [
     { id: "demo-sw1", owner_handle: "maren@bc", name: "Meeting-prep brief", description: "Builds a one-page brief before any call.", kind: "template" },
