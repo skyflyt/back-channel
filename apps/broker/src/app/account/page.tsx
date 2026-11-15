@@ -117,6 +117,20 @@ const SCOPE_LABELS: Record<string, string> = {
 };
 const plainScope = (scope: string) => SCOPE_LABELS[scope] ?? scope.replace(/[._]/g, " ");
 
+/** The Toolkit's item types, with the words the page uses for each (docs/vocabulary.md). */
+type ToolType = "skill" | "scheduled_task" | "prompt" | "link";
+const TOOL_TYPES: { key: ToolType; icon: string; label: string; plural: string }[] = [
+  { key: "skill", icon: "📜", label: "Tool", plural: "Tools" },
+  { key: "scheduled_task", icon: "⏰", label: "Scheduled check", plural: "Scheduled checks" },
+  { key: "prompt", icon: "💬", label: "Saved prompt", plural: "Saved prompts" },
+  { key: "link", icon: "↗", label: "Link", plural: "Links" },
+];
+const toolType = (t: string | null | undefined): ToolType => (TOOL_TYPES.some((x) => x.key === t) ? t as ToolType : "skill");
+/** Every word of the query appears in the name, description or (for a shared one) who shared it. */
+const toolMatches = (q: string, ...fields: (string | null | undefined)[]) => {
+  const hay = fields.filter(Boolean).join(" ").toLowerCase();
+  return q.trim().toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+};
 const plainKind = (kind: string) => kind === "template" ? "Copyable" : kind === "rpc" ? "Runs with friend" : kind.replace(/[._]/g, " ");
 const cleanDomain = (raw: string) => { try { return new URL(raw).hostname.replace(/^www\./, ""); } catch { return raw; } };
 const LINK_SOURCE_LABEL: Record<string, string> = { github: "GitHub", backchannel: "Back Channel", web: "Web" };
@@ -153,6 +167,10 @@ export default function AccountPage() {
   // Link lessons (WS-A): which card's install/share action is pending the full-warning
   // confirmation step. { id, action } - cleared once the user confirms or cancels.
   const [linkWarnFor, setLinkWarnFor] = useState<{ id: string; action: string } | null>(null);
+  // Toolkit: find a tool by name or words, narrow by type, and open one row's sharing at a time or several.
+  const [tkQuery, setTkQuery] = useState("");
+  const [tkType, setTkType] = useState<ToolType | "all">("all");
+  const [shareOpen, setShareOpen] = useState<Record<string, boolean>>({});
   const [libFlash, setLibFlash] = useState<string>("");
   const [newKey, setNewKey] = useState<string | null>(null);
   // The agents, for Home (connecting and managing them is on the Devices page).
@@ -997,6 +1015,28 @@ export default function AccountPage() {
 
   /* ------------------------------ toolkit ------------------------------ */
 
+  // One search and one type filter for the whole page: yours, shared with you, and your friends'.
+  const tkFiltering = tkQuery.trim() !== "" || tkType !== "all";
+  const tkKeep = (t: string | null | undefined, ...fields: (string | null | undefined)[]) => (tkType === "all" || toolType(t) === tkType) && toolMatches(tkQuery, ...fields);
+  const fSkills = vSkills.filter((sk) => tkKeep(sk.type, sk.name, sk.description));
+  const fShared = vShared.filter((sk) => tkKeep(sk.type, sk.name, sk.description, sk.owner_handle));
+  const fDiscover = vDiscover.filter((d) => tkKeep(d.type, d.name, d.description, d.owner_handle));
+  const clearToolkitFilter = () => { setTkQuery(""); setTkType("all"); };
+  const tkAll = [...vSkills, ...vShared, ...vDiscover];
+  // Shown once there's enough to look through; the type chips only for types that are present.
+  const toolkitFilterBar = tkAll.length > 3 ? (
+    <div className="ds-tkbar" role="search">
+      <input className="ds-input" type="search" placeholder="Find a tool by name or what it does" aria-label="Find a tool" value={tkQuery} onChange={(e) => setTkQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") setTkQuery(""); }} />
+      <div className="ds-tkchips" role="group" aria-label="Show only">
+        <button aria-pressed={tkType === "all"} onClick={() => setTkType("all")}>All<span className="ds-n">{tkAll.length}</span></button>
+        {TOOL_TYPES.map((t) => {
+          const n = tkAll.filter((x) => toolType(x.type) === t.key).length;
+          return n === 0 ? null : <button key={t.key} aria-pressed={tkType === t.key} onClick={() => setTkType(tkType === t.key ? "all" : t.key)}>{t.icon} {t.plural}<span className="ds-n">{n}</span></button>;
+        })}
+      </div>
+    </div>
+  ) : null;
+
   const toolkitPane = (
     <>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
@@ -1009,15 +1049,20 @@ export default function AccountPage() {
 
       {libFlash && <div className="ds-call ok" style={{ marginBottom: 14 }}>✅ {libFlash}</div>}
 
+      {toolkitFilterBar}
+
       <div className="ds-card" id="skills-section" style={{ marginBottom: 14 }}>
-        <h2 className="ds-cardh">Yours{vSkills.length ? ` (${vSkills.length})` : ""}</h2>
+        <h2 className="ds-cardh">Yours{vSkills.length ? ` (${tkFiltering ? `${fSkills.length} of ${vSkills.length}` : vSkills.length})` : ""}</h2>
         {vSkills.length === 0 && (
           <EmptyState icon="📚">Nothing in your Toolkit yet. Your agent can save tools, scheduled checks, and prompts here — then share them with a friend, with all your friends, or with anyone through a link.</EmptyState>
         )}
-        {vSkills.map((sk) => {
+        {vSkills.length > 0 && fSkills.length === 0 && (
+          <p className="ds-imeta" style={{ margin: "8px 0 0" }}>Nothing of yours matches. <button className="ds-linkbtn" onClick={clearToolkitFilter}>Show everything</button></p>
+        )}
+        {fSkills.map((sk) => {
           const trustedHandles = vTrust.filter((t) => t.trusted).map((t) => t.handle);
-          const type = sk.type || "skill";
-          const badge = type === "scheduled_task" ? { icon: "⏰", label: "Scheduled check" } : type === "prompt" ? { icon: "💬", label: "Saved prompt" } : type === "link" ? { icon: "↗", label: "Link" } : { icon: "📜", label: "Tool" };
+          const type = toolType(sk.type);
+          const badge = TOOL_TYPES.find((t) => t.key === type)!;
           const linkManifest = type === "link" ? (sk.manifest ?? {}) as Record<string, unknown> : null;
           const linkUrl = linkManifest && typeof linkManifest.url === "string" ? linkManifest.url : "";
           const linkSource = linkManifest && typeof linkManifest.source === "string" ? linkManifest.source : "web";
@@ -1036,9 +1081,21 @@ export default function AccountPage() {
                   {type === "skill" && <> <Chip>{plainKind(sk.kind)}</Chip></>}
                   {type === "link" && <> <span className="ds-imeta">{cleanDomain(linkUrl)} · {LINK_SOURCE_LABEL[linkSource] ?? "Web"}</span> <Chip tone="warn" title={LINK_HUMAN_WARNING}>↗ {LINK_BADGE_TEXT}</Chip></>}
                 </div>
-                {sk.description && <div className="ds-igoal">{sk.description}</div>}
-                <div className="ds-imeta">{sk.shared_with.length ? <>shared with: {sk.shared_with.map(shortHandle).join(", ")}</> : "private"}</div>
+                {sk.description && <div className="ds-igoal ds-clamp2">{sk.description}</div>}
+                {/* Who can see it, in one line; the controls that change it are under Share. */}
+                <div className="ds-imeta">
+                  {[sk.shared_with.length ? `Shared with ${sk.shared_with.map(shortHandle).join(", ")}` : !link && !sk.discoverable ? "Only you" : "",
+                    sk.discoverable ? "Friends can find it by name" : "",
+                    link ? `Public link${sk.public_expires_at ? `, expires ${new Date(sk.public_expires_at).toLocaleDateString()}` : ", never expires"}` : ""].filter(Boolean).join(" · ")}
+                </div>
 
+                <details className="ds-adv ds-share" open={!!shareOpen[sk.id] || linkWarnFor?.id === sk.id}
+                  onToggle={(e) => {
+                    const o = (e.currentTarget as HTMLDetailsElement).open;
+                    if (o !== !!shareOpen[sk.id]) setShareOpen((mp) => ({ ...mp, [sk.id]: o }));
+                    if (!o && linkWarnFor?.id === sk.id) setLinkWarnFor(null);
+                  }}>
+                  <summary>Share</summary>
                 {trustedHandles.length > 0 && (
                   <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                     {trustedHandles.map((h) => {
@@ -1055,6 +1112,7 @@ export default function AccountPage() {
                   </div>
                 )}
 
+                {trustedHandles.length === 0 && <div className="ds-imeta" style={{ marginTop: 8 }}>To share with one friend, add them first: Inbox → People → Invite.</div>}
                 <label className="ds-imeta" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: "pointer" }}>
                   <input type="checkbox" checked={sk.discoverable} disabled={busy === `disc:${sk.id}` || demoMode} onChange={() => toggleDiscoverable(sk.id, !sk.discoverable)} />
                   🌐 Let friends find this by name (they still need you to share it to use it)
@@ -1090,8 +1148,9 @@ export default function AccountPage() {
                     <div className="ds-imeta">🔒 {blockReason}</div>
                   )}
                 </div>
+                </details>
               </div>
-              <div className="ds-iright" style={{ flexDirection: "column", alignItems: "stretch" }}>
+              <div className="ds-iright">
                 <button className="ds-btn ghost" style={{ fontSize: 12 }} onClick={() => setInspect({ id: sk.id, name: sk.name, description: sk.description, kind: sk.kind, type: sk.type, manifest: sk.manifest, body: sk.body })}>View</button>
                 <button className="ds-btn ghost" style={{ fontSize: 12 }} disabled={demoMode} onClick={() => setEditor({ mode: "edit", initial: { id: sk.id, name: sk.name, description: sk.description, kind: sk.kind, type: sk.type, manifest: sk.manifest, body: sk.body } })}>Edit</button>
                 <button className="ds-btn danger" style={{ fontSize: 12 }} disabled={busy === `skilldel:${sk.id}` || demoMode} onClick={() => deleteSkill(sk.id, sk.name)}>Delete</button>
@@ -1102,11 +1161,11 @@ export default function AccountPage() {
       </div>
 
       <div className="ds-grid">
-        {vShared.length > 0 && (
+        {fShared.length > 0 && (
           <div className="ds-card">
-            <h2 className="ds-cardh">🎁 Shared with you</h2>
+            <h2 className="ds-cardh">🎁 Shared with you{tkFiltering ? ` (${fShared.length} of ${vShared.length})` : ""}</h2>
             <p className="ds-cardsub">A <strong>copyable tool</strong> gets added to your own agent with &ldquo;Send to my agent.&rdquo; A <strong>friend-run tool</strong> stays on their side — &ldquo;Ask their agent&rdquo; starts an Inbox conversation to use it.</p>
-            {vShared.map((sk) => {
+            {fShared.map((sk) => {
               const isTemplate = sk.kind === "template";
               const isLink = (sk.type || "skill") === "link";
               return (
@@ -1143,11 +1202,11 @@ export default function AccountPage() {
             })}
           </div>
         )}
-        {vDiscover.length > 0 && (
+        {fDiscover.length > 0 && (
           <div className="ds-card">
-            <h2 className="ds-cardh">✨ From your friends</h2>
+            <h2 className="ds-cardh">✨ From your friends{tkFiltering ? ` (${fDiscover.length} of ${vDiscover.length})` : ""}</h2>
             <p className="ds-cardsub">Useful things your friends&rsquo; agents can do. Ask a friend to share one and it shows up under &ldquo;Shared with you.&rdquo;</p>
-            {Object.entries(vDiscover.reduce<Record<string, DiscoverSkill[]>>((acc, d) => { (acc[d.owner_handle] ??= []).push(d); return acc; }, {})).map(([owner, items]) => (
+            {Object.entries(fDiscover.reduce<Record<string, DiscoverSkill[]>>((acc, d) => { (acc[d.owner_handle] ??= []).push(d); return acc; }, {})).map(([owner, items]) => (
               <div key={owner} style={{ marginTop: 10 }}>
                 <p className="ds-imeta" style={{ margin: "0 0 2px" }}><strong style={{ color: "var(--ds-ink)" }}>{shortHandle(owner)}&rsquo;s agent</strong> has {items.length} tool{items.length === 1 ? "" : "s"} you can use</p>
                 {items.map((d) => {
