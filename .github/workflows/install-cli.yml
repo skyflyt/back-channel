@@ -81,4 +81,6 @@ jobs:
       - name: install.sh passes shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y shellcheck
-          shellcheck -s sh apps/broker/public/install.sh
+          # SC2329 (new in shellcheck 0.11) flags cleanup() as never invoked; it runs via `trap cleanup EXIT INT TERM`.
+          # Excluded here rather than annotated in install.sh, whose bytes are hash-pinned (install.sh.sha256).
+          shellcheck -s sh -e SC2329 apps/broker/public/install.sh
