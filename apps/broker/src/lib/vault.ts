@@ -153,3 +153,24 @@ export async function vaultCollect(caller: Caller, requestId: string, waitMs: nu
 export async function vaultCaller(req: NextRequest): Promise<Gate> {
   return gate(req, "vault-ask", 60);
 }
+
+/** The longest a bc_vault_* tool call waits for the PC before answering pending (MCP clients time out tool calls). */
+export const TOOL_WAIT_MS = 20_000;
+
+const only = (args: Record<string, unknown>, keys: string[]) => Object.fromEntries(keys.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
+
+/** One bc_vault_* tool call (src/lib/mcp/vault-tools.mjs), with the caller's own key and the same gate as the worker routes. */
+export async function vaultTool(req: NextRequest, name: string, args: Record<string, unknown>, waitMs = TOOL_WAIT_MS): Promise<{ status: number; text: string }> {
+  const g = await vaultCaller(req);
+  if ("refused" in g) return { status: g.refused.status, text: await g.refused.text() };
+  let out: VaultOutcome;
+  switch (name) {
+    case "bc_vault_status": out = await vaultAsk(g.caller, "status", {}, waitMs); break;
+    case "bc_vault_list": out = await vaultAsk(g.caller, "list", only(args, ["path", "depth"]), waitMs); break;
+    case "bc_vault_search": out = await vaultAsk(g.caller, "search", only(args, ["query", "path"]), waitMs); break;
+    case "bc_vault_read": out = await vaultAsk(g.caller, "read", only(args, ["path"]), waitMs); break;
+    case "bc_vault_result": out = await vaultCollect(g.caller, String(args.request_id ?? ""), waitMs); break;
+    default: throw new Error(`unhandled vault tool: ${name}`);
+  }
+  return { status: out.status, text: JSON.stringify(out.body) };
+}

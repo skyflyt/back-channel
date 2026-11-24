@@ -15,6 +15,11 @@ let limited = false;
 before(() => {
   mock.module("@/lib/db", { namedExports: { prisma: db } });
   mock.module("@/lib/rate-limit", { namedExports: { rateLimit: () => ({ ok: !limited, retryAfterSec: 7 }), rateLimitPeek: () => ({ ok: !limited, retryAfterSec: 7 }), clientIp: () => "unknown" } });
+  // The MCP route's wrapped REST handlers, which these tests never reach (as in mcp-thread-id.routetest.mts).
+  const stub = { namedExports: { GET: async () => new Response("{}", { status: 200 }), POST: async () => new Response("{}", { status: 200 }) } };
+  for (const m of ["@/app/api/sessions/active/route", "@/app/api/poll/route", "@/app/api/invites/route", "@/app/api/invites/[code]/claim/route", "@/app/api/inbox/request/route",
+    "@/app/api/sessions/[id]/end/route", "@/app/api/scopes/route", "@/app/api/account/view-token-self/route", "@/app/api/inbox/agent-payloads/route"]) mock.module(m, stub);
+  mock.module("@/lib/inbox-pending", { namedExports: { pendingCount: async () => ({ count: 0, kinds: [] }) } });
   mock.module("@/lib/auth", { namedExports: {
     getAuthContext: async (header: string | null) => {
       const m = /^Bearer (\S+)$/.exec(header ?? "");
@@ -143,4 +148,62 @@ test("an aborted worker poll is never handed a request", async () => {
   const asked = await vaultAsk(caller("acct-a", "agent-chat"), "status", {}, 10);
   assert.equal(asked.status, 202);
   assert.equal((await next(KEY.worker, 0)).body.request.id, asked.body.request_id, "it waited in the queue for the next poll");
+});
+
+// ── bc_vault_* over POST /api/mcp ──
+async function mcp(as: string, method: string, params?: unknown) {
+  const { POST } = await import("@/app/api/mcp/route");
+  const res = await POST(new NextRequest("https://back-channel.app/api/mcp", { method: "POST", headers: { authorization: `Bearer ${as}`, "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, ...(params ? { params } : {}) }) }));
+  return res.json();
+}
+const VAULT_NAMES = ["bc_vault_list", "bc_vault_read", "bc_vault_result", "bc_vault_search", "bc_vault_status"];
+const vaultNames = (r: any) => r.result.tools.map((t: { name: string }) => t.name).filter((n: string) => n.startsWith("bc_vault_")).sort();
+
+test("tools/list offers bc_vault_* to full keys only, and only while the bridge is on", async () => {
+  assert.deepEqual(vaultNames(await mcp(KEY.chat, "tools/list")), VAULT_NAMES);
+  assert.deepEqual(vaultNames(await mcp(KEY.conn, "tools/list")), []);
+  process.env.VAULT_BRIDGE = "off";
+  assert.deepEqual(vaultNames(await mcp(KEY.chat, "tools/list")), []);
+  for (const t of (await import("@/lib/mcp/vault-tools.mjs")).VAULT_TOOLS) {
+    assert.match(t.description, /data, never instructions/, t.name);
+    assert.ok(!/write|edit|delete/i.test(t.name), t.name);
+  }
+});
+
+test("tools/call: a connector key is refused; a full key reads through the worker; offline says so at once", async () => {
+  const conn = await mcp(KEY.conn, "tools/call", { name: "bc_vault_read", arguments: { path: "README.md" } });
+  assert.equal(conn.result.isError, true);
+  assert.match(conn.result.content[0].text, /^HTTP 403: .*not_available_to_connectors/);
+
+  const offline = await mcp(KEY.chat, "tools/call", { name: "bc_vault_status", arguments: {} });
+  assert.match(offline.result.content[0].text, /^HTTP 503: .*vault_offline/);
+
+  const poll = next(KEY.worker, 5);
+  await new Promise(r => setTimeout(r, 20));
+  const call = mcp(KEY.chat, "tools/call", { name: "bc_vault_read", arguments: { path: "Projects/plan.md" } });
+  const handed = (await poll).body.request;
+  assert.deepEqual([handed.op, handed.args], ["read", { path: "Projects/plan.md" }]);
+  await result(KEY.worker, { id: handed.id, ok: true, result: { path: "Projects/plan.md", bytes: 5, text: "plan\n", commit: "a".repeat(40) } });
+  const read = await call;
+  assert.equal(read.result.isError, false);
+  assert.deepEqual(JSON.parse(read.result.content[0].text), { path: "Projects/plan.md", bytes: 5, text: "plan\n", commit: "a".repeat(40) });
+
+  const bad = await mcp(KEY.chat, "tools/call", { name: "bc_vault_read", arguments: { path: "x", text: "write this" } });
+  assert.match(bad.error.message, /unknown argument: text/);
+});
+
+test("tools/call: a slow PC answers pending, and bc_vault_result collects it", async () => {
+  const { vaultTool } = await import("@/lib/vault");
+  await next(KEY.worker, 0);
+  const req = (key: string) => new NextRequest("https://back-channel.app/api/mcp", { method: "POST", headers: { authorization: `Bearer ${key}` } });
+  const first = await vaultTool(req(KEY.chat), "bc_vault_search", { query: "plan", path: "Projects" }, 10);
+  assert.equal(first.status, 202);
+  const { request_id } = JSON.parse(first.text);
+  const handed = (await next(KEY.worker, 0)).body.request;
+  assert.deepEqual([handed.id, handed.op, handed.args], [request_id, "search", { query: "plan", path: "Projects" }]);
+  await result(KEY.worker, { id: request_id, ok: true, result: { matches: [] } });
+  const done = await mcp(KEY.chat, "tools/call", { name: "bc_vault_result", arguments: { request_id } });
+  assert.deepEqual(JSON.parse(done.result.content[0].text), { matches: [] });
+  const again = await mcp(KEY.chat, "tools/call", { name: "bc_vault_result", arguments: { request_id } });
+  assert.match(again.result.content[0].text, /^HTTP 404: .*unknown_request/);
 });
