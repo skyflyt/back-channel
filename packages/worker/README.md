@@ -211,6 +211,43 @@ The worker keeps the claim alive only near its 60-minute lapse while the CLI sti
 claim is lost (you took the task back or gave it to someone else) and lets the task go when the CLI stops without
 finishing. A task it has worked isn't picked again until someone changes it.
 
+### Vault: read-only notes for your own agents
+
+`run --vault` also answers vault reads from your own agents through Back Channel: status, list, search and read of
+a git-backed notes vault. See `docs/vault-bridge.md`. It only ever reads, and only from the branch as fetched from the
+vault's git server (Gitea, GitHub or anything git speaks) into a private ref, `refs/bc-vault/<branch>`. It never
+touches the working tree, the index or any branch, so it can't collide with the sessions that edit the vault or leave
+a sync stuck, and edits that haven't been pushed aren't served. It fetches again when the last fetch is older than
+`fetchEveryMs`; when the server can't be reached it serves the last fetch and says how old it is.
+
+1. Use an agent key of its own (`BC_AGENT_TOKEN` at `init`). Vault mode needs no `enroll` or `trust`.
+2. Install the profile. It holds no secrets (unknown keys are refused):
+
+   ```json
+   {
+     "root": "C:/vault",
+     "fetchUrl": "https://git.example.home/you/vault.git",
+     "branch": "main",
+     "exclude": ["Private", "Work/HR/"]
+   }
+   ```
+
+   `profile --name vault --file vault.json`. `root` is the vault's checkout on this PC (only its git objects are
+   read). Without `fetchUrl` it fetches from the checkout's `origin`. `exclude` adds to the built-in refusals:
+   `.git`, `.obsidian`, `.trash`, `.claude`, `.env*`, key stores and private keys (`*.kdbx`, `*.pem`, `*.key`,
+   `id_ed25519` and the like) and credential files are never listed, searched or read. A name or pattern refuses it
+   anywhere; a path with a slash inside refuses that folder from the vault's top. `maxReadBytes` (default 256 KiB,
+   at most 1 MiB) caps one read; binary files are never returned.
+3. Give it a read-only token from the git server (on Gitea: a token with repository read only), so the worker never
+   fetches with your own saved credentials: `vault-token --file token.txt` (or `--file -` to paste it on stdin).
+   It is kept in the worker's private state, given to git in its environment, and never sent to Back Channel.
+4. Check it with `vault` (fetches once and prints the commit, its time and how fresh it is), then run
+   `run --vault` (it can run with `--lists` and Dispatch in one worker).
+
+Each answer carries `commit`, `as_of` (the commit's time), `fetched_at`, `stale_seconds` and `fetch_ok`, and a read
+carries the note's `version` (`sha256:` of its bytes). Errors are fixed sentences, never git's own output. Back
+Channel sees a note's text only as the answer to one request from your own agent and keeps it in memory only.
+
 ## Failure and recovery
 
 The worker signs routing IDs, expiry and task/result purpose with Ed25519 and
@@ -245,6 +282,9 @@ Run `npm test --prefix packages/worker`. Tests use a deterministic real child
 fixture and an in-memory relay, including the encrypted roundtrip and sender
 continuation, route/purpose replay, tampering, rejected profiles/peers, duplicate
 polling, restart, lease cancellation, outbox retry and local exclusivity.
+`test/vault.test.mjs` covers vault mode against a bare fixture git server and a loopback broker: reads come only
+from the fetched ref, the working tree, index and branches are never touched, exclusions hold, and a down server
+serves the last fetch with its age.
 `test/lists.test.mjs` covers lists mode against a loopback broker that uses the broker's own Lists rules and a
 fixture agent CLI that speaks MCP. `test/remote-support.test.mjs` covers the remote-support profile against a
 fixture support connector pipe that checks the executor secret's hash, a loopback Back Channel that must receive

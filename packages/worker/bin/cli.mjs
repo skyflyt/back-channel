@@ -11,11 +11,12 @@ import { REMOTE_APP_PROFILE, validateRemoteAppProfile } from '../src/remote-app.
 import { REMOTE_SUPPORT_PROFILE, validateRemoteSupportProfile } from '../src/remote-support.mjs';
 import { isExecutorSecret } from '../src/agent-control.mjs';
 import { LISTS_PROFILE, ListsAgent, validateListsProfile } from '../src/lists.mjs';
+import { VAULT_PROFILE, VAULT_TOKEN_FILE, VaultAgent, VaultGit, VaultReader, validateVaultProfile } from '../src/vault.mjs';
 import { fileURLToPath } from 'node:url';
 import { stopWorker, watchParent } from '../src/stop.mjs';
 import { ReadinessError, allowSender, candidates, collectReadiness, revokeSender, sendReport, startReadinessReports } from '../src/readiness.mjs';
 import { startSecretsSync } from '../src/broker-relay.mjs';
-const help = `bc-worker (Node 22+)\ninit --broker URL --name NAME     Token from BC_AGENT_TOKEN\nenroll                           Register public keys; prints peer trust JSON\nagents                           List enrolled peers (does not trust them)\ntrust --file peer.json            Pin {id,encryptionKey,signingKey} from owner-verified source\nprofile --name NAME --file FILE   Install local approved runtime profile ("remote-app" and "remote-support" must be\n                                 read-only claude; "lists" takes no allowedSenders and is read-only unless it says otherwise)\nsend --target ID --profile NAME --objective-file FILE [--continue-profile NAME] [--remote-session ID]\n     [--executor-secret-from FILE|-]\n                                 --remote-session hands an approved remote app session to --profile remote-app,\n                                 or a running support session to --profile remote-support, which also needs the\n                                 session's executor secret: --executor-secret-from a private file holding it, or -\n                                 to read it from stdin. It is never taken on the command line. remote-app takes one\n                                 too when Back Channel issued it (v1.1)\nrun [--once] [--lists] [--parent-pid PID]\n                                 Poll and execute approved work/continuations; --lists also works the Lists\n                                 tasks assigned to this agent, one at a time, with the local "lists" profile\n                                 (without Dispatch enrollment, --lists works Lists only). Without --once it also\n                                 reports readiness to Back Channel at start and every 10 minutes. --parent-pid: stop\n                                 by itself (checked every 5 s) once that process, the launcher, has ended\nstop                             End the worker running on this state: only if the lock's process is this CLI's run\n                                 for this --state (else not_this_worker, nothing touched). Waits up to 15 s, then\n                                 clears the lock as recover does (interrupted work never replays)\nstatus                           Print durable local journal\ncancel --id UUID                 Cancel your outbound task\nrecover --confirm-stopped        Remove stale lock after owner stops previous worker/tree\nreadiness [--report]             Can an agent use apps on this PC? Non-secret JSON: the AppBridge agent-control pipe\n                                 (a hello only), claude's sign-in (claude auth status) and the agents the remote-app\n                                 profile accepts. --report also sends it to Back Channel\ncandidates                       Your other Dispatch agents, each with its key fingerprint, and whether it is pinned\n                                 and allowed to hand this PC remote app sessions\nallow-sender --id ID --fingerprint XXXX-XXXX-XXXX-XXXX [--claude PATH]\n                                 Let that agent hand this PC remote app sessions. Refused unless its keys from Back\n                                 Channel match the fingerprint you compared on its own PC. Pins it and adds it to the\n                                 remote-app profile (created if missing: claude from --claude or PATH, plan mode)\nrevoke-sender --id ID            Take it off the remote-app profile; unpin it if no other profile names it\nAll commands accept --state DIRECTORY (outside any repository/vault).\nExit 0 success; 1 failure. Enrollment and trust are separate.\nreadiness, candidates, allow-sender, revoke-sender and stop print one JSON object; on failure {"error","message"}.\nNo command prints the agent key or a private key.\n`;
+const help = `bc-worker (Node 22+)\ninit --broker URL --name NAME     Token from BC_AGENT_TOKEN\nenroll                           Register public keys; prints peer trust JSON\nagents                           List enrolled peers (does not trust them)\ntrust --file peer.json            Pin {id,encryptionKey,signingKey} from owner-verified source\nprofile --name NAME --file FILE   Install local approved runtime profile ("remote-app" and "remote-support" must be\n                                 read-only claude; "lists" takes no allowedSenders and is read-only unless it says otherwise)\nsend --target ID --profile NAME --objective-file FILE [--continue-profile NAME] [--remote-session ID]\n     [--executor-secret-from FILE|-]\n                                 --remote-session hands an approved remote app session to --profile remote-app,\n                                 or a running support session to --profile remote-support, which also needs the\n                                 session's executor secret: --executor-secret-from a private file holding it, or -\n                                 to read it from stdin. It is never taken on the command line. remote-app takes one\n                                 too when Back Channel issued it (v1.1)\nrun [--once] [--lists] [--vault] [--parent-pid PID]\n                                 Poll and execute approved work/continuations; --lists also works the Lists\n                                 tasks assigned to this agent, one at a time, with the local "lists" profile\n                                 (without Dispatch enrollment, --lists works Lists only). --vault also answers\n                                 your own agents' vault reads from the local "vault" profile: read-only, from\n                                 the branch as fetched from its git server, never the working files. Without --once it also\n                                 reports readiness to Back Channel at start and every 10 minutes. --parent-pid: stop\n                                 by itself (checked every 5 s) once that process, the launcher, has ended\nvault                            Fetch the vault once and print its status as JSON (commit, as_of, freshness)\nvault-token --file FILE|- | --clear\n                                 Keep (or remove) the vault's read-only git token in this worker's private state.\n                                 Read from a file or stdin, never the command line. With one set, git fetches\n                                 with it and never with your own saved credentials\nstop                             End the worker running on this state: only if the lock's process is this CLI's run\n                                 for this --state (else not_this_worker, nothing touched). Waits up to 15 s, then\n                                 clears the lock as recover does (interrupted work never replays)\nstatus                           Print durable local journal\ncancel --id UUID                 Cancel your outbound task\nrecover --confirm-stopped        Remove stale lock after owner stops previous worker/tree\nreadiness [--report]             Can an agent use apps on this PC? Non-secret JSON: the AppBridge agent-control pipe\n                                 (a hello only), claude's sign-in (claude auth status) and the agents the remote-app\n                                 profile accepts. --report also sends it to Back Channel\ncandidates                       Your other Dispatch agents, each with its key fingerprint, and whether it is pinned\n                                 and allowed to hand this PC remote app sessions\nallow-sender --id ID --fingerprint XXXX-XXXX-XXXX-XXXX [--claude PATH]\n                                 Let that agent hand this PC remote app sessions. Refused unless its keys from Back\n                                 Channel match the fingerprint you compared on its own PC. Pins it and adds it to the\n                                 remote-app profile (created if missing: claude from --claude or PATH, plan mode)\nrevoke-sender --id ID            Take it off the remote-app profile; unpin it if no other profile names it\nAll commands accept --state DIRECTORY (outside any repository/vault).\nExit 0 success; 1 failure. Enrollment and trust are separate.\nreadiness, candidates, allow-sender, revoke-sender and stop print one JSON object; on failure {"error","message"}.\nNo command prints the agent key or a private key.\n`;
 /** The executor secret from a file, or stdin for "-": one secret and nothing else. The error never shows what was read. */
 function readExecutorSecret(from) {
     const secret = fs.readFileSync(from === '-' ? 0 : from, 'utf8').trim();
@@ -92,7 +93,7 @@ async function recoverAfterRestart(store) {
 async function main() {
     if (Number(process.versions.node.split('.')[0]) < 22)
         throw Error('Node 22 or newer required');
-    const { values: v, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries(['state', 'broker', 'name', 'file', 'target', 'profile', 'objective-file', 'continue-profile', 'id', 'remote-session', 'executor-secret-from', 'fingerprint', 'claude', 'parent-pid'].map(k => [k, { type: 'string' }]).concat(['once', 'help', 'confirm-stopped', 'lists', 'report'].map(k => [k, { type: 'boolean' }]))) });
+    const { values: v, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries(['state', 'broker', 'name', 'file', 'target', 'profile', 'objective-file', 'continue-profile', 'id', 'remote-session', 'executor-secret-from', 'fingerprint', 'claude', 'parent-pid'].map(k => [k, { type: 'string' }]).concat(['once', 'help', 'confirm-stopped', 'lists', 'vault', 'report', 'clear'].map(k => [k, { type: 'boolean' }]))) });
     const command = positionals[0];
     if (v.help || !command) {
         console.log(help);
@@ -122,8 +123,24 @@ async function main() {
         console.log('Confirmed recovery recorded. Interrupted jobs will not replay; submit a new task after reviewing side effects.');
         return;
     }
-    if (!['send', 'status', 'cancel', 'agents'].includes(command)) await recoverAfterRestart(store);
-    const unlock = ['send', 'status', 'cancel', 'agents'].includes(command) ? () => { } : store.lock();
+    if (command === 'vault-token') {
+        if (v.clear) {
+            store.write(VAULT_TOKEN_FILE, { token: null });
+            console.log('Vault token removed');
+            return;
+        }
+        if (!v.file)
+            throw Error('vault-token needs --file FILE (or - for stdin), or --clear');
+        const token = fs.readFileSync(v.file === '-' ? 0 : v.file, 'utf8').trim();
+        if (!/^[A-Za-z0-9_.~+\/=-]{16,256}$/.test(token))
+            throw Error('That does not look like one git access token');
+        store.write(VAULT_TOKEN_FILE, { token });
+        console.log('Vault token kept in private worker state');
+        return;
+    }
+    const lockFree = ['send', 'status', 'cancel', 'agents', 'vault'];
+    if (!lockFree.includes(command)) await recoverAfterRestart(store);
+    const unlock = lockFree.includes(command) ? () => { } : store.lock();
     try {
         if (command === 'init') {
             if (store.read('config', null))
@@ -161,12 +178,20 @@ async function main() {
             if (!v.name)
                 throw Error('--name required');
             const parsed = JSON.parse(fs.readFileSync(v.file, 'utf8'));
-            const profile = v.name === REMOTE_APP_PROFILE ? validateRemoteAppProfile(parsed) : v.name === REMOTE_SUPPORT_PROFILE ? validateRemoteSupportProfile(parsed) : v.name === LISTS_PROFILE ? validateListsProfile(parsed) : validateProfile(parsed);
+            const profile = v.name === REMOTE_APP_PROFILE ? validateRemoteAppProfile(parsed) : v.name === REMOTE_SUPPORT_PROFILE ? validateRemoteSupportProfile(parsed) : v.name === LISTS_PROFILE ? validateListsProfile(parsed) : v.name === VAULT_PROFILE ? validateVaultProfile(parsed) : validateProfile(parsed);
             if (profile.adapter === 'fixture')
                 throw Error('Fixture adapter is test-only and cannot be installed by CLI');
             config.profiles[v.name] = profile;
             store.write('config', config);
             console.log('Local profile installed');
+            return;
+        }
+        if (command === 'vault') {
+            if (!config.profiles?.[VAULT_PROFILE])
+                throw Error('No local profile named "vault": install one with profile --name vault --file FILE');
+            const profile = validateVaultProfile(config.profiles[VAULT_PROFILE]);
+            const reader = new VaultReader(profile, { git: new VaultGit(profile, { token: store.read(VAULT_TOKEN_FILE, null)?.token ?? null }), log: message => console.error(message) });
+            console.log(JSON.stringify(await reader.handle('status'), null, 2));
             return;
         }
         const worker = new Worker(store);
@@ -195,8 +220,10 @@ async function main() {
             // It needs no Dispatch enrollment; without one, only Lists runs.
             const lists = v.lists ? new ListsAgent(worker) : null;
             lists?.recover();
-            const dispatch = !lists || Boolean(config.agentId);
-            if (!dispatch) console.error('Not enrolled for Dispatch: working Lists tasks only.');
+            // --vault: read-only vault answers (src/vault.mjs) beside Dispatch. Like --lists it needs no enrollment.
+            const vault = v.vault ? new VaultAgent(worker) : null;
+            const dispatch = !(lists || vault) || Boolean(config.agentId);
+            if (!dispatch) console.error(`Not enrolled for Dispatch: ${[lists && 'working Lists tasks', vault && 'answering vault reads'].filter(Boolean).join(' and ')} only.`);
             let stopped = false, failures = 0;
             // Readiness for the dashboard and the AppBridge console: at start and every 10 minutes. A failed report is
             // logged and the run carries on. Not with --once (a single pass), nor when recovery is required (it exits).
@@ -208,7 +235,7 @@ async function main() {
             // A stop also ends the wait between cycles, so the run winds down at once.
             let wake = () => { }, parent = null;
             const pause = ms => new Promise(resolve => { const timer = globalThis.setTimeout(resolve, ms); wake = () => { globalThis.clearTimeout(timer); resolve(); }; });
-            const stop = () => { stopped = true; parent?.stop(); reports?.stop(); secrets?.stop(); worker.stop(); lists?.stop(); wake(); };
+            const stop = () => { stopped = true; parent?.stop(); reports?.stop(); secrets?.stop(); worker.stop(); lists?.stop(); vault?.stop(); wake(); };
             process.on('SIGINT', stop);
             process.on('SIGTERM', stop);
             // --parent-pid: the launcher that started this worker (the scheduled task's PowerShell). Once it is gone (the
@@ -236,7 +263,7 @@ async function main() {
             // Either loop failing stops the other; the lock is released only once both have wound down.
             const loop = promise => promise.catch(e => { stop(); throw e; });
             try {
-                const outcomes = await Promise.allSettled([dispatch ? loop(dispatchLoop()) : null, lists ? loop(lists.run({ once: v.once })) : null]);
+                const outcomes = await Promise.allSettled([dispatch ? loop(dispatchLoop()) : null, lists ? loop(lists.run({ once: v.once })) : null, vault ? loop(vault.run({ once: v.once })) : null]);
                 const failed = outcomes.find(o => o.status === 'rejected');
                 if (failed) throw failed.reason;
                 worker.assertReady();
