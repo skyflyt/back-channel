@@ -24,6 +24,8 @@ const SEALED_NOTE =
 import { LIST_TOOLS } from "./list-tools.mjs";
 // Remote app sessions (bc_remote_*): own catalog module, appended right after LIST_TOOLS. Full-scope keys only.
 import { REMOTE_TOOLS } from "./remote-tools.mjs";
+// The vault bridge (bc_vault_*): own catalog module, appended after REMOTE_TOOLS. Full-scope keys only, VAULT_BRIDGE=on only.
+import { VAULT_TOOLS } from "./vault-tools.mjs";
 
 // The thread id is the one argument every per-thread tool needs, and it is the
 // one that goes missing in the field: a client reported bc_read_messages
@@ -206,6 +208,7 @@ export const TOOLS = [
   },
   ...LIST_TOOLS,
   ...REMOTE_TOOLS,
+  ...VAULT_TOOLS,
 ];
 
 const takesThreadId = (tool) => !!tool.inputSchema.properties?.session_id;

@@ -33,6 +33,9 @@ import { GET as agentPayloadsGET } from "@/app/api/inbox/agent-payloads/route";
 import { isListTool, listsTool, tasksWaitingForAgents } from "@/lib/lists";
 // Remote app sessions (bc_remote_*): full-scope keys only, same rules as /api/remote-app.
 import { isRemoteTool, remoteTool } from "@/lib/remote-app";
+// The vault bridge (bc_vault_*): full-scope keys only, VAULT_BRIDGE=on only, same rules as /api/vault (docs/vault-bridge.md).
+import { isVaultTool } from "@/lib/mcp/vault-tools.mjs";
+import { vaultRolloutOn, vaultTool } from "@/lib/vault";
 import { waitForInbox, TooManyWaitersError } from "@/lib/inbox-bus";
 // Side effect: registers the shared pendingCounter with inbox-bus (same wiring
 // /api/inbox/check and /api/inbox/events rely on) so waitForInbox here counts
@@ -113,6 +116,7 @@ async function dispatchTool(
 ): Promise<ToolOutcome> {
   if (isListTool(name)) return listsTool(req, name, args);
   if (isRemoteTool(name)) return remoteTool(req, name, args);
+  if (isVaultTool(name)) return vaultTool(req, name, args);
   switch (name) {
     case "bc_whoami": {
       const agent = auth.agentTokenId
@@ -323,7 +327,7 @@ export async function POST(req: NextRequest) {
   // Lists attribute every action to a specific agent, so a key with no agent
   // identity isn't offered the bc_task* tools (and /api/lists refuses it).
   if (msg.method === "tools/list" && !ctx.agentTokenId) {
-    const tools = (hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link")).filter((t) => !isListTool(t.name) && !isRemoteTool(t.name));
+    const tools = (hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link")).filter((t) => !isListTool(t.name) && !isRemoteTool(t.name) && !isVaultTool(t.name));
     return json(rpcResult(msg.id, { tools }));
   }
 
@@ -341,7 +345,11 @@ export async function POST(req: NextRequest) {
       // (view-token-self); leaving the tool out of its catalog just keeps the
       // model from offering something that will not work.
       // The bc_remote_* tools (a PC's apps) are left out for the same reason, and refused by remote-app.ts.
-      return json(rpcResult(msg.id, { tools: hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link" && !isRemoteTool(t.name)) }));
+      // The bc_vault_* tools: full-scope keys only (vault.ts refuses connectors too), and only while the bridge is on.
+      return json(rpcResult(msg.id, {
+        tools: (hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link" && !isRemoteTool(t.name) && !isVaultTool(t.name)))
+          .filter((t) => vaultRolloutOn() || !isVaultTool(t.name)),
+      }));
     case "tools/call": {
       const name = msg.params?.name;
       const tool = typeof name === "string" ? getTool(name) : null;
