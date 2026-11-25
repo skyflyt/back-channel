@@ -23,6 +23,9 @@
  *                     cannot skip it (there is nothing to skip to), and its grant is never spent.
  *   secret_broker_admin  asking a PC's worker to install or update the secret broker, or to trust a passkey for phone
  *                     approvals (§3.4); target: that worker's agent id
+ *   grant_vault       letting one hosted connector (claude.ai, ChatGPT over OAuth) read the person's notes vault through
+ *                     the bc_vault_* tools (docs/vault-bridge.md, step 4; src/lib/vault-grant.ts); target: that connector's
+ *                     agent id. ALWAYS needs a passkey: with APPROVAL_STEP_UP=off the grant is refused, not waved through.
  * Denying, stopping and cancelling are never gated: refusing stays one click. Agent (bearer) routes are unchanged.
  *
  * The grant: POST /api/account/passkeys/step-up/verify (src/lib/passkeys.ts) answers a verified ceremony with a random
@@ -41,7 +44,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 
 export const STEP_UP_HEADER = "x-bc-step-up";
-export const STEP_UP_ACTIONS = ["approve_session", "resume_session", "approve_support", "connect_agent", "manage_passkeys", "approve_secret", "secret_broker_admin"] as const;
+export const STEP_UP_ACTIONS = ["approve_session", "resume_session", "approve_support", "connect_agent", "manage_passkeys", "approve_secret", "secret_broker_admin", "grant_vault"] as const;
 export type StepUpAction = (typeof STEP_UP_ACTIONS)[number];
 /** A ceremony (the WebAuthn prompt) may take this long; the browser's own timeout is 60 seconds. */
 export const CEREMONY_TTL_MS = 5 * 60_000;
@@ -64,7 +67,7 @@ export function isStepUpAction(v: unknown): v is StepUpAction {
 /** The approvals, "go on" and the secret broker actions name what they are for; the other actions name nothing. */
 export function actionTakesTarget(action: StepUpAction): boolean {
   return action === "approve_session" || action === "resume_session" || action === "approve_support"
-    || action === "approve_secret" || action === "secret_broker_admin";
+    || action === "approve_secret" || action === "secret_broker_admin" || action === "grant_vault";
 }
 
 /** A target id as the approvals use them (a UUID), or null. */

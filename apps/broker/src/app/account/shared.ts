@@ -31,7 +31,13 @@ export function when(iso: string): string {
   return d.toLocaleDateString();
 }
 
-export interface AgentRow { id: string; name: string; runtime_type: string; created_at: string; last_used_at: string | null; revoked_at: string | null; }
+export interface AgentRow {
+  id: string; name: string; runtime_type: string; created_at: string; last_used_at: string | null; revoked_at: string | null;
+  /** "full" (an agent the person runs) or "connector" (an app connected by sign-in, such as claude.ai). */
+  scope?: string;
+  /** When the person let this connector read their notes vault (docs/vault-bridge.md step 4), else null. */
+  vault_grant_at?: string | null;
+}
 export const RUNTIME_LABEL: Record<string, string> = { cowork: "Cowork", codex: "Codex", claude_code: "Claude Code", chatgpt: "ChatGPT", other: "Other" };
 
 /**

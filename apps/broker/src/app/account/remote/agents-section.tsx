@@ -7,6 +7,9 @@
  * their client's own settings; the agent never runs anything to establish trust), the one-time agent code for
  * runtimes without MCP, and the developer-key escape hatch for scripting by hand.
  *
+ * A connected app (a connector key, such as claude.ai) also shows whether it may read the person's notes vault, with
+ * "Let it read your vault" (a passkey step-up, grant_vault) and "Stop vault reads" (one click); src/lib/vault-grant.ts.
+ *
  * Moved from the dashboard's Agents tab on 2026-10-31; the data and API paths are unchanged (/api/account/agents,
  * /api/auth/exchange-code, /api/account/bootstrap-prompt, all cookie + bc_csrf). The Add flow on the Devices page
  * opens the connect form through `connectOpen`.
@@ -46,6 +49,8 @@ export default function AgentsSection({ demo, connectOpen, onConnectOpenChange, 
   onAgents?: (agents: AgentRow[]) => void;
 }) {
   const [agents, setAgents] = useState<AgentRow[]>(demo ? (DEMO_ACCOUNT.agents as AgentRow[]) : []);
+  const [vaultBridge, setVaultBridge] = useState(false); // VAULT_BRIDGE on: connected apps can be granted the vault
+  const [vaultNote, setVaultNote] = useState<Record<string, string>>({});
   const [agentName, setAgentName] = useState("");
   const [agentRuntime, setAgentRuntime] = useState("other");
   const [mcpToken, setMcpToken] = useState<string | null>(null); // the agent's key, shown once
@@ -77,7 +82,7 @@ export default function AgentsSection({ demo, connectOpen, onConnectOpenChange, 
     if (demo) return;
     try {
       const r = await fetch("/api/account/agents", { credentials: "include" });
-      if (r.ok) { const list: AgentRow[] = (await r.json()).agents ?? []; setAgents(list); onAgents?.(list); }
+      if (r.ok) { const j = await r.json(); const list: AgentRow[] = j.agents ?? []; setAgents(list); setVaultBridge(j.vault_bridge === "on"); onAgents?.(list); }
     } catch { /* leave as-is */ }
   }, [demo, onAgents]);
   useEffect(() => { loadAgents(); }, [loadAgents]);
@@ -137,6 +142,25 @@ export default function AgentsSection({ demo, connectOpen, onConnectOpenChange, 
     if (!confirm(`Revoke "${name}"? This agent will lose access immediately. Your other agents stay connected.`)) return;
     setBusy(`revoke:${id}`);
     await fetch(`/api/account/agents/${id}`, { method: "DELETE", credentials: "include", headers: { "x-bc-csrf": csrf() } }).catch(() => {});
+    setBusy(""); loadAgents();
+  };
+
+  // The vault grant (docs/vault-bridge.md step 4): a connected app may read the notes vault only after the passkey.
+  const grantVault = async (a: AgentRow) => {
+    if (!confirm(`Let "${a.name}" read your notes vault?\n\nIt can list, search and read notes through your PC, read-only. Secret files and app settings are never shared. The text of each note it reads passes through Back Channel on the way, held in memory only and never stored.\n\nYou'll confirm with your passkey, and you can stop it any time here.`)) return;
+    setBusy(`vault:${a.id}`); setVaultNote((m) => ({ ...m, [a.id]: "" }));
+    const r = await sendWithStepUp("grant_vault", a.id, (h) => fetch(`/api/account/agents/${encodeURIComponent(a.id)}/vault`, {
+      method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-bc-csrf": csrf(), ...h }, body: "{}",
+    }), passkeys.hint);
+    if (r.ok) setVaultNote((m) => ({ ...m, [a.id]: "✓ It can read your vault now." }));
+    else if (r.needsPasskey) setVaultNote((m) => ({ ...m, [a.id]: "This needs a passkey on your account first. Add one under Passkeys in your settings, then try again." }));
+    else setVaultNote((m) => ({ ...m, [a.id]: r.message ?? "That didn't work. Try again." }));
+    setBusy(""); loadAgents();
+  };
+  const stopVault = async (a: AgentRow) => {
+    setBusy(`vault:${a.id}`);
+    await fetch(`/api/account/agents/${encodeURIComponent(a.id)}/vault`, { method: "DELETE", credentials: "include", headers: { "x-bc-csrf": csrf() } }).catch(() => {});
+    setVaultNote((m) => ({ ...m, [a.id]: "" }));
     setBusy(""); loadAgents();
   };
 
@@ -221,6 +245,15 @@ export default function AgentsSection({ demo, connectOpen, onConnectOpenChange, 
                 <div className="ds-imeta">added {when(a.created_at)} · {a.last_used_at ? `last heard from ${when(a.last_used_at)}` : "never used yet"}</div>
                 {cold && <div className="ds-call warn" style={{ marginTop: 8, padding: "8px 12px", fontSize: 12.5 }}>This agent hasn&apos;t been heard from in a while. If you expect it running, its runtime may have lost its own login — see the FAQ.</div>}
                 {agentCheck[a.id] && <div className="ds-call" style={{ marginTop: 8, padding: "8px 12px", fontSize: 12.5, background: "#f8fafc", border: "1px solid var(--ds-line)" }}>{agentCheck[a.id]}</div>}
+                {a.scope === "connector" && (a.vault_grant_at || vaultBridge) && (
+                  <div className="ds-imeta" style={{ marginTop: 6 }}>
+                    {a.vault_grant_at ? <>Can read your notes vault (since {when(a.vault_grant_at)}). </> : <>Can&apos;t read your notes vault. </>}
+                    {a.vault_grant_at
+                      ? <button className="ds-link" disabled={busy === `vault:${a.id}` || demo} onClick={() => stopVault(a)}>{busy === `vault:${a.id}` ? "…" : "Stop vault reads"}</button>
+                      : <button className="ds-link" disabled={busy === `vault:${a.id}` || demo} onClick={() => grantVault(a)}>{busy === `vault:${a.id}` ? "…" : "Let it read your vault"}</button>}
+                    {vaultNote[a.id] && <div style={{ marginTop: 4 }}>{vaultNote[a.id]}</div>}
+                  </div>
+                )}
               </div>
               <div className="ds-iright">
                 <button className="ds-link" disabled={busy === `check:${a.id}` || demo} onClick={() => checkAgent(a)}>{busy === `check:${a.id}` ? "checking…" : "Check status"}</button>

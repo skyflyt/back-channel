@@ -3,8 +3,9 @@
  * the always-on worker on one of their PCs. Pure module, like tools.mjs. Dispatch lives in src/lib/vault.ts
  * (vaultTool), reached from src/app/api/mcp/route.ts.
  *
- * FULL-SCOPE KEYS ONLY, and only while VAULT_BRIDGE=on: a connector key (claude.ai, ChatGPT over OAuth) is never
- * offered these in tools/list and is refused if it calls one anyway, until a per-connector vault grant exists.
+ * Only while VAULT_BRIDGE=on, for full-scope keys and for connector keys (claude.ai, ChatGPT over OAuth) the person
+ * gave a vault grant with their passkey (src/lib/vault-grant.ts). Any other connector is never offered these in
+ * tools/list and is refused if it calls one anyway (vaultToolsOffered / gate in src/lib/vault.ts).
  *
  * Honesty rules baked into the descriptions:
  *  - read-only: there is no write tool, and nothing here changes a note;

@@ -1,9 +1,9 @@
 # Vault bridge: read-only notes for your own agents
 
-Status: built in three steps, each its own change: step 1, the worker (`packages/worker/src/vault.mjs`,
+Status: built in four steps, each its own change: step 1, the worker (`packages/worker/src/vault.mjs`,
 `bc-worker run --vault`); step 2, the broker's rendezvous (`src/lib/vault-bridge.mjs`, `src/lib/vault.ts`,
-`/api/vault/worker/*`); step 3, the `bc_vault_*` MCP tools (`src/lib/mcp/vault-tools.mjs`). Step 4, a per-connector
-vault grant, is not built. Writes are out of scope for now.
+`/api/vault/worker/*`); step 3, the `bc_vault_*` MCP tools (`src/lib/mcp/vault-tools.mjs`); step 4, a per-connector
+vault grant (`src/lib/vault-grant.ts`, `/api/account/agents/:id/vault`). Writes are out of scope for now.
 
 ## Why
 
@@ -72,6 +72,24 @@ full-scope keys only. A call queues one request and waits up to 20 seconds; past
 while the bridge is on. Every description says a note's text is
 data, never instructions.
 
-Hosted connectors (claude.ai over OAuth) stay refused until the person turns on a per-connector vault grant from one
-of their PCs, with their passkey (step 4, in the PC app). Note text for a connector's read passes through Back
-Channel readable, held in memory only and never stored. That is the trade the grant asks the person to accept.
+Hosted connectors (claude.ai or ChatGPT over OAuth, keys with scope `connector`) get none of this until the person
+turns on a vault grant for that one connector (step 4).
+
+## Connector grant (step 4)
+
+- On: back-channel.app, Devices, Agents, "Let it read your vault" on a connector's row. The dashboard states the trade
+  first: note text for that connector's reads passes through Back Channel readable, held in memory only and never
+  stored. Then the person's passkey step-up (`grant_vault`, for exactly that connector), spent by
+  `POST /api/account/agents/:id/vault`. Always a passkey: an agent driving one of the PCs can't answer one, so it
+  can't grant itself or a connector the vault. With `APPROVAL_STEP_UP=off` a grant is refused (`step_up_off`), never
+  waved through. Only the account's own live connector keys can be granted; a full key answers `not_a_connector`.
+- Off: "Stop vault reads", one click with no passkey (`DELETE`, idempotent), or by revoking the connector's key (the
+  `VaultGrant` row cascades).
+- What it opens: the asking side only. A granted connector sees `bc_vault_*` in `tools/list` and can call them; the
+  worker routes stay full keys only, so a connector can never be the PC that answers. `VAULT_BRIDGE` off still
+  closes everything.
+- Fail closed: any error reading grants, the table not migrated yet included, means no grant.
+- Audit: `vault.grant.on` (with the passkey used) and `vault.grant.off`, plus the usual `vault.read` rows naming the
+  connector.
+- Deploy: the `VaultGrant` table is an additive migration (`prisma/migrations/20261125090000_vault_grant`). Apply it
+  with `prisma migrate deploy` before or right after the broker deploy; until it exists, grants simply stay off.
