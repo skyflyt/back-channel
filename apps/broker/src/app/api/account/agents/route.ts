@@ -4,6 +4,7 @@ import { getAccountFromCookie, SESSION_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADE
 import { rateLimit } from "@/lib/rate-limit";
 import { seedWelcomeIfFirstConnect } from "@/lib/onboarding";
 import { requireConnectStepUp, STEP_UP_HEADER } from "@/lib/step-up";
+import { vaultGrantsFor } from "@/lib/vault-grant";
 
 export const runtime = "nodejs";
 
@@ -11,6 +12,8 @@ export const runtime = "nodejs";
  * GET /api/account/agents — the account's registered agents (cookie-auth).
  * Active (revokedAt IS NULL) by default, newest-active first; pass
  * ?include_revoked=true for full history. Metadata only — never a key/hash.
+ * vault_grant_at: when the person let this connector read their vault (src/lib/vault-grant.ts), else null;
+ * vault_bridge: whether the vault bridge is switched on at all (VAULT_BRIDGE).
  */
 export async function GET(req: NextRequest) {
   const account = await getAccountFromCookie(req.cookies.get(SESSION_COOKIE_NAME)?.value);
@@ -21,7 +24,9 @@ export async function GET(req: NextRequest) {
     where: { accountId: account.id, ...(includeRevoked ? {} : { revokedAt: null }) },
     orderBy: [{ lastUsedAt: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
   });
+  const grants = await vaultGrantsFor(account.id);
   return NextResponse.json({
+    vault_bridge: process.env.VAULT_BRIDGE === "on" ? "on" : "off", // as vaultRolloutOn() in src/lib/vault.ts
     agents: rows.map((a) => ({
       id: a.id,
       name: a.name,
@@ -30,6 +35,7 @@ export async function GET(req: NextRequest) {
       created_at: a.createdAt.toISOString(),
       last_used_at: a.lastUsedAt?.toISOString() ?? null,
       revoked_at: a.revokedAt?.toISOString() ?? null,
+      vault_grant_at: grants.get(a.id)?.toISOString() ?? null,
     })),
   });
 }

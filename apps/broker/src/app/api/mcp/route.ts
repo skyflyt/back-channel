@@ -33,9 +33,10 @@ import { GET as agentPayloadsGET } from "@/app/api/inbox/agent-payloads/route";
 import { isListTool, listsTool, tasksWaitingForAgents } from "@/lib/lists";
 // Remote app sessions (bc_remote_*): full-scope keys only, same rules as /api/remote-app.
 import { isRemoteTool, remoteTool } from "@/lib/remote-app";
-// The vault bridge (bc_vault_*): full-scope keys only, VAULT_BRIDGE=on only, same rules as /api/vault (docs/vault-bridge.md).
+// The vault bridge (bc_vault_*): VAULT_BRIDGE=on only; full-scope keys, or a connector the person granted the vault to
+// (src/lib/vault-grant.ts); same rules as /api/vault (docs/vault-bridge.md).
 import { isVaultTool } from "@/lib/mcp/vault-tools.mjs";
-import { vaultRolloutOn, vaultTool } from "@/lib/vault";
+import { vaultToolsOffered, vaultTool } from "@/lib/vault";
 import { waitForInbox, TooManyWaitersError } from "@/lib/inbox-bus";
 // Side effect: registers the shared pendingCounter with inbox-bus (same wiring
 // /api/inbox/check and /api/inbox/events rely on) so waitForInbox here counts
@@ -340,16 +341,19 @@ export async function POST(req: NextRequest) {
     case "ping":
       // ping is a REQUEST — it needs an empty result, not a 202 (clients poll it for liveness).
       return json(rpcResult(msg.id, {}));
-    case "tools/list":
+    case "tools/list": {
       // A connector key is refused by the dashboard-link route itself
       // (view-token-self); leaving the tool out of its catalog just keeps the
       // model from offering something that will not work.
       // The bc_remote_* tools (a PC's apps) are left out for the same reason, and refused by remote-app.ts.
-      // The bc_vault_* tools: full-scope keys only (vault.ts refuses connectors too), and only while the bridge is on.
+      // The bc_vault_* tools: only while the bridge is on, to full-scope keys and to connectors with the person's
+      // vault grant (vault.ts applies the same rule to every call).
+      const vault = await vaultToolsOffered(ctx);
       return json(rpcResult(msg.id, {
-        tools: (hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link" && !isRemoteTool(t.name) && !isVaultTool(t.name)))
-          .filter((t) => vaultRolloutOn() || !isVaultTool(t.name)),
+        tools: (hasFullScope(ctx) ? TOOLS : TOOLS.filter((t) => t.name !== "bc_dashboard_link" && !isRemoteTool(t.name)))
+          .filter((t) => vault || !isVaultTool(t.name)),
       }));
+    }
     case "tools/call": {
       const name = msg.params?.name;
       const tool = typeof name === "string" ? getTool(name) : null;

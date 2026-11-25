@@ -139,6 +139,7 @@ model AgentToken {
   secretBrokerAt DateTime?
   secretRequests SecretRequest[]
   secretJobs     SecretJob[]
+  vaultGrant     VaultGrant?
   dispatchSent DispatchTask[] @relation("DispatchSender")
   dispatchReceived DispatchTask[] @relation("DispatchTarget")
   account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
@@ -1087,10 +1088,11 @@ model PasskeyChallenge {
   accountId  String
   kind       String    // "register" | "step_up"
   action     String?   // step_up: "approve_session" | "resume_session" | "approve_support" | "connect_agent" | "manage_passkeys"
-                       //   | "approve_secret" | "secret_broker_admin";
+                       //   | "approve_secret" | "secret_broker_admin" | "grant_vault";
                        // register: "manage_passkeys" when a step-up authorized it (the account had a passkey), else null
   targetId   String?   // approve_session, resume_session: the RemoteAppSession id; approve_support: the SupportInvite id;
-                       // approve_secret: the SecretRequest id; secret_broker_admin: the PC's worker (AgentToken id); else null
+                       // approve_secret: the SecretRequest id; secret_broker_admin: the PC's worker (AgentToken id);
+                       // grant_vault: the connector (AgentToken id); else null
   challenge  String    @unique // base64url, as sent to the browser (approve_secret: the broker's digest for the chosen grant)
   expiresAt  DateTime  // the ceremony's deadline (5 minutes); once a step-up verifies, the grant's (2 minutes)
   answeredAt DateTime? // the first verify attempt spent the challenge
@@ -1157,4 +1159,19 @@ model SecretJob {
 
   @@index([agentId, state])
   @@index([accountId, createdAt])
+}
+
+// A per-connector vault grant (docs/vault-bridge.md, step 4): the person let one hosted connector (an AgentToken with
+// scope "connector", minted by OAuth for claude.ai or ChatGPT) use the read-only bc_vault_* tools. Turned on from the
+// dashboard with a passkey step-up (grant_vault, src/lib/step-up.ts), off with one click; gone with the connector's key.
+// Its own table on purpose: Prisma selects every AgentToken column on every auth, so a column there would make a
+// not-yet-migrated database fail every request, where a missing table only fails a vault grant (closed).
+model VaultGrant {
+  agentTokenId String     @id // the connector's AgentToken id
+  accountId    String     // its person (the token's accountId), kept for the account's own listing
+  passkeyId    String     // which passkey confirmed it (no foreign key: a removed passkey leaves the record)
+  createdAt    DateTime   @default(now())
+  agentToken   AgentToken @relation(fields: [agentTokenId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
 }

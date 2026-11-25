@@ -9,7 +9,7 @@
 import { browserSupportsWebAuthn, startAuthentication, startRegistration } from "@simplewebauthn/browser";
 
 export type StepUpAction = "approve_session" | "resume_session" | "approve_support" | "connect_agent" | "manage_passkeys"
-  | "approve_secret" | "secret_broker_admin";
+  | "approve_secret" | "secret_broker_admin" | "grant_vault";
 /** "needed": the page knows the account has a passkey and the step-up is on, so the prompt comes first. */
 export type StepUpHint = "needed" | undefined;
 export const STEP_UP_HEADER = "x-bc-step-up";
