@@ -3,6 +3,8 @@ param(
     [string]$Name = "$env:COMPUTERNAME agent",
     [uri]$Broker = 'https://back-channel.app',
     [switch]$StartAtLogon,
+    [switch]$Lists,
+    [switch]$Vault,
     [switch]$CheckPrerequisitesOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -108,9 +110,15 @@ if ($LASTEXITCODE -ne 0) { throw 'Enrollment failed. The worker has not been sta
 $taskNodeLiteral = "'" + $taskNode.Replace("'", "''") + "'"
 $taskCliLiteral = "'" + $taskCli.Replace("'", "''") + "'"
 $taskStateLiteral = "'" + $taskState.Replace("'", "''") + "'"
+# -Lists and -Vault add those modes to the worker the launcher (and so the scheduled task) runs: run --lists / --vault.
+# Running the installer again keeps the modes the existing launcher already has.
+$taskOldLauncher = if (Test-Path -LiteralPath $taskLauncher) { [string](Get-Content -LiteralPath $taskLauncher -Raw) } else { '' }
+$taskModeArgs = ''
+if ($Lists -or $taskOldLauncher.Contains("'--lists'")) { $taskModeArgs += ", '--lists'" }
+if ($Vault -or $taskOldLauncher.Contains("'--vault'")) { $taskModeArgs += ", '--vault'" }
 @"
 `$ErrorActionPreference = 'Stop'
-`$worker = Start-Process -FilePath $taskNodeLiteral -ArgumentList @('"' + $taskCliLiteral + '"', '--state', '"' + $taskStateLiteral + '"', 'run', '--parent-pid', "`$PID") -WindowStyle Hidden -Wait -PassThru
+`$worker = Start-Process -FilePath $taskNodeLiteral -ArgumentList @('"' + $taskCliLiteral + '"', '--state', '"' + $taskStateLiteral + '"', 'run', '--parent-pid', "`$PID"$taskModeArgs) -WindowStyle Hidden -Wait -PassThru
 exit `$worker.ExitCode
 "@ | Set-Content -LiteralPath $taskLauncher -Encoding UTF8
 # -ExecutionPolicy Bypass: the Windows default (Restricted) refuses -File. The launcher passes its own PID to the
@@ -135,6 +143,7 @@ if ($taskTask) {
 }
 Write-Host "Installed at $taskInstall"
 Write-Host "Local state: $taskState"
+if ($taskModeArgs) { Write-Host ('The worker runs with' + $taskModeArgs.Replace(", '", ' ').Replace("'", '') + '.') }
 Write-Host 'Enrollment does not authorize execution. Pin the other agent and add a local project profile before sending a job.'
 Write-Host "Worker CLI: & `"$taskNode`" `"$taskCli`" --state `"$taskState`""
 Write-Host 'Complete setup with the CLI trust --file peer.json and profile --name NAME --file profile.json commands.'

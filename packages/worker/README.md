@@ -63,6 +63,10 @@ then `Start-ScheduledTask -TaskName 'BackChannel-Worker'`. Without that option,
 run the printed `run-worker.ps1` launcher after setup. The bootstrap does not
 start an incomplete worker or hold its setup lock.
 
+`-Vault` and `-Lists` make the launcher, and so the task, run the worker with
+`run --vault` and `--lists`; without them it runs Dispatch only and never answers
+vault reads. Running the bootstrap again keeps the modes the launcher already has.
+
 The task runs `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File run-worker.ps1` (the
 Windows default policy refuses `-File` otherwise). The launcher starts `run --parent-pid <its own PID>`, so stopping
 the task, which ends the launcher, also stops the worker within about 5 seconds. Running the bootstrap again updates
@@ -242,7 +246,8 @@ a sync stuck, and edits that haven't been pushed aren't served. It fetches again
    fetches with your own saved credentials: `vault-token --file token.txt` (or `--file -` to paste it on stdin).
    It is kept in the worker's private state, given to git in its environment, and never sent to Back Channel.
 4. Check it with `vault` (fetches once and prints the commit, its time and how fresh it is), then run
-   `run --vault` (it can run with `--lists` and Dispatch in one worker).
+   `run --vault` (it can run with `--lists` and Dispatch in one worker). For the `BackChannel-Worker` scheduled task,
+   run the Windows bootstrap with `-Vault` so its launcher passes `--vault`.
 
 Each answer carries `commit`, `as_of` (the commit's time), `fetched_at`, `stale_seconds` and `fetch_ok`, and a read
 carries the note's `version` (`sha256:` of its bytes). Errors are fixed sentences, never git's own output. Back
